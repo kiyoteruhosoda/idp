@@ -556,6 +556,19 @@ pub trait ClientAssertionReplayRepository: Send + Sync {
     ) -> Result<bool>;
 }
 
+/// 受けた DPoP の証明を鍵ごとに 1 回だけにする記録（ADR-0075 決定 4）。
+///
+/// 期限切れ行の掃除は本トレイトではなく共通の GC（`ExpiringRecordStore`）が行う。
+#[async_trait]
+pub trait DpopProofReplayRepository: Send + Sync {
+    /// `proof_hash`（`sha256(jkt ":" jti)` の 16 進）が未使用なら記録して `true`、既に記録済みなら
+    /// `false`（＝使い回し）を返す。実装は一意制約への挿入 1 回で判定すること（同時に 2 本来ても片方だけ）。
+    ///
+    /// `retain_until` は**受ける幅が閉じる時刻**（`iat` の許す過去の幅を過ぎる時刻）。
+    async fn record_if_unused(&self, proof_hash: &str, retain_until: DateTime<Utc>)
+        -> Result<bool>;
+}
+
 #[async_trait]
 pub trait ClientRepository: Send + Sync {
     /// `client_id` はテナント内一意のため `(tenant_id, client_id)` で検索する（ADR-0009 §2）。

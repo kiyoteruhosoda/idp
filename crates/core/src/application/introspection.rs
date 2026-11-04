@@ -10,6 +10,7 @@ use crate::application::access_token_verification::{AccessTokenRejection, Access
 use crate::application::client_authentication::{
     ClientAuthError, ClientAuthOutcome, ClientAuthenticator, PresentedClientCredentials,
 };
+use crate::application::token::KeyConfirmation;
 use crate::domain::client::Client;
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
@@ -42,6 +43,9 @@ pub struct IntrospectionResponse {
     pub iss: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub jti: Option<String>,
+    /// DPoP で結び付けた鍵（RFC 9449 §6.2。ADR-0075 決定 8）。結び付けていなければ省く。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cnf: Option<KeyConfirmation>,
 }
 
 impl IntrospectionResponse {
@@ -57,6 +61,7 @@ impl IntrospectionResponse {
             sub: None,
             iss: None,
             jti: None,
+            cnf: None,
         }
     }
 }
@@ -188,12 +193,20 @@ impl IntrospectionService {
             scope: Some(claims.scope),
             client_id: Some(claims.client_id),
             username: None,
-            token_type: Some("Bearer".to_string()),
+            token_type: Some(
+                if claims.cnf.is_some() {
+                    "DPoP"
+                } else {
+                    "Bearer"
+                }
+                .to_string(),
+            ),
             exp: Some(claims.exp),
             iat: Some(claims.iat),
             sub: Some(claims.sub),
             iss: Some(claims.iss),
             jti: Some(claims.jti),
+            cnf: claims.cnf,
         }
     }
 
@@ -241,6 +254,7 @@ impl IntrospectionService {
             // refresh token は不透明トークンで JWT の `jti` を持たない。保存している SHA-256 ハッシュを
             // `jti` として返すと内部保存値が client へ漏れるため付与しない（RFC 7662 で jti は任意）。
             jti: None,
+            cnf: rt.dpop_jkt.map(|jkt| KeyConfirmation { jkt }),
         }
     }
 

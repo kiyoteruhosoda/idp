@@ -54,6 +54,8 @@ metrics-exporter-prometheus = { workspace = true }
 
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }
+# DPoP の試験（ADR-0075）: アプリの代わりに P-256 の鍵で証明を作る。
+p256 = { workspace = true }
 jsonwebtoken = { workspace = true }
 # SAML SSO テストでの AuthnRequest 圧縮（HTTP-Redirect binding の DEFLATE）。
 flate2 = { workspace = true }

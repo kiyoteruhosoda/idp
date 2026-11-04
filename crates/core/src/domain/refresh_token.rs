@@ -35,6 +35,9 @@ pub struct RefreshToken {
     /// rotation で引き継ぐ ——refresh では認証をやり直していないので、「最後にログインした時刻」も
     /// 変わらない。`None` = 記録なし（本列の導入前に発行されたトークン。[`Self::auth_time_or_issued`]）。
     pub auth_time: Option<DateTime<Utc>>,
+    /// DPoP で結び付けた鍵の指紋（RFC 7638。ADR-0075）。`Some` なら、同じ鍵の証明が無いと使えない。
+    /// rotation で子へ引き継ぐ。`None` = 結び付けなし（持っていれば使える。今までどおり）。
+    pub dpop_jkt: Option<String>,
     pub expires_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -88,6 +91,7 @@ mod tests {
             sid: None,
             authentication_methods: None,
             auth_time: None,
+            dpop_jkt: None,
             expires_at: now,
             revoked_at: None,
             created_at: now,

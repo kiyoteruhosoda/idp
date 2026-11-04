@@ -192,6 +192,8 @@ fn discovery_document(issuer: &str, end_session_endpoint: &str) -> Value {
         "scopes_supported": ["openid", "profile", "email", "offline_access"],
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "refresh_token", "client_credentials"],
+        // DPoP（RFC 9449 §5.1。ADR-0075）。証明の署名は ES256 だけ。
+        "dpop_signing_alg_values_supported": crate::domain::dpop::SUPPORTED_ALGORITHMS,
         "subject_types_supported": ["public"],
         "id_token_signing_alg_values_supported": ["RS256"],
         // クライアント認証（RFC 6749 §2.3.1）。`client_secret_post` は多くの RP ライブラリが

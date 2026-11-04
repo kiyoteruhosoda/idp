@@ -63,6 +63,11 @@ pub async fn token(
         refresh_token: body.refresh_token,
         scope: body.scope,
         resource: body.resource,
+        // RFC 9449。証明が無ければ今までどおり Bearer で出す（ADR-0075 決定 1）。
+        dpop_proof: headers
+            .get("dpop")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string),
     };
 
     match state.token.exchange(tenant.context(), command, &ctx).await {
@@ -74,7 +79,13 @@ pub async fn token(
             ],
             Json(TokenResponse {
                 access_token: tokens.access_token,
-                token_type: "Bearer".to_string(),
+                // 鍵に結び付けたトークンは `DPoP`（RFC 9449 §5）。
+                token_type: if tokens.bound_to_key {
+                    "DPoP"
+                } else {
+                    "Bearer"
+                }
+                .to_string(),
                 expires_in: tokens.expires_in,
                 id_token: tokens.id_token,
                 scope: tokens.scope,

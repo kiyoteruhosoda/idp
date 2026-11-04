@@ -1,3 +1,12 @@
+## 2026-11-04（スマホのアプリのトークンを DPoP で端末の鍵に結び付ける。task #893・ADR-0075）
+
+- **トークンの口（`authorization_code`・`refresh_token`）で `DPoP` ヘッダー（RFC 9449）を受けるようにした。** 証明が付いていれば
+  アクセストークンに `cnf.jkt` を入れて `token_type: DPoP` で返し、リフレッシュトークンも同じ鍵に結び付ける（移行 0074 の
+  `refresh_tokens.dpop_jkt`）。結び付けたリフレッシュトークンは同じ鍵の証明でしか使えず、鍵の無い相手には何も失効させない
+  （別の鍵なら監査ログ `refresh_token.dpop_key_mismatch`）。使い回しの検出はそのまま。**証明を付けないアプリは今までどおり**。
+- **`/userinfo` は `cnf` のあるトークンを `Authorization: DPoP` と証明でしか受けない。** `/introspect` は `cnf` を返す。
+  discovery に `dpop_signing_alg_values_supported: ["ES256"]`。証明の `jti` は鍵ごとに 1 回（新しい表 `dpop_proof_jtis`）、
+  `iat` は 120 秒前〜60 秒後、nonce は使わない。受けるサーバーの守ることは RP_INTEGRATION.md §7.5。
 ## 2026-11-04（設定の画面で、秒の値に長さを添える。task #887 の続き）
 
 - **組織の設定の「今の値」「IdP 全体の値」で、秒の設定（`*_SECS`）に「604800（7 日）」のように長さを添えた。** 入力欄の下にも
