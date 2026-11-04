@@ -39,7 +39,7 @@ pub fn build(state: WebState) -> Router {
         .route("/login", get(login::login_page).post(login::login))
         // エンドユーザー・ポータルの TOTP 入力（`/login` 直接ログイン経路の 2 段階目）。
         .route("/login/mfa", get(portal::mfa_page).post(portal::mfa_submit))
-        // 「アプリで続ける」（task #892・ADR-0075）。
+        // 「アプリで続ける」（task #892・ADR-0077）。
         .route("/login/app/start", post(app_approval::start))
         .route("/login/app/complete", get(app_approval::complete))
         .route(

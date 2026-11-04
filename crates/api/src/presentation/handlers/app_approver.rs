@@ -1,4 +1,4 @@
-//! 認証アプリが呼ぶ口（`/{tenant_id}/app-approver/*`）と App Link の受け皿（task #892。ADR-0075）。
+//! 認証アプリが呼ぶ口（`/{tenant_id}/app-approver/*`）と App Link の受け皿（task #892。ADR-0077）。
 //!
 //! アプリはトークンを持たず、操作のたびに Keystore の鍵で署名する（文の形は
 //! `domain::app_approver::signed_message`）。判定は Application 層（`AppApprovalService`）にあり、

@@ -934,7 +934,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         default_risk: DefaultRisk::Safe,
         kind: SettingKind::Text,
         default_value: Some(""),
-        description: "認証アプリ（「アプリで続ける」。task #892・ADR-0075）の Android のパッケージ名。\
+        description: "認証アプリ（「アプリで続ける」。task #892・ADR-0077）の Android のパッケージ名。\
                       空なら認証アプリの口は全部閉じる（404）。Key Attestation と assetlinks.json の両方に使う。",
     },
     SettingDefinition {

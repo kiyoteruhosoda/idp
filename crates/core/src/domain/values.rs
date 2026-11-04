@@ -263,7 +263,7 @@ string_enum!(
         EmailOtp => "email_otp",
         SmsOtp => "sms_otp",
         ExternalIdp => "external_idp",
-        // 登録した認証アプリ（Keystore の鍵・使うたびに指紋）での承認（task #892。ADR-0075）。
+        // 登録した認証アプリ（Keystore の鍵・使うたびに指紋）での承認（task #892。ADR-0077）。
         AppApproval => "app_approval",
     }
 );

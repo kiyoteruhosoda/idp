@@ -1839,7 +1839,7 @@ pub trait ExpiringRecordStore: Send + Sync {
     async fn purge_expired(&self, now: DateTime<Utc>) -> Result<u64>;
 }
 
-/// 利用者の認証アプリの鍵（task #892。ADR-0075）と、その鍵で承認したログイン状態。
+/// 利用者の認証アプリの鍵（task #892。ADR-0077）と、その鍵で承認したログイン状態。
 #[async_trait]
 pub trait ApproverKeyRepository: Send + Sync {
     /// 登録する。同じ `key_id` が既にあれば `Conflict`。

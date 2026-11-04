@@ -82,7 +82,7 @@ pub struct SessionKeyBinding {
     pub bound_at: DateTime<Utc>,
 }
 
-/// ログイン状態の結び付けの種類（task #887・#892。ADR-0074・ADR-0075）。
+/// ログイン状態の結び付けの種類（task #887・#892。ADR-0074・ADR-0077）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionBinding {
     /// 結び付けなし。
@@ -96,7 +96,7 @@ pub enum SessionBinding {
 /// ログイン状態の長さを決める。
 ///
 /// 30 日（`bound_ttl`）にするのは、DBSC で結び付き**かつ**そのログイン状態の端末が自分の端末に
-/// 登録済みのとき（ADR-0074 §6）と、認証アプリで承認したとき（ADR-0075。承認した鍵そのものが
+/// 登録済みのとき（ADR-0074 §6）と、認証アプリで承認したとき（ADR-0077。承認した鍵そのものが
 /// パスキーで登録した端末の鍵なので、ブラウザの端末の登録は問わない）。それ以外は確立したときの
 /// 長さ（`absolute_ttl`）。どちらも**作った時刻から**数える。返すのは (idle の期限, absolute の期限)。
 pub fn lifetime_for(

@@ -126,7 +126,7 @@ impl SignInCompletion {
 
     /// 結び付けの種類を決めて SSO セッションを作る（長さは `session_key::lifetime_for`）。
     ///
-    /// 確立のときに結び付けが決まっているのは「アプリで承認」だけ（task #892。ADR-0075）。DBSC は確立の
+    /// 確立のときに結び付けが決まっているのは「アプリで承認」だけ（task #892。ADR-0077）。DBSC は確立の
     /// 後に結び付くので、ここでは `Unbound` で作り、結び付けたときに延ばす（ADR-0074）。
     pub async fn establish_sso_with_binding(
         &self,

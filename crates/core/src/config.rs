@@ -147,7 +147,7 @@ pub struct Config {
     security_alert_webhook_url: String,
     /// その鍵を読むファイル（`SECURITY_ALERT_WEBHOOK_TOKEN_FILE`）。
     security_alert_webhook_token_file: String,
-    /// 認証アプリ（task #892。ADR-0075。環境変数だけ）。
+    /// 認証アプリ（task #892。ADR-0077。環境変数だけ）。
     app_approver_package_name: String,
     app_approver_signing_cert_sha256: String,
     app_approver_extra_attestation_roots_file: String,

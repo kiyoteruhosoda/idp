@@ -68,7 +68,7 @@
       </table>
     </div>
     {% endif %}
-    {#- 認証アプリ（task #892・ADR-0075）。アプリの中でパスキーでログインし直して登録した鍵。取り消すと、
+    {#- 認証アプリ（task #892・ADR-0077）。アプリの中でパスキーでログインし直して登録した鍵。取り消すと、
         その鍵で承認したログイン状態も終わる。 -#}
     {% if !approver_keys.is_empty() %}
     <h2 class="h6 mt-4">{{ messages.get("user-security-approver-heading") }}</h2>

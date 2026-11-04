@@ -1,4 +1,4 @@
-//! 認証アプリの鍵・登録の受付・「アプリで続ける」の依頼の sqlx 実装（task #892。ADR-0075）。
+//! 認証アプリの鍵・登録の受付・「アプリで続ける」の依頼の sqlx 実装（task #892。ADR-0077）。
 
 use crate::domain::app_approver::{
     ApprovalRequest, ApprovalState, ApproverEnrollment, ApproverKey, EnrollmentStage,

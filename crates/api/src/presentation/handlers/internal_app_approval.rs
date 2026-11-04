@@ -1,5 +1,5 @@
 //! web が呼ぶ「アプリで続ける」と認証アプリの鍵の口（`/internal/app-approval/*`・
-//! `/internal/account/app-approver/*`。task #892。ADR-0075）。サービストークンの内側。
+//! `/internal/account/app-approver/*`。task #892。ADR-0077）。サービストークンの内側。
 //!
 //! 判定は Application 層（`AppApprovalService`）。ここは DTO の詰め替えだけを行う。
 

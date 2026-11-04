@@ -1151,7 +1151,7 @@ impl AppState {
             clock.clone(),
             *config.csrf_secret(),
         ));
-        // 認証アプリで承認するログイン（「アプリで続ける」。task #892・ADR-0075）。
+        // 認証アプリで承認するログイン（「アプリで続ける」。task #892・ADR-0077）。
         let app_approval = Arc::new(AppApprovalService::new(
             AppApprovalDependencies {
                 keys: Arc::new(SqlxApproverKeyRepository::new(pool.clone())),
@@ -1381,7 +1381,7 @@ impl FromRef<AppState> for Arc<RegisterService> {
 ///
 /// ⚠ 鍵を読めないからといって起動は止めない（知らせのためにログインを止めない）。代わりに
 /// エラーログを残し、出来事は監査ログで追える。
-/// 認証アプリの鍵の確かめの決まり（環境変数だけ。ADR-0075）。パッケージ名が無ければ口を閉じる（`None`）。
+/// 認証アプリの鍵の確かめの決まり（環境変数だけ。ADR-0077）。パッケージ名が無ければ口を閉じる（`None`）。
 ///
 /// 設定が壊れているとき（指紋の形が違う・根のファイルが読めない）は、口を閉じて起動を続ける
 /// （ログインそのものは止めない。知らせの送り口と同じ扱い）。

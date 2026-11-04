@@ -1,4 +1,4 @@
-//! Android の Key Attestation（鍵の証明）を確かめる（task #892。ADR-0075）。
+//! Android の Key Attestation（鍵の証明）を確かめる（task #892。ADR-0077）。
 //!
 //! 認証アプリは Keystore の中で鍵を作るときに assay の challenge を入れ、Keystore が出した証明書の
 //! 鎖（鍵の証明書 → 中間 → Google の根）をそのまま送ってくる。ここで確かめること:
@@ -15,7 +15,7 @@
 //! | アプリ | パッケージ名と署名の証明書の SHA-256 が、assay が信じる値 |
 //!
 //! ⚠ **ここで確かめないこと**: Google の失効一覧（https://android.googleapis.com/attestation/status）・
-//! 証明書の有効期間（鍵の証明書の期間は端末によって当てにならない）。ADR-0075 の「防げないこと」。
+//! 証明書の有効期間（鍵の証明書の期間は端末によって当てにならない）。ADR-0077 の「防げないこと」。
 
 use crate::domain::der::{
     self, DerElement, DerError, DerReader, TagClass, TAG_BIT_STRING, TAG_BOOLEAN, TAG_ENUMERATED,

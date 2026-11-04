@@ -42,7 +42,7 @@ pub const SAML_REQUEST_COOKIE: &str = "saml_request_id";
 pub const EXTERNAL_LOGIN_BINDING_COOKIE: &str = "external_login_binding";
 /// [`EXTERNAL_LOGIN_BINDING_COOKIE`] の寿命。api の進行状態の寿命（600 秒）と揃える。
 pub const EXTERNAL_LOGIN_BINDING_MAX_AGE_SECS: u64 = 600;
-/// 「アプリで続ける」を始めたブラウザに置く一度きりの印（task #892。ADR-0075）。認証アプリが開いた
+/// 「アプリで続ける」を始めたブラウザに置く一度きりの印（task #892。ADR-0077）。認証アプリが開いた
 /// ブラウザでコードと一緒に api へ渡し、依頼を始めたブラウザかを確かめる。**オリジン束縛**（`__Host-`）・
 /// `SameSite=Lax`（アプリが開く移動はトップレベルの GET なので届く）。
 pub const APP_APPROVAL_BINDING_COOKIE: &str = "app_approval_binding";

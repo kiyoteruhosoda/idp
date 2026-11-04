@@ -1,4 +1,4 @@
-//! 「アプリで続ける」と認証アプリの鍵（task #892。ADR-0075）。
+//! 「アプリで続ける」と認証アプリの鍵（task #892。ADR-0077）。
 //!
 //! `TEST_DATABASE_URL` 設定時のみ実行:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test app_approval

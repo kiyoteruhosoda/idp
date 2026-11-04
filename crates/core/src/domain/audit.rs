@@ -182,7 +182,7 @@ pub enum AuditEventType {
     /// 結び付けの登録・更新の署名を受け付けなかった（`reason` に理由）。別の鍵の署名でセッションを
     /// 終わらせたときは `reason` に `key_mismatch`。
     SessionKeyRejected,
-    /// 認証アプリの鍵を登録した・取り消した（task #892・ADR-0075）。`reason` に鍵の id と置き場。
+    /// 認証アプリの鍵を登録した・取り消した（task #892・ADR-0077）。`reason` に鍵の id と置き場。
     ApproverKeyRegistered,
     ApproverKeyRevoked,
     /// 鍵の登録の受付で、Key Attestation を受け付けなかった（`reason` に理由）。

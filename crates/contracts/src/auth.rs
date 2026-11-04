@@ -2523,7 +2523,7 @@ pub enum InternalSessionKeyBindingResponse {
     Internal,
 }
 
-// ─── 認証アプリで承認するログイン（task #892。ADR-0075） ───────────────────
+// ─── 認証アプリで承認するログイン（task #892。ADR-0077） ───────────────────
 
 /// 「アプリで続ける」の依頼を始める（`POST /internal/app-approval/start`）。
 #[derive(Debug, Clone, Serialize, Deserialize)]

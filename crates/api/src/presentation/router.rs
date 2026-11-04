@@ -192,7 +192,7 @@ pub fn build(state: AppState) -> Router {
         )
         // 利用者の端末（task #872）。ログインした端末の結び付けと「端末」の欄。
         .route("/internal/devices/observe", post(internal_devices::observe))
-        // 「アプリで続ける」と認証アプリの鍵（task #892・ADR-0075）。
+        // 「アプリで続ける」と認証アプリの鍵（task #892・ADR-0077）。
         .route(
             "/internal/app-approval/start",
             post(internal_app_approval::start),
@@ -733,7 +733,7 @@ pub fn build(state: AppState) -> Router {
             get(discovery::openid_configuration),
         )
         .route("/.well-known/jwks.json", get(discovery::jwks))
-        // 認証アプリが呼ぶ口（task #892・ADR-0075）。アプリはトークンを持たず、操作のたびに鍵で署名する。
+        // 認証アプリが呼ぶ口（task #892・ADR-0077）。アプリはトークンを持たず、操作のたびに鍵で署名する。
         .route(
             "/app-approver/enrollments",
             post(app_approver::start_enrollment),
