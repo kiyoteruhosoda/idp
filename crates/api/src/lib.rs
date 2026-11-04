@@ -90,11 +90,15 @@ pub async fn run() -> anyhow::Result<()> {
 
     // 180 日使われていない端末の登録を消す（task #872）。消すたびに監査へ残し、有効な組織には知らせる
     // ので、表の掃除（`expired_records`）とは別のループにする。1 日 1 回で足りる。
+    // ⚠ 初回は起動の 5 分後に走らせる。「24 時間待ってから初回」だと、1 日に 1 回以上配り直す
+    //   （そのたびに起動し直す）限り一度も走らない。
     {
         let devices = state.device_registry.clone();
         tokio::spawn(async move {
+            let mut wait = std::time::Duration::from_secs(5 * 60);
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(24 * 60 * 60)).await;
+                tokio::time::sleep(wait).await;
+                wait = std::time::Duration::from_secs(24 * 60 * 60);
                 match devices.purge_unused().await {
                     Ok(0) => {}
                     Ok(count) => tracing::info!(count, "expired unused devices"),
