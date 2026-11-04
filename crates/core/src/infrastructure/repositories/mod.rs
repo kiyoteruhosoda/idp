@@ -30,6 +30,7 @@ pub mod refresh_token;
 pub mod revoked_access_token;
 pub mod saml_service_provider;
 pub mod saml_sso_request;
+pub mod session_key_binding;
 pub mod sign_in_history;
 pub mod signing_key;
 pub mod sso_session;

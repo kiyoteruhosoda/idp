@@ -116,12 +116,35 @@ impl SsoSessionRepository for SqlxSsoSessionRepository {
     }
 
     async fn extend_idle(&self, session_hash: &str, idle_expires_at: DateTime<Utc>) -> Result<()> {
-        sqlx::query("UPDATE sso_sessions SET idle_expires_at = ? WHERE session_hash = ?")
-            .bind(idle_expires_at.naive_utc())
-            .bind(session_hash)
-            .execute(&self.pool)
-            .await
-            .map_err(repo_err)?;
+        // ⚠ 短くはしない（端末の鍵に結び付いたログイン状態は idle を absolute まで延ばしてある。ADR-0074）。
+        sqlx::query(
+            "UPDATE sso_sessions SET idle_expires_at = GREATEST(idle_expires_at, ?) \
+             WHERE session_hash = ?",
+        )
+        .bind(idle_expires_at.naive_utc())
+        .bind(session_hash)
+        .execute(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        Ok(())
+    }
+
+    async fn set_lifetime(
+        &self,
+        session_hash: &str,
+        idle_expires_at: DateTime<Utc>,
+        absolute_expires_at: DateTime<Utc>,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE sso_sessions SET idle_expires_at = ?, absolute_expires_at = ? \
+             WHERE session_hash = ?",
+        )
+        .bind(idle_expires_at.naive_utc())
+        .bind(absolute_expires_at.naive_utc())
+        .bind(session_hash)
+        .execute(&self.pool)
+        .await
+        .map_err(repo_err)?;
         Ok(())
     }
 

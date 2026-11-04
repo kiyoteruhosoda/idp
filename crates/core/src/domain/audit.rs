@@ -180,6 +180,11 @@ pub enum AuditEventType {
     /// （名前は残さない）。
     SshKeyRegistered,
     SshKeyRevoked,
+    /// SSO セッションを端末の鍵へ結び付けた（DBSC。task #887・ADR-0074）。`reason` に方式と鍵の指紋を残す。
+    SessionKeyBound,
+    /// 結び付けの登録・更新の署名を受け付けなかった（`reason` に理由）。別の鍵の署名でセッションを
+    /// 終わらせたときは `reason` に `key_mismatch`。
+    SessionKeyRejected,
 }
 
 impl AuditEventType {
@@ -279,6 +284,8 @@ impl AuditEventType {
             Self::DeviceExpired => "device.expired",
             Self::SshKeyRegistered => "ssh_key.registered",
             Self::SshKeyRevoked => "ssh_key.revoked",
+            Self::SessionKeyBound => "sso_session.key_bound",
+            Self::SessionKeyRejected => "sso_session.key_rejected",
         }
     }
 }

@@ -64,6 +64,7 @@ pub mod revocation;
 pub mod saml_service_provider_management;
 pub mod saml_sso;
 pub mod service_restart;
+pub mod session_key_binding;
 pub mod sign_in_completion;
 pub mod sign_in_history;
 pub mod ssh_key_registry;

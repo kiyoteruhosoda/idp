@@ -9,8 +9,8 @@ use crate::presentation::handlers::{
     admin_restart, admin_saml_service_providers, admin_signing_keys, admin_ssh_keys,
     admin_system_settings, admin_tenant_settings, admin_tenant_smtp, admin_tenants, admin_users,
     authorize, consent, discovery, health, internal_admin_token, internal_auth, internal_devices,
-    internal_runtime_settings, internal_sign_in_history, internal_ssh_keys, introspect,
-    invitations, logout, mfa, passkey, register, revoke, saml_sso, token, userinfo,
+    internal_runtime_settings, internal_session_keys, internal_sign_in_history, internal_ssh_keys,
+    introspect, invitations, logout, mfa, passkey, register, revoke, saml_sso, token, userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::security_headers::add_security_headers;
@@ -191,6 +191,19 @@ pub fn build(state: AppState) -> Router {
         )
         // 利用者の端末（task #872）。ログインした端末の結び付けと「端末」の欄。
         .route("/internal/devices/observe", post(internal_devices::observe))
+        // SSO セッションの端末の鍵への結び付け（DBSC。task #887）。
+        .route(
+            "/internal/sso/key-binding",
+            post(internal_session_keys::binding),
+        )
+        .route(
+            "/internal/sso/key-binding/register",
+            post(internal_session_keys::register),
+        )
+        .route(
+            "/internal/sso/key-binding/refresh",
+            post(internal_session_keys::refresh),
+        )
         .route(
             "/internal/account/devices",
             post(internal_devices::account_devices),

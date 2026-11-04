@@ -15,6 +15,8 @@ pub struct WebState {
     /// 設定画面からの再起動要求（ADR-0017）。`run()` の graceful shutdown がこの値を待つ。
     /// テストでは `build` が作った値を誰も待たないため、要求しても何も起きない。
     pub restart: ServiceRestart,
+    /// 「SSO セッションは端末の鍵に結び付いているか」の短い覚え（task #887）。
+    pub session_keys: crate::session_key::SessionKeyCache,
 }
 
 impl WebState {
@@ -28,6 +30,7 @@ impl WebState {
             api,
             started_at: chrono::Utc::now(),
             restart: ServiceRestart::new(),
+            session_keys: crate::session_key::SessionKeyCache::default(),
         }
     }
 

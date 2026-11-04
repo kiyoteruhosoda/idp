@@ -1352,6 +1352,8 @@ mod tests {
             ("UNREGISTERED_DEVICE_ALERTS_ENABLED", "false"),
             // task #885 で足した（既定は「使わない」）。
             ("SSH_KEYS_ENABLED", "false"),
+            // task #887 で足した（端末の鍵に結び付いたログイン状態の長さ）。
+            ("SSO_BOUND_TTL_SECS", "2592000"),
         ];
         assert_eq!(
             tenant_overridable_setting_keys().count(),

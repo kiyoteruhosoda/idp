@@ -1,0 +1,10 @@
+-- 0073 の巻き戻し。
+ALTER TABLE sso_session_contexts
+    DROP INDEX sso_session_contexts_key_session_uq,
+    DROP CONSTRAINT sso_session_contexts_key_algorithm_chk,
+    DROP COLUMN key_refreshed_at,
+    DROP COLUMN key_bound_at,
+    DROP COLUMN key_thumbprint,
+    DROP COLUMN key_public_jwk,
+    DROP COLUMN key_algorithm,
+    DROP COLUMN key_session_identifier;

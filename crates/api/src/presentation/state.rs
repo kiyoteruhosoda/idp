@@ -70,6 +70,7 @@ use crate::application::revocation::RevocationService;
 use crate::application::saml_service_provider_management::SamlServiceProviderManagementService;
 use crate::application::saml_sso::SamlSsoService;
 use crate::application::service_restart::ServiceRestartService;
+use crate::application::session_key_binding::SessionKeyBindingService;
 use crate::application::sign_in_completion::SignInCompletion;
 use crate::application::sign_in_history::{SignInFailureRecordingSink, SignInHistoryService};
 use crate::application::ssh_key_registry::SshKeyRegistryService;
@@ -89,7 +90,7 @@ use crate::domain::cache::Cache;
 use crate::domain::clock::Clock;
 use crate::domain::id_generator::IdGenerator;
 use crate::domain::repositories::{
-    AccountNoteRepository, SignInHistoryRepository, UserPermissionRepository,
+    AccountNoteRepository, SignInHistoryRepository, UserDeviceRepository, UserPermissionRepository,
 };
 use crate::domain::security_alert::{DisabledSecurityAlertSink, SecurityAlertSink};
 use crate::domain::tenant::{Tenant, TenantId};
@@ -135,6 +136,7 @@ use crate::infrastructure::repositories::refresh_token::SqlxRefreshTokenReposito
 use crate::infrastructure::repositories::revoked_access_token::SqlxRevokedAccessTokenRepository;
 use crate::infrastructure::repositories::saml_service_provider::SqlxSamlServiceProviderRepository;
 use crate::infrastructure::repositories::saml_sso_request::SqlxSamlSsoRequestRepository;
+use crate::infrastructure::repositories::session_key_binding::SqlxSessionKeyBindingRepository;
 use crate::infrastructure::repositories::sign_in_history::SqlxSignInHistoryRepository;
 use crate::infrastructure::repositories::signing_key::SqlxSigningKeyRepository;
 use crate::infrastructure::repositories::sso_session::SqlxSsoSessionRepository;
@@ -272,6 +274,8 @@ pub struct AppState {
     pub sign_in_history: Arc<SignInHistoryService>,
     /// 利用者が登録する SSH の公開鍵と、配る機械への一覧（task #885）。
     pub ssh_keys: Arc<SshKeyRegistryService>,
+    /// SSO セッションの端末の鍵への結び付け（DBSC。task #887）。
+    pub session_key_binding: Arc<SessionKeyBindingService>,
     /// Step-up 認証（重要操作の直前の本人確認。AP5）。
     pub step_up: Arc<StepUpService>,
     /// 認証器の統合管理（一覧・状態変更・リカバリーコード・email OTP。AP9）。
@@ -1120,8 +1124,10 @@ impl AppState {
 
         // task #872: 利用者の端末の一覧と、登録していない端末でのログインの知らせ。
         let security_alerts = security_alert_sink(&config);
+        let user_devices: Arc<dyn UserDeviceRepository> =
+            Arc::new(SqlxUserDeviceRepository::new(pool.clone()));
         let device_registry = Arc::new(DeviceRegistryService::new(
-            Arc::new(SqlxUserDeviceRepository::new(pool.clone())),
+            user_devices.clone(),
             sso_sessions.clone(),
             users.clone(),
             refresh_tokens.clone(),
@@ -1136,9 +1142,22 @@ impl AppState {
             sso_sessions.clone(),
             users.clone(),
             tenant_settings.clone(),
+            security_alerts.clone(),
+            audit.clone(),
+            clock.clone(),
+        ));
+        // SSO セッションの端末の鍵への結び付け（DBSC。task #887・ADR-0074）。
+        let session_key_binding = Arc::new(SessionKeyBindingService::new(
+            Arc::new(SqlxSessionKeyBindingRepository::new(pool.clone())),
+            sso_sessions.clone(),
+            user_devices,
+            users.clone(),
+            refresh_tokens.clone(),
+            tenant_settings.clone(),
             security_alerts,
             audit.clone(),
             clock.clone(),
+            *config.csrf_secret(),
         ));
 
         // task #879: 本人が見るログイン履歴。
@@ -1298,6 +1317,7 @@ impl AppState {
             device_registry,
             sign_in_history,
             ssh_keys,
+            session_key_binding,
             step_up,
             authenticators,
             authenticator_repository,

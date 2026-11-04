@@ -256,6 +256,21 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         description: "SSO セッションの絶対上限（秒）。操作の有無に関わらず再ログインを要求するまでの時間。",
     },
     SettingDefinition {
+        key: "SSO_BOUND_TTL_SECS",
+        scope: SettingScope::TenantOverridable,
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: false,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::UnsignedInteger,
+        default_value: Some("2592000"),
+        description: "端末の鍵に結び付いた SSO セッション（Chrome の DBSC）の長さ（秒。task #887）。結び付いていて、\
+                      かつその端末を利用者が「自分の端末」に登録しているときだけ、作った時刻から数えてこの長さにする \
+                      （使わなくても切れない）。それ以外は `SSO_ABSOLUTE_TTL_SECS`。`SSO_ABSOLUTE_TTL_SECS` より \
+                      短くしても延ばさないだけで、縮めはしない。",
+    },
+    SettingDefinition {
         key: "ACCESS_TOKEN_TTL_SECS",
         scope: SettingScope::Global,
         shared_with_web: false,

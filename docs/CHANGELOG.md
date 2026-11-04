@@ -7,6 +7,15 @@
 - **`/userinfo` は `cnf` のあるトークンを `Authorization: DPoP` と証明でしか受けない。** `/introspect` は `cnf` を返す。
   discovery に `dpop_signing_alg_values_supported: ["ES256"]`。証明の `jti` は鍵ごとに 1 回（新しい表 `dpop_proof_jtis`）、
   `iat` は 120 秒前〜60 秒後、nonce は使わない。受けるサーバーの守ることは RP_INTEGRATION.md §7.5。
+## 2026-11-04（ログイン状態を端末の鍵へ結び付ける。task #887・ADR-0074）
+
+- **Windows の Chrome では、assay のログイン状態を PC の TPM の中の鍵へ結び付けるようにした（DBSC）。** ログインの応答で
+  Chrome に結び付けを求め、10 分ごとに鍵の署名で短い Cookie（`__Host-sso_bound`）を出し直す。Cookie だけを別の PC へ
+  持ち出しても、10 分を過ぎるとログインしていない扱いになる。結び付けた鍵と違う鍵の署名が来たら、そのログイン状態を
+  終わらせて知らせる（`SECURITY_ALERT_WEBHOOK_URL`。組織の設定にかかわらず送る）。
+- **ログイン状態の長さを結び付けの有無で変えた。** 結び付いていて、その端末を「自分の端末」に登録していれば
+  `SSO_BOUND_TTL_SECS`（既定 30 日・組織ごと）。それ以外はこれまでどおり `SSO_ABSOLUTE_TTL_SECS`。使わなかったときの
+  期限（idle）は延長で短くしないようにした。
 
 ## 2026-11-04（利用者が SSH の鍵を自分で登録し、機械が読んで配る。task #885・ADR-0072）
 
