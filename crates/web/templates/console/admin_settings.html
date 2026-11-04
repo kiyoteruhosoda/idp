@@ -151,6 +151,7 @@
               <input type="text" class="form-control form-control-sm w-auto" id="tenant-value-input-{{ item.key }}" name="value" value="{{ item.value }}" required>
               {% endif %}
               <button type="submit" class="btn btn-sm btn-primary">{{ messages.get("admin-tenant-values-save") }}</button>
+              {% if self.is_seconds(item) %}<div class="form-text w-100 mt-0">{{ messages.get("admin-tenant-values-seconds-hint") }}</div>{% endif %}
             </form>
             <div class="small text-muted mt-2">
               {{ messages.get("admin-tenant-values-current") }} <code>{{ self.value_label(item, item.value) }}</code>
