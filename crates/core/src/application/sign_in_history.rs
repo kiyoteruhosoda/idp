@@ -23,7 +23,8 @@ use crate::domain::repositories::{
     AuditLogSink, SignInHistoryRepository, SsoSessionRepository, UserRepository,
 };
 use crate::domain::sign_in_history::{
-    sign_in_failure_from_audit, SignInAppUse, SignInRecord, SignInSuccess, SIGN_IN_HISTORY_PAGE_MAX,
+    sign_in_failure_from_audit, RequestCountry, SignInAppUse, SignInRecord, SignInSuccess,
+    SIGN_IN_HISTORY_PAGE_MAX,
 };
 use crate::domain::sso_session;
 use crate::domain::user_device::{CountryCode, OBSERVATION_WINDOW_SECS};
@@ -194,11 +195,21 @@ impl SignInHistoryService {
 pub struct SignInFailureRecordingSink {
     inner: Arc<dyn AuditLogSink>,
     history: Arc<dyn SignInHistoryRepository>,
+    /// 今の要求の国（task #895）。監査イベントには国が無いので、写すときにここから添える。
+    country: Arc<dyn RequestCountry>,
 }
 
 impl SignInFailureRecordingSink {
-    pub fn new(inner: Arc<dyn AuditLogSink>, history: Arc<dyn SignInHistoryRepository>) -> Self {
-        Self { inner, history }
+    pub fn new(
+        inner: Arc<dyn AuditLogSink>,
+        history: Arc<dyn SignInHistoryRepository>,
+        country: Arc<dyn RequestCountry>,
+    ) -> Self {
+        Self {
+            inner,
+            history,
+            country,
+        }
     }
 }
 
@@ -206,7 +217,8 @@ impl SignInFailureRecordingSink {
 impl AuditLogSink for SignInFailureRecordingSink {
     async fn record(&self, event: &AuditEvent) -> Result<()> {
         let result = self.inner.record(event).await;
-        if let Some(failure) = sign_in_failure_from_audit(event) {
+        if let Some(mut failure) = sign_in_failure_from_audit(event) {
+            failure.country = self.country.current();
             if let Err(e) = self.history.record_failure(&failure).await {
                 tracing::error!(error = %e, "failed to copy a failed sign-in into the sign-in history");
             }
@@ -318,7 +330,11 @@ mod tests {
     #[tokio::test]
     async fn failed_sign_ins_are_copied_even_when_the_audit_write_fails() {
         let history = Arc::new(Recorded::default());
-        let sink = SignInFailureRecordingSink::new(Arc::new(FailingAudit), history.clone());
+        let sink = SignInFailureRecordingSink::new(
+            Arc::new(FailingAudit),
+            history.clone(),
+            Arc::new(FixedCountry),
+        );
         assert!(
             sink.record(&event(AuditEventType::LoginFailed))
                 .await
@@ -330,5 +346,18 @@ mod tests {
         assert_eq!(copied.len(), 1, "only the failed sign-in is copied");
         assert_eq!(copied[0].outcome, SignInOutcome::Failed);
         assert_eq!(copied[0].ip_address.as_deref(), Some("198.51.100.7"));
+        assert_eq!(
+            copied[0].country.as_ref().map(CountryCode::as_str),
+            Some("JP"),
+            "the request's country is attached to the copy (task #895)"
+        );
+    }
+
+    struct FixedCountry;
+
+    impl RequestCountry for FixedCountry {
+        fn current(&self) -> Option<CountryCode> {
+            CountryCode::parse("JP")
+        }
     }
 }

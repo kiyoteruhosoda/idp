@@ -67,7 +67,7 @@ pub fn issued_sso_session(headers: &HeaderMap) -> Option<String> {
 }
 
 /// 信じてよい国の項目（形の確かめは api が行う）。
-fn country(headers: &HeaderMap, trust_forwarded: bool) -> Option<String> {
+pub(crate) fn trusted_country(headers: &HeaderMap, trust_forwarded: bool) -> Option<String> {
     if !trust_forwarded {
         return None;
     }
@@ -86,7 +86,7 @@ pub async fn observe_sign_ins(
     next: Next,
 ) -> Response {
     let existing = cookies::get(request.headers(), DEVICE_COOKIE).filter(|v| is_device_token(v));
-    let country = country(request.headers(), state.config.trust_forwarded_headers());
+    let country = trusted_country(request.headers(), state.config.trust_forwarded_headers());
     let user_agent = request
         .headers()
         .get(USER_AGENT)
@@ -202,9 +202,9 @@ mod tests {
     fn the_country_is_read_only_when_forwarded_headers_are_trusted() {
         let mut h = HeaderMap::new();
         h.insert(COUNTRY_HEADER, HeaderValue::from_static("JP"));
-        assert_eq!(country(&h, true).as_deref(), Some("JP"));
-        assert_eq!(country(&h, false), None);
+        assert_eq!(trusted_country(&h, true).as_deref(), Some("JP"));
+        assert_eq!(trusted_country(&h, false), None);
         h.insert(COUNTRY_HEADER, HeaderValue::from_static(""));
-        assert_eq!(country(&h, true), None);
+        assert_eq!(trusted_country(&h, true), None);
     }
 }

@@ -724,6 +724,11 @@ pub fn build(state: WebState) -> Router {
             state.clone(),
             crate::device_observation::observe_sign_ins,
         ))
+        // 今の要求の信じてよい国を、api への内部の呼び出しに添えられるよう要求の間だけ置く（task #895）。
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::client_country::scope_client_country,
+        ))
         .layer(axum::middleware::from_fn(correlation::propagate))
         // セッション Cookie の名前の読み替え（HTTPS では `__Host-` 前置のものだけを読む。task #583）。
         // どのハンドラ・route_layer よりも先に走るよう、ルートの外側に置く。

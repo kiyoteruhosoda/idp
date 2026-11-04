@@ -298,6 +298,10 @@ pub fn build(state: AppState) -> Router {
         // サービストークンを付けて呼ぶので、コンソールのバージョン画面はそのまま動く。
         .route("/internal/version", get(health::version))
         .route("/internal/version/schema", get(health::schema_version))
+        // web が添えた「信じてよい国」（task #895）。サービストークンの確かめ（外側）を通った要求でだけ読む。
+        .route_layer(axum::middleware::from_fn(
+            crate::presentation::client_country::capture_client_country,
+        ))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             internal_auth::require_service_token,

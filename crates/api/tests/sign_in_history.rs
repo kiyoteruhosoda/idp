@@ -303,3 +303,81 @@ async fn an_unknown_session_gets_no_history() {
     let page = history(&env, "not-a-session").await;
     assert_eq!(page["result"], "session_expired", "{page}");
 }
+
+/// 断ったログインを `/internal/authenticate` へ送る。`country` は web が添える見出し（task #895）。
+async fn fail_with_country(
+    env: &TestEnv,
+    client_id: &str,
+    username: &str,
+    country: Option<&str>,
+    service_token: Option<&str>,
+) -> StatusCode {
+    let auth_session = begin(env, client_id, "openid").await;
+    let csrf = assay_api::application::login::csrf_token(&auth_session, &env.csrf_secret);
+    let mut request = post_internal(
+        "/internal/authenticate",
+        service_token,
+        json!({
+            "tenant_id": env.root_tenant_id,
+            "auth_session_id": auth_session,
+            "username": username,
+            "password": "wrong-password-895",
+            "csrf_token": csrf,
+            "ip_address": "198.51.100.95",
+        }),
+    );
+    if let Some(country) = country {
+        request.headers_mut().insert(
+            assay_contracts::auth::CLIENT_COUNTRY_HEADER,
+            country.parse().unwrap(),
+        );
+    }
+    send(&env.app, request).await.status()
+}
+
+/// **断ったログインの行にも、web が添えた国が付く。サービストークンの無い要求の国は入らない。**（task #895）
+#[tokio::test]
+async fn failed_sign_ins_carry_the_country_the_web_vouched_for() {
+    let Some(env) = support::setup("sign-in history failure country").await else {
+        return;
+    };
+    let (client_id, _secret) =
+        support::insert_confidential_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
+    let username = unique_username();
+    support::register_user(&env.app, &env.root_tenant_id, &username, PASSWORD).await;
+    support::mark_email_verified(&env.pool, &env.root_tenant_id, &username).await;
+
+    // 1. web が国を添えた（JP）。
+    assert_eq!(
+        fail_with_country(&env, &client_id, &username, Some("JP"), Some(SERVICE_TOKEN)).await,
+        StatusCode::OK
+    );
+    // 2. 国が無い（家の中の入口が消した・信じない設定）。
+    assert_eq!(
+        fail_with_country(&env, &client_id, &username, None, Some(SERVICE_TOKEN)).await,
+        StatusCode::OK
+    );
+    // 3. サービストークン無しで国を付けて直接送る → 断られ、行は増えない。
+    assert_eq!(
+        fail_with_country(&env, &client_id, &username, Some("KP"), None).await,
+        StatusCode::UNAUTHORIZED
+    );
+
+    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT h.outcome, h.country FROM sign_in_history h \
+         JOIN user_login_identifiers i ON i.user_id = h.user_id \
+         WHERE i.normalized_value = ? ORDER BY h.id",
+    )
+    .bind(&username)
+    .fetch_all(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            ("failed".to_string(), Some("JP".to_string())),
+            ("failed".to_string(), None),
+        ],
+        "the vouched country is recorded, a missing one stays unknown, an unauthenticated one is never recorded"
+    );
+}

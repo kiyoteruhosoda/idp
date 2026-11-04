@@ -5,6 +5,7 @@
 
 pub mod admin;
 pub mod client_auth;
+pub mod client_country;
 pub mod cookies;
 pub mod correlation;
 pub mod cors;

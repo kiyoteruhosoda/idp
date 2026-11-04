@@ -12,6 +12,7 @@ pub mod api_client;
 pub mod application_denied;
 pub mod authentication_policy_form;
 pub mod authorization_response;
+pub mod client_country;
 pub mod client_ip;
 pub mod config;
 pub mod cookies;

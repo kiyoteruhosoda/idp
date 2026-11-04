@@ -276,10 +276,14 @@ impl ApiClient {
         }
     }
 
-    /// `Accept-Language` を（決まっていれば）付与する。
+    /// `Accept-Language` を（決まっていれば）付与し、今の要求の信じてよい国（task #895）も添える。
     fn with_language(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        match self.accept_language {
+        let request = match self.accept_language {
             Some(tag) => request.header(reqwest::header::ACCEPT_LANGUAGE, tag),
+            None => request,
+        };
+        match crate::client_country::current() {
+            Some(country) => request.header(assay_contracts::auth::CLIENT_COUNTRY_HEADER, country),
             None => request,
         }
     }
