@@ -6,11 +6,11 @@ use crate::presentation::handlers::{
     account_setup, admin, admin_accounts, admin_application_logs, admin_applications, admin_audit,
     admin_authentication_policies, admin_client_permissions, admin_clients, admin_external_idps,
     admin_invitations, admin_login_identifiers, admin_members, admin_permissions, admin_resources,
-    admin_restart, admin_saml_service_providers, admin_signing_keys, admin_system_settings,
-    admin_tenant_settings, admin_tenant_smtp, admin_tenants, admin_users, authorize, consent,
-    discovery, health, internal_admin_token, internal_auth, internal_devices,
-    internal_runtime_settings, internal_sign_in_history, introspect, invitations, logout, mfa,
-    passkey, register, revoke, saml_sso, token, userinfo,
+    admin_restart, admin_saml_service_providers, admin_signing_keys, admin_ssh_keys,
+    admin_system_settings, admin_tenant_settings, admin_tenant_smtp, admin_tenants, admin_users,
+    authorize, consent, discovery, health, internal_admin_token, internal_auth, internal_devices,
+    internal_runtime_settings, internal_sign_in_history, internal_ssh_keys, introspect,
+    invitations, logout, mfa, passkey, register, revoke, saml_sso, token, userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::security_headers::add_security_headers;
@@ -207,6 +207,19 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/internal/account/sign-in-history",
             post(internal_sign_in_history::account_sign_in_history),
+        )
+        // 利用者が登録する SSH の公開鍵（task #885）。
+        .route(
+            "/internal/account/ssh-keys",
+            post(internal_ssh_keys::account_ssh_keys),
+        )
+        .route(
+            "/internal/account/ssh-keys/register",
+            post(internal_ssh_keys::account_register_ssh_key),
+        )
+        .route(
+            "/internal/account/ssh-keys/revoke",
+            post(internal_ssh_keys::account_revoke_ssh_key),
         )
         // ログイン中ユーザーの所属テナント列挙（テナント切り替え UI）。
         .route(
@@ -597,6 +610,8 @@ pub fn build(state: AppState) -> Router {
             "/admin/applications/self/users",
             get(admin_applications::own_application_users),
         )
+        // 配る機械が読む SSH の鍵の一覧（task #885）。idp.ssh-keys:read 必須・機械クライアントだけ。
+        .route("/admin/ssh-keys", get(admin_ssh_keys::list_ssh_keys))
         // 保護リソース（`aud` に入る宛名）の登録・停止・削除（ADR-0042）。idp.resources:* 必須。
         .route(
             "/admin/resources",

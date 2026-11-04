@@ -1419,6 +1419,19 @@ curl -sS -X POST "$ISSUER/$TENANT_ID/admin/external-idps" \
 
 出来事は監査ログで追える: `login.unregistered_device`・`device.registered`・`device.revoked`・`device.expired`。
 
+## 利用者が登録した SSH の鍵を機器へ配りたいとき（ADR-0072）
+
+1. 配る機械のクライアントを組織に作る（用途「システム」・`private_key_jwt`。名前は `host-sshkeys`）。
+2. 組織の管理者が管理コンソール →「クライアント」→ そのクライアント →「権限」で `idp.ssh-keys:read` を付ける。
+   ⚠ 付けられるのは `idp.tenant.admin`（か `idp.system.admin`）を持つ人だけ（細粒度コードしか持たない機械からは付けられない）。
+3. 管理コンソール →「テナント設定」で `SSH_KEYS_ENABLED` を `true` にする。利用者の「アカウントのセキュリティ」に
+   「SSH の鍵」の欄が出る。
+4. 配る側は `client_credentials`・`resource={issuer}/{tenant_id}/admin` で管理トークンを取り、
+   `GET /{tenant_id}/admin/ssh-keys` を読む（形は `/api/openapi.json`）。
+5. 止めるときは `SSH_KEYS_ENABLED` を `false` に戻す。一覧は空になる（登録済みの鍵は消えない）。
+
+出来事は監査ログで追える: `ssh_key.registered`・`ssh_key.revoked`（`reason` に鍵の id と指紋）。
+
 ## 環境変数を設定したいとき
 
 | 変数 | 既定値 | 用途 |
@@ -1458,6 +1471,7 @@ curl -sS -X POST "$ISSUER/$TENANT_ID/admin/external-idps" \
 | `SECURITY_ALERT_WEBHOOK_URL` | 空（送らない） | セキュリティの知らせ（登録していない端末でのログインなど。ADR-0071）を送る Webhook。nolumia notice の `POST /api/notices` と同じ形の JSON を送る。**ENV でのみ設定可** |
 | `SECURITY_ALERT_WEBHOOK_TOKEN_FILE` | 空 | 上の Webhook に `Authorization: Bearer` で載せる鍵を読むファイル。**ENV でのみ設定可**（値そのものは環境変数に置かない） |
 | `UNREGISTERED_DEVICE_ALERTS_ENABLED` | `false` | 登録していない端末でのログイン・端末の登録・取り消し・期限切れを、上の Webhook へ知らせるか（利用者の所属元テナントの値）。監査ログには設定にかかわらず残る。**DB 上書き可・テナントごと** |
+| `SSH_KEYS_ENABLED` | `false` | 利用者が sk 型の SSH の公開鍵を登録でき、`idp.ssh-keys:read` を持つ機械クライアントへ一覧を渡すか（ADR-0072）。無効なら画面に欄が出ず、一覧は空。**DB 上書き可・テナントごと** |
 | `EXPIRED_RECORD_PURGE_INTERVAL_SECS` | `3600` | 期限切れレコード（認可セッション・authorization code・refresh token・SSO セッション・失効 jti・パスキーチャレンジ・各種一時トークン）を掃除する間隔（秒）。`0` = 掃除しない（表が際限なく増えるため非推奨）。**DB 上書き可** |
 | `CORS_ALLOWED_ORIGINS` | 空 | ブラウザからの越境アクセスを追加で許可するオリジン（カンマ区切り）。既定ではテナント内 public クライアントの `redirect_uris` から導いたオリジンのみ許可する。**DB 上書き可** |
 | `API_DOCS_ENABLED` | `false` | Swagger UI（`/api/docs`）と OpenAPI 文書（`/api/openapi.json`）を配信するか。api 面は公開されるため、有効にすると管理 API を含む全仕様が無認証で読める。開発・検証環境でのみ `true` にする。**DB 上書き可** |

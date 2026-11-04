@@ -31,6 +31,9 @@ pub enum SensitiveOperation {
     /// 今のブラウザを「自分の端末」として登録する（task #872）。**パスキーでしか通さない**
     /// （[`Self::passkey_only`]）。パスワードを盗んだだけの者に、自分の端末を登録させない。
     RegisterDevice,
+    /// SSH の公開鍵の登録・取り消し（task #885）。**パスキーでしか通さない**。登録した鍵は機器へ
+    /// 自動で配られるので、パスワードを盗んだだけの者に自分の鍵を足させない（外させもしない）。
+    ManageSshKeys,
 }
 
 impl SensitiveOperation {
@@ -42,6 +45,7 @@ impl SensitiveOperation {
             Self::ManageExternalIdentities => "manage_external_identities",
             Self::RevokeSession => "revoke_session",
             Self::RegisterDevice => "register_device",
+            Self::ManageSshKeys => "manage_ssh_keys",
         }
     }
 
@@ -52,6 +56,7 @@ impl SensitiveOperation {
             "manage_external_identities" => Some(Self::ManageExternalIdentities),
             "revoke_session" => Some(Self::RevokeSession),
             "register_device" => Some(Self::RegisterDevice),
+            "manage_ssh_keys" => Some(Self::ManageSshKeys),
             _ => None,
         }
     }
@@ -67,7 +72,7 @@ impl SensitiveOperation {
     /// [`crate::domain::user_device::REGISTRATION_PASSKEY_MAX_AGE_SECS`]（5 分）で、`step_up_at` ではなく
     /// パスキーで確かめた時刻で測る（[`crate::domain::user_device::passkey_verified_recently`]）。
     pub fn passkey_only(&self) -> bool {
-        matches!(self, Self::RegisterDevice)
+        matches!(self, Self::RegisterDevice | Self::ManageSshKeys)
     }
 
     pub fn requires_second_factor(&self) -> bool {
@@ -313,10 +318,12 @@ mod tests {
             SensitiveOperation::ManageExternalIdentities,
             SensitiveOperation::RevokeSession,
             SensitiveOperation::RegisterDevice,
+            SensitiveOperation::ManageSshKeys,
         ] {
             assert_eq!(SensitiveOperation::parse(op.as_str()), Some(op));
         }
         assert!(SensitiveOperation::RegisterDevice.passkey_only());
+        assert!(SensitiveOperation::ManageSshKeys.passkey_only());
         assert!(!SensitiveOperation::RevokeSession.passkey_only());
         assert_eq!(SensitiveOperation::parse("delete_everything"), None);
     }

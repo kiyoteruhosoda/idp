@@ -150,6 +150,15 @@ pub fn build(state: WebState) -> Router {
             "/settings/security/revoke-device",
             post(user_security::revoke_device),
         )
+        // SSH の公開鍵の登録・取り消し（task #885）。
+        .route(
+            "/settings/security/register-ssh-key",
+            post(user_security::register_ssh_key),
+        )
+        .route(
+            "/settings/security/revoke-ssh-key",
+            post(user_security::revoke_ssh_key),
+        )
         .route(
             "/settings/security/revoke-session",
             post(user_security::revoke_session),

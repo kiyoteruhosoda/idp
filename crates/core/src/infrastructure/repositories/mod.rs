@@ -45,4 +45,5 @@ pub mod user_authenticator;
 pub mod user_device;
 pub mod user_login_identifier;
 pub mod user_permission;
+pub mod user_ssh_key;
 pub mod webauthn_credential;

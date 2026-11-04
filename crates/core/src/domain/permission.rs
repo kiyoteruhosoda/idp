@@ -54,6 +54,12 @@ pub const RESOURCES_WRITE: &str = "idp.resources:write";
 /// 付与・剥奪ができる。⚠ `idp.system.admin` の持ち主の口座と、その付与には届かない。
 /// クライアントへも付けられる（break-glass の機械が非常用口座を作り直すため）。
 pub const ADMINS_WRITE: &str = "idp.admins:write";
+/// 組織の SSH の公開鍵の一覧を読む（task #885。ADR-0072）。配る機械（`host-sshkeys`）のためのコード。
+///
+/// `idp.tenant.admin` が含意する（テナント管理者がクライアントへ付けられる）が、⚠ 口
+/// （`GET /{tenant}/admin/ssh-keys`）は**クライアントのトークンしか通さない**。人の管理トークンでは、
+/// このコードを含意していても読めない。
+pub const SSH_KEYS_READ: &str = "idp.ssh-keys:read";
 /// メール送信（SMTP）設定の参照。scope のテナントのメールの経路を読む（root の scope なら全体の経路も）。
 ///
 /// ⚠ ADR-0051 §3 は「root scope でしか持てない」としていたが、ADR-0058 §8 で覆した。根拠だった
@@ -94,6 +100,7 @@ pub const TENANT_MANAGEMENT_CODES: &[&str] = &[
     RESOURCES_READ,
     RESOURCES_WRITE,
     ADMINS_WRITE,
+    SSH_KEYS_READ,
 ];
 
 /// root テナントの中でしか意味を持たないコード（全テナント共通の資源を扱う）。

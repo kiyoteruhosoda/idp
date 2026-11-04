@@ -72,6 +72,7 @@ use crate::application::saml_sso::SamlSsoService;
 use crate::application::service_restart::ServiceRestartService;
 use crate::application::sign_in_completion::SignInCompletion;
 use crate::application::sign_in_history::{SignInFailureRecordingSink, SignInHistoryService};
+use crate::application::ssh_key_registry::SshKeyRegistryService;
 use crate::application::sso_restore::SsoRestorer;
 use crate::application::step_up::StepUpService;
 use crate::application::stop_announcement::StopAnnouncementService;
@@ -148,6 +149,7 @@ use crate::infrastructure::repositories::user_authenticator::SqlxUserAuthenticat
 use crate::infrastructure::repositories::user_device::SqlxUserDeviceRepository;
 use crate::infrastructure::repositories::user_login_identifier::SqlxUserLoginIdentifierRepository;
 use crate::infrastructure::repositories::user_permission::SqlxUserPermissionRepository;
+use crate::infrastructure::repositories::user_ssh_key::SqlxUserSshKeyRepository;
 use crate::infrastructure::repositories::webauthn_credential::SqlxWebAuthnCredentialRepository;
 use crate::infrastructure::security_alert_webhook::WebhookSecurityAlertSink;
 use crate::infrastructure::webauthn::WebAuthnService;
@@ -267,6 +269,8 @@ pub struct AppState {
     pub device_registry: Arc<DeviceRegistryService>,
     /// 本人が見るログイン履歴（task #879）。
     pub sign_in_history: Arc<SignInHistoryService>,
+    /// 利用者が登録する SSH の公開鍵と、配る機械への一覧（task #885）。
+    pub ssh_keys: Arc<SshKeyRegistryService>,
     /// Step-up 認証（重要操作の直前の本人確認。AP5）。
     pub step_up: Arc<StepUpService>,
     /// 認証器の統合管理（一覧・状態変更・リカバリーコード・email OTP。AP9）。
@@ -1101,13 +1105,24 @@ impl AppState {
         ));
 
         // task #872: 利用者の端末の一覧と、登録していない端末でのログインの知らせ。
+        let security_alerts = security_alert_sink(&config);
         let device_registry = Arc::new(DeviceRegistryService::new(
             Arc::new(SqlxUserDeviceRepository::new(pool.clone())),
             sso_sessions.clone(),
             users.clone(),
             refresh_tokens.clone(),
             tenant_settings.clone(),
-            security_alert_sink(&config),
+            security_alerts.clone(),
+            audit.clone(),
+            clock.clone(),
+        ));
+        // task #885: 利用者が登録する SSH の公開鍵（知らせの送り口は端末と同じ）。
+        let ssh_keys = Arc::new(SshKeyRegistryService::new(
+            Arc::new(SqlxUserSshKeyRepository::new(pool.clone())),
+            sso_sessions.clone(),
+            users.clone(),
+            tenant_settings.clone(),
+            security_alerts,
             audit.clone(),
             clock.clone(),
         ));
@@ -1268,6 +1283,7 @@ impl AppState {
             account_security,
             device_registry,
             sign_in_history,
+            ssh_keys,
             step_up,
             authenticators,
             authenticator_repository,

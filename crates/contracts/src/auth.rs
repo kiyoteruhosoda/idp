@@ -1671,6 +1671,100 @@ pub enum InternalAccountRevokeDeviceResponse {
     Internal,
 }
 
+/// 「SSH の鍵」の欄の 1 行（task #885）。時刻は RFC 3339。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountSshKeySummary {
+    pub id: String,
+    pub name: String,
+    /// 鍵の型（`sk-ssh-ed25519@openssh.com` など）。
+    pub key_type: String,
+    /// `SHA256:…`。
+    pub fingerprint: String,
+    pub created_at: String,
+}
+
+/// 「SSH の鍵」の欄の取得 API（`POST /internal/account/ssh-keys`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAccountSshKeysRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAccountSshKeysResponse {
+    Ok {
+        /// この組織で SSH の鍵を使うか（無効なら欄を出さない）。
+        enabled: bool,
+        /// パスキーでの本人確認がまだ有効か。
+        passkey_fresh: bool,
+        keys: Vec<AccountSshKeySummary>,
+    },
+    SessionExpired,
+    Internal,
+}
+
+/// SSH の鍵の登録 API（`POST /internal/account/ssh-keys/register`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAccountRegisterSshKeyRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+    /// 貼り付けられた公開鍵（authorized_keys の 1 行）。
+    pub public_key: String,
+    pub name: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAccountRegisterSshKeyResponse {
+    Registered {
+        fingerprint: String,
+    },
+    Disabled,
+    /// パスキーで本人を確かめてから 5 分を過ぎている。web はパスキーの確認へ回す。
+    PasskeyRequired,
+    InvalidName,
+    /// 秘密鍵らしきものが貼られた（保存していない）。
+    PrivateKey,
+    /// sk 型ではない。
+    NotSecurityKey,
+    /// 形が壊れている。
+    Malformed,
+    AlreadyRegistered,
+    TooMany,
+    SessionExpired,
+    Internal,
+}
+
+/// SSH の鍵の取り消し API（`POST /internal/account/ssh-keys/revoke`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAccountRevokeSshKeyRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+    pub key_id: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAccountRevokeSshKeyResponse {
+    Revoked,
+    PasskeyRequired,
+    NotFound,
+    SessionExpired,
+    Internal,
+}
+
 /// セキュリティ画面の表示内容取得 API（`POST /internal/account/security`）のリクエスト。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAccountSecurityRequest {
