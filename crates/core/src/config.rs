@@ -1348,6 +1348,8 @@ mod tests {
             ("PASSWORD_RESET_CONSOLE_LINK_ENABLED", "true"),
             ("AUTH_POLICY_DEFAULT_EFFECT", "allow"),
             ("APPLICATION_ASSIGNMENT_ENFORCEMENT", "record_only"),
+            // task #872 で足した（足す前の `Config` には無い。既定は「知らせない」）。
+            ("UNREGISTERED_DEVICE_ALERTS_ENABLED", "false"),
         ];
         assert_eq!(
             tenant_overridable_setting_keys().count(),
