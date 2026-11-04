@@ -444,6 +444,12 @@ impl EffectiveTenantSettings for TenantSettingsService {
         AssignmentEnforcement::parse(&resolved.value)
             .map_err(|e| unparsable(APPLICATION_ASSIGNMENT_ENFORCEMENT, e))
     }
+
+    /// 登録していない端末でのログインを知らせるか（task #872）。渡すのは利用者の**所属元**テナント。
+    async fn unregistered_device_alerts_enabled(&self, tenant_id: TenantId) -> Result<bool> {
+        self.parse(tenant_id, "UNREGISTERED_DEVICE_ALERTS_ENABLED")
+            .await
+    }
 }
 
 impl TenantSettingsService {
@@ -989,6 +995,7 @@ mod tests {
             .await
             .unwrap();
         service.email_verification_ttl(t).await.unwrap();
+        assert!(!service.unregistered_device_alerts_enabled(t).await.unwrap());
     }
 
     /// i32 に収まらない失敗回数は負数へラップさせず i32::MAX へ飽和させる（初回失敗で即ロックしない）。

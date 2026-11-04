@@ -522,6 +522,22 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
                       GET する。閉じた環境では互換のミラーを立ててここを向ける。",
     },
     SettingDefinition {
+        key: "UNREGISTERED_DEVICE_ALERTS_ENABLED",
+        scope: SettingScope::TenantOverridable,
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: false,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::Boolean,
+        default_value: Some("false"),
+        description: "利用者が登録していない端末（ブラウザ）でログインしたとき、運用者の知らせの宛先へ \
+                      知らせるか（task #872）。利用者は「アカウントのセキュリティ」→「端末」でいつも使う \
+                      端末を登録でき、登録した端末では鳴らない。端末の登録・取り消し・期限切れもこれが \
+                      有効なテナントだけ知らせる。送り先は `SECURITY_ALERT_WEBHOOK_URL`（環境変数）。\
+                      出来事は有効・無効にかかわらず監査ログに残る。",
+    },
+    SettingDefinition {
         key: "OUTBOUND_TRUSTED_HOSTS",
         scope: SettingScope::Global,
         shared_with_web: false,
@@ -849,6 +865,33 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         default_value: Some("0"),
         description: "HSTS レスポンスヘッダの `max-age`（秒）。0 で HSTS を付与しない。HTTPS 配置では\
                       正の値を設定。api・web の両方が使うため、変更の反映には両サービスの再起動が必要。",
+    },
+    SettingDefinition {
+        key: "SECURITY_ALERT_WEBHOOK_URL",
+        scope: SettingScope::Global,
+        shared_with_web: false,
+        owner: SettingOwner::EnvLocked,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::Text,
+        default_value: Some(""),
+        description: "セキュリティの知らせ（登録していない端末でのログインなど。task #872）を送る \
+                      Webhook の URL（nolumia notice の `POST /api/notices` と同じ形の JSON を送る）。\
+                      空なら送らない。通信先なので環境変数でだけ決める（画面・DB から変えさせない）。",
+    },
+    SettingDefinition {
+        key: "SECURITY_ALERT_WEBHOOK_TOKEN_FILE",
+        scope: SettingScope::Global,
+        shared_with_web: false,
+        owner: SettingOwner::EnvLocked,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::Text,
+        default_value: Some(""),
+        description: "セキュリティの知らせの Webhook に `Authorization: Bearer` で載せる鍵を読むファイルの \
+                      パス（task #872）。値そのものは環境変数にも DB にも置かない。",
     },
     SettingDefinition {
         key: "INTERNAL_SERVICE_TOKEN",

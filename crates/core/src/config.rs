@@ -143,6 +143,10 @@ pub struct Config {
     password_breach_api_base_url: String,
     /// 名前を引いた結果が内部の住所でも外へ送ってよい名前（`OUTBOUND_TRUSTED_HOSTS`。task #585）。
     outbound_trusted_hosts: String,
+    /// セキュリティの知らせの送り先（`SECURITY_ALERT_WEBHOOK_URL`。task #872。環境変数だけ）。
+    security_alert_webhook_url: String,
+    /// その鍵を読むファイル（`SECURITY_ALERT_WEBHOOK_TOKEN_FILE`）。
+    security_alert_webhook_token_file: String,
     /// 漏えい済みパスワード照合の 1 リクエストの上限時間。
     password_breach_check_timeout: Duration,
     /// テナント解決キャッシュの TTL（ADR-0009 §7。id → tenant のホットパス）。
@@ -302,6 +306,9 @@ impl Config {
             password_breach_api_base_url: resolver
                 .string("PASSWORD_BREACH_API_BASE_URL", DEFAULT_BREACH_API_BASE_URL),
             outbound_trusted_hosts: resolver.string("OUTBOUND_TRUSTED_HOSTS", ""),
+            security_alert_webhook_url: resolver.string("SECURITY_ALERT_WEBHOOK_URL", ""),
+            security_alert_webhook_token_file: resolver
+                .string("SECURITY_ALERT_WEBHOOK_TOKEN_FILE", ""),
             password_breach_check_timeout: secs(
                 resolver.parse("PASSWORD_BREACH_CHECK_TIMEOUT_SECS", 3u64)?,
             ),
@@ -397,6 +404,14 @@ impl Config {
     /// 漏えい済みパスワード照合の接続先（k-匿名性のレンジ API）。
     pub fn password_breach_api_base_url(&self) -> &str {
         &self.password_breach_api_base_url
+    }
+    /// セキュリティの知らせの送り先 URL（空なら送らない。task #872）。
+    pub fn security_alert_webhook_url(&self) -> Option<&str> {
+        Some(self.security_alert_webhook_url.trim()).filter(|v| !v.is_empty())
+    }
+    /// セキュリティの知らせの鍵を読むファイル（空なら未設定。task #872）。
+    pub fn security_alert_webhook_token_file(&self) -> Option<&str> {
+        Some(self.security_alert_webhook_token_file.trim()).filter(|v| !v.is_empty())
     }
     /// 名前を引いた結果が内部の住所でも外へ送ってよい名前（task #585）。
     pub fn outbound_trust(&self) -> crate::domain::outbound_uri::OutboundTrust {
@@ -1333,6 +1348,8 @@ mod tests {
             ("PASSWORD_RESET_CONSOLE_LINK_ENABLED", "true"),
             ("AUTH_POLICY_DEFAULT_EFFECT", "allow"),
             ("APPLICATION_ASSIGNMENT_ENFORCEMENT", "record_only"),
+            // task #872 で足した（足す前の `Config` には無い。既定は「知らせない」）。
+            ("UNREGISTERED_DEVICE_ALERTS_ENABLED", "false"),
         ];
         assert_eq!(
             tenant_overridable_setting_keys().count(),

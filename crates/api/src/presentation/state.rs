@@ -42,6 +42,7 @@ use crate::application::client_status::ClientStatusService;
 use crate::application::code_issuance::CodeIssuanceService;
 use crate::application::consent::ConsentService;
 use crate::application::cors_policy::ApiCorsPolicy;
+use crate::application::device_registry::DeviceRegistryService;
 use crate::application::email_verification::EmailVerificationService;
 use crate::application::expired_record_purge::ExpiredRecordPurgeService;
 use crate::application::external_idp_discovery::ExternalIdpDiscoveryService;
@@ -86,6 +87,7 @@ use crate::domain::cache::Cache;
 use crate::domain::clock::Clock;
 use crate::domain::id_generator::IdGenerator;
 use crate::domain::repositories::{AccountNoteRepository, UserPermissionRepository};
+use crate::domain::security_alert::{DisabledSecurityAlertSink, SecurityAlertSink};
 use crate::domain::tenant::{Tenant, TenantId};
 use crate::infrastructure::backchannel_logout::ReqwestBackchannelLogoutSender;
 use crate::infrastructure::breached_password::RangeApiBreachedPasswordChecker;
@@ -139,9 +141,11 @@ use crate::infrastructure::repositories::tenant_provisioning::SqlxTenantProvisio
 use crate::infrastructure::repositories::totp_secret::SqlxTotpSecretRepository;
 use crate::infrastructure::repositories::user::SqlxUserRepository;
 use crate::infrastructure::repositories::user_authenticator::SqlxUserAuthenticatorRepository;
+use crate::infrastructure::repositories::user_device::SqlxUserDeviceRepository;
 use crate::infrastructure::repositories::user_login_identifier::SqlxUserLoginIdentifierRepository;
 use crate::infrastructure::repositories::user_permission::SqlxUserPermissionRepository;
 use crate::infrastructure::repositories::webauthn_credential::SqlxWebAuthnCredentialRepository;
+use crate::infrastructure::security_alert_webhook::WebhookSecurityAlertSink;
 use crate::infrastructure::webauthn::WebAuthnService;
 use crate::service_restart::ServiceRestart;
 use axum::extract::FromRef;
@@ -255,6 +259,8 @@ pub struct AppState {
     pub logout: Arc<LogoutService>,
     /// セルフサービスのセキュリティ画面（セッション一覧・失効／連携アプリ解除。G10）。
     pub account_security: Arc<AccountSecurityService>,
+    /// 利用者の端末の一覧と、登録していない端末でのログインの知らせ（task #872）。
+    pub device_registry: Arc<DeviceRegistryService>,
     /// Step-up 認証（重要操作の直前の本人確認。AP5）。
     pub step_up: Arc<StepUpService>,
     /// 認証器の統合管理（一覧・状態変更・リカバリーコード・email OTP。AP9）。
@@ -1079,6 +1085,18 @@ impl AppState {
             clock.clone(),
         ));
 
+        // task #872: 利用者の端末の一覧と、登録していない端末でのログインの知らせ。
+        let device_registry = Arc::new(DeviceRegistryService::new(
+            Arc::new(SqlxUserDeviceRepository::new(pool.clone())),
+            sso_sessions.clone(),
+            users.clone(),
+            refresh_tokens.clone(),
+            tenant_settings.clone(),
+            security_alert_sink(&config),
+            audit.clone(),
+            clock.clone(),
+        ));
+
         // F5: Token 管理（revocation / introspection）。
         let revocation = Arc::new(RevocationService::new(
             clients.clone(),
@@ -1225,6 +1243,7 @@ impl AppState {
             application_logs,
             logout,
             account_security,
+            device_registry,
             step_up,
             authenticators,
             authenticator_repository,
@@ -1266,5 +1285,44 @@ impl FromRef<AppState> for Db {
 impl FromRef<AppState> for Arc<RegisterService> {
     fn from_ref(state: &AppState) -> Arc<RegisterService> {
         state.register.clone()
+    }
+}
+
+/// セキュリティの知らせの送り口（task #872）。送り先が無い・鍵を読めないときは送らない。
+///
+/// ⚠ 鍵を読めないからといって起動は止めない（知らせのためにログインを止めない）。代わりに
+/// エラーログを残し、出来事は監査ログで追える。
+fn security_alert_sink(config: &Config) -> Arc<dyn SecurityAlertSink> {
+    let Some(url) = config.security_alert_webhook_url() else {
+        return Arc::new(DisabledSecurityAlertSink);
+    };
+    let token = match config.security_alert_webhook_token_file() {
+        Some(path) => match std::fs::read_to_string(path) {
+            Ok(token) if !token.trim().is_empty() => token,
+            Ok(_) => {
+                tracing::error!(
+                    "SECURITY_ALERT_WEBHOOK_TOKEN_FILE is empty; security alerts are disabled"
+                );
+                return Arc::new(DisabledSecurityAlertSink);
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "SECURITY_ALERT_WEBHOOK_TOKEN_FILE could not be read; security alerts are disabled");
+                return Arc::new(DisabledSecurityAlertSink);
+            }
+        },
+        None => {
+            tracing::error!("SECURITY_ALERT_WEBHOOK_URL is set without SECURITY_ALERT_WEBHOOK_TOKEN_FILE; security alerts are disabled");
+            return Arc::new(DisabledSecurityAlertSink);
+        }
+    };
+    match WebhookSecurityAlertSink::new(url.to_string(), token) {
+        Ok(sink) => {
+            tracing::info!("security alerts are sent to the configured webhook");
+            Arc::new(sink)
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "security alert webhook client could not be built; security alerts are disabled");
+            Arc::new(DisabledSecurityAlertSink)
+        }
     }
 }

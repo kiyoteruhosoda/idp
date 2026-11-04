@@ -81,4 +81,6 @@ pub trait EffectiveTenantSettings: Send + Sync {
     async fn policy_default_effect(&self, tenant_id: TenantId) -> Result<DefaultPolicyEffect>;
     /// アプリの割り当て判定をどこまでやるか。
     async fn assignment_enforcement(&self, tenant_id: TenantId) -> Result<AssignmentEnforcement>;
+    /// 登録していない端末でのログイン・端末の登録などを知らせるか（task #872）。
+    async fn unregistered_device_alerts_enabled(&self, tenant_id: TenantId) -> Result<bool>;
 }

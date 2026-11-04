@@ -8,6 +8,13 @@
 
 {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
 
+{% if passkey_only %}
+{#- パスキーでしか確かめられない操作（端末の登録。task #872）。パスワードの欄は出さない。 -#}
+<p>{{ messages.get("step-up-passkey-only-lead") }}</p>
+{% if !passkey_available %}
+<div class="alert alert-warning" role="alert">{{ messages.get("step-up-passkey-only-unavailable") }}</div>
+{% endif %}
+{% else %}
 <form method="post" action="{{ tenant }}/settings/verify">
   <input type="hidden" name="csrf_token" value="{{ csrf }}">
   <input type="hidden" name="operation" value="{{ operation }}">
@@ -25,6 +32,7 @@
   {% endif %}
   <button type="submit" class="btn btn-primary w-100">{{ messages.get("step-up-submit") }}</button>
 </form>
+{% endif %}
 
 {% if passkey_available %}
 {#- パスキーでの確認（T38）。**使えるパスキーを持っている利用者にだけ出す** —— 持っていない人に
@@ -32,7 +40,7 @@
     開始・完了のパスと、完了 API へ添える値（どの操作か・終わったらどこへ戻すか）を data 属性で
     渡す。JS が動く環境でしか使えないので、初期状態は `hidden` でスクリプトが外す。 -#}
 <div id="passkey-login" hidden>
-  <p class="auth-or">{{ messages.get("login-passkey-or") }}</p>
+  {% if !passkey_only %}<p class="auth-or">{{ messages.get("login-passkey-or") }}</p>{% endif %}
   <div class="d-grid">
     <button type="button" class="btn btn-outline-secondary" id="btn-passkey-login"><i class="fa-solid fa-key me-2" aria-hidden="true"></i>{{ messages.get("step-up-passkey-button") }}</button>
   </div>

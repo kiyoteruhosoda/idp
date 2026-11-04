@@ -44,6 +44,8 @@ use serde_json::json;
 /// `UnknownOperation` を返し、画面が 500 になる）。
 pub const MANAGE_AUTHENTICATORS: &str = "manage_authenticators";
 pub const REVOKE_SESSION: &str = "revoke_session";
+/// 端末の登録（task #872）。パスキーでしか通らない。
+pub const REGISTER_DEVICE: &str = "register_device";
 
 #[derive(Debug, Deserialize)]
 pub struct StepUpQuery {
@@ -188,12 +190,13 @@ pub async fn page(
         sso_session_id: sso,
         operation: operation.clone(),
     };
-    let (second_factor_required, passkey_available) =
+    let (second_factor_required, passkey_available, passkey_only) =
         match state.api.step_up_check(&correlation.0, &request).await {
             Ok(InternalStepUpCheckResponse::ChallengeRequired {
                 second_factor_required,
                 passkey_available,
-            }) => (second_factor_required, passkey_available),
+                passkey_only,
+            }) => (second_factor_required, passkey_available, passkey_only),
             // もう満たしている（別タブで確認済み等）なら、そのまま戻す。
             Ok(InternalStepUpCheckResponse::Satisfied) => return found(&next),
             Ok(InternalStepUpCheckResponse::SessionExpired) => {
@@ -220,6 +223,7 @@ pub async fn page(
         next: &next,
         second_factor_required,
         passkey_available,
+        passkey_only,
         error_key: query.error.as_deref().and_then(error_key_for),
     }))
     .into_response()

@@ -1406,6 +1406,19 @@ curl -sS -X POST "$ISSUER/$TENANT_ID/admin/external-idps" \
 2. テナント設定区画の「自己登録を許可する」にチェックを入れて保存する（既定は無効）。
 3. 無効へ戻すにはチェックを外して保存する。
 
+## 登録していない端末でのログインを知らせたいとき（ADR-0071）
+
+1. 知らせの送り先の受付の鍵をホストで作り、api の Pod へファイルとして載せる（値は環境変数に書かない）。
+2. api の環境変数に `SECURITY_ALERT_WEBHOOK_URL`（例: `http://notice.notice-prod.svc:8000/api/notices`）と
+   `SECURITY_ALERT_WEBHOOK_TOKEN_FILE`（鍵のファイルのパス）を書いて再起動する。起動ログに
+   `security alerts are sent to the configured webhook` が出れば送る。鍵を読めないときは
+   `security alerts are disabled` のエラーが出て、知らせだけが止まる（ログインは止まらない）。
+3. 知らせたい組織の管理コンソール →「テナント設定」で `UNREGISTERED_DEVICE_ALERTS_ENABLED` を `true` にする。
+4. 利用者は「アカウントのセキュリティ」→「自分の端末」でいつも使うブラウザを登録する（パスキーで確かめてから 5 分以内）。
+   登録したブラウザでは鳴らない。180 日使わなければ登録が切れ、もう一度登録する。
+
+出来事は監査ログで追える: `login.unregistered_device`・`device.registered`・`device.revoked`・`device.expired`。
+
 ## 環境変数を設定したいとき
 
 | 変数 | 既定値 | 用途 |
@@ -1442,6 +1455,9 @@ curl -sS -X POST "$ISSUER/$TENANT_ID/admin/external-idps" \
 | `BACKCHANNEL_LOGOUT_MAX_ATTEMPTS` | `8` | Back-channel logout 通知の再送上限。指数バックオフ（30 秒 → 最大 1 時間）。**DB 上書き可** |
 | `BACKCHANNEL_LOGOUT_POLL_INTERVAL_SECS` | `15` | Back-channel logout 送信ワーカーが送信キューを見る間隔（秒）。**DB 上書き可** |
 | `BACKCHANNEL_LOGOUT_RETENTION_DAYS` | `7` | 決着済み（送信成功・打ち切り）の送信キュー行の保持日数。`0` = 削除しない。**DB 上書き可** |
+| `SECURITY_ALERT_WEBHOOK_URL` | 空（送らない） | セキュリティの知らせ（登録していない端末でのログインなど。ADR-0071）を送る Webhook。nolumia notice の `POST /api/notices` と同じ形の JSON を送る。**ENV でのみ設定可** |
+| `SECURITY_ALERT_WEBHOOK_TOKEN_FILE` | 空 | 上の Webhook に `Authorization: Bearer` で載せる鍵を読むファイル。**ENV でのみ設定可**（値そのものは環境変数に置かない） |
+| `UNREGISTERED_DEVICE_ALERTS_ENABLED` | `false` | 登録していない端末でのログイン・端末の登録・取り消し・期限切れを、上の Webhook へ知らせるか（利用者の所属元テナントの値）。監査ログには設定にかかわらず残る。**DB 上書き可・テナントごと** |
 | `EXPIRED_RECORD_PURGE_INTERVAL_SECS` | `3600` | 期限切れレコード（認可セッション・authorization code・refresh token・SSO セッション・失効 jti・パスキーチャレンジ・各種一時トークン）を掃除する間隔（秒）。`0` = 掃除しない（表が際限なく増えるため非推奨）。**DB 上書き可** |
 | `CORS_ALLOWED_ORIGINS` | 空 | ブラウザからの越境アクセスを追加で許可するオリジン（カンマ区切り）。既定ではテナント内 public クライアントの `redirect_uris` から導いたオリジンのみ許可する。**DB 上書き可** |
 | `API_DOCS_ENABLED` | `false` | Swagger UI（`/api/docs`）と OpenAPI 文書（`/api/openapi.json`）を配信するか。api 面は公開されるため、有効にすると管理 API を含む全仕様が無認証で読める。開発・検証環境でのみ `true` にする。**DB 上書き可** |

@@ -28,6 +28,9 @@ pub enum SensitiveOperation {
     ManageExternalIdentities,
     /// ログイン中セッションの失効（他端末の締め出し）。
     RevokeSession,
+    /// 今のブラウザを「自分の端末」として登録する（task #872）。**パスキーでしか通さない**
+    /// （[`Self::passkey_only`]）。パスワードを盗んだだけの者に、自分の端末を登録させない。
+    RegisterDevice,
 }
 
 impl SensitiveOperation {
@@ -38,6 +41,7 @@ impl SensitiveOperation {
             Self::ManageAuthenticators => "manage_authenticators",
             Self::ManageExternalIdentities => "manage_external_identities",
             Self::RevokeSession => "revoke_session",
+            Self::RegisterDevice => "register_device",
         }
     }
 
@@ -47,6 +51,7 @@ impl SensitiveOperation {
             "manage_authenticators" => Some(Self::ManageAuthenticators),
             "manage_external_identities" => Some(Self::ManageExternalIdentities),
             "revoke_session" => Some(Self::RevokeSession),
+            "register_device" => Some(Self::RegisterDevice),
             _ => None,
         }
     }
@@ -56,6 +61,15 @@ impl SensitiveOperation {
     /// 認証器の管理と外部 IdP の紐付けは、単一要素で通せると「パスワードを盗んだだけの攻撃者が
     /// MFA を外して（または自分の認証器を足して）以後を乗っ取る」経路になるため、必ず第二要素を要る
     /// ものとする。パスワード変更・セッション失効は現行パスワードの提示で足りる。
+    /// パスキーでの確認だけを受け付ける操作か（パスワードの再確認では通さない。task #872）。
+    ///
+    /// 新しさの基準も他と違い、テナントの step-up の間隔ではなく
+    /// [`crate::domain::user_device::REGISTRATION_PASSKEY_MAX_AGE_SECS`]（5 分）で、`step_up_at` ではなく
+    /// パスキーで確かめた時刻で測る（[`crate::domain::user_device::passkey_verified_recently`]）。
+    pub fn passkey_only(&self) -> bool {
+        matches!(self, Self::RegisterDevice)
+    }
+
     pub fn requires_second_factor(&self) -> bool {
         matches!(
             self,
@@ -298,9 +312,12 @@ mod tests {
             SensitiveOperation::ManageAuthenticators,
             SensitiveOperation::ManageExternalIdentities,
             SensitiveOperation::RevokeSession,
+            SensitiveOperation::RegisterDevice,
         ] {
             assert_eq!(SensitiveOperation::parse(op.as_str()), Some(op));
         }
+        assert!(SensitiveOperation::RegisterDevice.passkey_only());
+        assert!(!SensitiveOperation::RevokeSession.passkey_only());
         assert_eq!(SensitiveOperation::parse("delete_everything"), None);
     }
 }

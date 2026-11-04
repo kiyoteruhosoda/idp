@@ -1019,9 +1019,11 @@ pub async fn step_up_check(
             StepUpCheckOutcome::ChallengeRequired {
                 second_factor_required,
                 passkey_available,
+                passkey_only,
             } => InternalStepUpCheckResponse::ChallengeRequired {
                 second_factor_required,
                 passkey_available,
+                passkey_only,
             },
             StepUpCheckOutcome::SessionExpired => InternalStepUpCheckResponse::SessionExpired,
             StepUpCheckOutcome::Internal(e) => {

@@ -182,7 +182,32 @@ impl SsoSessionRepository for SqlxSsoSessionRepository {
                 .await
                 .map_err(repo_err)?;
         }
+        // パスキーで確かめた時刻を、端末の登録の条件のために別に残す（task #872）。`step_up_at` は
+        // パスワードの再確認でも進むので、「パスキーで確かめたか」はそこからは分からない。
+        if methods.contains(&AuthenticationMethod::WebAuthn) {
+            sqlx::query(
+                "INSERT INTO sso_session_contexts (session_hash, passkey_verified_at) \
+                 VALUES (?, ?) \
+                 ON DUPLICATE KEY UPDATE passkey_verified_at = VALUES(passkey_verified_at)",
+            )
+            .bind(session_hash)
+            .bind(verified_at.naive_utc())
+            .execute(&self.pool)
+            .await
+            .map_err(repo_err)?;
+        }
         Ok(())
+    }
+
+    async fn passkey_verified_at(&self, session_hash: &str) -> Result<Option<DateTime<Utc>>> {
+        let row: Option<Option<NaiveDateTime>> = sqlx::query_scalar(
+            "SELECT passkey_verified_at FROM sso_session_contexts WHERE session_hash = ?",
+        )
+        .bind(session_hash)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        Ok(row.flatten().map(to_utc))
     }
 
     async fn delete(&self, session_hash: &str) -> Result<()> {

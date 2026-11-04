@@ -29,6 +29,7 @@ pub mod discovery;
 pub mod health;
 pub mod internal_admin_token;
 pub mod internal_auth;
+pub mod internal_devices;
 pub mod internal_runtime_settings;
 pub mod introspect;
 pub mod invitations;

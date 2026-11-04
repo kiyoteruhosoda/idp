@@ -17,6 +17,7 @@ pub mod config;
 pub mod cookies;
 pub mod correlation;
 pub mod csrf;
+pub mod device_observation;
 pub mod display_preferences;
 pub mod dto;
 pub mod error_pages;

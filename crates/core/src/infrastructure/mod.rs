@@ -18,5 +18,6 @@ pub mod password;
 pub mod rate_limit;
 pub mod repositories;
 pub mod secret_rewrap;
+pub mod security_alert_webhook;
 pub mod sms;
 pub mod webauthn;

@@ -141,6 +141,15 @@ pub fn build(state: WebState) -> Router {
         )
         // セルフサービスのセキュリティ画面（セッション一覧・失効／連携アプリ解除。G10）。
         .route("/settings/security", get(user_security::page))
+        // 端末の登録・取り消し（task #872）。
+        .route(
+            "/settings/security/register-device",
+            post(user_security::register_device),
+        )
+        .route(
+            "/settings/security/revoke-device",
+            post(user_security::revoke_device),
+        )
         .route(
             "/settings/security/revoke-session",
             post(user_security::revoke_session),
@@ -709,6 +718,12 @@ pub fn build(state: WebState) -> Router {
         .nest("/{tenant_id}", tenant_scoped)
         // どのルートにも一致しないリクエストには 404 エラーページを返す（axum 既定の空応答を避ける）。
         .fallback(error_pages::fallback)
+        // ログインした端末を api へ伝える（task #872）。どのログイン経路でも、応答が SSO セッションの
+        // Cookie を置いたことだけを見る。追跡キー（correlation）と接続元 IP より内側に置く。
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::device_observation::observe_sign_ins,
+        ))
         .layer(axum::middleware::from_fn(correlation::propagate))
         // セッション Cookie の名前の読み替え（HTTPS では `__Host-` 前置のものだけを読む。task #583）。
         // どのハンドラ・route_layer よりも先に走るよう、ルートの外側に置く。

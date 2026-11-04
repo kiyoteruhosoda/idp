@@ -165,6 +165,14 @@ pub enum AuditEventType {
     /// 管理者が発行したアカウント設定リンクで資格情報が決まった（ADR-0062）。
     /// `reason` に決め方（`method=passkey` / `method=password`）を残す。トークンは記録しない。
     AccountSetupCompleted,
+    /// 登録していない端末でログインした（task #872。ADR-0071）。`reason` に「初めての端末か」を残す。
+    /// 端末の印・セッション id は記録しない。
+    UnregisteredDeviceSignIn,
+    /// 利用者が端末を登録した・取り消した（task #872）。`reason` に端末の id を残す（名前は残さない）。
+    DeviceRegistered,
+    DeviceRevoked,
+    /// 使われないまま期限が過ぎ、端末の登録が切れた（task #872）。
+    DeviceExpired,
 }
 
 impl AuditEventType {
@@ -257,6 +265,10 @@ impl AuditEventType {
             Self::EmailVerificationRequested => "email_verification.requested",
             Self::EmailVerified => "email_verification.verified",
             Self::AccountSetupCompleted => "account_setup.completed",
+            Self::UnregisteredDeviceSignIn => "login.unregistered_device",
+            Self::DeviceRegistered => "device.registered",
+            Self::DeviceRevoked => "device.revoked",
+            Self::DeviceExpired => "device.expired",
         }
     }
 }

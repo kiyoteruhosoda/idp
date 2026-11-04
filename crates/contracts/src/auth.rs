@@ -1545,6 +1545,132 @@ pub struct AccountConnectedAppSummary {
     pub updated_at: String,
 }
 
+/// ログインした端末の結び付け API（`POST /internal/devices/observe`。task #872）のリクエスト。
+///
+/// web は SSO セッションの Cookie を置いたその応答で呼ぶ。テナントは要らない（利用者の所属元で決まる）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalDeviceObserveRequest {
+    /// web が置いたばかりの SSO セッション Cookie の値。
+    pub sso_session_id: String,
+    /// 端末の印（web の Cookie）。置けなかったときは `None`。
+    #[serde(default)]
+    pub device_token: Option<String>,
+    /// `CF-IPCountry`（web が `TRUST_FORWARDED_HEADERS` で信じると決めたときだけ）。
+    #[serde(default)]
+    pub country: Option<String>,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+/// ログインした端末の結び付け API のレスポンス。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalDeviceObserveResponse {
+    Registered,
+    Unregistered,
+    Ignored,
+    Internal,
+}
+
+/// 「端末」の欄の 1 行。時刻は RFC 3339。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountDeviceSummary {
+    pub id: String,
+    pub name: String,
+    /// 今見ているブラウザか。
+    pub current: bool,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+    pub registered_at: String,
+    pub last_used_at: String,
+    #[serde(default)]
+    pub last_country: Option<String>,
+    /// 使われないまま過ぎると登録が切れる時刻。
+    pub expires_at: String,
+}
+
+/// 「端末」の欄の取得 API（`POST /internal/account/devices`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAccountDevicesRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+    #[serde(default)]
+    pub device_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAccountDevicesResponse {
+    Ok {
+        devices: Vec<AccountDeviceSummary>,
+        /// 今見ているブラウザが登録済みか。
+        current_registered: bool,
+        /// 今見ているブラウザに端末の印があるか（無ければ登録できない）。
+        current_identified: bool,
+        /// パスキーでの本人確認がまだ有効か。
+        passkey_fresh: bool,
+        /// この組織で「登録していない端末」の知らせが有効か。
+        alerts_enabled: bool,
+    },
+    SessionExpired,
+    Internal,
+}
+
+/// 端末の登録 API（`POST /internal/account/devices/register`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAccountRegisterDeviceRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+    #[serde(default)]
+    pub device_token: Option<String>,
+    pub name: String,
+    #[serde(default)]
+    pub country: Option<String>,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAccountRegisterDeviceResponse {
+    Registered,
+    /// パスキーで本人を確かめてから 5 分を過ぎている。web はパスキーの確認へ回す。
+    PasskeyRequired,
+    AlreadyRegistered,
+    InvalidName,
+    DeviceUnidentified,
+    SessionExpired,
+    Internal,
+}
+
+/// 端末の取り消し API（`POST /internal/account/devices/revoke`）のリクエスト。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAccountRevokeDeviceRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+    pub device_id: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAccountRevokeDeviceResponse {
+    Revoked { sessions: usize },
+    NotFound,
+    SessionExpired,
+    Internal,
+}
+
 /// セキュリティ画面の表示内容取得 API（`POST /internal/account/security`）のリクエスト。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAccountSecurityRequest {
@@ -1671,6 +1797,10 @@ pub enum InternalStepUpCheckResponse {
         /// 持っていない利用者にボタンを見せると、ブラウザのダイアログが出てから失敗する。
         #[serde(default)]
         passkey_available: bool,
+        /// パスキーでしか確かめられない操作か（端末の登録。task #872）。画面はパスワードの欄を
+        /// 出さず、パスキーが無ければその旨を出す。
+        #[serde(default)]
+        passkey_only: bool,
     },
     /// SSO セッションが無い・期限切れ・利用者が無効。
     SessionExpired,
