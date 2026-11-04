@@ -46,6 +46,8 @@ pub const MANAGE_AUTHENTICATORS: &str = "manage_authenticators";
 pub const REVOKE_SESSION: &str = "revoke_session";
 /// 端末の登録（task #872）。パスキーでしか通らない。
 pub const REGISTER_DEVICE: &str = "register_device";
+/// SSH の公開鍵の登録・取り消し（task #885）。パスキーでしか通らない。
+pub const MANAGE_SSH_KEYS: &str = "manage_ssh_keys";
 
 #[derive(Debug, Deserialize)]
 pub struct StepUpQuery {

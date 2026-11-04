@@ -1350,6 +1350,8 @@ mod tests {
             ("APPLICATION_ASSIGNMENT_ENFORCEMENT", "record_only"),
             // task #872 で足した（足す前の `Config` には無い。既定は「知らせない」）。
             ("UNREGISTERED_DEVICE_ALERTS_ENABLED", "false"),
+            // task #885 で足した（既定は「使わない」）。
+            ("SSH_KEYS_ENABLED", "false"),
         ];
         assert_eq!(
             tenant_overridable_setting_keys().count(),

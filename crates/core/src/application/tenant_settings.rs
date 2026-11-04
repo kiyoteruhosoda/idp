@@ -450,6 +450,11 @@ impl EffectiveTenantSettings for TenantSettingsService {
         self.parse(tenant_id, "UNREGISTERED_DEVICE_ALERTS_ENABLED")
             .await
     }
+
+    /// SSH の公開鍵の登録と配布を使うか（task #885）。渡すのは要求のテナント（鍵を登録した組織）。
+    async fn ssh_keys_enabled(&self, tenant_id: TenantId) -> Result<bool> {
+        self.parse(tenant_id, "SSH_KEYS_ENABLED").await
+    }
 }
 
 impl TenantSettingsService {
@@ -996,6 +1001,7 @@ mod tests {
             .unwrap();
         service.email_verification_ttl(t).await.unwrap();
         assert!(!service.unregistered_device_alerts_enabled(t).await.unwrap());
+        assert!(!service.ssh_keys_enabled(t).await.unwrap());
     }
 
     /// i32 に収まらない失敗回数は負数へラップさせず i32::MAX へ飽和させる（初回失敗で即ロックしない）。

@@ -1146,6 +1146,9 @@ mod tests {
             sign_ins: &[],
             sign_ins_older: None,
             sign_ins_paged: false,
+            ssh_keys_enabled: false,
+            ssh_keys: &[],
+            ssh_keys_passkey_fresh: false,
             saved_key: None,
             error_key: None,
         });
@@ -1485,6 +1488,9 @@ mod tests {
                 sign_ins: &[],
                 sign_ins_older: None,
                 sign_ins_paged: false,
+                ssh_keys_enabled: false,
+                ssh_keys: &[],
+                ssh_keys_passkey_fresh: false,
                 saved_key: None,
                 error_key: None,
             })
@@ -1570,6 +1576,9 @@ mod tests {
             sign_ins: &sign_ins,
             sign_ins_older: Some(41),
             sign_ins_paged: false,
+            ssh_keys_enabled: false,
+            ssh_keys: &[],
+            ssh_keys_passkey_fresh: false,
             saved_key: None,
             error_key: None,
         });
@@ -1617,6 +1626,56 @@ mod tests {
         assert_eq!(browser_summary(""), "");
     }
 
+    /// 「SSH の鍵」の欄（task #885）: 組織で使っていなければ出さない。使っていれば登録の欄・指紋・取り消しの口、
+    /// パスキーの確認がまだなら確認への道を出す。
+    #[test]
+    fn the_security_page_lists_ssh_keys_only_when_enabled() {
+        let messages = Messages::new(Locale::Ja);
+        let keys = vec![SecuritySshKeyView {
+            id: "0197aaaa-0000-7000-8000-000000000009".to_string(),
+            name: "kyon-pc".to_string(),
+            key_type: "sk-ssh-ed25519@openssh.com".to_string(),
+            fingerprint: "SHA256:1rYiSPZV2H9QsZrfrX/5nhreVmcpuSKQQYA/CKjnPfU".to_string(),
+            created_at: "2026-11-04T09:00:00Z".to_string(),
+        }];
+        let render_with = |enabled: bool, fresh: bool| {
+            render(&UserSecurity {
+                messages: &messages,
+                tenant: "/t",
+                csrf: "csrf",
+                sessions: &[],
+                connected_apps: &[],
+                devices: &[],
+                current_device_registered: false,
+                current_device_identified: true,
+                passkey_fresh: false,
+                devices_alerts_enabled: true,
+                ssh_keys_enabled: enabled,
+                ssh_keys: &keys,
+                ssh_keys_passkey_fresh: fresh,
+                sign_ins: &[],
+                sign_ins_older: None,
+                sign_ins_paged: false,
+                saved_key: None,
+                error_key: None,
+            })
+        };
+        let html = render_with(false, false);
+        assert!(!html.contains(r#"id="ssh-keys""#), "{html}");
+        assert!(!html.contains("register-ssh-key"));
+
+        let html = render_with(true, false);
+        assert!(html.contains(r#"id="ssh-keys""#));
+        assert!(html.contains(r#"action="/t/settings/security/register-ssh-key""#));
+        assert!(html.contains(r#"action="/t/settings/security/revoke-ssh-key""#));
+        assert!(html.contains("SHA256:1rYiSPZV2H9QsZrfrX/5nhreVmcpuSKQQYA/CKjnPfU"));
+        assert!(html.contains(r#"name="key_id" value="0197aaaa-0000-7000-8000-000000000009""#));
+        assert!(html.contains("operation=manage_ssh_keys"));
+
+        let html = render_with(true, true);
+        assert!(!html.contains("operation=manage_ssh_keys"));
+    }
+
     /// 時刻は機械が読む値（`datetime`）と人が読む値（要素の中身）を分けて出す（ADR-0048）。
     /// 中身は JavaScript が閲覧者のタイムゾーンへ差し替えるが、差し替わらなくても読める形で
     /// 出しておく —— RFC 3339 のマイクロ秒付き文字列は、そのままでは日時として読めない。
@@ -1646,6 +1705,9 @@ mod tests {
             sign_ins: &[],
             sign_ins_older: None,
             sign_ins_paged: false,
+            ssh_keys_enabled: false,
+            ssh_keys: &[],
+            ssh_keys_passkey_fresh: false,
             saved_key: None,
             error_key: None,
         });
@@ -3769,6 +3831,12 @@ pub struct UserSecurity<'a> {
     pub sign_ins_older: Option<i64>,
     /// 古い履歴を見ているか（先頭へ戻るリンクを出す）。
     pub sign_ins_paged: bool,
+    /// この組織で SSH の鍵を使うか（task #885。無効なら欄を出さない）。
+    pub ssh_keys_enabled: bool,
+    /// 登録済みの SSH の鍵。
+    pub ssh_keys: &'a [SecuritySshKeyView],
+    /// パスキーでの本人確認がまだ有効か（SSH の鍵の登録・取り消しの条件）。
+    pub ssh_keys_passkey_fresh: bool,
     pub saved_key: Option<&'a str>,
     pub error_key: Option<&'a str>,
 }
@@ -3862,6 +3930,16 @@ pub fn browser_summary(user_agent: &str) -> String {
         (None, Some(b)) => b.to_string(),
         (None, None) => String::new(),
     }
+}
+
+/// 「SSH の鍵」の欄の 1 行（task #885）。時刻は api が返した RFC 3339 文字列のまま。
+pub struct SecuritySshKeyView {
+    pub id: String,
+    pub name: String,
+    pub key_type: String,
+    /// `SHA256:…`。
+    pub fingerprint: String,
+    pub created_at: String,
 }
 
 /// 「端末」の欄の 1 行（task #872）。時刻は api が返した RFC 3339 文字列のまま。

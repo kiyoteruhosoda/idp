@@ -151,6 +151,26 @@ pub(crate) fn notice_body(alert: &SecurityAlert) -> Value {
             ),
             "device-expired",
         ),
+        SecurityAlertKind::SshKeyRegistered { key_name, .. } => (
+            format!(
+                "{} が SSH の鍵「{}」を登録しました",
+                alert.username, key_name
+            ),
+            "ssh-key-registered",
+        ),
+        SecurityAlertKind::SshKeyRevoked { key_name, .. } => (
+            format!(
+                "{} が SSH の鍵「{}」を取り消しました",
+                alert.username, key_name
+            ),
+            "ssh-key-revoked",
+        ),
+    };
+    let subject = match &alert.kind {
+        SecurityAlertKind::SshKeyRegistered { .. } | SecurityAlertKind::SshKeyRevoked { .. } => {
+            "SSH の鍵"
+        }
+        _ => "ログインした端末",
     };
 
     let mut details = vec![format!(
@@ -174,6 +194,11 @@ pub(crate) fn notice_body(alert: &SecurityAlert) -> Value {
             ua.chars().take(300).collect::<String>()
         ));
     }
+    if let SecurityAlertKind::SshKeyRegistered { fingerprint, .. }
+    | SecurityAlertKind::SshKeyRevoked { fingerprint, .. } = &alert.kind
+    {
+        details.push(format!("指紋: {fingerprint}"));
+    }
     if let SecurityAlertKind::UnregisteredDeviceSignIn { methods, .. } = &alert.kind {
         let labels: Vec<&str> = methods.iter().map(method_label).collect();
         details.push(format!(
@@ -196,6 +221,10 @@ pub(crate) fn notice_body(alert: &SecurityAlert) -> Value {
         SecurityAlertKind::DeviceRegistered { .. } => vec![
             "覚えが無ければ、assay の「アカウントのセキュリティ」→「端末」から取り消してください".to_string(),
         ],
+        SecurityAlertKind::SshKeyRegistered { .. } => vec![
+            "この鍵は数分のうちに機器（nolumialab・naso・ASUS）へ配られます".to_string(),
+            "覚えが無ければ、すぐに assay の「アカウントのセキュリティ」→「SSH の鍵」から取り消し、パスキーを確かめてください".to_string(),
+        ],
         _ => Vec::new(),
     };
 
@@ -207,7 +236,7 @@ pub(crate) fn notice_body(alert: &SecurityAlert) -> Value {
         },
         "headline": headline,
         "items": [{
-            "subject": "ログインした端末",
+            "subject": subject,
             "state": "",
             "details": details,
         }],
@@ -259,6 +288,20 @@ mod tests {
             .collect();
         assert!(details.contains(&"国: JP"));
         assert!(details.contains(&"入り方: パスワード ＋ 確認コード（TOTP）"));
+    }
+
+    #[test]
+    fn ssh_key_registration_is_a_warning_with_the_fingerprint() {
+        let body = notice_body(&alert(SecurityAlertKind::SshKeyRegistered {
+            key_name: "kyon-pc".to_string(),
+            fingerprint: "SHA256:abc".to_string(),
+        }));
+        assert_eq!(body["level"], "warning");
+        assert_eq!(body["key"], "assay-ssh-key-registered-abcd1234");
+        assert_eq!(body["items"][0]["subject"], "SSH の鍵");
+        assert!(body["headline"].as_str().unwrap().contains("kyon-pc"));
+        let details = body["items"][0]["details"].as_array().unwrap();
+        assert!(details.iter().any(|d| d == "指紋: SHA256:abc"));
     }
 
     #[test]

@@ -19,18 +19,21 @@ use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{
     browser_summary, render, ConnectedAppView, SecurityDeviceView, SecuritySessionView,
-    SignInAppView, SignInRefreshView, SignInView, UserSecurity,
+    SecuritySshKeyView, SignInAppView, SignInRefreshView, SignInView, UserSecurity,
 };
 use crate::tenant::WebTenant;
 use assay_contracts::auth::{
     AccountSignInEntry, InternalAccountDevicesRequest, InternalAccountDevicesResponse,
     InternalAccountRegisterDeviceRequest, InternalAccountRegisterDeviceResponse,
+    InternalAccountRegisterSshKeyRequest, InternalAccountRegisterSshKeyResponse,
     InternalAccountReissueTokensRequest, InternalAccountReissueTokensResponse,
     InternalAccountRevokeConsentRequest, InternalAccountRevokeConsentResponse,
     InternalAccountRevokeDeviceRequest, InternalAccountRevokeDeviceResponse,
     InternalAccountRevokeSessionRequest, InternalAccountRevokeSessionResponse,
+    InternalAccountRevokeSshKeyRequest, InternalAccountRevokeSshKeyResponse,
     InternalAccountSecurityRequest, InternalAccountSecurityResponse,
     InternalAccountSignInHistoryRequest, InternalAccountSignInHistoryResponse,
+    InternalAccountSshKeysRequest, InternalAccountSshKeysResponse,
 };
 use axum::extract::{Extension, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -65,6 +68,19 @@ pub struct RevokeConsentForm {
 #[derive(Debug, Deserialize)]
 pub struct RegisterDeviceForm {
     pub name: String,
+    pub csrf_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RegisterSshKeyForm {
+    pub public_key: String,
+    pub name: String,
+    pub csrf_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RevokeSshKeyForm {
+    pub key_id: String,
     pub csrf_token: String,
 }
 
@@ -197,6 +213,46 @@ pub async fn page(
         }
     };
 
+    // 「SSH の鍵」の欄（task #885）。組織で使っていなければ欄ごと出さない。
+    let ssh_request = InternalAccountSshKeysRequest {
+        tenant_id: Some(tenant.0.clone()),
+        sso_session_id: request.sso_session_id.clone(),
+    };
+    let ssh_keys = match state
+        .api
+        .account_ssh_keys(&correlation.0, &ssh_request)
+        .await
+    {
+        Ok(InternalAccountSshKeysResponse::Ok {
+            enabled,
+            passkey_fresh,
+            keys,
+        }) => SshKeysSection {
+            enabled,
+            passkey_fresh,
+            keys: keys
+                .into_iter()
+                .map(|k| SecuritySshKeyView {
+                    id: k.id,
+                    name: k.name,
+                    key_type: k.key_type,
+                    fingerprint: k.fingerprint,
+                    created_at: k.created_at,
+                })
+                .collect(),
+        },
+        Ok(InternalAccountSshKeysResponse::SessionExpired) => {
+            return found(&format!("{}/login", tenant.prefix()));
+        }
+        Ok(InternalAccountSshKeysResponse::Internal) => {
+            return api_internal_error("account_ssh_keys");
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "account ssh keys fetch call to api failed");
+            return internal_call_status(&e).into_response();
+        }
+    };
+
     // Messages（FluentBundle）は !Send のため、api の await より後・描画の直前に生成する。
     let messages = Messages::new(locale);
     let sessions: Vec<SecuritySessionView> = sessions
@@ -235,6 +291,9 @@ pub async fn page(
         sign_ins: &sign_ins,
         sign_ins_older,
         sign_ins_paged: query.history_before.is_some(),
+        ssh_keys_enabled: ssh_keys.enabled,
+        ssh_keys: &ssh_keys.keys,
+        ssh_keys_passkey_fresh: ssh_keys.passkey_fresh,
         saved_key: query.saved.as_deref().and_then(saved_key_for),
         error_key: query.error.as_deref().and_then(error_key_for),
     }))
@@ -420,6 +479,172 @@ pub async fn reissue_tokens(
     }
 }
 
+/// 「SSH の鍵」の欄の中身（描画まで持ち回る）。
+struct SshKeysSection {
+    enabled: bool,
+    passkey_fresh: bool,
+    keys: Vec<SecuritySshKeyView>,
+}
+
+/// SSH の公開鍵を登録する（`POST /{tenant_id}/settings/security/register-ssh-key`。task #885）。
+///
+/// **パスキーで確かめてから 5 分以内**だけ通す。まだなら本人確認の画面（パスキーだけ）へ回し、
+/// 戻ってきたら利用者がもう一度貼って押す（フォームの中身は持ち越さない）。
+pub async fn register_ssh_key(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Form(form): Form<RegisterSshKeyForm>,
+) -> Response {
+    let base = format!("{}/settings/security", tenant.prefix());
+    let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
+        return found(&format!("{}/login", tenant.prefix()));
+    };
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
+        tracing::warn!(
+            correlation_id = %correlation.0,
+            "ssh key registration rejected: csrf token mismatch"
+        );
+        return see_other(&format!("{base}?error=csrf"));
+    }
+    // 秘密鍵らしきものは api へも渡さずここで断る（貼られた値をどこにも運ばない。api も同じ判定で断る）。
+    if form.public_key.contains("PRIVATE KEY") {
+        tracing::warn!(
+            correlation_id = %correlation.0,
+            "ssh key registration refused: a private key was pasted"
+        );
+        return see_other(&format!("{base}?error=ssh-key-private#ssh-keys"));
+    }
+    if let Err(response) = step_up::require_step_up(
+        &state,
+        &correlation,
+        &tenant,
+        &headers,
+        step_up::MANAGE_SSH_KEYS,
+        &format!("{base}#ssh-keys"),
+    )
+    .await
+    {
+        return response;
+    }
+
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
+    let request = InternalAccountRegisterSshKeyRequest {
+        tenant_id: Some(tenant.0.clone()),
+        sso_session_id: sso,
+        public_key: form.public_key,
+        name: form.name,
+        ip_address: ctx.ip_address,
+        user_agent: ctx.user_agent,
+    };
+    let error = |code: &str| see_other(&format!("{base}?error={code}#ssh-keys"));
+    match state
+        .api
+        .account_register_ssh_key(&ctx.correlation_id, &request)
+        .await
+    {
+        Ok(InternalAccountRegisterSshKeyResponse::Registered { .. }) => {
+            see_other(&format!("{base}?saved=ssh-key-registered#ssh-keys"))
+        }
+        Ok(InternalAccountRegisterSshKeyResponse::Disabled) => error("ssh-key-disabled"),
+        Ok(InternalAccountRegisterSshKeyResponse::PasskeyRequired) => {
+            error("ssh-key-passkey-required")
+        }
+        Ok(InternalAccountRegisterSshKeyResponse::InvalidName) => error("ssh-key-invalid-name"),
+        Ok(InternalAccountRegisterSshKeyResponse::PrivateKey) => error("ssh-key-private"),
+        Ok(InternalAccountRegisterSshKeyResponse::NotSecurityKey) => {
+            error("ssh-key-not-security-key")
+        }
+        Ok(InternalAccountRegisterSshKeyResponse::Malformed) => error("ssh-key-malformed"),
+        Ok(InternalAccountRegisterSshKeyResponse::AlreadyRegistered) => {
+            error("ssh-key-already-registered")
+        }
+        Ok(InternalAccountRegisterSshKeyResponse::TooMany) => error("ssh-key-too-many"),
+        Ok(InternalAccountRegisterSshKeyResponse::SessionExpired) => {
+            found(&format!("{}/login", tenant.prefix()))
+        }
+        Ok(InternalAccountRegisterSshKeyResponse::Internal) => {
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "ssh key registration call to api failed");
+            internal_call_status(&e).into_response()
+        }
+    }
+}
+
+/// SSH の公開鍵を取り消す（`POST /{tenant_id}/settings/security/revoke-ssh-key`。task #885）。
+///
+/// 取り消しもパスキーで 5 分以内だけ（盗んだ側に、本人の鍵を外して締め出させない）。
+pub async fn revoke_ssh_key(
+    State(state): State<WebState>,
+    Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
+    Extension(tenant): Extension<WebTenant>,
+    headers: HeaderMap,
+    Form(form): Form<RevokeSshKeyForm>,
+) -> Response {
+    let base = format!("{}/settings/security", tenant.prefix());
+    let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
+        return found(&format!("{}/login", tenant.prefix()));
+    };
+    if !console_csrf_valid(&sso, &form.csrf_token, state.config.csrf_secret()) {
+        tracing::warn!(
+            correlation_id = %correlation.0,
+            "ssh key revocation rejected: csrf token mismatch"
+        );
+        return see_other(&format!("{base}?error=csrf"));
+    }
+    if let Err(response) = step_up::require_step_up(
+        &state,
+        &correlation,
+        &tenant,
+        &headers,
+        step_up::MANAGE_SSH_KEYS,
+        &format!("{base}#ssh-keys"),
+    )
+    .await
+    {
+        return response;
+    }
+
+    let ctx = forwarded_context(&headers, &correlation, &client_ip);
+    let request = InternalAccountRevokeSshKeyRequest {
+        tenant_id: Some(tenant.0.clone()),
+        sso_session_id: sso,
+        key_id: form.key_id,
+        ip_address: ctx.ip_address,
+        user_agent: ctx.user_agent,
+    };
+    match state
+        .api
+        .account_revoke_ssh_key(&ctx.correlation_id, &request)
+        .await
+    {
+        Ok(InternalAccountRevokeSshKeyResponse::Revoked) => {
+            see_other(&format!("{base}?saved=ssh-key-revoked#ssh-keys"))
+        }
+        Ok(InternalAccountRevokeSshKeyResponse::PasskeyRequired) => {
+            see_other(&format!("{base}?error=ssh-key-passkey-required#ssh-keys"))
+        }
+        Ok(InternalAccountRevokeSshKeyResponse::NotFound) => {
+            see_other(&format!("{base}?error=ssh-key-not-found#ssh-keys"))
+        }
+        Ok(InternalAccountRevokeSshKeyResponse::SessionExpired) => {
+            found(&format!("{}/login", tenant.prefix()))
+        }
+        Ok(InternalAccountRevokeSshKeyResponse::Internal) => {
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "ssh key revocation call to api failed");
+            internal_call_status(&e).into_response()
+        }
+    }
+}
+
 /// 「端末」の欄の中身（描画まで持ち回る）。
 struct DevicesSection {
     devices: Vec<SecurityDeviceView>,
@@ -594,6 +819,8 @@ fn saved_key_for(value: &str) -> Option<&'static str> {
         "tokens-none" => Some("user-security-saved-tokens-none"),
         "device-registered" => Some("user-security-saved-device-registered"),
         "device-revoked" => Some("user-security-saved-device-revoked"),
+        "ssh-key-registered" => Some("user-security-saved-ssh-key-registered"),
+        "ssh-key-revoked" => Some("user-security-saved-ssh-key-revoked"),
         _ => None,
     }
 }
@@ -608,6 +835,15 @@ fn error_key_for(value: &str) -> Option<&'static str> {
         "device-invalid-name" => Some("user-security-error-device-invalid-name"),
         "device-unidentified" => Some("user-security-devices-unidentified"),
         "device-not-found" => Some("user-security-error-device-not-found"),
+        "ssh-key-disabled" => Some("user-security-error-ssh-key-disabled"),
+        "ssh-key-passkey-required" => Some("user-security-error-ssh-key-passkey-required"),
+        "ssh-key-invalid-name" => Some("user-security-error-ssh-key-invalid-name"),
+        "ssh-key-private" => Some("user-security-error-ssh-key-private"),
+        "ssh-key-not-security-key" => Some("user-security-error-ssh-key-not-security-key"),
+        "ssh-key-malformed" => Some("user-security-error-ssh-key-malformed"),
+        "ssh-key-already-registered" => Some("user-security-error-ssh-key-already-registered"),
+        "ssh-key-too-many" => Some("user-security-error-ssh-key-too-many"),
+        "ssh-key-not-found" => Some("user-security-error-ssh-key-not-found"),
         _ => None,
     }
 }

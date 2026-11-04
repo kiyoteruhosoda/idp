@@ -30,6 +30,16 @@ pub enum SecurityAlertKind {
     DeviceRevoked { device_name: String },
     /// 使われないまま期限が過ぎ、端末の登録が切れた。
     DeviceExpired { device_name: String },
+    /// SSH の公開鍵を登録した（task #885）。
+    SshKeyRegistered {
+        key_name: String,
+        fingerprint: String,
+    },
+    /// SSH の公開鍵を取り消した（task #885）。
+    SshKeyRevoked {
+        key_name: String,
+        fingerprint: String,
+    },
 }
 
 impl SecurityAlertKind {
@@ -38,7 +48,9 @@ impl SecurityAlertKind {
         match self {
             Self::UnregisteredDeviceSignIn { .. }
             | Self::DeviceRegistered { .. }
-            | Self::DeviceRevoked { .. } => SecurityAlertSeverity::Warning,
+            | Self::DeviceRevoked { .. }
+            | Self::SshKeyRegistered { .. }
+            | Self::SshKeyRevoked { .. } => SecurityAlertSeverity::Warning,
             Self::DeviceExpired { .. } => SecurityAlertSeverity::Info,
         }
     }

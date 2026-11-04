@@ -83,4 +83,6 @@ pub trait EffectiveTenantSettings: Send + Sync {
     async fn assignment_enforcement(&self, tenant_id: TenantId) -> Result<AssignmentEnforcement>;
     /// 登録していない端末でのログイン・端末の登録などを知らせるか（task #872）。
     async fn unregistered_device_alerts_enabled(&self, tenant_id: TenantId) -> Result<bool>;
+    /// 利用者が SSH の公開鍵を登録でき、配る機械へ一覧を渡すか（task #885）。渡すのは**要求の**テナント。
+    async fn ssh_keys_enabled(&self, tenant_id: TenantId) -> Result<bool>;
 }

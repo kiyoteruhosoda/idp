@@ -538,6 +538,22 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
                       出来事は有効・無効にかかわらず監査ログに残る。",
     },
     SettingDefinition {
+        key: "SSH_KEYS_ENABLED",
+        scope: SettingScope::TenantOverridable,
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: false,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::Boolean,
+        default_value: Some("false"),
+        description: "利用者が「アカウントのセキュリティ」→「SSH の鍵」で sk 型の SSH 公開鍵を登録できるか \
+                      （task #885。ADR-0072）。登録した鍵は、`idp.ssh-keys:read` を持つ機械クライアントが \
+                      `GET /{tenant}/admin/ssh-keys` で読み、各機器へ配る。無効の組織では画面に出ず、口は空の \
+                      一覧を返す（登録済みの鍵は消さない）。登録・取り消しは監査ログに残り、\
+                      `SECURITY_ALERT_WEBHOOK_URL` があれば知らせる。",
+    },
+    SettingDefinition {
         key: "OUTBOUND_TRUSTED_HOSTS",
         scope: SettingScope::Global,
         shared_with_web: false,

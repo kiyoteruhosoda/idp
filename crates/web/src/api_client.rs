@@ -3295,6 +3295,37 @@ impl ApiClient {
             .await
     }
 
+    /// 「SSH の鍵」の欄（task #885）。
+    pub async fn account_ssh_keys(
+        &self,
+        correlation_id: &str,
+        req: &assay_contracts::auth::InternalAccountSshKeysRequest,
+    ) -> Result<assay_contracts::auth::InternalAccountSshKeysResponse, InternalCallError> {
+        self.post_internal("/internal/account/ssh-keys", correlation_id, req)
+            .await
+    }
+
+    /// SSH の公開鍵を登録する（task #885）。
+    pub async fn account_register_ssh_key(
+        &self,
+        correlation_id: &str,
+        req: &assay_contracts::auth::InternalAccountRegisterSshKeyRequest,
+    ) -> Result<assay_contracts::auth::InternalAccountRegisterSshKeyResponse, InternalCallError>
+    {
+        self.post_internal("/internal/account/ssh-keys/register", correlation_id, req)
+            .await
+    }
+
+    /// SSH の公開鍵を取り消す（task #885）。
+    pub async fn account_revoke_ssh_key(
+        &self,
+        correlation_id: &str,
+        req: &assay_contracts::auth::InternalAccountRevokeSshKeyRequest,
+    ) -> Result<assay_contracts::auth::InternalAccountRevokeSshKeyResponse, InternalCallError> {
+        self.post_internal("/internal/account/ssh-keys/revoke", correlation_id, req)
+            .await
+    }
+
     /// ログイン中ユーザーの所属テナント（`ACTIVE`）を列挙する（テナント切り替え UI 用）。
     pub async fn account_tenants(
         &self,

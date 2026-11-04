@@ -53,6 +53,7 @@ use crate::domain::saml_service_provider::SamlServiceProvider;
 use crate::domain::saml_sso_request::SamlSsoRequest;
 use crate::domain::sign_in_history::{SignInAppUse, SignInFailure, SignInRecord, SignInSuccess};
 use crate::domain::signing_key::SigningKey;
+use crate::domain::ssh_key::{DistributedSshKey, UserSshKey};
 use crate::domain::sso_session::SsoSession;
 use crate::domain::system_setting::SystemSetting;
 use crate::domain::tenant::{Tenant, TenantId};
@@ -899,6 +900,25 @@ pub trait SignInHistoryRepository: Send + Sync {
         sids: &[String],
         now: DateTime<Utc>,
     ) -> Result<Vec<SignInAppUse>>;
+}
+
+/// 利用者が登録した SSH の公開鍵（task #885。ADR-0072）。鍵は登録した組織ごとに持つ。
+#[async_trait]
+pub trait UserSshKeyRepository: Send + Sync {
+    /// 利用者がその組織に登録した鍵を、登録の新しい順に返す。
+    async fn list_for_user(&self, tenant_id: TenantId, user_id: Uuid) -> Result<Vec<UserSshKey>>;
+    /// 登録する。同じ組織に同じ指紋の鍵が既にあれば `Conflict`（別の利用者の鍵でも）。
+    async fn insert(&self, key: &UserSshKey) -> Result<()>;
+    /// 利用者の鍵を 1 つ消し、消した行を返す（他人の鍵・別の組織の鍵の id なら `None`）。
+    async fn delete(
+        &self,
+        tenant_id: TenantId,
+        user_id: Uuid,
+        key_id: Uuid,
+    ) -> Result<Option<UserSshKey>>;
+    /// 配る機械へ渡す一覧。**有効な利用者**で、**その組織の有効なメンバー**の鍵だけ
+    /// （止めた利用者・組織から外れた利用者の鍵は出さない）。利用者名・登録の順に並べる。
+    async fn list_distributable(&self, tenant_id: TenantId) -> Result<Vec<DistributedSshKey>>;
 }
 
 #[async_trait]

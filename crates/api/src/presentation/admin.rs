@@ -120,6 +120,8 @@ permission_markers! {
     SamlServiceProvidersRead => permission::SAML_SERVICE_PROVIDERS_READ;
     /// SAML SP の登録・更新・削除。
     SamlServiceProvidersWrite => permission::SAML_SERVICE_PROVIDERS_WRITE;
+    /// 組織の SSH の鍵の一覧（task #885）。⚠ 口は機械クライアントだけを通す（`admin_ssh_keys`）。
+    SshKeysRead => permission::SSH_KEYS_READ;
     /// メール送信（SMTP）設定の参照（ADR-0051・ADR-0058 §8）。どのテナントでも付与でき、届くのは
     /// scope のテナントの経路だけ（全体の経路の口は使う側で root を課す）。⚠ `idp.tenant.admin` は含意しない。
     SmtpRead => permission::SMTP_READ;

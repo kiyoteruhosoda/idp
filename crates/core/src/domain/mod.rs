@@ -58,6 +58,7 @@ pub mod service_lifecycle;
 pub mod sign_in_history;
 pub mod signing_key;
 pub mod sms;
+pub mod ssh_key;
 pub mod sso_session;
 pub mod step_up;
 pub mod system_setting;

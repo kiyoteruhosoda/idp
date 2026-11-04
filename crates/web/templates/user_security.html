@@ -145,6 +145,72 @@
   </div>
 </div>
 
+{% if ssh_keys_enabled %}
+{#- SSH の鍵（task #885）。sk 型の公開鍵だけを登録でき、登録・取り消しはパスキーで確かめてから 5 分以内だけ。 -#}
+<div class="card mb-4" id="ssh-keys">
+  <div class="card-header d-flex align-items-center"><i class="fa-solid fa-terminal me-2" aria-hidden="true"></i>{{ messages.get("user-security-ssh-keys-heading") }}</div>
+  <div class="card-body">
+    <p class="text-muted small">{{ messages.get("user-security-ssh-keys-help") }}</p>
+    {% if !ssh_keys_passkey_fresh %}
+    <div class="alert alert-info d-flex flex-wrap align-items-center gap-2" role="status">
+      <span class="flex-grow-1">{{ messages.get("user-security-ssh-keys-passkey-needed") }}</span>
+      <a class="btn btn-outline-primary btn-sm" href="{{ tenant }}/settings/verify?operation=manage_ssh_keys&amp;next={{ tenant }}/settings/security"><i class="fa-solid fa-key me-2" aria-hidden="true"></i>{{ messages.get("user-security-ssh-keys-verify") }}</a>
+    </div>
+    {% endif %}
+    <form method="post" action="{{ tenant }}/settings/security/register-ssh-key" class="row g-2 mb-3">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <div class="col-12">
+        <label class="form-label" for="ssh_public_key">{{ messages.get("user-security-ssh-keys-public-key") }}{% include "required_mark.html" %}</label>
+        <textarea class="form-control font-monospace" id="ssh_public_key" name="public_key" rows="3" maxlength="4096" required spellcheck="false" autocomplete="off" placeholder="sk-ssh-ed25519@openssh.com AAAA…"></textarea>
+        <div class="form-text">{{ messages.get("user-security-ssh-keys-public-key-help") }}</div>
+      </div>
+      <div class="col-sm-8">
+        <label class="form-label" for="ssh_key_name">{{ messages.get("user-security-ssh-keys-name") }}{% include "required_mark.html" %}</label>
+        <input type="text" class="form-control" id="ssh_key_name" name="name" maxlength="100" required placeholder="{{ messages.get("user-security-ssh-keys-name-placeholder") }}">
+      </div>
+      <div class="col-sm-4 d-grid align-self-end">
+        <button type="submit" class="btn btn-primary"><i class="fa-solid fa-plus me-2" aria-hidden="true"></i>{{ messages.get("user-security-ssh-keys-register") }}</button>
+      </div>
+    </form>
+    {% if ssh_keys.is_empty() %}
+    <p class="text-muted mb-0">{{ messages.get("user-security-ssh-keys-empty") }}</p>
+    {% else %}
+    <div class="table-responsive">
+      <table class="table align-middle table-cards">
+        <thead>
+          <tr>
+            <th scope="col">{{ messages.get("user-security-ssh-keys-name") }}</th>
+            <th scope="col">{{ messages.get("user-security-ssh-keys-fingerprint") }}</th>
+            <th scope="col">{{ messages.get("user-security-ssh-keys-created") }}</th>
+            <th scope="col"><span class="visually-hidden">{{ messages.get("user-security-ssh-keys-revoke") }}</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for key in ssh_keys %}
+          <tr>
+            <td data-label="{{ messages.get("user-security-ssh-keys-name") }}">
+              <span class="d-block fw-semibold text-break">{{ key.name }}</span>
+              <span class="d-block small text-muted text-break">{{ key.key_type }}</span>
+            </td>
+            <td data-label="{{ messages.get("user-security-ssh-keys-fingerprint") }}"><code class="text-break">{{ key.fingerprint }}</code></td>
+            <td data-label="{{ messages.get("user-security-ssh-keys-created") }}"><time class="local-time" datetime="{{ key.created_at }}">{{ crate::templates::utc_short(key.created_at.as_str()) }}</time></td>
+            <td class="text-end">
+              <form method="post" action="{{ tenant }}/settings/security/revoke-ssh-key" data-confirm="{{ messages.get("user-security-ssh-keys-revoke-confirm") }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                <input type="hidden" name="key_id" value="{{ key.id }}">
+                <button type="submit" class="btn btn-outline-danger btn-sm">{{ messages.get("user-security-ssh-keys-revoke") }}</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
 <div class="card mb-4" id="sessions">
   <div class="card-header d-flex align-items-center"><i class="fa-solid fa-display me-2" aria-hidden="true"></i>{{ messages.get("user-security-sessions-heading") }}</div>
   <div class="card-body">

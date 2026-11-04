@@ -173,6 +173,10 @@ pub enum AuditEventType {
     DeviceRevoked,
     /// 使われないまま期限が過ぎ、端末の登録が切れた（task #872）。
     DeviceExpired,
+    /// 利用者が SSH の公開鍵を登録した・取り消した（task #885）。`reason` に鍵の id と指紋を残す
+    /// （名前は残さない）。
+    SshKeyRegistered,
+    SshKeyRevoked,
 }
 
 impl AuditEventType {
@@ -269,6 +273,8 @@ impl AuditEventType {
             Self::DeviceRegistered => "device.registered",
             Self::DeviceRevoked => "device.revoked",
             Self::DeviceExpired => "device.expired",
+            Self::SshKeyRegistered => "ssh_key.registered",
+            Self::SshKeyRevoked => "ssh_key.revoked",
         }
     }
 }

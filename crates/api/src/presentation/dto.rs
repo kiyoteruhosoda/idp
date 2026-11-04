@@ -1034,6 +1034,27 @@ pub struct ResourceListResponse {
     pub resources: Vec<ResourceResponse>,
 }
 
+/// 配る機械へ渡す SSH の鍵の 1 行（`GET /{tenant_id}/admin/ssh-keys`。task #885）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SshKeyResponse {
+    /// assay の利用者名（preferred_username）。配る側が機器の利用者へ対応付ける。
+    pub username: String,
+    /// 利用者が付けた鍵の名前。
+    pub name: String,
+    /// authorized_keys の 1 行の「型 本体」（コメント・オプション無し）。
+    pub public_key: String,
+    /// `SHA256:…`（`ssh-keygen -l` と同じ）。
+    pub fingerprint: String,
+    /// 登録した時刻（RFC 3339・UTC）。
+    pub created_at: String,
+}
+
+/// 組織の有効な SSH の鍵の一覧（`GET /{tenant_id}/admin/ssh-keys`）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SshKeyListResponse {
+    pub keys: Vec<SshKeyResponse>,
+}
+
 /// 利用者の状態更新リクエスト（`PATCH /{tenant_id}/admin/users/{user_id}`）。
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateUserStatusRequest {
