@@ -246,8 +246,14 @@ async fn an_approval_completes_only_in_the_browser_that_started_it() {
     let code = approve(&env, &key, &request_id).await;
     let refused = complete(&env, &request_id, &code, None).await;
     assert_eq!(refused["result"], "another_browser", "{refused}");
+    // 断った依頼は終わっている（同じコードをもう一度、別の印で出しても通らない）。
     let other = complete(&env, &request_id, &code, Some("not-the-binding")).await;
-    assert_eq!(other["result"], "another_browser", "{other}");
+    assert_eq!(other["result"], "invalid", "{other}");
+    // 違う印の 1 回目も「別のブラウザ」になる。
+    let (request_id2, _) = start_request(&env, None).await;
+    let code2 = approve(&env, &key, &request_id2).await;
+    let wrong = complete(&env, &request_id2, &code2, Some("not-the-binding")).await;
+    assert_eq!(wrong["result"], "another_browser", "{wrong}");
     // 一度断った依頼は、後から正しい印で来ても完了しない。
     let late = complete(&env, &request_id, &code, Some(&binding)).await;
     assert_eq!(late["result"], "invalid", "{late}");
