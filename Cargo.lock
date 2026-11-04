@@ -196,6 +196,7 @@ dependencies = [
  "jsonwebtoken",
  "metrics",
  "metrics-exporter-prometheus",
+ "p256",
  "percent-encoding",
  "rand 0.10.3",
  "reqwest",
