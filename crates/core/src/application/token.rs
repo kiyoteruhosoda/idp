@@ -18,6 +18,7 @@ use crate::application::client_authentication::{
     PresentedClientCredentials,
 };
 use crate::application::key_service::KeyService;
+use crate::application::sign_in_history::log_history_error;
 use crate::domain::application::{ApplicationAccess, BindingTarget};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::authorization_code::{AuthorizationCodeValue, CodeRedemptionRejection};
@@ -31,8 +32,8 @@ use crate::domain::pkce;
 use crate::domain::refresh_token::RefreshToken;
 use crate::domain::repositories::{
     ApplicationRepository, AuthorizationCodeRepository, ClientPermissionRepository,
-    ClientRepository, ProtectedResourceRepository, RefreshTokenRepository, TenantRepository,
-    UserRepository,
+    ClientRepository, ProtectedResourceRepository, RefreshTokenRepository, SignInHistoryRepository,
+    TenantRepository, UserRepository,
 };
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::{AuthenticationMethod, AuthenticationStrength, Scope};
@@ -237,6 +238,8 @@ pub struct TokenService {
     /// `client_authentication` に集約してある（ADR-0030）。
     client_auth: Arc<ClientAuthenticator>,
     audit: Arc<AuditService>,
+    /// 本人が見るログイン履歴（task #879）。どのアプリへトークンを出し、リフレッシュがどう使われたか。
+    sign_in_history: Arc<dyn SignInHistoryRepository>,
     clock: Arc<dyn Clock>,
     /// 基底 issuer（`https://<host>`）。`iss` はテナント毎に `<基底>/<tenant_id>` を合成する
     /// （ADR-0009 §6。`domain::issuer::tenant_issuer`）。
@@ -264,6 +267,7 @@ impl TokenService {
         keys: Arc<KeyService>,
         client_auth: Arc<ClientAuthenticator>,
         audit: Arc<AuditService>,
+        sign_in_history: Arc<dyn SignInHistoryRepository>,
         clock: Arc<dyn Clock>,
         base_issuer: String,
         access_token_ttl: std::time::Duration,
@@ -284,12 +288,30 @@ impl TokenService {
             keys,
             client_auth,
             audit,
+            sign_in_history,
             clock,
             base_issuer,
             access_token_ttl,
             management_token_ttl,
             id_token_ttl,
             refresh_token_ttl,
+        }
+    }
+
+    /// ログイン履歴: 使い終えたリフレッシュトークンがもう一度来た（task #879）。
+    async fn note_refresh_reuse(
+        &self,
+        stored: &RefreshToken,
+        client_id: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) {
+        if let Some(sid) = stored.sid.as_deref() {
+            log_history_error(
+                self.sign_in_history
+                    .record_refresh_reuse(sid, client_id, now)
+                    .await,
+                "refresh reuse",
+            );
         }
     }
 
@@ -539,6 +561,23 @@ impl TokenService {
             None
         };
 
+        // ログイン履歴: このログインでこのアプリへ入った（task #879）。
+        if let Some(sid) = authentication.sso_sid() {
+            log_history_error(
+                self.sign_in_history
+                    .record_app_issue(
+                        authentication.user_id(),
+                        tenant_id,
+                        sid,
+                        &client_id,
+                        now,
+                        has_offline,
+                    )
+                    .await,
+                "app issue",
+            );
+        }
+
         self.audit
             .record(
                 AuditEventType::TokenIssued,
@@ -636,6 +675,7 @@ impl TokenService {
                     ctx,
                 )
                 .await;
+            self.note_refresh_reuse(&stored, &client_id, now).await;
             return Err(TokenError::new(
                 OAuthErrorCode::InvalidGrant,
                 "refresh_token has already been used",
@@ -703,6 +743,7 @@ impl TokenService {
                         ctx,
                     )
                     .await;
+                self.note_refresh_reuse(&stored, &client_id, now).await;
                 return Err(TokenError::new(
                     OAuthErrorCode::InvalidGrant,
                     "refresh_token has already been used",
@@ -781,6 +822,21 @@ impl TokenService {
             return Err(internal(&e));
         }
 
+        // ログイン履歴: 更新を送ってきた相手（アプリのサーバーなら、そのサーバー）を残す（task #879）。
+        if let Some(sid) = stored.sid.as_deref() {
+            log_history_error(
+                self.sign_in_history
+                    .record_refresh_use(
+                        sid,
+                        &client_id,
+                        now,
+                        ctx.ip_address.as_deref(),
+                        ctx.user_agent.as_deref(),
+                    )
+                    .await,
+                "refresh use",
+            );
+        }
         self.audit
             .record(
                 AuditEventType::RefreshTokenUsed,

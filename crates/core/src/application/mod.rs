@@ -64,6 +64,7 @@ pub mod saml_service_provider_management;
 pub mod saml_sso;
 pub mod service_restart;
 pub mod sign_in_completion;
+pub mod sign_in_history;
 pub mod sso_restore;
 pub mod step_up;
 pub mod stop_announcement;

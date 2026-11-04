@@ -71,6 +71,7 @@ use crate::application::saml_service_provider_management::SamlServiceProviderMan
 use crate::application::saml_sso::SamlSsoService;
 use crate::application::service_restart::ServiceRestartService;
 use crate::application::sign_in_completion::SignInCompletion;
+use crate::application::sign_in_history::{SignInFailureRecordingSink, SignInHistoryService};
 use crate::application::sso_restore::SsoRestorer;
 use crate::application::step_up::StepUpService;
 use crate::application::stop_announcement::StopAnnouncementService;
@@ -86,7 +87,9 @@ use crate::config::Config;
 use crate::domain::cache::Cache;
 use crate::domain::clock::Clock;
 use crate::domain::id_generator::IdGenerator;
-use crate::domain::repositories::{AccountNoteRepository, UserPermissionRepository};
+use crate::domain::repositories::{
+    AccountNoteRepository, SignInHistoryRepository, UserPermissionRepository,
+};
 use crate::domain::security_alert::{DisabledSecurityAlertSink, SecurityAlertSink};
 use crate::domain::tenant::{Tenant, TenantId};
 use crate::infrastructure::backchannel_logout::ReqwestBackchannelLogoutSender;
@@ -130,6 +133,7 @@ use crate::infrastructure::repositories::refresh_token::SqlxRefreshTokenReposito
 use crate::infrastructure::repositories::revoked_access_token::SqlxRevokedAccessTokenRepository;
 use crate::infrastructure::repositories::saml_service_provider::SqlxSamlServiceProviderRepository;
 use crate::infrastructure::repositories::saml_sso_request::SqlxSamlSsoRequestRepository;
+use crate::infrastructure::repositories::sign_in_history::SqlxSignInHistoryRepository;
 use crate::infrastructure::repositories::signing_key::SqlxSigningKeyRepository;
 use crate::infrastructure::repositories::sso_session::SqlxSsoSessionRepository;
 use crate::infrastructure::repositories::system_setting::SqlxSystemSettingsRepository;
@@ -261,6 +265,8 @@ pub struct AppState {
     pub account_security: Arc<AccountSecurityService>,
     /// 利用者の端末の一覧と、登録していない端末でのログインの知らせ（task #872）。
     pub device_registry: Arc<DeviceRegistryService>,
+    /// 本人が見るログイン履歴（task #879）。
+    pub sign_in_history: Arc<SignInHistoryService>,
     /// Step-up 認証（重要操作の直前の本人確認。AP5）。
     pub step_up: Arc<StepUpService>,
     /// 認証器の統合管理（一覧・状態変更・リカバリーコード・email OTP。AP9）。
@@ -349,7 +355,13 @@ impl AppState {
             Arc::new(SqlxAuthenticationPolicyRepository::new(pool.clone()));
         let webauthn_credentials = Arc::new(SqlxWebAuthnCredentialRepository::new(pool.clone()));
         let passkey_challenges = Arc::new(SqlxPasskeyChallengeRepository::new(pool.clone()));
-        let audit_sink = Arc::new(SqlxAuditLogSink::new(pool.clone()));
+        // 断ったログインは監査ログへ書く所で本人の履歴へも写す（task #879）。
+        let sign_in_history_repository: Arc<dyn SignInHistoryRepository> =
+            Arc::new(SqlxSignInHistoryRepository::new(pool.clone()));
+        let audit_sink = Arc::new(SignInFailureRecordingSink::new(
+            Arc::new(SqlxAuditLogSink::new(pool.clone())),
+            sign_in_history_repository.clone(),
+        ));
         let audit_logs = Arc::new(SqlxAuditLogQuery::new(pool.clone()));
         let hasher = Arc::new(Argon2PasswordHasher::new());
         let ids: Arc<dyn IdGenerator> = Arc::new(UuidV7Generator);
@@ -804,6 +816,7 @@ impl AppState {
             keys.clone(),
             client_auth.clone(),
             audit.clone(),
+            sign_in_history_repository.clone(),
             clock.clone(),
             config.issuer().to_string(),
             config.access_token_ttl(),
@@ -1097,6 +1110,14 @@ impl AppState {
             clock.clone(),
         ));
 
+        // task #879: 本人が見るログイン履歴。
+        let sign_in_history = Arc::new(SignInHistoryService::new(
+            sign_in_history_repository.clone(),
+            sso_sessions.clone(),
+            users.clone(),
+            clock.clone(),
+        ));
+
         // F5: Token 管理（revocation / introspection）。
         let revocation = Arc::new(RevocationService::new(
             clients.clone(),
@@ -1244,6 +1265,7 @@ impl AppState {
             logout,
             account_security,
             device_registry,
+            sign_in_history,
             step_up,
             authenticators,
             authenticator_repository,

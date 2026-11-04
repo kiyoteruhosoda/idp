@@ -1143,6 +1143,9 @@ mod tests {
             current_device_identified: true,
             passkey_fresh: false,
             devices_alerts_enabled: true,
+            sign_ins: &[],
+            sign_ins_older: None,
+            sign_ins_paged: false,
             saved_key: None,
             error_key: None,
         });
@@ -1479,6 +1482,9 @@ mod tests {
                 current_device_identified: identified,
                 passkey_fresh: false,
                 devices_alerts_enabled: true,
+                sign_ins: &[],
+                sign_ins_older: None,
+                sign_ins_paged: false,
                 saved_key: None,
                 error_key: None,
             })
@@ -1494,6 +1500,121 @@ mod tests {
 
         let html = render_with(false, false);
         assert!(!html.contains(r#"action="/t/settings/security/register-device""#));
+    }
+
+    /// 「ログイン履歴」の欄（task #879）: 成功と失敗を見分けられ、リフレッシュの「送ってきた相手」は
+    /// ログインした接続元と別に書かれ、assay の外で延ばすアプリの断り書きが出る。
+    #[test]
+    fn the_security_page_lists_sign_ins_and_refresh_usage() {
+        let messages = Messages::new(Locale::Ja);
+        let sign_ins = vec![
+            SignInView {
+                occurred_at: "2026-11-04T09:00:00Z".to_string(),
+                outcome_key: "user-security-signins-outcome-succeeded",
+                succeeded: true,
+                failure_key: None,
+                ip_address: "203.0.113.10".to_string(),
+                country: "JP".to_string(),
+                browser_summary: "Windows・Chrome".to_string(),
+                user_agent: "Mozilla/5.0 (Windows NT 10.0)".to_string(),
+                method_keys: vec![
+                    "user-security-signins-method-password",
+                    "user-security-signins-method-totp",
+                ],
+                attempted_app: String::new(),
+                current: true,
+                device_registered: Some(false),
+                apps: vec![SignInAppView {
+                    app_name: "photonest".to_string(),
+                    last_issued_at: "2026-11-04T09:00:05Z".to_string(),
+                    refresh: Some(SignInRefreshView {
+                        use_count: "12".to_string(),
+                        last_used_at: "2026-11-04T10:00:00Z".to_string(),
+                        last_ip_address: "198.51.100.20".to_string(),
+                        last_browser_summary: String::new(),
+                        last_user_agent: "python-httpx/0.28".to_string(),
+                        reuse_detected_at: "2026-11-04T10:05:00Z".to_string(),
+                        state_key: "user-security-signins-refresh-state-revoked",
+                        active: false,
+                        revoked_at: "2026-11-04T10:05:00Z".to_string(),
+                    }),
+                }],
+            },
+            SignInView {
+                occurred_at: "2026-11-04T08:59:00Z".to_string(),
+                outcome_key: "user-security-signins-outcome-failed",
+                succeeded: false,
+                failure_key: Some("user-security-signins-failure-wrong-password"),
+                ip_address: "192.0.2.99".to_string(),
+                country: String::new(),
+                browser_summary: String::new(),
+                user_agent: String::new(),
+                method_keys: Vec::new(),
+                attempted_app: "photonest".to_string(),
+                current: false,
+                device_registered: None,
+                apps: Vec::new(),
+            },
+        ];
+        let html = render(&UserSecurity {
+            messages: &messages,
+            tenant: "/t",
+            csrf: "csrf",
+            sessions: &[],
+            connected_apps: &[],
+            devices: &[],
+            current_device_registered: false,
+            current_device_identified: true,
+            passkey_fresh: false,
+            devices_alerts_enabled: true,
+            sign_ins: &sign_ins,
+            sign_ins_older: Some(41),
+            sign_ins_paged: false,
+            saved_key: None,
+            error_key: None,
+        });
+        assert!(html.contains(r#"id="sign-ins""#), "{html}");
+        // 成功と失敗の見分け（AC2）。
+        assert!(html.contains(r#"data-outcome="succeeded""#));
+        assert!(html.contains(r#"data-outcome="refused""#));
+        assert!(html.contains("パスワード違い"));
+        // 日時・IP と国・ブラウザと OS・入り方・入った先のアプリ（AC1）。
+        assert!(html.contains("203.0.113.10"));
+        assert!(html.contains("JP"));
+        assert!(html.contains("Windows・Chrome"));
+        assert!(
+            html.contains("パスワード・確認コード（認証アプリ）"),
+            "{html}"
+        );
+        assert!(html.contains("photonest"));
+        // 国が分からないときは偽らず「不明」（AC7）。
+        assert!(html.contains("（国は不明）"));
+        // リフレッシュの利用状況（AC3）と、送ってきた相手を分けて書く（AC4）。
+        assert!(html.contains("延長した回数: 12"), "{html}");
+        assert!(html.contains("取り消し済み"));
+        assert!(html.contains("使い終えたトークンがもう一度使われました"));
+        assert!(html.contains("送ってきた相手: 198.51.100.20"), "{html}");
+        // assay を最初のログインにだけ使うアプリの断り書き（AC5）。
+        assert!(html.contains("ここには出ません"));
+        // 古い履歴へ。
+        assert!(html.contains(r#"href="/t/settings/security?history_before=41#sign-ins""#));
+    }
+
+    #[test]
+    fn browser_summaries_name_the_os_and_the_browser() {
+        let chrome_win = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
+        assert_eq!(browser_summary(chrome_win), "Windows・Chrome");
+        let edge = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0";
+        assert_eq!(browser_summary(edge), "Windows・Edge");
+        let android = "Mozilla/5.0 (Linux; Android 15; Pixel 9 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36";
+        assert_eq!(browser_summary(android), "Android・Chrome");
+        let iphone = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1";
+        assert_eq!(browser_summary(iphone), "iOS・Safari");
+        let firefox_mac =
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.0; rv:131.0) Gecko/20100101 Firefox/131.0";
+        assert_eq!(browser_summary(firefox_mac), "macOS・Firefox");
+        assert_eq!(browser_summary("python-httpx/0.28"), "");
+        assert_eq!(browser_summary(""), "");
     }
 
     /// 時刻は機械が読む値（`datetime`）と人が読む値（要素の中身）を分けて出す（ADR-0048）。
@@ -1522,6 +1643,9 @@ mod tests {
             current_device_identified: true,
             passkey_fresh: false,
             devices_alerts_enabled: true,
+            sign_ins: &[],
+            sign_ins_older: None,
+            sign_ins_paged: false,
             saved_key: None,
             error_key: None,
         });
@@ -3639,8 +3763,105 @@ pub struct UserSecurity<'a> {
     pub passkey_fresh: bool,
     /// この組織で「登録していない端末」の知らせが有効か。
     pub devices_alerts_enabled: bool,
+    /// ログイン履歴（task #879）。新しい順。
+    pub sign_ins: &'a [SignInView],
+    /// もっと古い履歴へのリンク（`?history_before=` の値）。無ければ最後のページ。
+    pub sign_ins_older: Option<i64>,
+    /// 古い履歴を見ているか（先頭へ戻るリンクを出す）。
+    pub sign_ins_paged: bool,
     pub saved_key: Option<&'a str>,
     pub error_key: Option<&'a str>,
+}
+
+/// ログイン履歴の 1 行（task #879）。文言はキーで持ち、テンプレートで訳す。
+pub struct SignInView {
+    pub occurred_at: String,
+    /// `user-security-signins-outcome-*`。
+    pub outcome_key: &'static str,
+    /// 成功したか（バッジの色を変える）。
+    pub succeeded: bool,
+    /// 断った理由（`user-security-signins-failure-*`）。成功なら `None`。
+    pub failure_key: Option<&'static str>,
+    pub ip_address: String,
+    /// 国コード（分からない・信じられないときは空）。
+    pub country: String,
+    /// 「Windows・Chrome」のような短い要約（分からなければ空）。
+    pub browser_summary: String,
+    pub user_agent: String,
+    /// 入り方（`user-security-signins-method-*`）。
+    pub method_keys: Vec<&'static str>,
+    /// 断ったログインを始めたアプリ（分かれば）。
+    pub attempted_app: String,
+    pub current: bool,
+    /// 登録した端末だったか（`None` は分からない）。
+    pub device_registered: Option<bool>,
+    pub apps: Vec<SignInAppView>,
+}
+
+/// ログインで入ったアプリと、リフレッシュトークンの使われ方（task #879）。
+pub struct SignInAppView {
+    pub app_name: String,
+    pub last_issued_at: String,
+    pub refresh: Option<SignInRefreshView>,
+}
+
+/// リフレッシュトークンの使われ方。接続元・名乗りは**更新を送ってきた相手**のもの。
+pub struct SignInRefreshView {
+    pub use_count: String,
+    /// 一度も更新していなければ空。
+    pub last_used_at: String,
+    pub last_ip_address: String,
+    pub last_browser_summary: String,
+    pub last_user_agent: String,
+    pub reuse_detected_at: String,
+    /// `user-security-signins-refresh-state-*`。
+    pub state_key: &'static str,
+    pub active: bool,
+    pub revoked_at: String,
+}
+
+/// ブラウザの名乗り（User-Agent）から「OS・ブラウザ」を短く取り出す（表示用。判定には使わない）。
+///
+/// 名乗りは自己申告で偽れる。画面では要約の下に元の文字列も出す。
+pub fn browser_summary(user_agent: &str) -> String {
+    let ua = user_agent;
+    let os = if ua.contains("Android") {
+        Some("Android")
+    } else if ua.contains("iPhone") || ua.contains("iPad") || ua.contains("iOS") {
+        Some("iOS")
+    } else if ua.contains("Windows") {
+        Some("Windows")
+    } else if ua.contains("Mac OS X") || ua.contains("Macintosh") {
+        Some("macOS")
+    } else if ua.contains("CrOS") {
+        Some("ChromeOS")
+    } else if ua.contains("Linux") {
+        Some("Linux")
+    } else {
+        None
+    };
+    // 順番が意味を持つ: Edge・Opera・Samsung は名乗りに "Chrome" も含み、Chrome は "Safari" も含む。
+    let browser = if ua.contains("Edg/") || ua.contains("EdgA/") || ua.contains("EdgiOS/") {
+        Some("Edge")
+    } else if ua.contains("OPR/") {
+        Some("Opera")
+    } else if ua.contains("SamsungBrowser/") {
+        Some("Samsung Internet")
+    } else if ua.contains("Firefox/") || ua.contains("FxiOS/") {
+        Some("Firefox")
+    } else if ua.contains("Chrome/") || ua.contains("CriOS/") {
+        Some("Chrome")
+    } else if ua.contains("Safari/") {
+        Some("Safari")
+    } else {
+        None
+    };
+    match (os, browser) {
+        (Some(o), Some(b)) => format!("{o}・{b}"),
+        (Some(o), None) => o.to_string(),
+        (None, Some(b)) => b.to_string(),
+        (None, None) => String::new(),
+    }
 }
 
 /// 「端末」の欄の 1 行（task #872）。時刻は api が返した RFC 3339 文字列のまま。

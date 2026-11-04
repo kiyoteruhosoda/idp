@@ -45,6 +45,24 @@ pub async fn observe(
             &ctx,
         )
         .await;
+    // ログイン履歴（task #879）。端末の判定と同じ所で写す（国はここでしか分からない）。
+    // 端末の判定が失敗しても履歴は残す（登録の有無は分からない扱い）。
+    let device_registered = match &outcome {
+        Ok(ObserveOutcome::Registered) => Some(true),
+        Ok(ObserveOutcome::Unregistered) if req.device_token.is_some() => Some(false),
+        _ => None,
+    };
+    if let Err(e) = state
+        .sign_in_history
+        .record_sign_in(
+            &req.sso_session_id,
+            req.country.as_deref(),
+            device_registered,
+        )
+        .await
+    {
+        tracing::error!(error = %e, "sign-in history could not be recorded");
+    }
     Json(match outcome {
         Ok(ObserveOutcome::Registered) => InternalDeviceObserveResponse::Registered,
         Ok(ObserveOutcome::Unregistered) => InternalDeviceObserveResponse::Unregistered,

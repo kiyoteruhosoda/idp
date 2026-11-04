@@ -3259,6 +3259,17 @@ impl ApiClient {
             .await
     }
 
+    /// 本人のログイン履歴（task #879）。
+    pub async fn account_sign_in_history(
+        &self,
+        correlation_id: &str,
+        req: &assay_contracts::auth::InternalAccountSignInHistoryRequest,
+    ) -> Result<assay_contracts::auth::InternalAccountSignInHistoryResponse, InternalCallError>
+    {
+        self.post_internal("/internal/account/sign-in-history", correlation_id, req)
+            .await
+    }
+
     /// 今のブラウザを端末として登録する（task #872）。
     pub async fn account_register_device(
         &self,

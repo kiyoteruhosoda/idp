@@ -9,8 +9,8 @@ use crate::presentation::handlers::{
     admin_restart, admin_saml_service_providers, admin_signing_keys, admin_system_settings,
     admin_tenant_settings, admin_tenant_smtp, admin_tenants, admin_users, authorize, consent,
     discovery, health, internal_admin_token, internal_auth, internal_devices,
-    internal_runtime_settings, introspect, invitations, logout, mfa, passkey, register, revoke,
-    saml_sso, token, userinfo,
+    internal_runtime_settings, internal_sign_in_history, introspect, invitations, logout, mfa,
+    passkey, register, revoke, saml_sso, token, userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::security_headers::add_security_headers;
@@ -202,6 +202,11 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/internal/account/devices/revoke",
             post(internal_devices::account_revoke_device),
+        )
+        // 本人のログイン履歴（task #879）。
+        .route(
+            "/internal/account/sign-in-history",
+            post(internal_sign_in_history::account_sign_in_history),
         )
         // ログイン中ユーザーの所属テナント列挙（テナント切り替え UI）。
         .route(

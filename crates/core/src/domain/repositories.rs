@@ -51,6 +51,7 @@ use crate::domain::resource::ProtectedResource;
 use crate::domain::revoked_access_token::RevokedAccessToken;
 use crate::domain::saml_service_provider::SamlServiceProvider;
 use crate::domain::saml_sso_request::SamlSsoRequest;
+use crate::domain::sign_in_history::{SignInAppUse, SignInFailure, SignInRecord, SignInSuccess};
 use crate::domain::signing_key::SigningKey;
 use crate::domain::sso_session::SsoSession;
 use crate::domain::system_setting::SystemSetting;
@@ -846,6 +847,58 @@ pub trait UserDeviceRepository: Send + Sync {
     ) -> Result<bool>;
     /// 利用者のこの端末で作られた SSO セッションの `session_hash`（取り消しの巻き添えで切る）。
     async fn sessions_for_device(&self, user_id: Uuid, device: &DeviceRef) -> Result<Vec<String>>;
+}
+
+/// 本人が見るログイン履歴（task #879。ADR-0073）。
+///
+/// 書き込みはどれも「履歴のための写し」で、失敗してもログイン・トークンの発行は止めない
+/// （呼び出し側がログに残して続ける）。
+#[async_trait]
+pub trait SignInHistoryRepository: Send + Sync {
+    /// 成功したログインを書く。同じ `sid` が既にあれば何もせず `false`（二重の頼み）。
+    async fn record_success(&self, sign_in: &SignInSuccess) -> Result<bool>;
+    /// 断ったログインを書く。
+    async fn record_failure(&self, failure: &SignInFailure) -> Result<()>;
+    /// ログイン（`sid`）でアプリへトークンを出したことを書く（2 回目以降は最後の時刻を進める）。
+    async fn record_app_issue(
+        &self,
+        user_id: Uuid,
+        tenant_id: TenantId,
+        sid: &str,
+        client_id: &str,
+        issued_at: DateTime<Utc>,
+        refresh_issued: bool,
+    ) -> Result<()>;
+    /// リフレッシュトークンで更新したことを書く。接続元・名乗りは**更新を送ってきた相手**のもの。
+    async fn record_refresh_use(
+        &self,
+        sid: &str,
+        client_id: &str,
+        used_at: DateTime<Utc>,
+        ip_address: Option<&str>,
+        user_agent: Option<&str>,
+    ) -> Result<()>;
+    /// 使い終えたリフレッシュトークンがもう一度来たことを書く。
+    async fn record_refresh_reuse(
+        &self,
+        sid: &str,
+        client_id: &str,
+        detected_at: DateTime<Utc>,
+    ) -> Result<()>;
+    /// 利用者の履歴を新しい順に返す（`before` を渡すとその id より古いものだけ）。
+    async fn list_for_user(
+        &self,
+        user_id: Uuid,
+        before: Option<i64>,
+        limit: u32,
+    ) -> Result<Vec<SignInRecord>>;
+    /// ログイン（`sids`）ごとのアプリでの使われ方。リフレッシュの状態は `now` で決める。
+    async fn app_usage(
+        &self,
+        user_id: Uuid,
+        sids: &[String],
+        now: DateTime<Utc>,
+    ) -> Result<Vec<SignInAppUse>>;
 }
 
 #[async_trait]
