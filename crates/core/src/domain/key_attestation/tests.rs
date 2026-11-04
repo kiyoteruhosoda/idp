@@ -182,7 +182,8 @@ fn refuses_broken_or_short_chains() {
         verify_attestation(&good[..1], CHALLENGE, &policy()),
         Err(AttestationRejection::Malformed)
     );
-    good[0].truncate(good[0].len() - 3);
+    let shorter = good[0].len() - 3;
+    good[0].truncate(shorter);
     assert_eq!(
         verify_attestation(&good, CHALLENGE, &policy()),
         Err(AttestationRejection::Malformed)

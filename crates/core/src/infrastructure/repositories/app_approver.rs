@@ -44,9 +44,6 @@ impl SqlxApproverKeyRepository {
     }
 }
 
-const KEY_COLUMNS: &str = "id, user_id, key_id, public_key_spki, security_level, device_name, \
-                           registered_at, last_used_at";
-
 fn key_from_row(row: &MySqlRow) -> Result<ApproverKey> {
     let id: String = row.try_get("id").map_err(repo_err)?;
     let user_id: String = row.try_get("user_id").map_err(repo_err)?;
@@ -92,9 +89,9 @@ impl ApproverKeyRepository for SqlxApproverKeyRepository {
     }
 
     async fn find_by_key_id(&self, key_id: &str) -> Result<Option<ApproverKey>> {
-        let row = sqlx::query(&format!(
-            "SELECT {KEY_COLUMNS} FROM app_approver_keys WHERE key_id = ?"
-        ))
+        let row = sqlx::query(
+            "SELECT id, user_id, key_id, public_key_spki, security_level, device_name, registered_at, last_used_at FROM app_approver_keys WHERE key_id = ?",
+        )
         .bind(key_id)
         .fetch_optional(&self.pool)
         .await
@@ -103,10 +100,10 @@ impl ApproverKeyRepository for SqlxApproverKeyRepository {
     }
 
     async fn list_for_user(&self, user_id: Uuid) -> Result<Vec<ApproverKey>> {
-        let rows = sqlx::query(&format!(
-            "SELECT {KEY_COLUMNS} FROM app_approver_keys WHERE user_id = ? \
-             ORDER BY registered_at DESC"
-        ))
+        let rows = sqlx::query(
+            "SELECT id, user_id, key_id, public_key_spki, security_level, device_name, registered_at, last_used_at FROM app_approver_keys WHERE user_id = ? \
+             ORDER BY registered_at DESC",
+        )
         .bind(user_id.to_string())
         .fetch_all(&self.pool)
         .await
@@ -116,9 +113,9 @@ impl ApproverKeyRepository for SqlxApproverKeyRepository {
 
     async fn delete(&self, user_id: Uuid, id: Uuid) -> Result<Option<ApproverKey>> {
         let mut tx = self.pool.begin().await.map_err(repo_err)?;
-        let row = sqlx::query(&format!(
-            "SELECT {KEY_COLUMNS} FROM app_approver_keys WHERE id = ? AND user_id = ? FOR UPDATE"
-        ))
+        let row = sqlx::query(
+            "SELECT id, user_id, key_id, public_key_spki, security_level, device_name, registered_at, last_used_at FROM app_approver_keys WHERE id = ? AND user_id = ? FOR UPDATE",
+        )
         .bind(id.to_string())
         .bind(user_id.to_string())
         .fetch_optional(&mut *tx)

@@ -15,7 +15,7 @@ use crate::cookies;
 use crate::correlation::CorrelationId;
 use crate::csrf::{console_csrf_token, console_csrf_valid};
 use crate::handlers::{forwarded_context, found, locale, see_other, step_up};
-use crate::i18n::Messages;
+use crate::i18n::{Locale, Messages};
 use crate::state::WebState;
 use crate::templates::{render, AppApprovalWaitPage, AppApproverConfirmPage, MessagePage};
 use crate::tenant::WebTenant;
@@ -40,7 +40,10 @@ pub(crate) fn is_enrollment_id(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-fn message_page(messages: &Messages, key: &str, status: StatusCode) -> Response {
+/// ⚠ `Messages`（FluentBundle）は `Send` でないので、ハンドラでは `await` をまたいで持たない。
+/// 言語（`Locale`）だけを持ち、描く直前に作る。
+fn message_page(locale: Locale, key: &str, status: StatusCode) -> Response {
+    let messages = &Messages::new(locale);
     let body = render(&MessagePage {
         lang: messages.lang(),
         title: messages.get("app-approval-title"),
@@ -89,30 +92,18 @@ pub async fn start(
     headers: HeaderMap,
     Form(form): Form<StartForm>,
 ) -> Response {
-    let messages = Messages::new(locale(&headers));
+    let loc = locale(&headers);
     if !state.config.app_approver_enabled() {
-        return message_page(
-            &messages,
-            "app-approval-error-unavailable",
-            StatusCode::NOT_FOUND,
-        );
+        return message_page(loc, "app-approval-error-unavailable", StatusCode::NOT_FOUND);
     }
     let Some(auth_session_id) = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE) else {
-        return message_page(
-            &messages,
-            "app-approval-error-restart",
-            StatusCode::BAD_REQUEST,
-        );
+        return message_page(loc, "app-approval-error-restart", StatusCode::BAD_REQUEST);
     };
     let expected =
         assay_contracts::csrf::login_csrf_token(&auth_session_id, state.config.csrf_secret());
     if form.csrf_token != expected {
         tracing::warn!(correlation_id = %correlation.0, "app approval start rejected: csrf token mismatch");
-        return message_page(
-            &messages,
-            "app-approval-error-restart",
-            StatusCode::BAD_REQUEST,
-        );
+        return message_page(loc, "app-approval-error-restart", StatusCode::BAD_REQUEST);
     }
     let ctx = forwarded_context(&headers, &correlation, &client_ip);
     let request = InternalAppApprovalStartRequest {
@@ -137,6 +128,7 @@ pub async fn start(
                 tenant.0,
                 request_id
             );
+            let messages = Messages::new(loc);
             let body = render(&AppApprovalWaitPage {
                 messages: &messages,
                 approve_url: &approve_url,
@@ -157,13 +149,11 @@ pub async fn start(
                     .into_response(),
             )
         }
-        Ok(InternalAppApprovalStartResponse::Disabled) => message_page(
-            &messages,
-            "app-approval-error-unavailable",
-            StatusCode::NOT_FOUND,
-        ),
+        Ok(InternalAppApprovalStartResponse::Disabled) => {
+            message_page(loc, "app-approval-error-unavailable", StatusCode::NOT_FOUND)
+        }
         Ok(InternalAppApprovalStartResponse::RateLimited) => message_page(
-            &messages,
+            loc,
             "login-error-rate-limited",
             StatusCode::TOO_MANY_REQUESTS,
         ),
@@ -192,10 +182,10 @@ pub async fn complete(
     headers: HeaderMap,
     Query(query): Query<CompleteQuery>,
 ) -> Response {
-    let messages = Messages::new(locale(&headers));
+    let loc = locale(&headers);
     if !is_enrollment_id(&query.request) || query.code.is_empty() || query.code.len() > 64 {
         return private(message_page(
-            &messages,
+            loc,
             "app-approval-error-invalid",
             StatusCode::BAD_REQUEST,
         ));
@@ -241,7 +231,11 @@ pub async fn complete(
                     )
                     .expire_session(cookies::AUTH_SESSION_COOKIE)
                     .into_headers(),
-                crate::authorization_response::respond(&messages, &destination, form_post),
+                crate::authorization_response::respond(
+                    &Messages::new(loc),
+                    &destination,
+                    form_post,
+                ),
             )
                 .into_response()
         }
@@ -278,22 +272,22 @@ pub async fn complete(
                 )
                 .expire_session(cookies::AUTH_SESSION_COOKIE)
                 .into_headers(),
-            crate::application_denied::page(&messages, &tenant.prefix(), &application_name),
+            crate::application_denied::page(
+                &Messages::new(loc),
+                &tenant.prefix(),
+                &application_name,
+            ),
         )
             .into_response(),
         InternalAppApprovalCompleteResponse::Invalid => (
             set_cookies.into_headers(),
-            message_page(
-                &messages,
-                "app-approval-error-invalid",
-                StatusCode::BAD_REQUEST,
-            ),
+            message_page(loc, "app-approval-error-invalid", StatusCode::BAD_REQUEST),
         )
             .into_response(),
         InternalAppApprovalCompleteResponse::AnotherBrowser => (
             set_cookies.into_headers(),
             message_page(
-                &messages,
+                loc,
                 "app-approval-error-another-browser",
                 StatusCode::FORBIDDEN,
             ),
@@ -301,17 +295,13 @@ pub async fn complete(
             .into_response(),
         InternalAppApprovalCompleteResponse::PolicyDenied => (
             set_cookies.into_headers(),
-            message_page(
-                &messages,
-                "login-error-policy-denied",
-                StatusCode::FORBIDDEN,
-            ),
+            message_page(loc, "login-error-policy-denied", StatusCode::FORBIDDEN),
         )
             .into_response(),
         InternalAppApprovalCompleteResponse::UserUnavailable => (
             set_cookies.into_headers(),
             message_page(
-                &messages,
+                loc,
                 "app-approval-error-user-unavailable",
                 StatusCode::FORBIDDEN,
             ),
@@ -359,10 +349,10 @@ pub async fn confirm_page(
     headers: HeaderMap,
     Query(query): Query<ConfirmQuery>,
 ) -> Response {
-    let messages = Messages::new(locale(&headers));
+    let loc = locale(&headers);
     if !is_enrollment_id(&query.enrollment) {
         return message_page(
-            &messages,
+            loc,
             "app-approver-error-enrollment-gone",
             StatusCode::NOT_FOUND,
         );
@@ -403,6 +393,7 @@ pub async fn confirm_page(
                 "tee" => "app-approver-level-tee",
                 _ => "app-approver-level-software",
             };
+            let messages = Messages::new(loc);
             let body = render(&AppApproverConfirmPage {
                 messages: &messages,
                 tenant_prefix: &tenant.prefix(),
@@ -424,7 +415,7 @@ pub async fn confirm_page(
             )
         }
         Ok(InternalAccountApproverEnrollmentResponse::NotFound) => message_page(
-            &messages,
+            loc,
             "app-approver-error-enrollment-gone",
             StatusCode::NOT_FOUND,
         ),
@@ -461,10 +452,10 @@ pub async fn confirm(
     headers: HeaderMap,
     Form(form): Form<ConfirmForm>,
 ) -> Response {
-    let messages = Messages::new(locale(&headers));
+    let loc = locale(&headers);
     if !is_enrollment_id(&form.enrollment) {
         return message_page(
-            &messages,
+            loc,
             "app-approver-error-enrollment-gone",
             StatusCode::NOT_FOUND,
         );
@@ -516,7 +507,7 @@ pub async fn confirm(
         )),
         Ok(InternalAccountApproverConfirmResponse::PasskeyRequired) => see_other(&page),
         Ok(InternalAccountApproverConfirmResponse::NotFound) => message_page(
-            &messages,
+            loc,
             "app-approver-error-enrollment-gone",
             StatusCode::NOT_FOUND,
         ),
