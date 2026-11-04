@@ -135,6 +135,25 @@ mod tests {
     };
     use crate::i18n::{Locale, Messages};
 
+    /// 秒の設定は長さを添えて読ませる（持ち主「秒わかりにくい」。task #887）。
+    #[test]
+    fn seconds_are_shown_with_a_readable_duration() {
+        let ja = Messages::new(Locale::Ja);
+        let en = Messages::new(Locale::En);
+        assert_eq!(duration_label(&ja, 604_800).as_deref(), Some("7 日"));
+        assert_eq!(duration_label(&ja, 28_800).as_deref(), Some("8 時間"));
+        assert_eq!(duration_label(&ja, 2_592_000).as_deref(), Some("30 日"));
+        assert_eq!(
+            duration_label(&ja, 95_400).as_deref(),
+            Some("1 日 2 時間 30 分")
+        );
+        assert_eq!(duration_label(&ja, 0), None);
+        assert_eq!(duration_label(&en, 86_400).as_deref(), Some("1 day"));
+        assert_eq!(duration_label(&en, 900).as_deref(), Some("15 minutes"));
+        assert!(is_seconds_setting("SSO_IDLE_TTL_SECS"));
+        assert!(!is_seconds_setting("PASSWORD_MAX_AGE_DAYS"));
+    }
+
     /// サイドバーとホームが、メニューを自前で並べていないこと。
     ///
     /// ⚠ **これが破られた状態が実際に続いていた** ——サイドバーにだけ「外部 IdP」が、ホームに
@@ -3632,7 +3651,8 @@ impl AdminSettings<'_> {
         setting_label(self.messages, key)
     }
 
-    /// 値の表示。真偽値だけは「有効 / 無効」で読ませる（それ以外は保存形式のまま）。
+    /// 値の表示。真偽値は「有効 / 無効」で、秒の値（`*_SECS`）は「604800（7 日）」のように長さを添えて
+    /// 読ませる（それ以外は保存形式のまま）。
     pub fn value_label(&self, item: &crate::admin_dto::TenantSettingView, value: &str) -> String {
         if item.kind == "BOOLEAN" {
             match value {
@@ -3641,8 +3661,60 @@ impl AdminSettings<'_> {
                 _ => {}
             }
         }
+        if is_seconds_setting(&item.key) {
+            if let Some(duration) = value
+                .trim()
+                .parse::<u64>()
+                .ok()
+                .and_then(|secs| duration_label(&self.messages, secs))
+            {
+                return self.messages.get_args(
+                    "admin-tenant-values-seconds-with-duration",
+                    &[("value", value), ("duration", &duration)],
+                );
+            }
+        }
         value.to_string()
     }
+
+    /// 秒で入れる設定か（入力欄の下に早見を出す）。
+    pub fn is_seconds(&self, item: &crate::admin_dto::TenantSettingView) -> bool {
+        item.kind == "UNSIGNED_INTEGER" && is_seconds_setting(&item.key)
+    }
+}
+
+/// 値が秒の設定か（キーの名前が `_SECS` で終わる）。
+pub fn is_seconds_setting(key: &str) -> bool {
+    key.ends_with("_SECS")
+}
+
+/// 秒を「7 日」「8 時間」「1 日 2 時間 30 分」のような長さにする。0 は `None`（「無し」の意味を持つ設定があるため、
+/// 長さとしては読ませない）。
+pub fn duration_label(messages: &Messages, secs: u64) -> Option<String> {
+    if secs == 0 {
+        return None;
+    }
+    let units = [
+        (86_400, "duration-days"),
+        (3_600, "duration-hours"),
+        (60, "duration-minutes"),
+        (1, "duration-seconds"),
+    ];
+    let mut rest = secs;
+    let mut parts = Vec::new();
+    for (size, key) in units {
+        let n = rest / size;
+        rest %= size;
+        if n > 0 {
+            let id = if n == 1 {
+                format!("{key}-one")
+            } else {
+                format!("{key}-other")
+            };
+            parts.push(messages.get_arg(&id, "n", &n.to_string()));
+        }
+    }
+    Some(parts.join(" "))
 }
 
 /// 設定キーの表示名（`admin-tenant-setting-<KEY>`）。訳が無ければキーそのもの。
