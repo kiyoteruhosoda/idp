@@ -141,17 +141,19 @@ impl UserSshKeyRepository for SqlxUserSshKeyRepository {
     async fn list_distributable(&self, tenant_id: TenantId) -> Result<Vec<DistributedSshKey>> {
         // 有効な利用者（仮登録でない）で、その組織の有効なメンバー（所属元も HOME の行を持つ）で、
         // 利用者名を持つ人の鍵だけ。利用者名が無いと配る側が機器の利用者へ対応付けられない。
+        // 利用者名は登録簿の主識別子（`user_login_identifiers.primary_of_user`。`users` に列は無い）。
         let rows = sqlx::query(
-            "SELECT u.preferred_username AS username, k.name, k.key_type, k.key_blob, \
+            "SELECT p.display_value AS username, k.name, k.key_type, k.key_blob, \
                     k.fingerprint, k.created_at \
              FROM user_ssh_keys k \
              JOIN users u ON u.id = k.user_id \
                  AND u.status = 'ACTIVE' AND u.pending_setup = 0 \
-                 AND u.preferred_username IS NOT NULL AND u.preferred_username <> '' \
+             JOIN user_login_identifiers p ON p.primary_of_user = k.user_id \
+                 AND p.display_value <> '' \
              JOIN tenant_memberships m ON m.tenant_id = k.tenant_id AND m.user_id = k.user_id \
                  AND m.status = 'ACTIVE' \
              WHERE k.tenant_id = ? \
-             ORDER BY u.preferred_username, k.created_at, k.id",
+             ORDER BY p.display_value, k.created_at, k.id",
         )
         .bind(tenant_id.to_string())
         .fetch_all(&self.pool)

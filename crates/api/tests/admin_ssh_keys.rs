@@ -131,12 +131,22 @@ async fn only_the_distribution_machine_reads_the_active_keys_of_an_enabled_tenan
     // 鍵を持つ利用者（利用者名つき）と、その鍵。
     let owner = support::create_plain_user(&env.pool, &tenant_id).await;
     let username = format!("kyon{}", unique());
-    sqlx::query("UPDATE users SET preferred_username = ? WHERE id = ?")
-        .bind(&username)
-        .bind(&owner)
-        .execute(&env.pool)
-        .await
-        .unwrap();
+    // 利用者名は登録簿の主識別子（`users` に列は無い）。
+    sqlx::query(
+        "INSERT INTO user_login_identifiers \
+         (id, tenant_id, user_id, identifier_type, display_value, normalized_value, \
+          is_active, primary_of_user) \
+         VALUES (?, ?, ?, 'username', ?, ?, 1, ?)",
+    )
+    .bind(uuid::Uuid::now_v7().to_string())
+    .bind(&tenant_id)
+    .bind(&owner)
+    .bind(&username)
+    .bind(username.to_lowercase())
+    .bind(&owner)
+    .execute(&env.pool)
+    .await
+    .unwrap();
     let (blob, fingerprint) = sample_key(1);
     let key_id = uuid::Uuid::now_v7().to_string();
     sqlx::query(
