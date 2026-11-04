@@ -21,6 +21,7 @@ pub mod client_jwks;
 pub mod clock;
 pub mod consent;
 pub mod crypto;
+pub mod dpop;
 pub mod effective_tenant_settings;
 pub mod email_verification;
 pub mod error;

@@ -121,6 +121,7 @@ use crate::infrastructure::repositories::client::SqlxClientRepository;
 use crate::infrastructure::repositories::client_assertion::SqlxClientAssertionReplayRepository;
 use crate::infrastructure::repositories::client_permission::SqlxClientPermissionRepository;
 use crate::infrastructure::repositories::consent::SqlxClientConsentRepository;
+use crate::infrastructure::repositories::dpop_proof::SqlxDpopProofReplayRepository;
 use crate::infrastructure::repositories::email_verification_token::SqlxEmailVerificationTokenRepository;
 use crate::infrastructure::repositories::external_idp::{
     SqlxExternalIdentityProviderRepository, SqlxExternalIdentityRepository,
@@ -809,6 +810,13 @@ impl AppState {
         // assay 自身以外を指定された `client_credentials` でのみ引く。
         let resources: Arc<dyn crate::domain::repositories::ProtectedResourceRepository> =
             Arc::new(SqlxProtectedResourceRepository::new(pool.clone()));
+        // DPoP の証明（ADR-0075）。`/token` と `/userinfo` が同じものを使う。
+        let dpop = Arc::new(
+            crate::application::dpop_proof_verification::DpopProofVerifier::new(
+                Arc::new(SqlxDpopProofReplayRepository::new(pool.clone())),
+                clock.clone(),
+            ),
+        );
         let token = Arc::new(TokenService::new(
             clients.clone(),
             users.clone(),
@@ -821,6 +829,7 @@ impl AppState {
             application_access.clone(),
             keys.clone(),
             client_auth.clone(),
+            dpop.clone(),
             audit.clone(),
             sign_in_history_repository.clone(),
             clock.clone(),
@@ -838,7 +847,12 @@ impl AppState {
             config.issuer().to_string(),
             config.clock_skew(),
         ));
-        let userinfo = Arc::new(UserInfoService::new(users.clone(), access_tokens.clone()));
+        let userinfo = Arc::new(UserInfoService::new(
+            users.clone(),
+            access_tokens.clone(),
+            dpop.clone(),
+            config.issuer().to_string(),
+        ));
         let permissions_admin = Arc::new(PermissionManagementService::new(
             users.clone(),
             tenant_memberships.clone(),

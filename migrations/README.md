@@ -310,3 +310,6 @@ root テナントの UUID は固定値 `00000000-0000-7000-8000-000000000001`（
 - `0064_drop_tenant_member_notes`: 0063 の contract。入れ替わりの間に旧バイナリが旧表へ書いたメモ
   （`account_notes` に無い人の行だけ）を写してから `tenant_member_notes` を落とす（ADR-0065）。`down` は
   0061 と同じ定義で作り直し、人のメモを写す（0063 の `down` がそれを読む）。
+- `0074_dpop_binding`: `refresh_tokens.dpop_jkt`（DPoP で結び付けた鍵の指紋。NULL = 結び付けなし）と、DPoP の証明を
+  1 回だけにする記録の表 `dpop_proof_jtis` を足す（ADR-0075）。expand のみ。`down` は表を落として列を外す
+  （結び付けていたリフレッシュトークンは、鍵なしでも使えるようになる）。

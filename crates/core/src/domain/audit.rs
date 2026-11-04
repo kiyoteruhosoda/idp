@@ -79,6 +79,9 @@ pub enum AuditEventType {
     RefreshTokenUsed,
     RefreshTokenReuseDetected,
     RefreshTokenRevoked,
+    /// DPoP で結び付けたリフレッシュトークンが、別の鍵の証明と一緒に来た（ADR-0075 決定 7）。
+    /// 盗まれたトークンが別の端末で使われようとした印。何も失効させない。
+    RefreshTokenKeyMismatch,
     /// 同意の付与・取り消し（F3: Consent）。`ConsentRevoked` は利用者自身による連携解除（G10）。
     ConsentGranted,
     ConsentDenied,
@@ -223,6 +226,7 @@ impl AuditEventType {
             Self::RefreshTokenUsed => "refresh_token.used",
             Self::RefreshTokenReuseDetected => "refresh_token.reuse_detected",
             Self::RefreshTokenRevoked => "refresh_token.revoked",
+            Self::RefreshTokenKeyMismatch => "refresh_token.dpop_key_mismatch",
             Self::ConsentGranted => "consent.granted",
             Self::ConsentDenied => "consent.denied",
             Self::ConsentRevoked => "consent.revoked",

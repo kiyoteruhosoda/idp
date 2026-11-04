@@ -17,6 +17,7 @@ use crate::application::client_authentication::{
     ClientAuthError, ClientAuthFailure, ClientAuthOutcome, ClientAuthenticator,
     PresentedClientCredentials,
 };
+use crate::application::dpop_proof_verification::{DpopProofFailure, DpopProofVerifier};
 use crate::application::key_service::KeyService;
 use crate::application::sign_in_history::log_history_error;
 use crate::domain::application::{ApplicationAccess, BindingTarget};
@@ -25,6 +26,7 @@ use crate::domain::authorization_code::{AuthorizationCodeValue, CodeRedemptionRe
 use crate::domain::client::Client;
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
+use crate::domain::dpop::VerifiedDpopProof;
 use crate::domain::error::OAuthErrorCode;
 use crate::domain::issuer::tenant_issuer;
 use crate::domain::jwt;
@@ -138,9 +140,25 @@ pub struct AccessTokenClaims {
     /// RP がその内容に依存し得る。混ぜると管理権限が RP の認可判断へ漏れる。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub perms: Option<String>,
+    /// DPoP で結び付けた鍵（RFC 9449 §6.1 の `cnf.jkt`。ADR-0075）。あるトークンは、その鍵の証明と
+    /// 一緒でなければ使えない。省略 = 結び付けなし（Bearer）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cnf: Option<KeyConfirmation>,
+}
+
+/// アクセストークンの `cnf`（RFC 7800 の確認方法）。assay が入れるのは DPoP の `jkt` だけ。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyConfirmation {
+    /// 鍵の JWK Thumbprint（RFC 7638。SHA-256 の base64url）。
+    pub jkt: String,
 }
 
 impl AccessTokenClaims {
+    /// DPoP で結び付けた鍵の指紋（`cnf.jkt`）。無ければ Bearer のトークン。
+    pub fn dpop_jkt(&self) -> Option<&str> {
+        self.cnf.as_ref().map(|c| c.jkt.as_str())
+    }
+
     /// 主体がクライアント自身か（`client_credentials` で発行されたトークンか）。
     pub fn subject_is_client(&self) -> bool {
         self.sub_type.as_deref() == Some(SUBJECT_TYPE_CLIENT)
@@ -182,6 +200,8 @@ pub struct TokenCommand {
     /// **どちらを欲しいのかを呼び出し側に書かせる**のは、クライアントの登録権限から発行内容を
     /// 暗黙に切り替えると、権限を 1 つ付けた途端にトークンの `aud` が変わってしまうためである。
     pub resource: Option<String>,
+    /// `DPoP` ヘッダーの証明（RFC 9449。ADR-0075）。`authorization_code` と `refresh_token` でだけ見る。
+    pub dpop_proof: Option<String>,
 }
 
 /// トークンエンドポイントのエラー（RFC 6749 §5.2 形式で返す）。
@@ -209,6 +229,8 @@ pub struct IssuedTokens {
     pub scope: String,
     /// `offline_access` scope が含まれる場合のみ発行する。
     pub refresh_token: Option<String>,
+    /// DPoP で鍵に結び付けたか（`token_type` を `DPoP` で返す。RFC 9449 §5）。
+    pub bound_to_key: bool,
 }
 
 pub struct TokenService {
@@ -237,6 +259,8 @@ pub struct TokenService {
     /// クライアント認証（secret 照合・assertion 検証）。方式ごとの分岐は
     /// `client_authentication` に集約してある（ADR-0030）。
     client_auth: Arc<ClientAuthenticator>,
+    /// DPoP の証明（ADR-0075）。`authorization_code` と `refresh_token` でだけ使う。
+    dpop: Arc<DpopProofVerifier>,
     audit: Arc<AuditService>,
     /// 本人が見るログイン履歴（task #879）。どのアプリへトークンを出し、リフレッシュがどう使われたか。
     sign_in_history: Arc<dyn SignInHistoryRepository>,
@@ -266,6 +290,7 @@ impl TokenService {
         application_access: Arc<ApplicationAccessService>,
         keys: Arc<KeyService>,
         client_auth: Arc<ClientAuthenticator>,
+        dpop: Arc<DpopProofVerifier>,
         audit: Arc<AuditService>,
         sign_in_history: Arc<dyn SignInHistoryRepository>,
         clock: Arc<dyn Clock>,
@@ -287,6 +312,7 @@ impl TokenService {
             application_access,
             keys,
             client_auth,
+            dpop,
             audit,
             sign_in_history,
             clock,
@@ -337,8 +363,14 @@ impl TokenService {
             ));
         }
         match cmd.grant_type.as_deref() {
-            Some("authorization_code") => self.exchange_code(tenant, cmd, ctx).await,
-            Some("refresh_token") => self.exchange_refresh_token(tenant, cmd, ctx).await,
+            Some("authorization_code") => {
+                let proof = self.verify_dpop_proof(tenant, &cmd).await?;
+                self.exchange_code(tenant, cmd, proof, ctx).await
+            }
+            Some("refresh_token") => {
+                let proof = self.verify_dpop_proof(tenant, &cmd).await?;
+                self.exchange_refresh_token(tenant, cmd, proof, ctx).await
+            }
             Some("client_credentials") => self.issue_client_credentials(tenant, cmd, ctx).await,
             _ => Err(TokenError::new(
                 OAuthErrorCode::UnsupportedGrantType,
@@ -347,11 +379,38 @@ impl TokenService {
         }
     }
 
+    /// `DPoP` ヘッダーの証明を確かめる（ADR-0075）。無ければ `None`（今までどおり Bearer で出す）。
+    ///
+    /// grant を処理する前に見る。証明が壊れている（端末の時計のずれなど）だけで認可コードを
+    /// 使い切らせない ——アプリは作り直して送り直せる。
+    async fn verify_dpop_proof(
+        &self,
+        tenant: TenantContext,
+        cmd: &TokenCommand,
+    ) -> Result<Option<VerifiedDpopProof>, TokenError> {
+        let Some(proof) = cmd.dpop_proof.as_deref() else {
+            return Ok(None);
+        };
+        let token_endpoint = format!(
+            "{}/token",
+            tenant_issuer(&self.base_issuer, tenant.tenant_id())
+        );
+        match self.dpop.verify(proof, "POST", &token_endpoint, None).await {
+            Ok(verified) => Ok(Some(verified)),
+            Err(DpopProofFailure::Rejected(rejection)) => Err(TokenError::new(
+                OAuthErrorCode::InvalidDpopProof,
+                rejection.reason(),
+            )),
+            Err(DpopProofFailure::Unavailable(e)) => Err(internal(&e)),
+        }
+    }
+
     /// `authorization_code` grant の処理。
     async fn exchange_code(
         &self,
         tenant: TenantContext,
         cmd: TokenCommand,
+        proof: Option<VerifiedDpopProof>,
         ctx: &RequestContext,
     ) -> Result<IssuedTokens, TokenError> {
         let tenant_id = tenant.tenant_id();
@@ -513,6 +572,10 @@ impl TokenService {
             sub_type: None,
             // 利用者ログインのトークンは管理 API 向けではない（ADR-0037）。
             perms: None,
+            // 証明が付いていれば、その鍵に結び付ける（ADR-0075 決定 1）。
+            cnf: proof
+                .as_ref()
+                .map(|p| KeyConfirmation { jkt: p.jkt.clone() }),
         };
         let id_token = self.sign_id_token(&id_claims).await?;
         let access_token = self.sign_access_token(&access_claims).await?;
@@ -538,6 +601,8 @@ impl TokenService {
                 authentication_methods: authentication.methods().map(<[_]>::to_vec),
                 // ID Token の `auth_time`。refresh でも「最後にログインした時刻」を名乗り続ける（task #584）。
                 auth_time: Some(authentication.auth_time()),
+                // アクセストークンと同じ鍵に結び付ける（ADR-0075 決定 1）。
+                dpop_jkt: proof.as_ref().map(|p| p.jkt.clone()),
                 expires_at: now + chrono::Duration::from_std(self.refresh_token_ttl).unwrap(),
                 revoked_at: None,
                 created_at: now,
@@ -596,6 +661,7 @@ impl TokenService {
             expires_in: self.access_token_ttl.as_secs(),
             scope: scope_str,
             refresh_token: refresh_token_plain,
+            bound_to_key: proof.is_some(),
         })
     }
 
@@ -604,6 +670,7 @@ impl TokenService {
         &self,
         tenant: TenantContext,
         cmd: TokenCommand,
+        proof: Option<VerifiedDpopProof>,
         ctx: &RequestContext,
     ) -> Result<IssuedTokens, TokenError> {
         let tenant_id = tenant.tenant_id();
@@ -641,6 +708,39 @@ impl TokenService {
                 "refresh_token was issued to another client",
             ));
         }
+
+        // 4b. DPoP の結び付け（ADR-0075 決定 7）。⚠ **使い回しの検出より先に見る** ——鍵を持たない者が
+        //     盗んだトークンを出しても、家族ごと失効させて持ち主のアプリを止めることはさせない。
+        //     結び付けていないトークンに証明が付いていれば、新しいトークンからその鍵に結び付ける
+        //     （DPoP を入れた版へ更新したアプリが、ログインし直さずに移れるように）。
+        let bound_jkt = match (stored.dpop_jkt.as_deref(), proof.as_ref()) {
+            (Some(_), None) => {
+                return Err(TokenError::new(
+                    OAuthErrorCode::InvalidDpopProof,
+                    "this refresh_token is bound to a key; a DPoP proof is required",
+                ));
+            }
+            (Some(bound), Some(p)) if bound != p.jkt => {
+                self.audit
+                    .record(
+                        AuditEventType::RefreshTokenKeyMismatch,
+                        AuditResult::Failure,
+                        Some(tenant_id),
+                        Some(stored.user_id),
+                        Some(&client_id),
+                        Some("refresh token presented with a DPoP proof of another key; nothing revoked"),
+                        ctx,
+                    )
+                    .await;
+                return Err(TokenError::new(
+                    OAuthErrorCode::InvalidGrant,
+                    "refresh_token is bound to another key",
+                ));
+            }
+            (Some(bound), Some(_)) => Some(bound.to_string()),
+            (None, Some(p)) => Some(p.jkt.clone()),
+            (None, None) => None,
+        };
 
         // 5. reuse detection: すでに同じトークンから新トークンが発行済みなら全チェーン失効。
         let already_rotated = match self.refresh_tokens.exists_by_parent_hash(&rt_hash).await {
@@ -795,6 +895,9 @@ impl TokenService {
             sub_type: None,
             // 利用者ログインのトークンは管理 API 向けではない（ADR-0037）。
             perms: None,
+            // 結び付けたリフレッシュトークンなら同じ鍵、結び付けていないものに証明が付いていれば
+            // その鍵（決定 7。上で確かめ済み）。
+            cnf: bound_jkt.clone().map(|jkt| KeyConfirmation { jkt }),
         };
         let id_token = self.sign_id_token(&id_claims).await?;
         let access_token = self.sign_access_token(&access_claims).await?;
@@ -814,6 +917,7 @@ impl TokenService {
             sid: stored.sid.clone(),
             authentication_methods: stored.authentication_methods.clone(),
             auth_time: Some(stored.auth_time_or_issued()),
+            dpop_jkt: bound_jkt.clone(),
             expires_at: stored.expires_at, // TTL は引き継ぐ（スライドさせない）
             revoked_at: None,
             created_at: now,
@@ -877,6 +981,7 @@ impl TokenService {
             expires_in: self.access_token_ttl.as_secs(),
             scope: scope_str,
             refresh_token: Some(new_rt_plain),
+            bound_to_key: bound_jkt.is_some(),
         })
     }
 
@@ -1103,6 +1208,8 @@ impl TokenService {
             jti: Uuid::new_v4().to_string(),
             sub_type: Some(SUBJECT_TYPE_CLIENT.to_string()),
             perms,
+            // 機械（サーバー）のトークンは DPoP で結び付けない（ADR-0075 決定 1）。
+            cnf: None,
         };
         let access_token = self.sign_access_token(&access_claims).await?;
 
@@ -1125,6 +1232,7 @@ impl TokenService {
             expires_in: ttl.as_secs(),
             scope: scope_str,
             refresh_token: None,
+            bound_to_key: false,
         })
     }
 
@@ -1508,6 +1616,7 @@ mod tests {
             jti: "j".to_string(),
             sub_type: Some(SUBJECT_TYPE_CLIENT.to_string()),
             perms: None,
+            cnf: None,
         };
         assert!(claims.subject_is_client());
         claims.sub_type = None;

@@ -23,6 +23,7 @@ use crate::infrastructure::db::Db;
 use crate::infrastructure::repositories::{
     auth_session::SqlxAuthSessionRepository, authorization_code::SqlxAuthorizationCodeRepository,
     client_assertion::SqlxClientAssertionReplayRepository,
+    dpop_proof::SqlxDpopProofReplayRepository,
     email_verification_token::SqlxEmailVerificationTokenRepository,
     external_idp::SqlxExternalLoginRequestRepository,
     passkey_challenge::SqlxPasskeyChallengeRepository,
@@ -113,6 +114,7 @@ macro_rules! purge_directly {
 
 purge_directly!(SqlxAuthorizationCodeRepository, "authorization_codes");
 purge_directly!(SqlxClientAssertionReplayRepository, "client_assertion_jtis");
+purge_directly!(SqlxDpopProofReplayRepository, "dpop_proof_jtis");
 purge_directly!(SqlxRefreshTokenRepository, "refresh_tokens");
 purge_directly!(SqlxRevokedAccessTokenRepository, "revoked_access_tokens");
 purge_directly!(SqlxPasswordResetTokenRepository, "password_reset_tokens");
@@ -136,6 +138,7 @@ pub fn all_expiring_record_stores(pool: Db) -> Vec<Arc<dyn ExpiringRecordStore>>
         Arc::new(SqlxUserAuthenticatorRepository::new(pool.clone())),
         Arc::new(SqlxAuthorizationCodeRepository::new(pool.clone())),
         Arc::new(SqlxClientAssertionReplayRepository::new(pool.clone())),
+        Arc::new(SqlxDpopProofReplayRepository::new(pool.clone())),
         Arc::new(SqlxRefreshTokenRepository::new(pool.clone())),
         Arc::new(SqlxRevokedAccessTokenRepository::new(pool.clone())),
         Arc::new(SqlxPasswordResetTokenRepository::new(pool.clone())),
@@ -154,6 +157,7 @@ pub const PURGED_TABLES: &[&str] = &[
     "user_authenticators",
     "authorization_codes",
     "client_assertion_jtis",
+    "dpop_proof_jtis",
     "refresh_tokens",
     "revoked_access_tokens",
     "password_reset_tokens",
