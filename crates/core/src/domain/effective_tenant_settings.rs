@@ -46,11 +46,13 @@ use chrono::Duration;
 pub const AUTH_POLICY_DEFAULT_EFFECT: &str = "AUTH_POLICY_DEFAULT_EFFECT";
 pub const APPLICATION_ASSIGNMENT_ENFORCEMENT: &str = "APPLICATION_ASSIGNMENT_ENFORCEMENT";
 
-/// SSO セッションの寿命（`SSO_IDLE_TTL_SECS` / `SSO_ABSOLUTE_TTL_SECS`）。
+/// SSO セッションの寿命（`SSO_IDLE_TTL_SECS` / `SSO_ABSOLUTE_TTL_SECS` / `SSO_BOUND_TTL_SECS`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SsoSessionLifetime {
     pub idle: Duration,
     pub absolute: Duration,
+    /// 端末の鍵に結び付き、端末が登録済みのときの長さ（task #887。ADR-0074）。
+    pub bound: Duration,
 }
 
 /// テナントについて効いている値を、型付きで返す。

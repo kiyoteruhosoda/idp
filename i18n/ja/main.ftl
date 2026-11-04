@@ -843,6 +843,7 @@ admin-tenant-setting-LOGIN_LOCK_DURATION_SECS = ロックする時間（秒）
 admin-tenant-setting-LOGIN_MAX_LOCK_DURATION_SECS = ロックする時間の上限（秒）
 admin-tenant-setting-SSO_IDLE_TTL_SECS = 操作が無いときにログアウトするまでの時間（秒）
 admin-tenant-setting-SSO_ABSOLUTE_TTL_SECS = ログインが続く最長時間（秒）
+admin-tenant-setting-SSO_BOUND_TTL_SECS = 端末の鍵に結び付いたログインが続く時間（秒）
 admin-tenant-setting-STEP_UP_MAX_AGE_SECS = 重要な操作の前に本人確認をやり直すまでの時間（秒）
 admin-tenant-setting-INVITATION_TTL_SECS = 招待リンクの有効期間（秒）
 admin-tenant-setting-PASSWORD_RESET_TTL_SECS = パスワード再設定リンクの有効期間（秒）

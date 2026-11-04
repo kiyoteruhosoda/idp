@@ -392,6 +392,7 @@ impl EffectiveTenantSettings for TenantSettingsService {
         Ok(SsoSessionLifetime {
             idle: self.seconds(tenant_id, "SSO_IDLE_TTL_SECS").await?,
             absolute: self.seconds(tenant_id, "SSO_ABSOLUTE_TTL_SECS").await?,
+            bound: self.seconds(tenant_id, "SSO_BOUND_TTL_SECS").await?,
         })
     }
 

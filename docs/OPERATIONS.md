@@ -1448,6 +1448,7 @@ curl -sS -X POST "$ISSUER/$TENANT_ID/admin/external-idps" \
 | `AUTHORIZATION_CODE_TTL_SECS` | `60` | authorization code の有効期間 |
 | `SSO_IDLE_TTL_SECS` | `28800` | SSO idle タイムアウト（8h） |
 | `SSO_ABSOLUTE_TTL_SECS` | `86400` | SSO absolute タイムアウト（24h） |
+| `SSO_BOUND_TTL_SECS` | `2592000` | 端末の鍵に結び付き（Chrome の DBSC）、端末を「自分の端末」に登録したログイン状態の長さ（30 日。作った時刻から数え、使わなくても切れない。ADR-0074） |
 | `ACCESS_TOKEN_TTL_SECS` | `900` | Access Token 有効期間 |
 | `MANAGEMENT_TOKEN_TTL_SECS` | `300` | 管理 API のアクセストークンの有効期間（ADR-0037）。管理コンソールは毎回取り直すので短くてよい |
 | `ID_TOKEN_TTL_SECS` | `3600` | ID Token 有効期間 |

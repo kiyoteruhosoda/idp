@@ -40,6 +40,9 @@ pub enum SecurityAlertKind {
         key_name: String,
         fingerprint: String,
     },
+    /// 端末の鍵に結び付いたログイン状態へ、別の鍵の署名が来た（Cookie の持ち出しの疑い。task #887）。
+    /// そのログイン状態は終わらせてある。
+    SessionKeyMismatch,
 }
 
 impl SecurityAlertKind {
@@ -50,7 +53,8 @@ impl SecurityAlertKind {
             | Self::DeviceRegistered { .. }
             | Self::DeviceRevoked { .. }
             | Self::SshKeyRegistered { .. }
-            | Self::SshKeyRevoked { .. } => SecurityAlertSeverity::Warning,
+            | Self::SshKeyRevoked { .. }
+            | Self::SessionKeyMismatch => SecurityAlertSeverity::Warning,
             Self::DeviceExpired { .. } => SecurityAlertSeverity::Info,
         }
     }

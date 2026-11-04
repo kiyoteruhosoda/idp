@@ -51,6 +51,7 @@ use crate::domain::resource::ProtectedResource;
 use crate::domain::revoked_access_token::RevokedAccessToken;
 use crate::domain::saml_service_provider::SamlServiceProvider;
 use crate::domain::saml_sso_request::SamlSsoRequest;
+use crate::domain::session_key::SessionKeyBinding;
 use crate::domain::sign_in_history::{SignInAppUse, SignInFailure, SignInRecord, SignInSuccess};
 use crate::domain::signing_key::SigningKey;
 use crate::domain::ssh_key::{DistributedSshKey, UserSshKey};
@@ -746,6 +747,18 @@ pub trait SsoSessionRepository: Send + Sync {
     }
     /// SSO 復元時に idle 期限を延長する（absolute は変更しない、設計仕様 §3.4）。
     async fn extend_idle(&self, session_hash: &str, idle_expires_at: DateTime<Utc>) -> Result<()>;
+    /// 期限を置き直す（端末の鍵への結び付けで長さが変わったとき。task #887・ADR-0074）。
+    /// 既定実装は未対応エラー（本番の sqlx 実装のみが上書きする）。
+    async fn set_lifetime(
+        &self,
+        _session_hash: &str,
+        _idle_expires_at: DateTime<Utc>,
+        _absolute_expires_at: DateTime<Utc>,
+    ) -> Result<()> {
+        Err(crate::domain::error::DomainError::Repository(
+            "set_lifetime is not supported by this repository".to_string(),
+        ))
+    }
     /// 第二要素の検証完了を記録する（AP4・AP5。Step-up 認証で既存セッションを昇格させる経路）。
     /// `methods` は昇格後の全認証方式で、強度は実装が [`AuthenticationStrength::from_methods`]
     /// で導出する（導出規則の単一の出所をドメインに置くため、呼び出し側は強度を渡さない）。
@@ -919,6 +932,17 @@ pub trait UserSshKeyRepository: Send + Sync {
     /// 配る機械へ渡す一覧。**有効な利用者**で、**その組織の有効なメンバー**の鍵だけ
     /// （止めた利用者・組織から外れた利用者の鍵は出さない）。利用者名・登録の順に並べる。
     async fn list_distributable(&self, tenant_id: TenantId) -> Result<Vec<DistributedSshKey>>;
+}
+
+/// SSO セッションと端末の鍵の結び付け（DBSC。task #887。ADR-0074）。置き場は `sso_session_contexts`。
+#[async_trait]
+pub trait SessionKeyBindingRepository: Send + Sync {
+    /// 結び付き（無ければ `None`）。
+    async fn find(&self, session_hash: &str) -> Result<Option<SessionKeyBinding>>;
+    /// 結び付ける。**まだ結び付いていないときだけ**書き、書いたら `true`。
+    async fn bind(&self, session_hash: &str, binding: &SessionKeyBinding) -> Result<bool>;
+    /// 鍵で署名して更新したことを記録する。
+    async fn record_refresh(&self, session_hash: &str, at: DateTime<Utc>) -> Result<()>;
 }
 
 #[async_trait]

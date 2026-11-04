@@ -30,6 +30,7 @@ pub mod pagination;
 pub mod router;
 pub mod security_headers;
 pub mod service_restart;
+pub mod session_key;
 pub mod settings_filter;
 pub mod state;
 pub mod telemetry;

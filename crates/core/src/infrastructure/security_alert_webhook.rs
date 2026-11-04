@@ -165,6 +165,13 @@ pub(crate) fn notice_body(alert: &SecurityAlert) -> Value {
             ),
             "ssh-key-revoked",
         ),
+        SecurityAlertKind::SessionKeyMismatch => (
+            format!(
+                "{} のログイン状態が、結び付けた端末の鍵とは別の鍵で使われようとしました（Cookie の持ち出しの疑い）",
+                alert.username
+            ),
+            "session-key-mismatch",
+        ),
     };
     let subject = match &alert.kind {
         SecurityAlertKind::SshKeyRegistered { .. } | SecurityAlertKind::SshKeyRevoked { .. } => {
@@ -224,6 +231,11 @@ pub(crate) fn notice_body(alert: &SecurityAlert) -> Value {
         SecurityAlertKind::SshKeyRegistered { .. } => vec![
             "この鍵は数分のうちに機器（nolumialab・naso・ASUS）へ配られます".to_string(),
             "覚えが無ければ、すぐに assay の「アカウントのセキュリティ」→「SSH の鍵」から取り消し、パスキーを確かめてください".to_string(),
+        ],
+        SecurityAlertKind::SessionKeyMismatch => vec![
+            "そのログイン状態は終わらせました。本人はログインし直せば使えます".to_string(),
+            "その端末の Cookie が持ち出された疑いがあります。端末のウイルス対策を確かめ、assay の「アカウントのセキュリティ」で他のセッションも切ってください"
+                .to_string(),
         ],
         _ => Vec::new(),
     };

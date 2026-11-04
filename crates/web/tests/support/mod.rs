@@ -93,6 +93,16 @@ pub async fn setup() -> WebEnv {
         .with_priority(10)
         .mount(&env.api)
         .await;
+    // 入口の確かめ（task #887）が「SSO セッションは端末の鍵に結び付いているか」を毎回聞く。既定は
+    // 「結び付いていない」（今までどおり長い Cookie だけで通る）。結び付いた場合を試すテストは上書きする。
+    Mock::given(method("POST"))
+        .and(path("/internal/sso/key-binding"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({ "result": "unbound" })),
+        )
+        .with_priority(10)
+        .mount(&env.api)
+        .await;
     env
 }
 
