@@ -3666,7 +3666,7 @@ impl AdminSettings<'_> {
                 .trim()
                 .parse::<u64>()
                 .ok()
-                .and_then(|secs| duration_label(&self.messages, secs))
+                .and_then(|secs| duration_label(self.messages, secs))
             {
                 return self.messages.get_args(
                     "admin-tenant-values-seconds-with-duration",
