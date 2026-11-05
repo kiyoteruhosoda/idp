@@ -2712,7 +2712,8 @@ pub enum InternalAccountSecurityStatusResponse {
         belongings: Vec<AccountBelonging>,
         apps: Vec<AccountAppTokens>,
         policy: AccountSecurityPolicy,
-        warnings: AccountSecurityWarnings,
+        /// 箱に入れるのは enum の大きさを抑えるため（JSON の形は変わらない）。
+        warnings: Box<AccountSecurityWarnings>,
     },
     SessionExpired,
     Internal,

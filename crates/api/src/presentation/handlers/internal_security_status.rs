@@ -40,7 +40,7 @@ pub async fn account_security_status(
             belongings: status.belongings.iter().map(belonging).collect(),
             apps: status.apps.iter().map(app).collect(),
             policy: policy(&status.policy),
-            warnings: warnings(&status.warnings),
+            warnings: Box::new(warnings(&status.warnings)),
         },
         SecurityStatusOutcome::SessionExpired => {
             InternalAccountSecurityStatusResponse::SessionExpired

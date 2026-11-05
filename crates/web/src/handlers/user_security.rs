@@ -340,6 +340,7 @@ pub async fn page(
         std::collections::HashMap::new();
     let status: Option<SecurityStatusView> =
         status.map(|(sessions, belongings, apps, policy, warnings)| {
+            let warnings = *warnings;
             for s in sessions.into_iter().map(session_status_view) {
                 session_statuses.insert(s.id.clone(), s);
             }
@@ -355,9 +356,9 @@ pub async fn page(
                 policy: PolicyView {
                     unregistered_device_alerts: policy.unregistered_device_alerts,
                     ssh_keys_enabled: policy.ssh_keys_enabled,
-                    bound_ttl: duration_label(&messages, policy.bound_ttl_secs),
-                    absolute_ttl: duration_label(&messages, policy.absolute_ttl_secs),
-                    idle_ttl: duration_label(&messages, policy.idle_ttl_secs),
+                    bound_ttl: length_label(&messages, policy.bound_ttl_secs),
+                    absolute_ttl: length_label(&messages, policy.absolute_ttl_secs),
+                    idle_ttl: length_label(&messages, policy.idle_ttl_secs),
                     device_expiry_days: policy.device_expiry_days,
                 },
                 warnings: [
@@ -400,13 +401,13 @@ pub async fn page(
     let sessions: Vec<SecuritySessionView> = sessions
         .into_iter()
         .map(|s| SecuritySessionView {
+            status: session_statuses.remove(&s.id),
             id: s.id,
             current: s.current,
             multi_factor: s.multi_factor,
             auth_time: s.auth_time,
             user_agent: s.user_agent.unwrap_or_default(),
             ip_address: s.ip_address.unwrap_or_default(),
-            status: session_statuses.remove(&s.id),
             absolute_expires_at: s.absolute_expires_at,
         })
         .collect();
@@ -1115,6 +1116,11 @@ fn session_status_view(s: AccountSessionStatus) -> SessionStatusView {
         },
         passkey_fresh_until: s.passkey_fresh_until.unwrap_or_default(),
     }
+}
+
+/// 組織の長さの設定（秒）を「30 日」のように読める形へ。
+fn length_label(messages: &Messages, secs: i64) -> String {
+    duration_label(messages, u64::try_from(secs).unwrap_or(0)).unwrap_or_else(|| secs.to_string())
 }
 
 /// 長さの根拠の文言のキー（長い言い方と、表の 1 行の短い言い方）。

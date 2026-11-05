@@ -1846,9 +1846,9 @@ mod tests {
             policy: PolicyView {
                 unregistered_device_alerts: false,
                 ssh_keys_enabled: true,
-                bound_ttl: duration_label(&messages, 2_592_000),
-                absolute_ttl: duration_label(&messages, 604_800),
-                idle_ttl: duration_label(&messages, 604_800),
+                bound_ttl: duration_label(&messages, 2_592_000).unwrap_or_default(),
+                absolute_ttl: duration_label(&messages, 604_800).unwrap_or_default(),
+                idle_ttl: duration_label(&messages, 604_800).unwrap_or_default(),
                 device_expiry_days: 180,
             },
             warnings: if bound {
@@ -1921,15 +1921,6 @@ mod tests {
         let html = render_with(None);
         assert!(html.contains(r#"id="status-unavailable""#));
         assert!(!html.contains(r#"id="status""#));
-    }
-
-    #[test]
-    fn durations_are_written_in_the_largest_whole_unit() {
-        let messages = Messages::new(Locale::Ja);
-        assert_eq!(duration_label(&messages, 2_592_000), "30 日");
-        assert_eq!(duration_label(&messages, 28_800), "8 時間");
-        assert_eq!(duration_label(&messages, 900), "15 分");
-        assert_eq!(duration_label(&messages, 61), "61 秒");
     }
 
     /// 解釈できない値は落とさずそのまま出す（表示を欠かすより手掛かりを残す）。
@@ -4313,20 +4304,6 @@ pub struct SignInRefreshView {
     pub state_key: &'static str,
     pub active: bool,
     pub revoked_at: String,
-}
-
-/// 秒の長さを「30 日」「8 時間」「15 分」のように読める形にする（割り切れる最大の単位で）。
-pub fn duration_label(messages: &Messages, secs: i64) -> String {
-    let (n, unit) = if secs > 0 && secs % 86_400 == 0 {
-        (secs / 86_400, "user-security-status-unit-days")
-    } else if secs > 0 && secs % 3_600 == 0 {
-        (secs / 3_600, "user-security-status-unit-hours")
-    } else if secs > 0 && secs % 60 == 0 {
-        (secs / 60, "user-security-status-unit-minutes")
-    } else {
-        (secs, "user-security-status-unit-seconds")
-    };
-    messages.get_arg(unit, "n", &n.to_string())
 }
 
 /// ブラウザの名乗り（User-Agent）から「OS・ブラウザ」を短く取り出す（表示用。判定には使わない）。
