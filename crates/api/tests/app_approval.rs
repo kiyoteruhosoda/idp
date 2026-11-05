@@ -270,7 +270,9 @@ async fn an_approval_completes_only_in_the_browser_that_started_it() {
     let sso = done["sso_session_id"].as_str().unwrap();
     assert_eq!(done["sso_absolute_ttl_secs"], 2_592_000);
     let (idle, absolute) = session_lifetime_secs(&env, sso).await;
-    assert_eq!((idle, absolute), (2_592_000, 2_592_000));
+    // created_at は DB が付ける（数ミリ秒ずれる）ので、秒の切り捨ての分だけ幅を見る。
+    assert!((2_591_998..=2_592_000).contains(&idle), "{idle}");
+    assert!((2_591_998..=2_592_000).contains(&absolute), "{absolute}");
     let linked: Option<String> = sqlx::query_scalar(
         "SELECT approver_key_id FROM sso_session_contexts WHERE session_hash = ?",
     )
