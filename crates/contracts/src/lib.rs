@@ -14,6 +14,7 @@ pub mod cookies;
 pub mod csrf;
 pub mod deployment;
 pub mod forwarded;
+pub mod frame_ancestors;
 pub mod health;
 pub mod http_trace;
 pub mod internal_auth;

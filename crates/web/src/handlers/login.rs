@@ -222,35 +222,50 @@ fn restored_response(
 
     let messages = Messages::new(locale(headers));
     let auth_session_ttl = state.config.auth_session_ttl_secs();
+    // RP へ返す 302 は、画面を出さずに試す往復（見えない枠）でも通す（task #888・ADR-0076）。
+    // 描く応答（自動送信フォーム・同意・断りの画面）は枠に入れない
+    let framed = |mut response: Response| {
+        if response.status() == StatusCode::FOUND {
+            crate::security_headers::allow_silent_auth_framing(
+                &mut response,
+                state.config.silent_auth_frame_ancestors(),
+            );
+        }
+        response
+    };
     Ok(match outcome {
         // SSO 復元で code 発行済み。残っている古い auth_session Cookie を掃除して RP へ返す。
         InternalAuthorizeResumeResponse::Redirect {
             redirect_to,
             form_post,
             sso_absolute_ttl_secs,
-        } => (
-            refresh_sso(
-                state
-                    .set_cookies()
-                    .expire_session(cookies::AUTH_SESSION_COOKIE),
-                sso_absolute_ttl_secs,
+        } => framed(
+            (
+                refresh_sso(
+                    state
+                        .set_cookies()
+                        .expire_session(cookies::AUTH_SESSION_COOKIE),
+                    sso_absolute_ttl_secs,
+                )
+                .into_headers(),
+                crate::authorization_response::respond(&messages, &redirect_to, form_post),
             )
-            .into_headers(),
-            crate::authorization_response::respond(&messages, &redirect_to, form_post),
-        )
-            .into_response(),
+                .into_response(),
+        ),
         // フロー終了のエラー（prompt=none 失敗等）。RP へエラーを返す。
         InternalAuthorizeResumeResponse::ErrorRedirect {
             redirect_to,
             form_post,
-        } => (
-            state
-                .set_cookies()
-                .expire_session(cookies::AUTH_SESSION_COOKIE)
-                .into_headers(),
-            crate::authorization_response::respond(&messages, &redirect_to, form_post),
-        )
-            .into_response(),
+        } => framed(
+            (
+                state
+                    .set_cookies()
+                    .expire_session(cookies::AUTH_SESSION_COOKIE)
+                    .into_headers(),
+                crate::authorization_response::respond(&messages, &redirect_to, form_post),
+            )
+                .into_response(),
+        ),
         InternalAuthorizeResumeResponse::ConsentRequired {
             auth_session_id,
             sso_absolute_ttl_secs,

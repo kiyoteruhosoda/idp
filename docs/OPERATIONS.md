@@ -1469,6 +1469,7 @@ curl -sS -X POST "$ISSUER/$TENANT_ID/admin/external-idps" \
 | `BACKCHANNEL_LOGOUT_MAX_ATTEMPTS` | `8` | Back-channel logout 通知の再送上限。指数バックオフ（30 秒 → 最大 1 時間）。**DB 上書き可** |
 | `BACKCHANNEL_LOGOUT_POLL_INTERVAL_SECS` | `15` | Back-channel logout 送信ワーカーが送信キューを見る間隔（秒）。**DB 上書き可** |
 | `BACKCHANNEL_LOGOUT_RETENTION_DAYS` | `7` | 決着済み（送信成功・打ち切り）の送信キュー行の保持日数。`0` = 削除しない。**DB 上書き可** |
+| `SILENT_AUTH_FRAME_ANCESTORS` | 空（枠を許さない） | 画面を出さずに試す往復（`prompt=none`）の 302 を枠（iframe）に入れてよい親（空白区切りの origin。例 `https://*.nolumia.com`。ADR-0076）。描く画面は常に枠に入れない。api と web の両方に同じ値を入れる。**ENV でのみ設定可** |
 | `SECURITY_ALERT_WEBHOOK_URL` | 空（送らない） | セキュリティの知らせ（登録していない端末でのログインなど。ADR-0071）を送る Webhook。nolumia notice の `POST /api/notices` と同じ形の JSON を送る。**ENV でのみ設定可** |
 | `SECURITY_ALERT_WEBHOOK_TOKEN_FILE` | 空 | 上の Webhook に `Authorization: Bearer` で載せる鍵を読むファイル。**ENV でのみ設定可**（値そのものは環境変数に置かない） |
 | `UNREGISTERED_DEVICE_ALERTS_ENABLED` | `false` | 登録していない端末でのログイン・端末の登録・取り消し・期限切れを、上の Webhook へ知らせるか（利用者の所属元テナントの値）。監査ログには設定にかかわらず残る。**DB 上書き可・テナントごと** |
