@@ -231,6 +231,7 @@ impl ManagementTokenService {
             jti: Uuid::new_v4().to_string(),
             sub_type: client_id.map(|_| SUBJECT_TYPE_CLIENT.to_string()),
             perms: Some(permission_codes.join(" ")),
+            cnf: None,
         };
         let key = self
             .keys
@@ -389,6 +390,7 @@ mod tests {
             jti: "j".to_string(),
             sub_type: Some(SUBJECT_TYPE_CLIENT.to_string()),
             perms: Some("idp.users:read".to_string()),
+            cnf: None,
         }
     }
 

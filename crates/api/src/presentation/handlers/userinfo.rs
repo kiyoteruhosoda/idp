@@ -1,6 +1,6 @@
 //! UserInfo エンドポイント（`GET /userinfo`、設計仕様 §4.7）。
 
-use crate::application::userinfo::UserInfoError;
+use crate::application::userinfo::{PresentedAccessToken, UserInfoError};
 use crate::presentation::dto::{OAuthErrorResponse, UserInfoResponse};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
@@ -26,17 +26,24 @@ pub async fn userinfo(
     Extension(tenant): Extension<ResolvedTenant>,
     headers: HeaderMap,
 ) -> Response {
-    let bearer = headers
+    // `Bearer` と `DPoP`（RFC 9449 §7.1。ADR-0075 決定 8）。どちらで出すかはトークンの `cnf` で決まり、
+    // 食い違いはユースケースが断る。
+    let authorization = headers
         .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-    let Some(token) = bearer else {
-        return unauthorized("missing bearer token");
+        .and_then(|v| v.to_str().ok());
+    let proof = headers.get("dpop").and_then(|v| v.to_str().ok());
+    let presented = match authorization {
+        Some(v) if v.starts_with("Bearer ") => PresentedAccessToken::Bearer(&v["Bearer ".len()..]),
+        Some(v) if v.starts_with("DPoP ") => PresentedAccessToken::Dpop {
+            token: &v["DPoP ".len()..],
+            proof,
+        },
+        _ => return unauthorized("missing bearer token"),
     };
 
     // 要求テナントはパス由来（`resolve_tenant`）。トークンの `iss`/`aud` を当該テナントの合成 issuer と
     // 厳密照合し、他テナント発行トークンの流用を弾く（ADR-0009 §6）。
-    match state.userinfo.userinfo(tenant.context(), token).await {
+    match state.userinfo.userinfo(tenant.context(), presented).await {
         Ok(claims) => Json(UserInfoResponse {
             sub: claims.sub,
             email: claims.email,
@@ -46,6 +53,7 @@ pub async fn userinfo(
         })
         .into_response(),
         Err(UserInfoError::InvalidToken(reason)) => unauthorized(reason),
+        Err(UserInfoError::InvalidDpopProof(reason)) => invalid_dpop_proof(reason),
         Err(UserInfoError::InsufficientScope) => (
             StatusCode::FORBIDDEN,
             [(
@@ -68,9 +76,29 @@ pub async fn userinfo(
 fn unauthorized(reason: &str) -> Response {
     (
         StatusCode::UNAUTHORIZED,
-        [(header::WWW_AUTHENTICATE, "Bearer error=\"invalid_token\"")],
+        // DPoP も受けることを知らせる（RFC 9449 §7.1。チャレンジは 2 つ並べてよい）。
+        [(
+            header::WWW_AUTHENTICATE,
+            "Bearer error=\"invalid_token\", DPoP algs=\"ES256\"",
+        )],
         Json(OAuthErrorResponse {
             error: "invalid_token".to_string(),
+            error_description: Some(reason.to_string()),
+        }),
+    )
+        .into_response()
+}
+
+/// DPoP の証明が無い・正しくない（RFC 9449 §7.1・§12.2）。
+fn invalid_dpop_proof(reason: &str) -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        [(
+            header::WWW_AUTHENTICATE,
+            "DPoP error=\"invalid_dpop_proof\", algs=\"ES256\"",
+        )],
+        Json(OAuthErrorResponse {
+            error: "invalid_dpop_proof".to_string(),
             error_description: Some(reason.to_string()),
         }),
     )

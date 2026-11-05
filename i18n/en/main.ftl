@@ -825,6 +825,16 @@ admin-tenant-values-whole = IdP-wide value
 admin-tenant-values-save = Save
 admin-tenant-values-clear = Use the IdP-wide value
 admin-tenant-values-clear-hint = Removes the value set for this tenant. From then on, this setting follows the IdP-wide value, including later changes.
+admin-tenant-values-seconds-with-duration = { $value } ({ $duration })
+admin-tenant-values-seconds-hint = Enter seconds: 1 hour = 3600, 1 day = 86400, 7 days = 604800, 30 days = 2592000.
+duration-days-one = { $n } day
+duration-days-other = { $n } days
+duration-hours-one = { $n } hour
+duration-hours-other = { $n } hours
+duration-minutes-one = { $n } minute
+duration-minutes-other = { $n } minutes
+duration-seconds-one = { $n } second
+duration-seconds-other = { $n } seconds
 admin-tenant-values-true = On
 admin-tenant-values-false = Off
 admin-tenant-values-choice-locks-out = asks for confirmation

@@ -17,6 +17,7 @@ pub mod client;
 pub mod client_assertion;
 pub mod client_permission;
 pub mod consent;
+pub mod dpop_proof;
 pub mod email_verification_token;
 pub mod expired_records;
 pub mod external_idp;

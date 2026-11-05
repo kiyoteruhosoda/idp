@@ -264,6 +264,29 @@ GET .../users?subs=<sub>,<sub>,<sub>
 
 ---
 
+## 7.5 スマホのアプリのトークン（DPoP）を受けるサーバー
+
+アプリ（public client）が `DPoP` ヘッダーを付けてトークンを取ると、アクセストークンに
+`cnf: {"jkt": "<鍵の指紋>"}` が入り、`token_type` は `DPoP` になる（ADR-0075）。そのトークンを
+受けるサーバーは次を守る。**`cnf` の無いトークンは今までどおり Bearer。**
+
+| 確かめること | 中身 |
+|---|---|
+| 出し方 | `Authorization: DPoP <token>` と `DPoP: <証明>`。`cnf` のあるトークンが `Bearer` で来たら 401 |
+| 証明の形 | `typ` は `dpop+jwt`、`alg` は ES256、`jwk` は P-256 の公開鍵（`d` があれば断る）。署名が `jwk` で通る |
+| 鍵 | `jwk` の RFC 7638 の指紋がトークンの `cnf.jkt` と同じ |
+| `htm`・`htu` | 要求のメソッドと、**このサーバーが外へ名乗る URL**（問い合わせと断片を外す）。前段の proxy の後ろで `Host` から組み立てない |
+| `ath` | アクセストークンの SHA-256 の base64url |
+| `iat` | 今より 120 秒前〜60 秒後（assay と同じ幅） |
+| `jti` | 鍵ごとに 1 回だけ。受ける幅が閉じるまで覚える（複数の台で動くなら DB で） |
+
+- 断るときは 401 と `WWW-Authenticate: DPoP error="invalid_dpop_proof", algs="ES256"`。アプリは時計を直して 1 回だけ送り直す。
+- ⚠ **`cnf` のあるトークンでは assay の `/userinfo` を引けない**（サーバーは鍵を持たない）。プロフィールが要るときは、
+  アプリが送る ID トークン（`aud` がアプリの `client_id`・`sub` がアクセストークンと同じ）の署名を確かめて読む。
+- nonce（`DPoP-Nonce`）は使わない（ADR-0075 決定 3）。
+
+---
+
 ## 8. よくある落とし穴
 
 - ⚠ **PKCE を送っていない** ——`invalid_request` で画面にすら着かない

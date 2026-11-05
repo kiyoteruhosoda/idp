@@ -43,6 +43,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "user_password_history",
     "tenant_domains",
     "client_assertion_jtis",
+    "dpop_proof_jtis",
     "tenant_settings",
 ];
 
