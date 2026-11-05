@@ -59,6 +59,9 @@ pub struct Config {
     /// 画面を出さずに試す往復を枠に入れてよい親（`SILENT_AUTH_FRAME_ANCESTORS`。api と同キー・環境変数だけ。
     /// task #888・ADR-0076）。
     silent_auth_frame_ancestors: assay_contracts::frame_ancestors::FrameAncestors,
+    /// 「アプリで続ける」を出すか（`APP_APPROVER_PACKAGE_NAME` が空でない。task #892）。
+    /// 判定そのものは api（口が閉じていれば依頼を断る）。ここは画面に出すかだけ。
+    app_approver_enabled: bool,
     log_format: LogFormat,
     /// api 経由の DB 上書き値を採用した共有キー（起動ログ用。値は含めない）。
     shared_settings_from_api: Vec<String>,
@@ -227,6 +230,7 @@ impl Config {
                 &env_or("SILENT_AUTH_FRAME_ANCESTORS", ""),
             )
             .map_err(|e| anyhow::anyhow!(e))?,
+            app_approver_enabled: !env_or("APP_APPROVER_PACKAGE_NAME", "").trim().is_empty(),
             log_format: parse_log_format(),
             shared_settings_from_api: resolver.applied_keys(),
             shared_runtime_settings: shared.clone(),
@@ -294,6 +298,11 @@ impl Config {
     /// `X-Forwarded-For` を信頼してクライアント IP を採るか（SEC1）。`false`（既定）なら
     /// ヘッダを無視し、TCP 接続元アドレス（`ConnectInfo`）を使う。api 側と同じキー・同じ既定で、
     /// 信頼できるリバースプロキシ配下でのみ `true` にする。
+    /// 「アプリで続ける」を画面に出すか（task #892）。
+    pub fn app_approver_enabled(&self) -> bool {
+        self.app_approver_enabled
+    }
+
     pub fn trust_forwarded_headers(&self) -> bool {
         self.trust_forwarded_headers
     }

@@ -37,6 +37,8 @@ pub enum OAuthErrorCode {
     InteractionRequired,
     /// 要求された `resource`（RFC 8707 §2）が不正・未知・許可されていない場合。
     InvalidTarget,
+    /// DPoP の証明が無い・正しくない（RFC 9449 §5・§12.3。ADR-0075）。
+    InvalidDpopProof,
 }
 
 impl OAuthErrorCode {
@@ -55,6 +57,7 @@ impl OAuthErrorCode {
             Self::ConsentRequired => "consent_required",
             Self::InteractionRequired => "interaction_required",
             Self::InvalidTarget => "invalid_target",
+            Self::InvalidDpopProof => "invalid_dpop_proof",
         }
     }
 }

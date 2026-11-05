@@ -914,6 +914,7 @@ mod tests {
                 login_hint,
                 client_name: None,
                 tenant_name: None,
+                app_approval_offered: false,
             })
         };
 
@@ -1162,6 +1163,7 @@ mod tests {
             current_device_identified: true,
             passkey_fresh: false,
             devices_alerts_enabled: true,
+            approver_keys: &[],
             sign_ins: &[],
             sign_ins_older: None,
             sign_ins_paged: false,
@@ -1250,6 +1252,7 @@ mod tests {
                 login_hint: None,
                 client_name,
                 tenant_name,
+                app_approval_offered: false,
             })
         };
 
@@ -1300,6 +1303,7 @@ mod tests {
             login_hint: None,
             client_name: None,
             tenant_name: None,
+            app_approval_offered: false,
         });
         assert_attributes(
             &oidc,
@@ -1504,6 +1508,7 @@ mod tests {
                 current_device_identified: identified,
                 passkey_fresh: false,
                 devices_alerts_enabled: true,
+                approver_keys: &[],
                 sign_ins: &[],
                 sign_ins_older: None,
                 sign_ins_paged: false,
@@ -1592,6 +1597,7 @@ mod tests {
             current_device_identified: true,
             passkey_fresh: false,
             devices_alerts_enabled: true,
+            approver_keys: &[],
             sign_ins: &sign_ins,
             sign_ins_older: Some(41),
             sign_ins_paged: false,
@@ -1669,6 +1675,7 @@ mod tests {
                 current_device_identified: true,
                 passkey_fresh: false,
                 devices_alerts_enabled: true,
+                approver_keys: &[],
                 ssh_keys_enabled: enabled,
                 ssh_keys: &keys,
                 ssh_keys_passkey_fresh: fresh,
@@ -1721,6 +1728,7 @@ mod tests {
             current_device_identified: true,
             passkey_fresh: false,
             devices_alerts_enabled: true,
+            approver_keys: &[],
             sign_ins: &[],
             sign_ins_older: None,
             sign_ins_paged: false,
@@ -1847,6 +1855,7 @@ mod tests {
             csrf: "csrf",
             error_key: None,
             login_hint: None,
+            app_approval_offered: false,
         });
         // 直接ログインは開始も専用の経路を指す（放置された認可フローの Cookie を拾わないため。
         // ADR-0040 決定 4）。認可フローはスクリプトの既定値を使うので data 属性を持たない。
@@ -2296,6 +2305,9 @@ pub struct LoginTemplate<'a> {
     pub client_name: Option<&'a str>,
     /// フローのテナントの表示名。ナビバーの名乗りに出す。`None` なら `IdP` を出す。
     pub tenant_name: Option<&'a str>,
+    /// 「アプリで続ける」を置くか（認証アプリの口が開いている。task #892）。Android の Chrome の
+    /// ときだけ見せるのは画面のスクリプト（見た目だけ。User-Agent を判定には使わない）。
+    pub app_approval_offered: bool,
 }
 
 /// エンドユーザー・ポータルのログイン画面（`GET /{tenant_id}/login`。OIDC の `auth_session` を持たない
@@ -2344,6 +2356,34 @@ pub struct SamlPostPage<'a> {
     /// base64 済みの SAML Response（テンプレートが hidden input へエスケープして埋め込む）。
     pub saml_response: &'a str,
     pub relay_state: Option<&'a str>,
+}
+
+/// 「アプリで続ける」を押した後の画面（task #892）。このブラウザに依頼の印を置き、認証アプリを開くリンクを出す。
+///
+/// ⚠ この画面は待つだけで、承認されても自分では先へ進まない（進むのは認証アプリが開いた新しいタブ）。
+#[derive(Template)]
+#[template(path = "app_approval_wait.html")]
+pub struct AppApprovalWaitPage<'a> {
+    pub messages: &'a Messages,
+    /// 認証アプリの App Link（発行者のホストの `/app/approve`）。
+    pub approve_url: &'a str,
+    pub tenant_prefix: &'a str,
+}
+
+/// 認証アプリの鍵の登録の確認（task #892）。認証アプリの Auth Tab の中で開く。
+#[derive(Template)]
+#[template(path = "app_approver_confirm.html")]
+pub struct AppApproverConfirmPage<'a> {
+    pub messages: &'a Messages,
+    pub tenant_prefix: &'a str,
+    pub csrf: &'a str,
+    pub enrollment: &'a str,
+    /// アプリの自己申告の機種名。
+    pub device_name: &'a str,
+    /// 鍵の置き場の表示の翻訳キー。
+    pub level_key: &'a str,
+    /// 受付を始めた時刻（RFC 3339）。
+    pub created_at: &'a str,
 }
 
 /// タイトルと本文のみの最小ページ（ログインのエラー・権限不足など、共通レイアウトに載せない画面）。
@@ -3897,6 +3937,8 @@ pub struct UserSecurity<'a> {
     pub passkey_fresh: bool,
     /// この組織で「登録していない端末」の知らせが有効か。
     pub devices_alerts_enabled: bool,
+    /// 登録済みの認証アプリの鍵（task #892。「端末」の欄に「認証アプリ」として並ぶ）。
+    pub approver_keys: &'a [SecurityApproverKeyView],
     /// ログイン履歴（task #879）。新しい順。
     pub sign_ins: &'a [SignInView],
     /// もっと古い履歴へのリンク（`?history_before=` の値）。無ければ最後のページ。
@@ -4015,6 +4057,18 @@ pub struct SecuritySshKeyView {
 }
 
 /// 「端末」の欄の 1 行（task #872）。時刻は api が返した RFC 3339 文字列のまま。
+/// 「端末」の欄の「認証アプリ」の 1 行（task #892）。
+pub struct SecurityApproverKeyView {
+    pub id: String,
+    /// アプリの自己申告の機種名。
+    pub device_name: String,
+    /// 鍵の置き場の表示（`app-approver-level-*`）。
+    pub level_key: &'static str,
+    pub registered_at: String,
+    /// 最後に承認に使った時刻（無ければ空）。
+    pub last_used_at: String,
+}
+
 pub struct SecurityDeviceView {
     pub id: String,
     pub name: String,

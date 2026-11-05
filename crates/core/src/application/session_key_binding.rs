@@ -31,7 +31,8 @@ use crate::domain::repositories::{
 };
 use crate::domain::security_alert::{SecurityAlert, SecurityAlertKind, SecurityAlertSink};
 use crate::domain::session_key::{
-    lifetime_for, verify_refresh, verify_registration, ProofError, SessionKeyBinding,
+    lifetime_for, verify_refresh, verify_registration, ProofError, SessionBinding,
+    SessionKeyBinding,
 };
 use crate::domain::sso_session::{self, SsoSession};
 use crate::domain::user::User;
@@ -263,7 +264,7 @@ impl SessionKeyBindingService {
         let (idle, absolute) = lifetime_for(
             session.created_at,
             session.idle_expires_at,
-            true,
+            SessionBinding::DeviceKey,
             device_registered,
             lifetime.absolute,
             lifetime.bound,

@@ -8,9 +8,10 @@ use crate::presentation::handlers::{
     admin_invitations, admin_login_identifiers, admin_members, admin_permissions, admin_resources,
     admin_restart, admin_saml_service_providers, admin_signing_keys, admin_ssh_keys,
     admin_system_settings, admin_tenant_settings, admin_tenant_smtp, admin_tenants, admin_users,
-    authorize, consent, discovery, health, internal_admin_token, internal_auth, internal_devices,
-    internal_runtime_settings, internal_session_keys, internal_sign_in_history, internal_ssh_keys,
-    introspect, invitations, logout, mfa, passkey, register, revoke, saml_sso, token, userinfo,
+    app_approver, authorize, consent, discovery, health, internal_admin_token,
+    internal_app_approval, internal_auth, internal_devices, internal_runtime_settings,
+    internal_session_keys, internal_sign_in_history, internal_ssh_keys, introspect, invitations,
+    logout, mfa, passkey, register, revoke, saml_sso, token, userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::security_headers::add_security_headers;
@@ -191,6 +192,31 @@ pub fn build(state: AppState) -> Router {
         )
         // 利用者の端末（task #872）。ログインした端末の結び付けと「端末」の欄。
         .route("/internal/devices/observe", post(internal_devices::observe))
+        // 「アプリで続ける」と認証アプリの鍵（task #892・ADR-0077）。
+        .route(
+            "/internal/app-approval/start",
+            post(internal_app_approval::start),
+        )
+        .route(
+            "/internal/app-approval/complete",
+            post(internal_app_approval::complete),
+        )
+        .route(
+            "/internal/account/app-approver/enrollment",
+            post(internal_app_approval::account_enrollment),
+        )
+        .route(
+            "/internal/account/app-approver/confirm",
+            post(internal_app_approval::account_confirm),
+        )
+        .route(
+            "/internal/account/app-approver/keys",
+            post(internal_app_approval::account_keys),
+        )
+        .route(
+            "/internal/account/app-approver/keys/revoke",
+            post(internal_app_approval::account_revoke_key),
+        )
         // SSO セッションの端末の鍵への結び付け（DBSC。task #887）。
         .route(
             "/internal/sso/key-binding",
@@ -707,6 +733,33 @@ pub fn build(state: AppState) -> Router {
             get(discovery::openid_configuration),
         )
         .route("/.well-known/jwks.json", get(discovery::jwks))
+        // 認証アプリが呼ぶ口（task #892・ADR-0077）。アプリはトークンを持たず、操作のたびに鍵で署名する。
+        .route(
+            "/app-approver/enrollments",
+            post(app_approver::start_enrollment),
+        )
+        .route(
+            "/app-approver/enrollments/{id}/key",
+            put(app_approver::submit_key),
+        )
+        .route(
+            "/app-approver/enrollments/{id}/activate",
+            post(app_approver::activate),
+        )
+        .route(
+            "/app-approver/requests/{id}",
+            get(app_approver::view_request),
+        )
+        .route(
+            "/app-approver/requests/{id}/approve",
+            post(app_approver::approve),
+        )
+        .route("/app-approver/requests/{id}/deny", post(app_approver::deny))
+        .route("/app-approver/keys/{key_id}", get(app_approver::key_state))
+        .route(
+            "/app-approver/keys/{key_id}/revoke",
+            post(app_approver::revoke),
+        )
         // SAML IdP メタデータ出力（公開。SP が assay を信頼するために取り込むメタデータ）。
         .route("/saml/metadata", get(discovery::saml_idp_metadata))
         // SAML SSO エンドポイント（メタデータが広告する SingleSignOnService。Redirect / POST 両対応）。
@@ -723,6 +776,13 @@ pub fn build(state: AppState) -> Router {
     // テナント外パス（プレフィクスなし。ADR-0009 §6）: ヘルスチェック・内部 API・API ドキュメント。
     Router::new()
         .route("/healthz", get(health::liveness))
+        // 認証アプリの App Link（task #892）。assetlinks.json と、ブラウザで開かれたときの案内。
+        .route(
+            "/.well-known/assetlinks.json",
+            get(app_approver::asset_links),
+        )
+        .route("/app/approve", get(app_approver::app_link_fallback))
+        .route("/app/enrolled", get(app_approver::app_link_fallback))
         .route("/readyz", get(health::readiness))
         .nest("/{tenant_id}", tenant_scoped)
         .merge(internal)

@@ -263,6 +263,8 @@ string_enum!(
         EmailOtp => "email_otp",
         SmsOtp => "sms_otp",
         ExternalIdp => "external_idp",
+        // 登録した認証アプリ（Keystore の鍵・使うたびに指紋）での承認（task #892。ADR-0077）。
+        AppApproval => "app_approval",
     }
 );
 
@@ -293,6 +295,8 @@ impl AuthenticationMethod {
             Self::RecoveryCode => "rba",
             Self::EmailOtp | Self::SmsOtp => "otp",
             Self::ExternalIdp => "fed",
+            // 端末の中の取り出せない鍵（所持）を、指紋（生体）で解いて署名した。
+            Self::AppApproval => "hwk",
         }
     }
 
@@ -304,12 +308,17 @@ impl AuthenticationMethod {
     pub fn is_second_factor(&self) -> bool {
         matches!(
             self,
-            Self::Totp | Self::WebAuthn | Self::RecoveryCode | Self::EmailOtp | Self::SmsOtp
+            Self::Totp
+                | Self::WebAuthn
+                | Self::RecoveryCode
+                | Self::EmailOtp
+                | Self::SmsOtp
+                | Self::AppApproval
         )
     }
 
     /// 全バリアント。方式を足したらここも足す（漏れはテストで気付ける）。
-    pub const ALL: [AuthenticationMethod; 7] = [
+    pub const ALL: [AuthenticationMethod; 8] = [
         Self::Password,
         Self::Totp,
         Self::WebAuthn,
@@ -317,6 +326,7 @@ impl AuthenticationMethod {
         Self::EmailOtp,
         Self::SmsOtp,
         Self::ExternalIdp,
+        Self::AppApproval,
     ];
 
     /// 第二要素として数えられる方式の全列挙（[`Self::is_second_factor`] が真のもの）。
@@ -324,12 +334,13 @@ impl AuthenticationMethod {
     /// 認証ポリシーの「いずれか 1 つ」（OR）へそのまま渡せる形で持つ。判定関数だけでは
     /// 「第二要素を 1 つ足せ」という**要求**を組み立てられないため、列挙も要る。
     /// 両者が食い違わないことはテストで確かめる。
-    pub const SECOND_FACTORS: [AuthenticationMethod; 5] = [
+    pub const SECOND_FACTORS: [AuthenticationMethod; 6] = [
         Self::Totp,
         Self::WebAuthn,
         Self::RecoveryCode,
         Self::EmailOtp,
         Self::SmsOtp,
+        Self::AppApproval,
     ];
 }
 

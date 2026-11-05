@@ -149,6 +149,11 @@ pub struct Config {
     security_alert_webhook_token_file: String,
     /// 画面を出さずに試す往復を枠に入れてよい親（`SILENT_AUTH_FRAME_ANCESTORS`。task #888。環境変数だけ）。
     silent_auth_frame_ancestors: assay_contracts::frame_ancestors::FrameAncestors,
+    /// 認証アプリ（task #892。ADR-0077。環境変数だけ）。
+    app_approver_package_name: String,
+    app_approver_signing_cert_sha256: String,
+    app_approver_extra_attestation_roots_file: String,
+    app_approver_allow_software_attestation: bool,
     /// 漏えい済みパスワード照合の 1 リクエストの上限時間。
     password_breach_check_timeout: Duration,
     /// テナント解決キャッシュの TTL（ADR-0009 §7。id → tenant のホットパス）。
@@ -320,6 +325,13 @@ impl Config {
                 &resolver.string("SILENT_AUTH_FRAME_ANCESTORS", ""),
             )
             .map_err(|e| anyhow::anyhow!(e))?,
+            app_approver_package_name: resolver.string("APP_APPROVER_PACKAGE_NAME", ""),
+            app_approver_signing_cert_sha256: resolver
+                .string("APP_APPROVER_SIGNING_CERT_SHA256", ""),
+            app_approver_extra_attestation_roots_file: resolver
+                .string("APP_APPROVER_EXTRA_ATTESTATION_ROOTS_FILE", ""),
+            app_approver_allow_software_attestation: resolver
+                .parse("APP_APPROVER_ALLOW_SOFTWARE_ATTESTATION", false)?,
             password_breach_check_timeout: secs(
                 resolver.parse("PASSWORD_BREACH_CHECK_TIMEOUT_SECS", 3u64)?,
             ),
@@ -427,6 +439,22 @@ impl Config {
     /// セキュリティの知らせの鍵を読むファイル（空なら未設定。task #872）。
     pub fn security_alert_webhook_token_file(&self) -> Option<&str> {
         Some(self.security_alert_webhook_token_file.trim()).filter(|v| !v.is_empty())
+    }
+    /// 認証アプリのパッケージ名（空なら認証アプリの口を閉じる。task #892）。
+    pub fn app_approver_package_name(&self) -> Option<&str> {
+        Some(self.app_approver_package_name.trim()).filter(|v| !v.is_empty())
+    }
+    /// 認証アプリの署名の証明書の SHA-256（`AB:CD:…`・カンマ区切り。形の確かめは使う側）。
+    pub fn app_approver_signing_cert_sha256(&self) -> &str {
+        &self.app_approver_signing_cert_sha256
+    }
+    /// Google の根に加えて信じる根のファイル（stg の確かめ用）。
+    pub fn app_approver_extra_attestation_roots_file(&self) -> Option<&str> {
+        Some(self.app_approver_extra_attestation_roots_file.trim()).filter(|v| !v.is_empty())
+    }
+    /// ソフトウェアの鍵も受けるか（stg の確かめ用）。
+    pub fn app_approver_allow_software_attestation(&self) -> bool {
+        self.app_approver_allow_software_attestation
     }
     /// 名前を引いた結果が内部の住所でも外へ送ってよい名前（task #585）。
     pub fn outbound_trust(&self) -> crate::domain::outbound_uri::OutboundTrust {

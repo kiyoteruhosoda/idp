@@ -1474,6 +1474,10 @@ curl -sS -X POST "$ISSUER/$TENANT_ID/admin/external-idps" \
 | `SECURITY_ALERT_WEBHOOK_TOKEN_FILE` | 空 | 上の Webhook に `Authorization: Bearer` で載せる鍵を読むファイル。**ENV でのみ設定可**（値そのものは環境変数に置かない） |
 | `UNREGISTERED_DEVICE_ALERTS_ENABLED` | `false` | 登録していない端末でのログイン・端末の登録・取り消し・期限切れを、上の Webhook へ知らせるか（利用者の所属元テナントの値）。監査ログには設定にかかわらず残る。**DB 上書き可・テナントごと** |
 | `SSH_KEYS_ENABLED` | `false` | 利用者が sk 型の SSH の公開鍵を登録でき、`idp.ssh-keys:read` を持つ機械クライアントへ一覧を渡すか（ADR-0072）。無効なら画面に欄が出ず、一覧は空。**DB 上書き可・テナントごと** |
+| `APP_APPROVER_PACKAGE_NAME` | 空（使わない） | 認証アプリ（「アプリで続ける」。ADR-0077）の Android のパッケージ名（`com.nolumia.auth`）。空なら認証アプリの口・`/.well-known/assetlinks.json`・ログイン画面のボタンが全部無くなる。api と web の両方が読む。**ENV でのみ設定可** |
+| `APP_APPROVER_SIGNING_CERT_SHA256` | 空 | 認証アプリの署名の証明書の SHA-256（`AB:CD:…`・カンマ区切り）。Key Attestation と `assetlinks.json` に使う。**ENV でのみ設定可** |
+| `APP_APPROVER_EXTRA_ATTESTATION_ROOTS_FILE` | 空 | Google の根に加えて信じる Key Attestation の根（PEM のファイル）。**stg の確かめ用。本番では空** |
+| `APP_APPROVER_ALLOW_SOFTWARE_ATTESTATION` | `false` | ソフトウェアの鍵・起動が検証されていない端末の鍵も受けるか。**stg の確かめ用。本番では false** |
 | `EXPIRED_RECORD_PURGE_INTERVAL_SECS` | `3600` | 期限切れレコード（認可セッション・authorization code・refresh token・SSO セッション・失効 jti・パスキーチャレンジ・各種一時トークン）を掃除する間隔（秒）。`0` = 掃除しない（表が際限なく増えるため非推奨）。**DB 上書き可** |
 | `CORS_ALLOWED_ORIGINS` | 空 | ブラウザからの越境アクセスを追加で許可するオリジン（カンマ区切り）。既定ではテナント内 public クライアントの `redirect_uris` から導いたオリジンのみ許可する。**DB 上書き可** |
 | `API_DOCS_ENABLED` | `false` | Swagger UI（`/api/docs`）と OpenAPI 文書（`/api/openapi.json`）を配信するか。api 面は公開されるため、有効にすると管理 API を含む全仕様が無認証で読める。開発・検証環境でのみ `true` にする。**DB 上書き可** |
