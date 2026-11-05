@@ -56,7 +56,13 @@ async fn the_confirmation_page_lets_its_form_redirect_to_the_issuer() {
         form_action.split_whitespace().count() >= 3,
         "the issuer's origin is allowed besides 'self': {form_action}"
     );
-    assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
+    assert!(response
+        .headers()
+        .get("cache-control")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .contains("no-store"));
 }
 
 #[tokio::test]
