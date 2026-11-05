@@ -405,13 +405,17 @@ pub async fn confirm_page(
                 level_key,
                 created_at: &created_at,
             });
+            // 「登録する」の送信は、発行者のホストの戻り先（`/app/enrolled`。Auth Tab がアプリへ返す）への
+            // 302 で終わる。Chrome は `form-action` を送信の後のリダイレクトにも当てるので、この画面だけ
+            // 戻り先のオリジンを許す（ログイン画面が RP のオリジンを許すのと同じ。SEC3）。
+            let enrolled = enrolled_url(&state, &query.enrollment, "");
             private(
                 (
                     state
                         .set_cookies()
                         .expire_local(&enrollment_cookie)
                         .into_headers(),
-                    Html(body),
+                    crate::security_headers::html_with_form_action_csp(&enrolled, body),
                 )
                     .into_response(),
             )
