@@ -1851,3 +1851,81 @@ pub trait ExpiringRecordStore: Send + Sync {
     /// `now` 時点で期限切れの行を削除し、削除件数を返す。
     async fn purge_expired(&self, now: DateTime<Utc>) -> Result<u64>;
 }
+
+/// 利用者の認証アプリの鍵（task #892。ADR-0077）と、その鍵で承認したログイン状態。
+#[async_trait]
+pub trait ApproverKeyRepository: Send + Sync {
+    /// 登録する。同じ `key_id` が既にあれば `Conflict`。
+    async fn insert(&self, key: &crate::domain::app_approver::ApproverKey) -> Result<()>;
+    /// アプリが名乗る `key_id` で引く。
+    async fn find_by_key_id(
+        &self,
+        key_id: &str,
+    ) -> Result<Option<crate::domain::app_approver::ApproverKey>>;
+    /// 利用者の鍵を登録の新しい順に返す。
+    async fn list_for_user(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Vec<crate::domain::app_approver::ApproverKey>>;
+    /// 利用者の鍵を 1 つ消し、消した行を返す（他人の鍵なら `None`）。
+    async fn delete(
+        &self,
+        user_id: Uuid,
+        id: Uuid,
+    ) -> Result<Option<crate::domain::app_approver::ApproverKey>>;
+    /// 承認に使ったことを記録する。
+    async fn touch(&self, id: Uuid, used_at: DateTime<Utc>) -> Result<()>;
+    /// ログイン状態をこの鍵で承認したと記録する（文脈の行が無ければ作る）。
+    async fn link_session(&self, session_hash: &str, id: Uuid) -> Result<()>;
+    /// この鍵で承認したログイン状態（の SHA-256）。
+    async fn approved_sessions(&self, id: Uuid) -> Result<Vec<String>>;
+}
+
+/// 鍵の登録の受付（10 分）。段階の移り変わりは「前の段階のときだけ書く」で 1 回にする。
+#[async_trait]
+pub trait ApproverEnrollmentRepository: Send + Sync {
+    async fn insert(
+        &self,
+        enrollment: &crate::domain::app_approver::ApproverEnrollment,
+    ) -> Result<()>;
+    async fn find(
+        &self,
+        tenant_id: Uuid,
+        id: &str,
+    ) -> Result<Option<crate::domain::app_approver::ApproverEnrollment>>;
+    /// 段階を書き換える。いまの段階が `expected`（`stage` の名前）のときだけ書き、書いたら `true`。
+    async fn advance(
+        &self,
+        enrollment: &crate::domain::app_approver::ApproverEnrollment,
+        expected: &str,
+    ) -> Result<bool>;
+    /// 受付を消す（有効にした・やめた）。消したら `true`。
+    async fn delete(&self, id: &str) -> Result<bool>;
+}
+
+/// 「アプリで続ける」の依頼（5 分）。状態の移り変わりは「前の状態のときだけ書く」で 1 回にする。
+#[async_trait]
+pub trait ApprovalRequestRepository: Send + Sync {
+    async fn insert(&self, request: &crate::domain::app_approver::ApprovalRequest) -> Result<()>;
+    async fn find(
+        &self,
+        tenant_id: Uuid,
+        id: &str,
+    ) -> Result<Option<crate::domain::app_approver::ApprovalRequest>>;
+    /// 承認を書く（`pending` のときだけ）。書いたら `true`。
+    async fn approve(
+        &self,
+        id: &str,
+        approver_key: Uuid,
+        user_id: Uuid,
+        code_hash: &str,
+        code_expires_at: DateTime<Utc>,
+    ) -> Result<bool>;
+    /// 状態を `from` から `to` へ移す（`from` のときだけ）。書いたら `true`。
+    async fn transition(
+        &self,
+        id: &str,
+        from: crate::domain::app_approver::ApprovalState,
+        to: crate::domain::app_approver::ApprovalState,
+    ) -> Result<bool>;
+}

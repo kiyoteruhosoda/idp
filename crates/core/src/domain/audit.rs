@@ -185,6 +185,16 @@ pub enum AuditEventType {
     /// 結び付けの登録・更新の署名を受け付けなかった（`reason` に理由）。別の鍵の署名でセッションを
     /// 終わらせたときは `reason` に `key_mismatch`。
     SessionKeyRejected,
+    /// 認証アプリの鍵を登録した・取り消した（task #892・ADR-0077）。`reason` に鍵の id と置き場。
+    ApproverKeyRegistered,
+    ApproverKeyRevoked,
+    /// 鍵の登録の受付で、Key Attestation を受け付けなかった（`reason` に理由）。
+    ApproverKeyRejected,
+    /// 「アプリで続ける」の依頼を認証アプリで承認した・断った。
+    AppApprovalApproved,
+    AppApprovalDenied,
+    /// 承認したコードを、依頼を始めたのとは別のブラウザで使おうとした（別の端末の依頼を承認した疑い）。
+    AppApprovalRefused,
 }
 
 impl AuditEventType {
@@ -286,6 +296,12 @@ impl AuditEventType {
             Self::SshKeyRevoked => "ssh_key.revoked",
             Self::SessionKeyBound => "sso_session.key_bound",
             Self::SessionKeyRejected => "sso_session.key_rejected",
+            Self::ApproverKeyRegistered => "approver_key.registered",
+            Self::ApproverKeyRevoked => "approver_key.revoked",
+            Self::ApproverKeyRejected => "approver_key.rejected",
+            Self::AppApprovalApproved => "app_approval.approved",
+            Self::AppApprovalDenied => "app_approval.denied",
+            Self::AppApprovalRefused => "app_approval.refused",
         }
     }
 }

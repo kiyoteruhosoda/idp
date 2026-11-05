@@ -15,6 +15,8 @@ use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::response::IntoResponse;
 
 pub(crate) const PASSKEY_LOGIN_JS: &str = include_str!("../../assets/passkey-login.js");
+/// 「アプリで続ける」を Android のブラウザでだけ見せる（task #892。見た目だけ）。
+pub(crate) const APP_APPROVAL_LOGIN_JS: &str = include_str!("../../assets/app-approval-login.js");
 pub(crate) const PASSKEY_REGISTER_JS: &str = include_str!("../../assets/passkey-register.js");
 pub(crate) const ACCOUNT_SETUP_JS: &str = include_str!("../../assets/account-setup.js");
 pub(crate) const SHARE_LINK_JS: &str = include_str!("../../assets/share-link.js");
@@ -41,6 +43,10 @@ fn javascript(body: &'static str) -> impl IntoResponse {
 
 pub async fn passkey_login_js() -> impl IntoResponse {
     javascript(PASSKEY_LOGIN_JS)
+}
+
+pub async fn app_approval_login_js() -> impl IntoResponse {
+    javascript(APP_APPROVAL_LOGIN_JS)
 }
 
 pub async fn passkey_register_js() -> impl IntoResponse {

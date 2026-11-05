@@ -21,6 +21,7 @@ use crate::application::account_theme::AccountThemeService;
 use crate::application::admin_access::AdminAccessService;
 use crate::application::admin_account_guard::AdminAccountGuard;
 use crate::application::admin_login::AdminLoginService;
+use crate::application::app_approval::{AppApprovalDependencies, AppApprovalService};
 use crate::application::application_access::ApplicationAccessService;
 use crate::application::application_log::ApplicationLogService;
 use crate::application::application_management::ApplicationManagementService;
@@ -105,6 +106,9 @@ use crate::infrastructure::password::Argon2PasswordHasher;
 use crate::infrastructure::rate_limit::InMemoryLoginRateLimiter;
 use crate::infrastructure::repositories::account_note::SqlxAccountNoteRepository;
 use crate::infrastructure::repositories::account_query::SqlxAccountQuery;
+use crate::infrastructure::repositories::app_approver::{
+    SqlxApprovalRequestRepository, SqlxApproverEnrollmentRepository, SqlxApproverKeyRepository,
+};
 use crate::infrastructure::repositories::application::SqlxApplicationRepository;
 use crate::infrastructure::repositories::application_log::{
     SqlxApplicationLogQuery, SqlxApplicationLogSink,
@@ -276,6 +280,8 @@ pub struct AppState {
     pub ssh_keys: Arc<SshKeyRegistryService>,
     /// SSO セッションの端末の鍵への結び付け（DBSC。task #887）。
     pub session_key_binding: Arc<SessionKeyBindingService>,
+    /// 認証アプリで承認するログインと、認証アプリの鍵（task #892）。
+    pub app_approval: Arc<AppApprovalService>,
     /// Step-up 認証（重要操作の直前の本人確認。AP5）。
     pub step_up: Arc<StepUpService>,
     /// 認証器の統合管理（一覧・状態変更・リカバリーコード・email OTP。AP9）。
@@ -1154,10 +1160,32 @@ impl AppState {
             users.clone(),
             refresh_tokens.clone(),
             tenant_settings.clone(),
-            security_alerts,
+            security_alerts.clone(),
             audit.clone(),
             clock.clone(),
             *config.csrf_secret(),
+        ));
+        // 認証アプリで承認するログイン（「アプリで続ける」。task #892・ADR-0077）。
+        let app_approval = Arc::new(AppApprovalService::new(
+            AppApprovalDependencies {
+                keys: Arc::new(SqlxApproverKeyRepository::new(pool.clone())),
+                enrollments: Arc::new(SqlxApproverEnrollmentRepository::new(pool.clone())),
+                requests: Arc::new(SqlxApprovalRequestRepository::new(pool.clone())),
+                users: users.clone(),
+                memberships: tenant_memberships.clone(),
+                sso_sessions: sso_sessions.clone(),
+                refresh_tokens: refresh_tokens.clone(),
+                auth_sessions: auth_sessions.clone(),
+                clients: clients.clone(),
+                policy_gate: policy_gate.clone(),
+                sign_in: sign_in.clone(),
+                settings: tenant_settings.clone(),
+                audit: audit.clone(),
+                alerts: security_alerts,
+                rate_limiter: rate_limiter.clone(),
+                clock: clock.clone(),
+            },
+            app_approver_policy(&config),
         ));
 
         // task #879: 本人が見るログイン履歴。
@@ -1318,6 +1346,7 @@ impl AppState {
             sign_in_history,
             ssh_keys,
             session_key_binding,
+            app_approval,
             step_up,
             authenticators,
             authenticator_repository,
@@ -1366,6 +1395,78 @@ impl FromRef<AppState> for Arc<RegisterService> {
 ///
 /// ⚠ 鍵を読めないからといって起動は止めない（知らせのためにログインを止めない）。代わりに
 /// エラーログを残し、出来事は監査ログで追える。
+/// 認証アプリの鍵の確かめの決まり（環境変数だけ。ADR-0077）。パッケージ名が無ければ口を閉じる（`None`）。
+///
+/// 設定が壊れているとき（指紋の形が違う・根のファイルが読めない）は、口を閉じて起動を続ける
+/// （ログインそのものは止めない。知らせの送り口と同じ扱い）。
+fn app_approver_policy(
+    config: &Config,
+) -> Option<crate::domain::key_attestation::AttestationPolicy> {
+    use crate::domain::key_attestation::{root_keys_from_pem, AttestationPolicy, GOOGLE_ROOTS_PEM};
+    let package = config.app_approver_package_name()?;
+    let mut digests = Vec::new();
+    for raw in config
+        .app_approver_signing_cert_sha256()
+        .split(',')
+        .map(str::trim)
+        .filter(|f| !f.is_empty())
+    {
+        let hex: String = raw.chars().filter(|c| *c != ':').collect();
+        match hex::decode(&hex)
+            .ok()
+            .and_then(|b| <[u8; 32]>::try_from(b).ok())
+        {
+            Some(d) => digests.push(d),
+            None => {
+                tracing::error!("APP_APPROVER_SIGNING_CERT_SHA256 has a malformed fingerprint; the authenticator app is disabled");
+                return None;
+            }
+        }
+    }
+    if digests.is_empty() {
+        tracing::error!("APP_APPROVER_PACKAGE_NAME is set without APP_APPROVER_SIGNING_CERT_SHA256; the authenticator app is disabled");
+        return None;
+    }
+    let mut roots = match root_keys_from_pem(GOOGLE_ROOTS_PEM) {
+        Ok(roots) => roots,
+        Err(e) => {
+            tracing::error!(
+                reason = e.as_str(),
+                "the shipped Google attestation roots could not be read"
+            );
+            return None;
+        }
+    };
+    if let Some(path) = config.app_approver_extra_attestation_roots_file() {
+        match std::fs::read_to_string(path)
+            .map_err(|e| e.to_string())
+            .and_then(|pem| root_keys_from_pem(&pem).map_err(|e| e.as_str().to_string()))
+        {
+            Ok(extra) if !extra.is_empty() => {
+                tracing::warn!(
+                    count = extra.len(),
+                    "extra key attestation roots are trusted (staging only)"
+                );
+                roots.extend(extra);
+            }
+            Ok(_) | Err(_) => {
+                tracing::error!("APP_APPROVER_EXTRA_ATTESTATION_ROOTS_FILE could not be read; the authenticator app is disabled");
+                return None;
+            }
+        }
+    }
+    if config.app_approver_allow_software_attestation() {
+        tracing::warn!("software key attestation is accepted (staging only)");
+    }
+    tracing::info!(package, "the authenticator app is enabled");
+    Some(AttestationPolicy {
+        trusted_root_keys: roots,
+        package_name: package.to_string(),
+        signing_cert_digests: digests,
+        allow_software: config.app_approver_allow_software_attestation(),
+    })
+}
+
 fn security_alert_sink(config: &Config) -> Arc<dyn SecurityAlertSink> {
     let Some(url) = config.security_alert_webhook_url() else {
         return Arc::new(DisabledSecurityAlertSink);

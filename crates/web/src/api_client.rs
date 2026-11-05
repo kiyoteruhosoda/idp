@@ -3243,6 +3243,81 @@ impl ApiClient {
         .await
     }
 
+    /// 「アプリで続ける」の依頼を始める（task #892）。
+    pub async fn app_approval_start(
+        &self,
+        correlation_id: &str,
+        req: &assay_contracts::auth::InternalAppApprovalStartRequest,
+    ) -> Result<assay_contracts::auth::InternalAppApprovalStartResponse, InternalCallError> {
+        self.post_internal("/internal/app-approval/start", correlation_id, req)
+            .await
+    }
+
+    /// 認証アプリが開いたブラウザで「アプリで続ける」を完了する（task #892）。
+    pub async fn app_approval_complete(
+        &self,
+        correlation_id: &str,
+        req: &assay_contracts::auth::InternalAppApprovalCompleteRequest,
+    ) -> Result<assay_contracts::auth::InternalAppApprovalCompleteResponse, InternalCallError> {
+        self.post_internal("/internal/app-approval/complete", correlation_id, req)
+            .await
+    }
+
+    /// 認証アプリの登録の確認の画面の中身（task #892）。
+    pub async fn account_approver_enrollment(
+        &self,
+        correlation_id: &str,
+        req: &assay_contracts::auth::InternalAccountApproverEnrollmentRequest,
+    ) -> Result<assay_contracts::auth::InternalAccountApproverEnrollmentResponse, InternalCallError>
+    {
+        self.post_internal(
+            "/internal/account/app-approver/enrollment",
+            correlation_id,
+            req,
+        )
+        .await
+    }
+
+    /// 認証アプリの登録を確かめる（task #892）。
+    pub async fn account_approver_confirm(
+        &self,
+        correlation_id: &str,
+        req: &assay_contracts::auth::InternalAccountApproverEnrollmentRequest,
+    ) -> Result<assay_contracts::auth::InternalAccountApproverConfirmResponse, InternalCallError>
+    {
+        self.post_internal(
+            "/internal/account/app-approver/confirm",
+            correlation_id,
+            req,
+        )
+        .await
+    }
+
+    /// 「認証アプリ」の一覧（task #892）。
+    pub async fn account_approver_keys(
+        &self,
+        correlation_id: &str,
+        req: &assay_contracts::auth::InternalAccountApproverKeysRequest,
+    ) -> Result<assay_contracts::auth::InternalAccountApproverKeysResponse, InternalCallError> {
+        self.post_internal("/internal/account/app-approver/keys", correlation_id, req)
+            .await
+    }
+
+    /// 認証アプリの鍵を取り消す（task #892）。
+    pub async fn account_revoke_approver_key(
+        &self,
+        correlation_id: &str,
+        req: &assay_contracts::auth::InternalAccountRevokeApproverKeyRequest,
+    ) -> Result<assay_contracts::auth::InternalAccountRevokeApproverKeyResponse, InternalCallError>
+    {
+        self.post_internal(
+            "/internal/account/app-approver/keys/revoke",
+            correlation_id,
+            req,
+        )
+        .await
+    }
+
     /// ログインしたばかりの SSO セッションへ端末を結び付ける（task #872）。
     pub async fn device_observe(
         &self,

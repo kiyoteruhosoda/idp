@@ -18,6 +18,7 @@ pub mod admin_signing_keys_console;
 pub mod admin_status_console;
 pub mod admin_tenants_console;
 pub mod admin_users_console;
+pub mod app_approval;
 pub mod authenticators;
 pub mod consent;
 pub mod console_script;

@@ -114,6 +114,7 @@ fn method_label(method: &AuthenticationMethod) -> &'static str {
         AuthenticationMethod::EmailOtp => "メールの確認コード",
         AuthenticationMethod::SmsOtp => "SMS の確認コード",
         AuthenticationMethod::ExternalIdp => "外部のログイン",
+        AuthenticationMethod::AppApproval => "認証アプリでの承認",
     }
 }
 
@@ -172,11 +173,35 @@ pub(crate) fn notice_body(alert: &SecurityAlert) -> Value {
             ),
             "session-key-mismatch",
         ),
+        SecurityAlertKind::ApproverKeyRegistered { device_name } => (
+            format!(
+                "{} が認証アプリ（{}）の鍵を登録しました",
+                alert.username, device_name
+            ),
+            "approver-key-registered",
+        ),
+        SecurityAlertKind::ApproverKeyRevoked { device_name } => (
+            format!(
+                "{} が認証アプリ（{}）の鍵を取り消しました",
+                alert.username, device_name
+            ),
+            "approver-key-revoked",
+        ),
+        SecurityAlertKind::AppApprovalFromAnotherBrowser { device_name } => (
+            format!(
+                "{} が認証アプリ（{}）で承認したログインを、別のブラウザで使おうとしました（ログインはさせていません）",
+                alert.username, device_name
+            ),
+            "app-approval-another-browser",
+        ),
     };
     let subject = match &alert.kind {
         SecurityAlertKind::SshKeyRegistered { .. } | SecurityAlertKind::SshKeyRevoked { .. } => {
             "SSH の鍵"
         }
+        SecurityAlertKind::ApproverKeyRegistered { .. }
+        | SecurityAlertKind::ApproverKeyRevoked { .. }
+        | SecurityAlertKind::AppApprovalFromAnotherBrowser { .. } => "認証アプリ",
         _ => "ログインした端末",
     };
 
@@ -236,6 +261,13 @@ pub(crate) fn notice_body(alert: &SecurityAlert) -> Value {
             "そのログイン状態は終わらせました。本人はログインし直せば使えます".to_string(),
             "その端末の Cookie が持ち出された疑いがあります。端末のウイルス対策を確かめ、assay の「アカウントのセキュリティ」で他のセッションも切ってください"
                 .to_string(),
+        ],
+        SecurityAlertKind::ApproverKeyRegistered { .. } => vec![
+            "覚えが無ければ、assay の「アカウントのセキュリティ」→「端末」の「認証アプリ」から取り消してください（その鍵で承認したログイン状態も終わります）".to_string(),
+        ],
+        SecurityAlertKind::AppApprovalFromAnotherBrowser { .. } => vec![
+            "自分のスマホで始めたログインでなければ、だれかが別の端末で始めた依頼を承認させようとした疑いがあります".to_string(),
+            "ログインはさせていません。心当たりが無ければパスワードとパスキーを確かめてください".to_string(),
         ],
         _ => Vec::new(),
     };

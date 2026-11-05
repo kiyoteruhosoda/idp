@@ -186,6 +186,7 @@ dependencies = [
  "assay-core",
  "assay-web",
  "async-trait",
+ "aws-lc-rs",
  "axum",
  "base64 0.23.1",
  "chrono",

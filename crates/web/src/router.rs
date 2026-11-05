@@ -13,11 +13,11 @@ use crate::handlers::{
     admin_external_idps_console, admin_invitations_console, admin_login_identifiers_console,
     admin_members_console, admin_resources_console, admin_restart_console,
     admin_saml_clients_console, admin_settings, admin_signing_keys_console, admin_status_console,
-    admin_tenants_console, admin_users_console, authenticators, consent, console_script,
-    external_login, health, invitation_accept, locale, login, mfa_totp, page_scripts, passkey,
-    password_change, password_reset, portal, react_assets, rp_logout, saml_sso, step_up,
-    stylesheet, submit_feedback_script, user_security, user_settings, vendor_assets, verify_email,
-    web_app_manifest,
+    admin_tenants_console, admin_users_console, app_approval, authenticators, consent,
+    console_script, external_login, health, invitation_accept, locale, login, mfa_totp,
+    page_scripts, passkey, password_change, password_reset, portal, react_assets, rp_logout,
+    saml_sso, step_up, stylesheet, submit_feedback_script, user_security, user_settings,
+    vendor_assets, verify_email, web_app_manifest,
 };
 use crate::i18n::Messages;
 use crate::login_context::load_rp_login_context;
@@ -39,6 +39,17 @@ pub fn build(state: WebState) -> Router {
         .route("/login", get(login::login_page).post(login::login))
         // エンドユーザー・ポータルの TOTP 入力（`/login` 直接ログイン経路の 2 段階目）。
         .route("/login/mfa", get(portal::mfa_page).post(portal::mfa_submit))
+        // 「アプリで続ける」（task #892・ADR-0077）。
+        .route("/login/app/start", post(app_approval::start))
+        .route("/login/app/complete", get(app_approval::complete))
+        .route(
+            "/settings/app-approver/confirm",
+            get(app_approval::confirm_page).post(app_approval::confirm),
+        )
+        .route(
+            "/settings/security/revoke-approver-key",
+            post(app_approval::revoke_key),
+        )
         // エンドユーザー・ポータルの強制パスワード変更（初回ログイン時。ADR-0009 §5。管理コンソールと
         // 同じ共有画面を流用）。
         .route(
@@ -672,6 +683,10 @@ pub fn build(state: WebState) -> Router {
         .route(
             "/assets/passkey-login.js",
             get(page_scripts::passkey_login_js),
+        )
+        .route(
+            "/assets/app-approval-login.js",
+            get(page_scripts::app_approval_login_js),
         )
         .route(
             "/assets/passkey-register.js",

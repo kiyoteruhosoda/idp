@@ -25,11 +25,17 @@ pub enum SecurityAlertKind {
         methods: Vec<AuthenticationMethod>,
     },
     /// 端末を登録した。
-    DeviceRegistered { device_name: String },
+    DeviceRegistered {
+        device_name: String,
+    },
     /// 利用者が端末の登録を取り消した。
-    DeviceRevoked { device_name: String },
+    DeviceRevoked {
+        device_name: String,
+    },
     /// 使われないまま期限が過ぎ、端末の登録が切れた。
-    DeviceExpired { device_name: String },
+    DeviceExpired {
+        device_name: String,
+    },
     /// SSH の公開鍵を登録した（task #885）。
     SshKeyRegistered {
         key_name: String,
@@ -43,6 +49,18 @@ pub enum SecurityAlertKind {
     /// 端末の鍵に結び付いたログイン状態へ、別の鍵の署名が来た（Cookie の持ち出しの疑い。task #887）。
     /// そのログイン状態は終わらせてある。
     SessionKeyMismatch,
+    /// 認証アプリの鍵を登録した・取り消した（task #892）。
+    ApproverKeyRegistered {
+        device_name: String,
+    },
+    ApproverKeyRevoked {
+        device_name: String,
+    },
+    /// 認証アプリで承認したログインを、依頼を始めたのとは別のブラウザで完了しようとした
+    /// （別の端末で始めた依頼を、だまされて承認した疑い）。ログインはさせていない。
+    AppApprovalFromAnotherBrowser {
+        device_name: String,
+    },
 }
 
 impl SecurityAlertKind {
@@ -54,7 +72,10 @@ impl SecurityAlertKind {
             | Self::DeviceRevoked { .. }
             | Self::SshKeyRegistered { .. }
             | Self::SshKeyRevoked { .. }
-            | Self::SessionKeyMismatch => SecurityAlertSeverity::Warning,
+            | Self::SessionKeyMismatch
+            | Self::ApproverKeyRegistered { .. }
+            | Self::ApproverKeyRevoked { .. }
+            | Self::AppApprovalFromAnotherBrowser { .. } => SecurityAlertSeverity::Warning,
             Self::DeviceExpired { .. } => SecurityAlertSeverity::Info,
         }
     }

@@ -82,20 +82,37 @@ pub struct SessionKeyBinding {
     pub bound_at: DateTime<Utc>,
 }
 
-/// 結び付いたログイン状態の長さを決める材料。
+/// ログイン状態の結び付けの種類（task #887・#892。ADR-0074・ADR-0077）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionBinding {
+    /// 結び付けなし。
+    Unbound,
+    /// DBSC で端末の鍵に結び付いた（Windows の Chrome）。
+    DeviceKey,
+    /// 登録した認証アプリで承認して作った（Android の Chrome。持ち主の決定「アプリで認証なら 30 日」）。
+    AppApproval,
+}
+
+/// ログイン状態の長さを決める。
 ///
-/// 30 日（`bound_ttl`）にするのは「鍵に結び付いている」かつ「そのログイン状態の端末が自分の端末に
-/// 登録済み」のときだけ（ADR-0074 §6）。それ以外は確立したときの長さ（`absolute_ttl`）。
-/// どちらも**作った時刻から**数える。返すのは (idle の期限, absolute の期限)。
+/// 30 日（`bound_ttl`）にするのは、DBSC で結び付き**かつ**そのログイン状態の端末が自分の端末に
+/// 登録済みのとき（ADR-0074 §6）と、認証アプリで承認したとき（ADR-0077。承認した鍵そのものが
+/// パスキーで登録した端末の鍵なので、ブラウザの端末の登録は問わない）。それ以外は確立したときの
+/// 長さ（`absolute_ttl`）。どちらも**作った時刻から**数える。返すのは (idle の期限, absolute の期限)。
 pub fn lifetime_for(
     created_at: DateTime<Utc>,
     current_idle: DateTime<Utc>,
-    key_bound: bool,
+    binding: SessionBinding,
     device_registered: bool,
     absolute_ttl: Duration,
     bound_ttl: Duration,
 ) -> (DateTime<Utc>, DateTime<Utc>) {
-    if key_bound && device_registered && bound_ttl > absolute_ttl {
+    let long = match binding {
+        SessionBinding::Unbound => false,
+        SessionBinding::DeviceKey => device_registered,
+        SessionBinding::AppApproval => true,
+    };
+    if long && bound_ttl > absolute_ttl {
         let absolute = created_at + bound_ttl;
         // 結び付いたログイン状態は「使わなかった」で切らない（持ち主の決定。idle も同じ長さ）。
         (absolute, absolute)
@@ -352,27 +369,50 @@ mod tests {
         let idle = created + Duration::hours(30);
         let week = Duration::days(7);
         let month = Duration::days(30);
+        use SessionBinding::{DeviceKey, Unbound};
         assert_eq!(
-            lifetime_for(created, idle, true, true, week, month),
+            lifetime_for(created, idle, DeviceKey, true, week, month),
             (created + month, created + month)
         );
-        for (bound, registered) in [(true, false), (false, true), (false, false)] {
+        for (binding, registered) in [(DeviceKey, false), (Unbound, true), (Unbound, false)] {
             assert_eq!(
-                lifetime_for(created, idle, bound, registered, week, month),
+                lifetime_for(created, idle, binding, registered, week, month),
                 (idle, created + week),
-                "bound={bound} registered={registered}"
+                "binding={binding:?} registered={registered}"
             );
         }
         // 30 日から 7 日へ戻すとき、idle は absolute を越えない。
         assert_eq!(
-            lifetime_for(created, created + month, true, false, week, month),
+            lifetime_for(created, created + month, DeviceKey, false, week, month),
             (created + week, created + week)
         );
         // 組織が長さを短く決めていれば、結び付いても延ばさない。
         assert_eq!(
-            lifetime_for(created, idle, true, true, month, week),
+            lifetime_for(created, idle, DeviceKey, true, month, week),
             (idle, created + month)
         );
+    }
+
+    #[test]
+    fn an_app_approved_session_gets_the_long_lifetime_without_a_registered_browser() {
+        use chrono::TimeZone;
+        let created = Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).unwrap();
+        let idle = created + Duration::hours(30);
+        let week = Duration::days(7);
+        let month = Duration::days(30);
+        for registered in [true, false] {
+            assert_eq!(
+                lifetime_for(
+                    created,
+                    idle,
+                    SessionBinding::AppApproval,
+                    registered,
+                    week,
+                    month
+                ),
+                (created + month, created + month)
+            );
+        }
     }
 
     #[test]
