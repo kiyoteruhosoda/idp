@@ -61,6 +61,15 @@ pub fn portal_csrf_valid(csrf_id: Option<&str>, submitted: &str, key: &[u8]) -> 
     seeded_valid(csrf_id, submitted, key, portal_csrf_token)
 }
 
+/// 認可の途中のログイン画面のフォーム（「アプリで続ける」。task #892）の CSRF を、`auth_session_id` と照合する。
+/// トークンはログインのフォームと同じもの（`assay_contracts::csrf::login_csrf_token`）。
+pub fn login_csrf_valid(auth_session_id: &str, submitted: &str, key: &[u8]) -> bool {
+    assay_contracts::csrf::verify(
+        &assay_contracts::csrf::login_csrf_token(auth_session_id, key),
+        submitted,
+    )
+}
+
 /// ログイン後の状態変更フォーム（管理コンソール・アカウント設定・ログアウト）の CSRF を、SSO
 /// セッション id と照合する。SSO セッション id を既に取り出しているハンドラ向け。
 pub fn console_csrf_valid(sso_session_id: &str, submitted: &str, key: &[u8]) -> bool {

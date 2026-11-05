@@ -13,7 +13,7 @@ use super::{api_internal_error, internal_call_status};
 use crate::client_ip::ClientIp;
 use crate::cookies;
 use crate::correlation::CorrelationId;
-use crate::csrf::{console_csrf_token, console_csrf_valid};
+use crate::csrf::{console_csrf_token, console_csrf_valid, login_csrf_valid};
 use crate::handlers::{forwarded_context, found, locale, see_other, step_up};
 use crate::i18n::{Locale, Messages};
 use crate::state::WebState;
@@ -99,9 +99,11 @@ pub async fn start(
     let Some(auth_session_id) = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE) else {
         return message_page(loc, "app-approval-error-restart", StatusCode::BAD_REQUEST);
     };
-    let expected =
-        assay_contracts::csrf::login_csrf_token(&auth_session_id, state.config.csrf_secret());
-    if form.csrf_token != expected {
+    if !login_csrf_valid(
+        &auth_session_id,
+        &form.csrf_token,
+        state.config.csrf_secret(),
+    ) {
         tracing::warn!(correlation_id = %correlation.0, "app approval start rejected: csrf token mismatch");
         return message_page(loc, "app-approval-error-restart", StatusCode::BAD_REQUEST);
     }
