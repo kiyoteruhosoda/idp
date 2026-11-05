@@ -18,12 +18,14 @@ use crate::handlers::{forwarded_context, found, locale, see_other, step_up};
 use crate::i18n::Messages;
 use crate::state::WebState;
 use crate::templates::{
-    browser_summary, render, ConnectedAppView, SecurityApproverKeyView, SecurityDeviceView,
-    SecuritySessionView, SecuritySshKeyView, SignInAppView, SignInRefreshView, SignInView,
-    UserSecurity,
+    browser_summary, duration_label, render, AppTokensView, BelongingView, ConnectedAppView,
+    PolicyView, SecurityApproverKeyView, SecurityDeviceView, SecuritySessionView,
+    SecuritySshKeyView, SecurityStatusView, SessionStatusView, SignInAppView, SignInRefreshView,
+    SignInView, UserSecurity, WarningView,
 };
 use crate::tenant::WebTenant;
 use assay_contracts::auth::{
+    AccountAppTokens, AccountBelonging, AccountOccurrences, AccountSessionStatus,
     AccountSignInEntry, InternalAccountDevicesRequest, InternalAccountDevicesResponse,
     InternalAccountRegisterDeviceRequest, InternalAccountRegisterDeviceResponse,
     InternalAccountRegisterSshKeyRequest, InternalAccountRegisterSshKeyResponse,
@@ -33,6 +35,7 @@ use assay_contracts::auth::{
     InternalAccountRevokeSessionRequest, InternalAccountRevokeSessionResponse,
     InternalAccountRevokeSshKeyRequest, InternalAccountRevokeSshKeyResponse,
     InternalAccountSecurityRequest, InternalAccountSecurityResponse,
+    InternalAccountSecurityStatusRequest, InternalAccountSecurityStatusResponse,
     InternalAccountSignInHistoryRequest, InternalAccountSignInHistoryResponse,
     InternalAccountSshKeysRequest, InternalAccountSshKeysResponse,
 };
@@ -101,6 +104,7 @@ pub struct ReissueTokensForm {
 pub async fn page(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
+    Extension(client_ip): Extension<ClientIp>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
     Query(query): Query<SecurityQuery>,
@@ -287,11 +291,117 @@ pub async fn page(
         }
     };
 
+    // 「状況」（task #896）。読めなくても下の一覧は出す（欄の代わりに案内を出す）。
+    let status = match state
+        .api
+        .account_security_status(
+            &correlation.0,
+            &InternalAccountSecurityStatusRequest {
+                tenant_id: Some(tenant.0.clone()),
+                sso_session_id: request.sso_session_id.clone(),
+            },
+        )
+        .await
+    {
+        Ok(InternalAccountSecurityStatusResponse::Ok {
+            sessions,
+            belongings,
+            apps,
+            policy,
+            warnings,
+        }) => Some((sessions, belongings, apps, policy, warnings)),
+        Ok(InternalAccountSecurityStatusResponse::SessionExpired) => {
+            return found(&format!("{}/login", tenant.prefix()));
+        }
+        Ok(InternalAccountSecurityStatusResponse::Internal) => {
+            tracing::warn!("security status could not be built");
+            None
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "security status call to api failed");
+            None
+        }
+    };
+    let bound_cookie_expires_at =
+        crate::session_key::bound_cookie_expiry(&state, &headers, &request.sso_session_id)
+            .and_then(|t| chrono::DateTime::from_timestamp(t, 0))
+            .map(|t| t.to_rfc3339())
+            .unwrap_or_default();
+    let request_user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+
     // Messages（FluentBundle）は !Send のため、api の await より後・描画の直前に生成する。
     let messages = Messages::new(locale);
+    // ログイン状態ごとの状況は、下の「ログイン状態」の表の行へも添える（同じ id で引く）。
+    let mut session_statuses: std::collections::HashMap<String, SessionStatusView> =
+        std::collections::HashMap::new();
+    let status: Option<SecurityStatusView> =
+        status.map(|(sessions, belongings, apps, policy, warnings)| {
+            let warnings = *warnings;
+            for s in sessions.into_iter().map(session_status_view) {
+                session_statuses.insert(s.id.clone(), s);
+            }
+            SecurityStatusView {
+                current: session_statuses.values().find(|s| s.current).cloned(),
+                browser: browser_summary(&request_user_agent),
+                user_agent: request_user_agent.clone(),
+                ip_address: client_ip.0.clone().unwrap_or_default(),
+                country: crate::client_country::current().unwrap_or_default(),
+                bound_cookie_expires_at: bound_cookie_expires_at.clone(),
+                belongings: belongings.into_iter().map(belonging_view).collect(),
+                apps: apps.into_iter().map(app_tokens_view).collect(),
+                policy: PolicyView {
+                    unregistered_device_alerts: policy.unregistered_device_alerts,
+                    ssh_keys_enabled: policy.ssh_keys_enabled,
+                    bound_ttl: length_label(&messages, policy.bound_ttl_secs),
+                    absolute_ttl: length_label(&messages, policy.absolute_ttl_secs),
+                    idle_ttl: length_label(&messages, policy.idle_ttl_secs),
+                    device_expiry_days: policy.device_expiry_days,
+                },
+                warnings: [
+                    (
+                        "user-security-status-warning-reuse",
+                        &warnings.refresh_reuse,
+                    ),
+                    (
+                        "user-security-status-warning-session-key",
+                        &warnings.session_key_mismatch,
+                    ),
+                    (
+                        "user-security-status-warning-dpop-key",
+                        &warnings.dpop_key_mismatch,
+                    ),
+                    (
+                        "user-security-status-warning-unregistered",
+                        &warnings.unregistered_sign_ins,
+                    ),
+                ]
+                .into_iter()
+                .filter(|(_, o)| o.count > 0)
+                .map(
+                    |(key, o): (&'static str, &AccountOccurrences)| WarningView {
+                        key,
+                        count: o.count,
+                        last_at: o.last_at.clone().unwrap_or_default(),
+                    },
+                )
+                .collect(),
+                failure_days: warnings
+                    .failure_days
+                    .into_iter()
+                    .map(|d| (d.day, d.count))
+                    .collect(),
+                warning_window_days: warnings.window_days,
+            }
+        });
+
     let sessions: Vec<SecuritySessionView> = sessions
         .into_iter()
         .map(|s| SecuritySessionView {
+            status: session_statuses.remove(&s.id),
             id: s.id,
             current: s.current,
             multi_factor: s.multi_factor,
@@ -329,6 +439,7 @@ pub async fn page(
         ssh_keys_enabled: ssh_keys.enabled,
         ssh_keys: &ssh_keys.keys,
         ssh_keys_passkey_fresh: ssh_keys.passkey_fresh,
+        status: status.as_ref(),
         saved_key: query.saved.as_deref().and_then(saved_key_for),
         error_key: query.error.as_deref().and_then(error_key_for),
     }))
@@ -955,6 +1066,179 @@ fn failure_key(kind: &str) -> &'static str {
         "policy_denied" => "user-security-signins-failure-policy",
         "external_failed" => "user-security-signins-failure-external",
         _ => "user-security-signins-failure-other",
+    }
+}
+
+/// 「状況」のログイン状態 1 つを画面の形へ（task #896）。
+fn session_status_view(s: AccountSessionStatus) -> SessionStatusView {
+    let user_agent = s.user_agent.unwrap_or_default();
+    SessionStatusView {
+        browser: browser_summary(&user_agent),
+        user_agent,
+        id: s.id,
+        current: s.current,
+        auth_time: s.auth_time,
+        expires_at: s.expires_at,
+        method_keys: s.methods.iter().map(|m| method_key(m)).collect(),
+        multi_factor: s.multi_factor,
+        ip_address: s.ip_address.unwrap_or_default(),
+        country: s.country.unwrap_or_default(),
+        device_identified: s.device_identified,
+        device_name: s.device_name.unwrap_or_default(),
+        device_registered_at: s.device_registered_at.unwrap_or_default(),
+        device_last_used_at: s.device_last_used_at.unwrap_or_default(),
+        binding_key: match s.binding.as_str() {
+            "device_key" => "user-security-status-binding-device-key",
+            "app_approval" => "user-security-status-binding-app-approval",
+            _ => "user-security-status-binding-unbound",
+        },
+        long_lifetime: matches!(
+            s.lifetime_basis.as_str(),
+            "bound_on_registered_device" | "app_approval"
+        ),
+        basis_key: basis_keys(&s.lifetime_basis).0,
+        basis_short_key: basis_keys(&s.lifetime_basis).1,
+        key_algorithm: s.key_algorithm.unwrap_or_default(),
+        key_thumbprint_head: s
+            .key_thumbprint
+            .unwrap_or_default()
+            .chars()
+            .take(12)
+            .collect(),
+        key_bound_at: s.key_bound_at.unwrap_or_default(),
+        key_refreshed_at: s.key_refreshed_at.unwrap_or_default(),
+        approver_device_name: s.approver_device_name.unwrap_or_default(),
+        approver_level_key: match s.approver_security_level.as_deref() {
+            Some("strongbox") => "app-approver-level-strongbox",
+            Some("tee") => "app-approver-level-tee",
+            Some(_) => "app-approver-level-software",
+            None => "",
+        },
+        passkey_fresh_until: s.passkey_fresh_until.unwrap_or_default(),
+    }
+}
+
+/// 組織の長さの設定（秒）を「30 日」のように読める形へ。
+fn length_label(messages: &Messages, secs: i64) -> String {
+    duration_label(messages, u64::try_from(secs).unwrap_or(0)).unwrap_or_else(|| secs.to_string())
+}
+
+/// 長さの根拠の文言のキー（長い言い方と、表の 1 行の短い言い方）。
+fn basis_keys(basis: &str) -> (&'static str, &'static str) {
+    match basis {
+        "bound_on_registered_device" => (
+            "user-security-status-basis-bound-registered",
+            "user-security-status-basis-bound-registered-short",
+        ),
+        "app_approval" => (
+            "user-security-status-basis-app-approval",
+            "user-security-status-basis-app-approval-short",
+        ),
+        "bound_on_unregistered_device" => (
+            "user-security-status-basis-bound-unregistered",
+            "user-security-status-basis-bound-unregistered-short",
+        ),
+        "not_extended_by_setting" => (
+            "user-security-status-basis-not-extended",
+            "user-security-status-basis-not-extended-short",
+        ),
+        _ => (
+            "user-security-status-basis-unbound",
+            "user-security-status-basis-unbound-short",
+        ),
+    }
+}
+
+/// 持ち物 1 つを画面の形へ（task #896）。種類ごとに「何に使われるか」「強さ」を決める。
+fn belonging_view(b: AccountBelonging) -> BelongingView {
+    let (kind_key, use_key, strength_key) = match b.kind.as_str() {
+        "passkey" => (
+            "user-security-status-kind-passkey",
+            "user-security-status-use-passkey",
+            "user-security-status-strength-phishing-resistant",
+        ),
+        "totp" => (
+            "user-security-status-kind-totp",
+            "user-security-status-use-totp",
+            "user-security-status-strength-second-factor",
+        ),
+        "approver_key" => (
+            "user-security-status-kind-approver-key",
+            "user-security-status-use-approver-key",
+            "user-security-status-strength-phishing-resistant",
+        ),
+        "device" => (
+            "user-security-status-kind-device",
+            "user-security-status-use-device",
+            "user-security-status-strength-marker",
+        ),
+        _ => (
+            "user-security-status-kind-ssh-key",
+            "user-security-status-use-ssh-key",
+            "user-security-status-strength-hardware",
+        ),
+    };
+    let (detail, detail_key) = match (b.kind.as_str(), b.detail) {
+        ("approver_key", Some(level)) => (
+            String::new(),
+            match level.as_str() {
+                "strongbox" => "app-approver-level-strongbox",
+                "tee" => "app-approver-level-tee",
+                _ => "app-approver-level-software",
+            },
+        ),
+        ("device", Some(ua)) => (browser_summary(&ua), ""),
+        (_, detail) => (detail.unwrap_or_default(), ""),
+    };
+    BelongingView {
+        last_use_invisible: b.kind == "ssh_key",
+        kind_key,
+        use_key,
+        strength_key,
+        name: b.name,
+        detail,
+        detail_key,
+        registered_at: b.registered_at,
+        last_used_at: b.last_used_at.unwrap_or_default(),
+        expires_at: b.expires_at.unwrap_or_default(),
+    }
+}
+
+/// アプリ 1 つのトークンの種別を画面の形へ（task #896）。
+fn app_tokens_view(a: AccountAppTokens) -> AppTokensView {
+    let token_key = if a.active_refresh_tokens == 0 {
+        "user-security-status-token-none"
+    } else if a.dpop_bound_refresh_tokens == a.active_refresh_tokens {
+        "user-security-status-token-dpop"
+    } else if a.dpop_bound_refresh_tokens == 0 {
+        "user-security-status-token-bearer"
+    } else {
+        "user-security-status-token-mixed"
+    };
+    let sender = match (a.refresh_last_ip, a.refresh_last_user_agent) {
+        (Some(ip), Some(ua)) => {
+            let summary = browser_summary(&ua);
+            if summary.is_empty() {
+                ip
+            } else {
+                format!("{ip}（{summary}）")
+            }
+        }
+        (Some(ip), None) => ip,
+        (None, Some(ua)) => browser_summary(&ua),
+        (None, None) => String::new(),
+    };
+    AppTokensView {
+        app_name: a.app_name,
+        scopes: a.scopes.join(" "),
+        active_refresh_tokens: a.active_refresh_tokens,
+        dpop_bound_refresh_tokens: a.dpop_bound_refresh_tokens,
+        token_key,
+        last_issued_at: a.last_issued_at.unwrap_or_default(),
+        refresh_use_count: a.refresh_use_count,
+        refresh_last_used_at: a.refresh_last_used_at.unwrap_or_default(),
+        refresh_last_sender: sender,
+        refresh_reuse_detected_at: a.refresh_reuse_detected_at.unwrap_or_default(),
     }
 }
 

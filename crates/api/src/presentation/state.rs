@@ -70,6 +70,7 @@ use crate::application::resource_management::ResourceManagementService;
 use crate::application::revocation::RevocationService;
 use crate::application::saml_service_provider_management::SamlServiceProviderManagementService;
 use crate::application::saml_sso::SamlSsoService;
+use crate::application::security_status::{SecurityStatusDeps, SecurityStatusService};
 use crate::application::service_restart::ServiceRestartService;
 use crate::application::session_key_binding::SessionKeyBindingService;
 use crate::application::sign_in_completion::SignInCompletion;
@@ -140,6 +141,7 @@ use crate::infrastructure::repositories::refresh_token::SqlxRefreshTokenReposito
 use crate::infrastructure::repositories::revoked_access_token::SqlxRevokedAccessTokenRepository;
 use crate::infrastructure::repositories::saml_service_provider::SqlxSamlServiceProviderRepository;
 use crate::infrastructure::repositories::saml_sso_request::SqlxSamlSsoRequestRepository;
+use crate::infrastructure::repositories::security_status_query::SqlxSecurityStatusQuery;
 use crate::infrastructure::repositories::session_key_binding::SqlxSessionKeyBindingRepository;
 use crate::infrastructure::repositories::sign_in_history::SqlxSignInHistoryRepository;
 use crate::infrastructure::repositories::signing_key::SqlxSigningKeyRepository;
@@ -276,6 +278,8 @@ pub struct AppState {
     pub device_registry: Arc<DeviceRegistryService>,
     /// 本人が見るログイン履歴（task #879）。
     pub sign_in_history: Arc<SignInHistoryService>,
+    /// 本人が見る「状況」（task #896）。
+    pub security_status: Arc<SecurityStatusService>,
     /// 利用者が登録する SSH の公開鍵と、配る機械への一覧（task #885）。
     pub ssh_keys: Arc<SshKeyRegistryService>,
     /// SSO セッションの端末の鍵への結び付け（DBSC。task #887）。
@@ -1156,7 +1160,7 @@ impl AppState {
         let session_key_binding = Arc::new(SessionKeyBindingService::new(
             Arc::new(SqlxSessionKeyBindingRepository::new(pool.clone())),
             sso_sessions.clone(),
-            user_devices,
+            user_devices.clone(),
             users.clone(),
             refresh_tokens.clone(),
             tenant_settings.clone(),
@@ -1187,6 +1191,19 @@ impl AppState {
             },
             app_approver_policy(&config),
         ));
+
+        // task #896: 本人が見る「状況」（読むだけ）。
+        let security_status = Arc::new(SecurityStatusService::new(SecurityStatusDeps {
+            query: Arc::new(SqlxSecurityStatusQuery::new(pool.clone())),
+            sso_sessions: sso_sessions.clone(),
+            users: users.clone(),
+            authenticators: authenticator_repository.clone(),
+            devices: user_devices.clone(),
+            approver_keys: Arc::new(SqlxApproverKeyRepository::new(pool.clone())),
+            ssh_keys: Arc::new(SqlxUserSshKeyRepository::new(pool.clone())),
+            settings: tenant_settings.clone(),
+            clock: clock.clone(),
+        }));
 
         // task #879: 本人が見るログイン履歴。
         let sign_in_history = Arc::new(SignInHistoryService::new(
@@ -1344,6 +1361,7 @@ impl AppState {
             account_security,
             device_registry,
             sign_in_history,
+            security_status,
             ssh_keys,
             session_key_binding,
             app_approval,

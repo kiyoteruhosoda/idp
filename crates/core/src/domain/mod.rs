@@ -58,6 +58,7 @@ pub mod saml_response;
 pub mod saml_service_provider;
 pub mod saml_sso_request;
 pub mod security_alert;
+pub mod security_status;
 pub mod service_lifecycle;
 pub mod session_key;
 pub mod sign_in_history;

@@ -10,8 +10,8 @@ use crate::presentation::handlers::{
     admin_system_settings, admin_tenant_settings, admin_tenant_smtp, admin_tenants, admin_users,
     app_approver, authorize, consent, discovery, health, internal_admin_token,
     internal_app_approval, internal_auth, internal_devices, internal_runtime_settings,
-    internal_session_keys, internal_sign_in_history, internal_ssh_keys, introspect, invitations,
-    logout, mfa, passkey, register, revoke, saml_sso, token, userinfo,
+    internal_security_status, internal_session_keys, internal_sign_in_history, internal_ssh_keys,
+    introspect, invitations, logout, mfa, passkey, register, revoke, saml_sso, token, userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::security_headers::add_security_headers;
@@ -241,6 +241,11 @@ pub fn build(state: AppState) -> Router {
         .route(
             "/internal/account/devices/revoke",
             post(internal_devices::account_revoke_device),
+        )
+        // 本人が見る「状況」（task #896）。
+        .route(
+            "/internal/account/security/status",
+            post(internal_security_status::account_security_status),
         )
         // 本人のログイン履歴（task #879）。
         .route(

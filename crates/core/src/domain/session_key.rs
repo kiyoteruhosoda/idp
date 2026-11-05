@@ -107,18 +107,70 @@ pub fn lifetime_for(
     absolute_ttl: Duration,
     bound_ttl: Duration,
 ) -> (DateTime<Utc>, DateTime<Utc>) {
-    let long = match binding {
-        SessionBinding::Unbound => false,
-        SessionBinding::DeviceKey => device_registered,
-        SessionBinding::AppApproval => true,
-    };
-    if long && bound_ttl > absolute_ttl {
+    if lifetime_basis(binding, device_registered, absolute_ttl, bound_ttl).is_long() {
         let absolute = created_at + bound_ttl;
         // 結び付いたログイン状態は「使わなかった」で切らない（持ち主の決定。idle も同じ長さ）。
         (absolute, absolute)
     } else {
         let absolute = created_at + absolute_ttl;
         (current_idle.min(absolute), absolute)
+    }
+}
+
+/// ログイン状態の長さがなぜその長さか（task #896。本人の「状況」に 1 行で出す）。
+///
+/// [`lifetime_for`] はこの判定だけで長さを選ぶ。画面の説明と実際の長さが食い違わないよう、判定は
+/// ここ 1 か所に置く。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LifetimeBasis {
+    /// 端末の鍵に結び付き、かつその端末が登録済み → 長い（`bound_ttl`）。
+    BoundOnRegisteredDevice,
+    /// 登録した認証アプリで承認して入った → 長い（`bound_ttl`）。
+    AppApproval,
+    /// 端末の鍵に結び付いたが、その端末は登録していない → 確立したときの長さ。
+    BoundOnUnregisteredDevice,
+    /// 結び付いていない → 確立したときの長さ。
+    Unbound,
+    /// 長くしてよい条件は満たすが、組織の長さの設定が延ばさない（`bound_ttl` ≦ `absolute_ttl`）。
+    NotExtendedBySetting,
+}
+
+impl LifetimeBasis {
+    /// 長い長さ（`bound_ttl`）を使うか。
+    pub fn is_long(self) -> bool {
+        matches!(self, Self::BoundOnRegisteredDevice | Self::AppApproval)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::BoundOnRegisteredDevice => "bound_on_registered_device",
+            Self::AppApproval => "app_approval",
+            Self::BoundOnUnregisteredDevice => "bound_on_unregistered_device",
+            Self::Unbound => "unbound",
+            Self::NotExtendedBySetting => "not_extended_by_setting",
+        }
+    }
+}
+
+/// 結び付けの種類と端末の登録から、長さの根拠を決める。
+pub fn lifetime_basis(
+    binding: SessionBinding,
+    device_registered: bool,
+    absolute_ttl: Duration,
+    bound_ttl: Duration,
+) -> LifetimeBasis {
+    let qualified = match binding {
+        SessionBinding::Unbound => return LifetimeBasis::Unbound,
+        SessionBinding::DeviceKey if !device_registered => {
+            return LifetimeBasis::BoundOnUnregisteredDevice
+        }
+        SessionBinding::DeviceKey => LifetimeBasis::BoundOnRegisteredDevice,
+        SessionBinding::AppApproval => LifetimeBasis::AppApproval,
+    };
+    if bound_ttl > absolute_ttl {
+        qualified
+    } else {
+        LifetimeBasis::NotExtendedBySetting
     }
 }
 
@@ -411,6 +463,51 @@ mod tests {
                     month
                 ),
                 (created + month, created + month)
+            );
+        }
+    }
+
+    #[test]
+    fn the_basis_names_why_a_session_has_its_length() {
+        let week = Duration::days(7);
+        let month = Duration::days(30);
+        use SessionBinding::{AppApproval, DeviceKey, Unbound};
+        assert_eq!(
+            lifetime_basis(DeviceKey, true, week, month),
+            LifetimeBasis::BoundOnRegisteredDevice
+        );
+        assert_eq!(
+            lifetime_basis(AppApproval, false, week, month),
+            LifetimeBasis::AppApproval
+        );
+        assert_eq!(
+            lifetime_basis(DeviceKey, false, week, month),
+            LifetimeBasis::BoundOnUnregisteredDevice
+        );
+        assert_eq!(
+            lifetime_basis(Unbound, true, week, month),
+            LifetimeBasis::Unbound
+        );
+        assert_eq!(
+            lifetime_basis(DeviceKey, true, month, week),
+            LifetimeBasis::NotExtendedBySetting
+        );
+        // 長いと言う根拠のときだけ lifetime_for も長くする。
+        use chrono::TimeZone;
+        let created = Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).unwrap();
+        for (binding, registered) in [
+            (DeviceKey, true),
+            (DeviceKey, false),
+            (AppApproval, false),
+            (Unbound, true),
+        ] {
+            let long = lifetime_basis(binding, registered, week, month).is_long();
+            let (_, absolute) =
+                lifetime_for(created, created + week, binding, registered, week, month);
+            assert_eq!(
+                absolute == created + month,
+                long,
+                "{binding:?} {registered}"
             );
         }
     }

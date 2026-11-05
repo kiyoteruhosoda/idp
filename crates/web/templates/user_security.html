@@ -10,6 +10,8 @@
 {% if let Some(key) = saved_key %}<div class="alert alert-success" role="status">{{ messages.get(key) }}</div>{% endif %}
 {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
 
+{% include "user_security_status.html" %}
+
 <div class="card mb-4" id="devices">
   <div class="card-header d-flex align-items-center"><i class="fa-solid fa-laptop me-2" aria-hidden="true"></i>{{ messages.get("user-security-devices-heading") }}</div>
   <div class="card-body">
@@ -273,10 +275,16 @@
               <span class="d-block text-break">{{ session.user_agent }}</span>
               {% if session.current %}<span class="badge text-bg-primary">{{ messages.get("user-security-session-current") }}</span>{% endif %}
               {% if session.multi_factor %}<span class="badge text-bg-success">{{ messages.get("user-security-session-mfa") }}</span>{% endif %}
+              {#- 端末・結び付け・入り方（task #896）。 -#}
+              {% if let Some(st) = session.status.as_ref() %}
+              <span class="d-block small" data-session-status="device">{% if !st.device_name.is_empty() %}<span class="badge text-bg-success">{{ messages.get("user-security-signins-device-registered") }}</span> {{ st.device_name }}{% else if st.device_identified %}<span class="badge text-bg-secondary">{{ messages.get("user-security-signins-device-unregistered") }}</span>{% else %}<span class="text-muted">{{ messages.get("user-security-status-device-unidentified-short") }}</span>{% endif %}</span>
+              <span class="d-block small" data-session-status="binding">{{ messages.get(st.binding_key) }}{% if !st.approver_device_name.is_empty() %}（{{ st.approver_device_name }}）{% endif %}</span>
+              <span class="d-block small text-muted">{% for key in st.method_keys %}{% if !loop.first %}・{% endif %}{{ messages.get(key) }}{% endfor %}</span>
+              {% endif %}
             </td>
             <td data-label="{{ messages.get("user-security-session-ip") }}">{{ session.ip_address }}</td>
             <td data-label="{{ messages.get("user-security-session-auth-time") }}"><time class="local-time" datetime="{{ session.auth_time }}">{{ crate::templates::utc_short(session.auth_time.as_str()) }}</time></td>
-            <td data-label="{{ messages.get("user-security-session-expires") }}"><time class="local-time" datetime="{{ session.absolute_expires_at }}">{{ crate::templates::utc_short(session.absolute_expires_at.as_str()) }}</time></td>
+            <td data-label="{{ messages.get("user-security-session-expires") }}">{% if let Some(st) = session.status.as_ref() %}<time class="local-time" datetime="{{ st.expires_at }}">{{ crate::templates::utc_short(st.expires_at.as_str()) }}</time><span class="d-block small text-muted" data-session-status="basis">{{ messages.get(st.basis_short_key) }}</span>{% else %}<time class="local-time" datetime="{{ session.absolute_expires_at }}">{{ crate::templates::utc_short(session.absolute_expires_at.as_str()) }}</time>{% endif %}</td>
             <td class="text-end">
               {% if !session.current %}
               <form method="post" action="{{ tenant }}/settings/security/revoke-session" data-confirm="{{ messages.get("user-security-session-revoke-confirm") }}">
