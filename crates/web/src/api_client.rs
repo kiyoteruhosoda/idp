@@ -3368,6 +3368,17 @@ impl ApiClient {
             .await
     }
 
+    /// 「状況」の欄（task #896）。
+    pub async fn account_security_status(
+        &self,
+        correlation_id: &str,
+        req: &assay_contracts::auth::InternalAccountSecurityStatusRequest,
+    ) -> Result<assay_contracts::auth::InternalAccountSecurityStatusResponse, InternalCallError>
+    {
+        self.post_internal("/internal/account/security/status", correlation_id, req)
+            .await
+    }
+
     /// 本人のログイン履歴（task #879）。
     pub async fn account_sign_in_history(
         &self,

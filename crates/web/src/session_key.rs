@@ -94,6 +94,21 @@ fn bound_cookie_name(state: &WebState) -> String {
         .origin_bound_name(contract::BOUND_COOKIE)
 }
 
+/// このブラウザの短い Cookie の期限（UNIX 秒）。無い・合わない・切れているなら `None`（task #896）。
+pub fn bound_cookie_expiry(
+    state: &WebState,
+    headers: &axum::http::HeaderMap,
+    sso_session_id: &str,
+) -> Option<i64> {
+    let value = crate::cookies::get(headers, &bound_cookie_name(state))?;
+    contract::bound_cookie_expires_at(
+        state.config.csrf_secret(),
+        sso_session_id,
+        &value,
+        now_secs(),
+    )
+}
+
 /// 短い Cookie を置く `Set-Cookie`。
 fn set_bound_cookie(state: &WebState, sso_session_id: &str) -> String {
     let expires_at = now_secs() + contract::BOUND_COOKIE_MAX_AGE_SECS;

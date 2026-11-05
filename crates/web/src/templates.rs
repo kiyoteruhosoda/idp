@@ -1170,6 +1170,7 @@ mod tests {
             ssh_keys_enabled: false,
             ssh_keys: &[],
             ssh_keys_passkey_fresh: false,
+            status: None,
             saved_key: None,
             error_key: None,
         });
@@ -1515,6 +1516,7 @@ mod tests {
                 ssh_keys_enabled: false,
                 ssh_keys: &[],
                 ssh_keys_passkey_fresh: false,
+                status: None,
                 saved_key: None,
                 error_key: None,
             })
@@ -1604,6 +1606,7 @@ mod tests {
             ssh_keys_enabled: false,
             ssh_keys: &[],
             ssh_keys_passkey_fresh: false,
+            status: None,
             saved_key: None,
             error_key: None,
         });
@@ -1679,6 +1682,7 @@ mod tests {
                 ssh_keys_enabled: enabled,
                 ssh_keys: &keys,
                 ssh_keys_passkey_fresh: fresh,
+                status: None,
                 sign_ins: &[],
                 sign_ins_older: None,
                 sign_ins_paged: false,
@@ -1716,6 +1720,7 @@ mod tests {
             user_agent: "UA".to_string(),
             ip_address: "203.0.113.1".to_string(),
             absolute_expires_at: "2026-09-09T19:20:04.512345Z".to_string(),
+            status: None,
         }];
         let html = render(&UserSecurity {
             messages: &messages,
@@ -1735,6 +1740,7 @@ mod tests {
             ssh_keys_enabled: false,
             ssh_keys: &[],
             ssh_keys_passkey_fresh: false,
+            status: None,
             saved_key: None,
             error_key: None,
         });
@@ -1744,6 +1750,186 @@ mod tests {
         );
         // 生の RFC 3339 が本文へ出ていない（出ていると、差し替え前の画面が読めない）。
         assert!(!html.contains(">2026-09-09T11:20:04.512345Z<"), "{html}");
+    }
+
+    /// 「状況」（task #896）: 結び付き＋登録済みと、どちらも無い状態で、端末・結び付き・長さの根拠・
+    /// 持ち物・トークンの種別・組織の決まりの書き分けが変わる。読めなかったときは案内だけ出す。
+    #[test]
+    fn the_status_section_tells_a_bound_registered_session_from_a_plain_one() {
+        let messages = Messages::new(Locale::Ja);
+        let session = |bound: bool| SessionStatusView {
+            id: "s1".to_string(),
+            current: true,
+            auth_time: "2026-11-05T01:00:00Z".to_string(),
+            expires_at: "2026-12-05T01:00:00Z".to_string(),
+            method_keys: vec!["user-security-signins-method-passkey"],
+            multi_factor: bound,
+            browser: "Windows・Chrome".to_string(),
+            user_agent: "UA".to_string(),
+            ip_address: "203.0.113.1".to_string(),
+            country: String::new(),
+            device_identified: true,
+            device_name: if bound {
+                "家の PC".to_string()
+            } else {
+                String::new()
+            },
+            device_registered_at: "2026-11-01T00:00:00Z".to_string(),
+            device_last_used_at: "2026-11-05T01:00:00Z".to_string(),
+            binding_key: if bound {
+                "user-security-status-binding-device-key"
+            } else {
+                "user-security-status-binding-unbound"
+            },
+            basis_key: if bound {
+                "user-security-status-basis-bound-registered"
+            } else {
+                "user-security-status-basis-unbound"
+            },
+            basis_short_key: if bound {
+                "user-security-status-basis-bound-registered-short"
+            } else {
+                "user-security-status-basis-unbound-short"
+            },
+            long_lifetime: bound,
+            key_algorithm: if bound {
+                "ES256".to_string()
+            } else {
+                String::new()
+            },
+            key_thumbprint_head: "abcdefghijkl".to_string(),
+            key_bound_at: "2026-11-05T01:00:01Z".to_string(),
+            key_refreshed_at: String::new(),
+            approver_device_name: String::new(),
+            approver_level_key: "",
+            passkey_fresh_until: String::new(),
+        };
+        let view = |bound: bool| SecurityStatusView {
+            current: Some(session(bound)),
+            browser: "Windows・Chrome".to_string(),
+            user_agent: "UA".to_string(),
+            ip_address: "203.0.113.1".to_string(),
+            country: String::new(),
+            bound_cookie_expires_at: String::new(),
+            belongings: if bound {
+                vec![BelongingView {
+                    kind_key: "user-security-status-kind-device",
+                    use_key: "user-security-status-use-device",
+                    strength_key: "user-security-status-strength-marker",
+                    name: "家の PC".to_string(),
+                    detail: "Windows・Chrome".to_string(),
+                    detail_key: "",
+                    registered_at: "2026-11-01T00:00:00Z".to_string(),
+                    last_used_at: "2026-11-05T01:00:00Z".to_string(),
+                    last_use_invisible: false,
+                    expires_at: "2027-05-04T01:00:00Z".to_string(),
+                }]
+            } else {
+                Vec::new()
+            },
+            apps: vec![AppTokensView {
+                app_name: "photonest".to_string(),
+                scopes: "openid".to_string(),
+                active_refresh_tokens: u32::from(bound),
+                dpop_bound_refresh_tokens: u32::from(bound),
+                token_key: if bound {
+                    "user-security-status-token-dpop"
+                } else {
+                    "user-security-status-token-none"
+                },
+                last_issued_at: String::new(),
+                refresh_use_count: 0,
+                refresh_last_used_at: String::new(),
+                refresh_last_sender: String::new(),
+                refresh_reuse_detected_at: String::new(),
+            }],
+            policy: PolicyView {
+                unregistered_device_alerts: false,
+                ssh_keys_enabled: true,
+                bound_ttl: duration_label(&messages, 2_592_000),
+                absolute_ttl: duration_label(&messages, 604_800),
+                idle_ttl: duration_label(&messages, 604_800),
+                device_expiry_days: 180,
+            },
+            warnings: if bound {
+                Vec::new()
+            } else {
+                vec![WarningView {
+                    key: "user-security-status-warning-unregistered",
+                    count: 2,
+                    last_at: "2026-11-05T01:00:00Z".to_string(),
+                }]
+            },
+            failure_days: Vec::new(),
+            warning_window_days: 30,
+        };
+        let render_with = |status: Option<&SecurityStatusView>| {
+            render(&UserSecurity {
+                messages: &messages,
+                tenant: "/t",
+                csrf: "csrf",
+                sessions: &[],
+                connected_apps: &[],
+                devices: &[],
+                current_device_registered: false,
+                current_device_identified: true,
+                passkey_fresh: false,
+                devices_alerts_enabled: true,
+                approver_keys: &[],
+                sign_ins: &[],
+                sign_ins_older: None,
+                sign_ins_paged: false,
+                ssh_keys_enabled: false,
+                ssh_keys: &[],
+                ssh_keys_passkey_fresh: false,
+                status,
+                saved_key: None,
+                error_key: None,
+            })
+        };
+
+        let bound = view(true);
+        let html = render_with(Some(&bound));
+        assert!(html.contains(r#"id="status""#), "{html}");
+        assert!(
+            html.contains("端末の鍵に結び付き、かつ登録した端末なので 30 日です。"),
+            "{html}"
+        );
+        assert!(html.contains("結び付いています"));
+        assert!(html.contains("ES256"));
+        assert!(html.contains("家の PC"));
+        assert!(html.contains("登録した端末"));
+        assert!(html.contains("端末の鍵に結び付き（DPoP）"));
+        assert!(
+            html.contains("国なし"),
+            "home network has no country: {html}"
+        );
+        assert!(!html.contains(r#"id="status-warnings""#));
+
+        let plain = view(false);
+        let html = render_with(Some(&plain));
+        assert!(
+            html.contains("端末の鍵に結び付いていないので 7 日です。"),
+            "{html}"
+        );
+        assert!(html.contains("結び付いていません"));
+        assert!(html.contains("登録していない端末"));
+        assert!(html.contains("リフレッシュトークンは持っていません"));
+        assert!(html.contains(r#"id="status-warnings""#));
+        assert!(html.contains("まだ登録した持ち物はありません。"));
+
+        let html = render_with(None);
+        assert!(html.contains(r#"id="status-unavailable""#));
+        assert!(!html.contains(r#"id="status""#));
+    }
+
+    #[test]
+    fn durations_are_written_in_the_largest_whole_unit() {
+        let messages = Messages::new(Locale::Ja);
+        assert_eq!(duration_label(&messages, 2_592_000), "30 日");
+        assert_eq!(duration_label(&messages, 28_800), "8 時間");
+        assert_eq!(duration_label(&messages, 900), "15 分");
+        assert_eq!(duration_label(&messages, 61), "61 秒");
     }
 
     /// 解釈できない値は落とさずそのまま出す（表示を欠かすより手掛かりを残す）。
@@ -3905,6 +4091,131 @@ pub struct SecuritySessionView {
     pub user_agent: String,
     pub ip_address: String,
     pub absolute_expires_at: String,
+    /// 「状況」から引いた、このログイン状態の端末・結び付け・入り方・長さの根拠（task #896）。
+    /// 「状況」を読めなかったときは `None`（今までの列だけ出す）。
+    pub status: Option<SessionStatusView>,
+}
+
+/// ログイン状態 1 つの状況（task #896。ADR-0078）。文言はキーで持ち、テンプレートで訳す。
+#[derive(Clone)]
+pub struct SessionStatusView {
+    pub id: String,
+    pub current: bool,
+    pub auth_time: String,
+    /// 切れる時刻（RFC 3339）。
+    pub expires_at: String,
+    /// 入り方（`user-security-signins-method-*`）。
+    pub method_keys: Vec<&'static str>,
+    pub multi_factor: bool,
+    /// 「OS・ブラウザ」の要約と元の名乗り。
+    pub browser: String,
+    pub user_agent: String,
+    pub ip_address: String,
+    pub country: String,
+    pub device_identified: bool,
+    /// 登録済みの端末の名前（未登録なら空）。
+    pub device_name: String,
+    pub device_registered_at: String,
+    pub device_last_used_at: String,
+    /// `user-security-status-binding-*`。
+    pub binding_key: &'static str,
+    /// `user-security-status-basis-*`。
+    pub basis_key: &'static str,
+    /// 根拠の短い言い方（「ログイン状態」の表の 1 行。`user-security-status-basis-*-short`）。
+    pub basis_short_key: &'static str,
+    /// 長い長さを使っているか（根拠の行の色分け）。
+    pub long_lifetime: bool,
+    pub key_algorithm: String,
+    /// 公開鍵の指紋の頭（12 文字）。
+    pub key_thumbprint_head: String,
+    pub key_bound_at: String,
+    pub key_refreshed_at: String,
+    pub approver_device_name: String,
+    /// `app-approver-level-*`（承認で入っていなければ空）。
+    pub approver_level_key: &'static str,
+    pub passkey_fresh_until: String,
+}
+
+/// 信頼している持ち物 1 つ（task #896）。
+pub struct BelongingView {
+    /// `user-security-status-kind-*`。
+    pub kind_key: &'static str,
+    /// 何に使われるか（`user-security-status-use-*`）。
+    pub use_key: &'static str,
+    /// 強さ（`user-security-status-strength-*`）。
+    pub strength_key: &'static str,
+    pub name: String,
+    /// 補足（端末の名乗り・SSH の鍵の型）。
+    pub detail: String,
+    /// 補足を訳すキー（認証アプリの鍵の置き場。無ければ空）。
+    pub detail_key: &'static str,
+    pub registered_at: String,
+    pub last_used_at: String,
+    /// 最後に使った時刻が assay から見えない（SSH の鍵）。
+    pub last_use_invisible: bool,
+    pub expires_at: String,
+}
+
+/// アプリ 1 つのトークンの種別（task #896）。
+pub struct AppTokensView {
+    pub app_name: String,
+    pub scopes: String,
+    pub active_refresh_tokens: u32,
+    pub dpop_bound_refresh_tokens: u32,
+    /// `user-security-status-token-*`（リフレッシュトークンの種別の 1 行）。
+    pub token_key: &'static str,
+    pub last_issued_at: String,
+    pub refresh_use_count: u32,
+    pub refresh_last_used_at: String,
+    pub refresh_last_sender: String,
+    pub refresh_reuse_detected_at: String,
+}
+
+/// 自分に効いている組織の決まり（task #896）。
+pub struct PolicyView {
+    pub unregistered_device_alerts: bool,
+    pub ssh_keys_enabled: bool,
+    /// 長さ（「30 日」「8 時間」のように読める形）。
+    pub bound_ttl: String,
+    pub absolute_ttl: String,
+    pub idle_ttl: String,
+    pub device_expiry_days: i64,
+}
+
+/// 注意の 1 行（task #896）。
+pub struct WarningView {
+    /// `user-security-status-warning-*`。
+    pub key: &'static str,
+    pub count: u32,
+    pub last_at: String,
+}
+
+/// 「状況」の欄（task #896。ADR-0078）。
+pub struct SecurityStatusView {
+    /// 今見ているログイン状態（無ければ「このブラウザ」の欄は出さない）。
+    pub current: Option<SessionStatusView>,
+    /// このブラウザの今の要求から読んだもの（ログインしたときではなく、いま）。
+    pub browser: String,
+    pub user_agent: String,
+    pub ip_address: String,
+    /// 国（信じられないとき・家の中からは空）。
+    pub country: String,
+    /// 短い Cookie（端末の鍵で 10 分ごとに取り直す）の期限（RFC 3339。無ければ空）。
+    pub bound_cookie_expires_at: String,
+    pub belongings: Vec<BelongingView>,
+    pub apps: Vec<AppTokensView>,
+    pub policy: PolicyView,
+    pub warnings: Vec<WarningView>,
+    /// 断られたログインの多かった日（`YYYY-MM-DD`）と回数。
+    pub failure_days: Vec<(String, u32)>,
+    pub warning_window_days: i64,
+}
+
+impl SecurityStatusView {
+    /// 注意が 1 つでもあるか。
+    pub fn has_warnings(&self) -> bool {
+        !self.warnings.is_empty() || !self.failure_days.is_empty()
+    }
 }
 
 /// セキュリティ画面の連携済みアプリ 1 行（G10）。
@@ -3951,6 +4262,8 @@ pub struct UserSecurity<'a> {
     pub ssh_keys: &'a [SecuritySshKeyView],
     /// パスキーでの本人確認がまだ有効か（SSH の鍵の登録・取り消しの条件）。
     pub ssh_keys_passkey_fresh: bool,
+    /// 「状況」（task #896）。読めなかったら `None` で、欄の代わりに案内を出す。
+    pub status: Option<&'a SecurityStatusView>,
     pub saved_key: Option<&'a str>,
     pub error_key: Option<&'a str>,
 }
@@ -4000,6 +4313,20 @@ pub struct SignInRefreshView {
     pub state_key: &'static str,
     pub active: bool,
     pub revoked_at: String,
+}
+
+/// 秒の長さを「30 日」「8 時間」「15 分」のように読める形にする（割り切れる最大の単位で）。
+pub fn duration_label(messages: &Messages, secs: i64) -> String {
+    let (n, unit) = if secs > 0 && secs % 86_400 == 0 {
+        (secs / 86_400, "user-security-status-unit-days")
+    } else if secs > 0 && secs % 3_600 == 0 {
+        (secs / 3_600, "user-security-status-unit-hours")
+    } else if secs > 0 && secs % 60 == 0 {
+        (secs / 60, "user-security-status-unit-minutes")
+    } else {
+        (secs, "user-security-status-unit-seconds")
+    };
+    messages.get_arg(unit, "n", &n.to_string())
 }
 
 /// ブラウザの名乗り（User-Agent）から「OS・ブラウザ」を短く取り出す（表示用。判定には使わない）。

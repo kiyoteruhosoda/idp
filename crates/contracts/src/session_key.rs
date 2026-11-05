@@ -101,6 +101,19 @@ pub fn bound_cookie_is_valid(key: &[u8], sso_session_id: &str, value: &str, now:
         .is_some_and(|expires_at| now < expires_at && expires_at - now <= BOUND_COOKIE_MAX_AGE_SECS)
 }
 
+/// 短い Cookie がこの SSO セッションのもので、まだ切れていなければ、その期限（UNIX 秒）。
+/// 本人の「状況」に出すため（task #896）。
+pub fn bound_cookie_expires_at(
+    key: &[u8],
+    sso_session_id: &str,
+    value: &str,
+    now: i64,
+) -> Option<i64> {
+    bound_cookie_is_valid(key, sso_session_id, value, now)
+        .then(|| read_stamp(key, "dbsc-bound-cookie", sso_session_id, value))
+        .flatten()
+}
+
 /// ログインの応答に付ける `Secure-Session-Registration` の値。
 pub fn registration_header(challenge: &str) -> String {
     format!(
@@ -125,6 +138,17 @@ mod tests {
 
     const KEY: &[u8] = b"test-key-for-unit-tests-32bytes!";
     const SESSION: &str = "session-a";
+
+    #[test]
+    fn the_bound_cookie_reveals_its_expiry_only_when_valid() {
+        let value = bound_cookie(KEY, SESSION, 1_000);
+        assert_eq!(
+            bound_cookie_expires_at(KEY, SESSION, &value, 900),
+            Some(1_000)
+        );
+        assert_eq!(bound_cookie_expires_at(KEY, SESSION, &value, 1_000), None);
+        assert_eq!(bound_cookie_expires_at(KEY, "session-b", &value, 900), None);
+    }
 
     #[test]
     fn a_challenge_is_bound_to_the_session_and_expires() {

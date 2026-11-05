@@ -958,6 +958,30 @@ pub trait SessionKeyBindingRepository: Send + Sync {
     async fn record_refresh(&self, session_hash: &str, at: DateTime<Utc>) -> Result<()>;
 }
 
+/// 本人が見る「状況」の読み取り（task #896。ADR-0078）。読むだけで書かない。
+#[async_trait]
+pub trait SecurityStatusQuery: Send + Sync {
+    /// 利用者のログイン状態ごとの文脈（文脈の行が無いログイン状態は返らない）。
+    async fn session_contexts(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Vec<crate::domain::security_status::SessionContextStatus>>;
+    /// アプリごとのトークンの種別。同意したアプリ・有効なリフレッシュトークンのあるアプリ・
+    /// `recent_since` 以後にトークンを出したアプリを、名前の順に返す。
+    async fn app_tokens(
+        &self,
+        user_id: Uuid,
+        now: DateTime<Utc>,
+        recent_since: DateTime<Utc>,
+    ) -> Result<Vec<crate::domain::security_status::AppTokenStatus>>;
+    /// `since` 以後の注意。
+    async fn warnings(
+        &self,
+        user_id: Uuid,
+        since: DateTime<Utc>,
+    ) -> Result<crate::domain::security_status::SecurityWarnings>;
+}
+
 #[async_trait]
 pub trait AuthorizationCodeRepository: Send + Sync {
     async fn create(&self, code: &AuthorizationCode) -> Result<()>;

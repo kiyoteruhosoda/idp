@@ -2692,3 +2692,157 @@ pub enum InternalAccountRevokeApproverKeyResponse {
     SessionExpired,
     Internal,
 }
+
+/// 「状況」の取得 API（`POST /internal/account/security/status`。task #896。ADR-0078）のリクエスト。
+///
+/// 利用者は SSO セッションの持ち主で決まる（利用者 id は受け取らない＝他人の状況は引けない）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalAccountSecurityStatusRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub sso_session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalAccountSecurityStatusResponse {
+    Ok {
+        /// 今のログイン状態が先頭、あとは新しい順。
+        sessions: Vec<AccountSessionStatus>,
+        belongings: Vec<AccountBelonging>,
+        apps: Vec<AccountAppTokens>,
+        policy: AccountSecurityPolicy,
+        warnings: AccountSecurityWarnings,
+    },
+    SessionExpired,
+    Internal,
+}
+
+/// ログイン状態 1 つの状況。時刻はどれも RFC 3339（UTC）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountSessionStatus {
+    /// 既存の「ログイン状態」の行（`AccountSessionSummary::id`）と同じ値。
+    pub id: String,
+    pub current: bool,
+    pub auth_time: String,
+    pub created_at: String,
+    /// 切れる時刻（idle と absolute の早いほう）。
+    pub expires_at: String,
+    /// 確かめた入り方（`password` / `webauthn` / `totp` / `app_approval` …。確かめた順）。
+    #[serde(default)]
+    pub methods: Vec<String>,
+    pub multi_factor: bool,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub country: Option<String>,
+    /// ログイン状態を作ったブラウザの端末の印が分かっているか。
+    pub device_identified: bool,
+    /// 登録済みの端末なら、その名前と登録した時刻・最後に使った時刻。
+    #[serde(default)]
+    pub device_name: Option<String>,
+    #[serde(default)]
+    pub device_registered_at: Option<String>,
+    #[serde(default)]
+    pub device_last_used_at: Option<String>,
+    /// `unbound` / `device_key` / `app_approval`。
+    pub binding: String,
+    /// 長さの根拠（`bound_on_registered_device` / `app_approval` / `bound_on_unregistered_device` /
+    /// `unbound` / `not_extended_by_setting`）。
+    pub lifetime_basis: String,
+    /// 端末の鍵（DBSC）。
+    #[serde(default)]
+    pub key_algorithm: Option<String>,
+    #[serde(default)]
+    pub key_thumbprint: Option<String>,
+    #[serde(default)]
+    pub key_bound_at: Option<String>,
+    #[serde(default)]
+    pub key_refreshed_at: Option<String>,
+    /// 承認した認証アプリの機種名と鍵の置き場（`tee` / `strongbox` / `software`）。
+    #[serde(default)]
+    pub approver_device_name: Option<String>,
+    #[serde(default)]
+    pub approver_security_level: Option<String>,
+    /// パスキーの本人確認が新しいうちの期限（過ぎていれば `None`）。
+    #[serde(default)]
+    pub passkey_fresh_until: Option<String>,
+}
+
+/// 信頼している持ち物 1 つ。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountBelonging {
+    /// `passkey` / `totp` / `approver_key` / `device` / `ssh_key`。
+    pub kind: String,
+    pub name: String,
+    /// 種類ごとの補足（認証アプリの鍵の置き場・端末の名乗り・SSH の鍵の型）。
+    #[serde(default)]
+    pub detail: Option<String>,
+    pub registered_at: String,
+    /// assay から使われたことが見えないもの（SSH の鍵）は常に `None`。
+    #[serde(default)]
+    pub last_used_at: Option<String>,
+    #[serde(default)]
+    pub expires_at: Option<String>,
+}
+
+/// アプリ 1 つのトークンの種別。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountAppTokens {
+    pub client_id: String,
+    pub app_name: String,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    pub active_refresh_tokens: u32,
+    pub dpop_bound_refresh_tokens: u32,
+    #[serde(default)]
+    pub last_issued_at: Option<String>,
+    pub refresh_use_count: u32,
+    #[serde(default)]
+    pub refresh_last_used_at: Option<String>,
+    #[serde(default)]
+    pub refresh_last_ip: Option<String>,
+    #[serde(default)]
+    pub refresh_last_user_agent: Option<String>,
+    #[serde(default)]
+    pub refresh_reuse_detected_at: Option<String>,
+}
+
+/// 自分に効いている組織の決まり。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountSecurityPolicy {
+    pub unregistered_device_alerts: bool,
+    pub ssh_keys_enabled: bool,
+    pub idle_ttl_secs: i64,
+    pub absolute_ttl_secs: i64,
+    pub bound_ttl_secs: i64,
+    pub device_expiry_days: i64,
+}
+
+/// 直近 30 日の注意。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AccountSecurityWarnings {
+    pub window_days: i64,
+    pub refresh_reuse: AccountOccurrences,
+    pub session_key_mismatch: AccountOccurrences,
+    pub dpop_key_mismatch: AccountOccurrences,
+    pub unregistered_sign_ins: AccountOccurrences,
+    /// 断られたログインの多かった日（`YYYY-MM-DD`・UTC）と回数。
+    #[serde(default)]
+    pub failure_days: Vec<AccountFailureDay>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AccountOccurrences {
+    pub count: u32,
+    #[serde(default)]
+    pub last_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountFailureDay {
+    pub day: String,
+    pub count: u32,
+}

@@ -64,6 +64,7 @@ pub mod resource_management;
 pub mod revocation;
 pub mod saml_service_provider_management;
 pub mod saml_sso;
+pub mod security_status;
 pub mod service_restart;
 pub mod session_key_binding;
 pub mod sign_in_completion;

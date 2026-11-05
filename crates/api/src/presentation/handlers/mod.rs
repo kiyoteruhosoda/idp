@@ -34,6 +34,7 @@ pub mod internal_app_approval;
 pub mod internal_auth;
 pub mod internal_devices;
 pub mod internal_runtime_settings;
+pub mod internal_security_status;
 pub mod internal_session_keys;
 pub mod internal_sign_in_history;
 pub mod internal_ssh_keys;

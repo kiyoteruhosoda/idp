@@ -1,0 +1,117 @@
+{#- 「状況」（task #896・ADR-0078）。読むだけ。変える操作は下の各欄へのリンク。 -#}
+{% if let Some(st) = status %}
+<div class="card mb-4" id="status">
+  <div class="card-header d-flex align-items-center"><i class="fa-solid fa-shield-halved me-2" aria-hidden="true"></i>{{ messages.get("user-security-status-heading") }}</div>
+  <div class="card-body">
+    <p class="text-muted small">{{ messages.get("user-security-status-help") }}</p>
+
+    {% if st.has_warnings() %}
+    <div class="alert alert-danger" role="alert" id="status-warnings">
+      <p class="fw-semibold mb-1">{{ messages.get_arg("user-security-status-warnings-heading", "days", st.warning_window_days.to_string().as_str()) }}</p>
+      <ul class="mb-0">
+        {% for w in st.warnings %}
+        <li>{{ messages.get(w.key) }}: {{ messages.get_arg("user-security-status-times", "n", w.count.to_string().as_str()) }}{% if !w.last_at.is_empty() %}（{{ messages.get("user-security-status-last") }} <time class="local-time" datetime="{{ w.last_at }}">{{ crate::templates::utc_short(w.last_at.as_str()) }}</time>）{% endif %}</li>
+        {% endfor %}
+        {% for fd in st.failure_days %}
+        <li>{{ messages.get("user-security-status-warning-failures") }}: {{ fd.0 }} UTC — {{ messages.get_arg("user-security-status-times", "n", fd.1.to_string().as_str()) }}</li>
+        {% endfor %}
+      </ul>
+      <p class="small mb-0 mt-1"><a href="#sign-ins">{{ messages.get("user-security-status-see-history") }}</a></p>
+    </div>
+    {% endif %}
+
+    <h2 class="h6 mt-2" id="status-this-browser">{{ messages.get("user-security-status-this-browser") }}</h2>
+    <dl class="row small mb-3">
+      <dt class="col-sm-4">{{ messages.get("user-security-signins-browser") }}</dt>
+      <dd class="col-sm-8 mb-1">{% if st.browser.is_empty() %}{{ messages.get("user-security-signins-unknown") }}{% else %}{{ st.browser }}{% endif %}<span class="d-block text-muted text-break">{{ st.user_agent }}</span><span class="d-block text-muted">{{ messages.get("user-security-status-ua-note") }}</span></dd>
+      <dt class="col-sm-4">{{ messages.get("user-security-signins-from") }}</dt>
+      <dd class="col-sm-8 mb-1">{{ st.ip_address }} {% if st.country.is_empty() %}<span class="text-muted">{{ messages.get("user-security-status-country-none") }}</span>{% else %}{{ st.country }}{% endif %}</dd>
+      {% if let Some(cur) = st.current %}
+      <dt class="col-sm-4">{{ messages.get("user-security-status-device") }}</dt>
+      <dd class="col-sm-8 mb-1" data-status="device">{% if !cur.device_name.is_empty() %}<span class="badge text-bg-success">{{ messages.get("user-security-signins-device-registered") }}</span> {{ cur.device_name }}<span class="d-block text-muted">{{ messages.get("user-security-status-device-registered-at") }} <time class="local-time" datetime="{{ cur.device_registered_at }}">{{ crate::templates::utc_short(cur.device_registered_at.as_str()) }}</time> · {{ messages.get_arg("user-security-status-device-expiry", "days", st.policy.device_expiry_days.to_string().as_str()) }}</span>{% else if cur.device_identified %}<span class="badge text-bg-secondary">{{ messages.get("user-security-signins-device-unregistered") }}</span> <a href="#devices">{{ messages.get("user-security-status-register-link") }}</a>{% else %}<span class="text-muted">{{ messages.get("user-security-status-device-unidentified") }}</span>{% endif %}</dd>
+      <dt class="col-sm-4">{{ messages.get("user-security-status-sign-in") }}</dt>
+      <dd class="col-sm-8 mb-1"><time class="local-time" datetime="{{ cur.auth_time }}">{{ crate::templates::utc_short(cur.auth_time.as_str()) }}</time> · {% if cur.method_keys.is_empty() %}{{ messages.get("user-security-signins-unknown") }}{% else %}{% for key in cur.method_keys %}{% if !loop.first %}・{% endif %}{{ messages.get(key) }}{% endfor %}{% endif %} · {% if cur.multi_factor %}<span class="badge text-bg-success">{{ messages.get("user-security-status-multi-factor") }}</span>{% else %}<span class="badge text-bg-secondary">{{ messages.get("user-security-status-single-factor") }}</span>{% endif %}</dd>
+      <dt class="col-sm-4">{{ messages.get("user-security-status-binding") }}</dt>
+      <dd class="col-sm-8 mb-1" data-status="binding">{{ messages.get(cur.binding_key) }}{% if !cur.key_algorithm.is_empty() %}<span class="d-block text-muted">{{ cur.key_algorithm }} · <code>{{ cur.key_thumbprint_head }}…</code> · {{ messages.get("user-security-status-key-bound-at") }} <time class="local-time" datetime="{{ cur.key_bound_at }}">{{ crate::templates::utc_short(cur.key_bound_at.as_str()) }}</time>{% if !cur.key_refreshed_at.is_empty() %} · {{ messages.get("user-security-status-key-refreshed-at") }} <time class="local-time" datetime="{{ cur.key_refreshed_at }}">{{ crate::templates::utc_short(cur.key_refreshed_at.as_str()) }}</time>{% endif %}</span>{% if !st.bound_cookie_expires_at.is_empty() %}<span class="d-block text-muted">{{ messages.get("user-security-status-bound-cookie") }} <time class="local-time" datetime="{{ st.bound_cookie_expires_at }}">{{ crate::templates::utc_short(st.bound_cookie_expires_at.as_str()) }}</time></span>{% endif %}{% endif %}{% if !cur.approver_device_name.is_empty() %}<span class="d-block text-muted">{{ cur.approver_device_name }}{% if !cur.approver_level_key.is_empty() %} · {{ messages.get(cur.approver_level_key) }}{% endif %}</span>{% endif %}</dd>
+      <dt class="col-sm-4">{{ messages.get("user-security-status-lifetime") }}</dt>
+      <dd class="col-sm-8 mb-1" data-status="lifetime"><time class="local-time" datetime="{{ cur.expires_at }}">{{ crate::templates::utc_short(cur.expires_at.as_str()) }}</time>{% if cur.long_lifetime %}<span class="d-block text-success">{{ messages.get_arg(cur.basis_key, "length", st.policy.bound_ttl.as_str()) }}</span>{% else %}<span class="d-block text-muted">{{ messages.get_arg(cur.basis_key, "length", st.policy.absolute_ttl.as_str()) }}</span>{% endif %}</dd>
+      <dt class="col-sm-4">{{ messages.get("user-security-status-passkey-fresh") }}</dt>
+      <dd class="col-sm-8 mb-1">{% if cur.passkey_fresh_until.is_empty() %}{{ messages.get("user-security-status-passkey-stale") }}{% else %}{{ messages.get("user-security-status-passkey-until") }} <time class="local-time" datetime="{{ cur.passkey_fresh_until }}">{{ crate::templates::utc_short(cur.passkey_fresh_until.as_str()) }}</time>{% endif %}</dd>
+      {% endif %}
+    </dl>
+
+    <h2 class="h6 mt-4" id="status-belongings">{{ messages.get("user-security-status-belongings") }}</h2>
+    <p class="text-muted small">{{ messages.get("user-security-status-device-is-browser") }}</p>
+    {% if st.belongings.is_empty() %}
+    <p class="text-muted small">{{ messages.get("user-security-status-belongings-empty") }}</p>
+    {% else %}
+    <div class="table-responsive">
+      <table class="table align-middle table-cards small">
+        <thead>
+          <tr>
+            <th scope="col">{{ messages.get("user-security-status-kind") }}</th>
+            <th scope="col">{{ messages.get("user-security-status-use") }}</th>
+            <th scope="col">{{ messages.get("user-security-status-strength") }}</th>
+            <th scope="col">{{ messages.get("user-security-status-last-used") }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for b in st.belongings %}
+          <tr>
+            <td data-label="{{ messages.get("user-security-status-kind") }}"><span class="d-block fw-semibold">{{ messages.get(b.kind_key) }}</span><span class="d-block text-break">{{ b.name }}</span>{% if !b.detail_key.is_empty() %}<span class="d-block text-muted">{{ messages.get(b.detail_key) }}</span>{% else if !b.detail.is_empty() %}<span class="d-block text-muted text-break">{{ b.detail }}</span>{% endif %}</td>
+            <td data-label="{{ messages.get("user-security-status-use") }}">{{ messages.get(b.use_key) }}</td>
+            <td data-label="{{ messages.get("user-security-status-strength") }}">{{ messages.get(b.strength_key) }}</td>
+            <td data-label="{{ messages.get("user-security-status-last-used") }}">{% if b.last_use_invisible %}<span class="text-muted">{{ messages.get("user-security-status-last-used-invisible") }}</span>{% else if b.last_used_at.is_empty() %}<span class="text-muted">{{ messages.get("user-security-approver-never-used") }}</span>{% else %}<time class="local-time" datetime="{{ b.last_used_at }}">{{ crate::templates::utc_short(b.last_used_at.as_str()) }}</time>{% endif %}{% if !b.expires_at.is_empty() %}<span class="d-block text-muted">{{ messages.get("user-security-devices-expires") }} <time class="local-time" datetime="{{ b.expires_at }}">{{ crate::templates::utc_short(b.expires_at.as_str()) }}</time></span>{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    <h2 class="h6 mt-4" id="status-apps">{{ messages.get("user-security-status-apps") }}</h2>
+    <p class="text-muted small">{{ messages.get("user-security-status-apps-help") }}</p>
+    {% if st.apps.is_empty() %}
+    <p class="text-muted small">{{ messages.get("user-security-status-apps-empty") }}</p>
+    {% else %}
+    <div class="table-responsive">
+      <table class="table align-middle table-cards small">
+        <thead>
+          <tr>
+            <th scope="col">{{ messages.get("user-security-app-name") }}</th>
+            <th scope="col">{{ messages.get("user-security-status-token") }}</th>
+            <th scope="col">{{ messages.get("user-security-signins-refresh") }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in st.apps %}
+          <tr>
+            <td data-label="{{ messages.get("user-security-app-name") }}"><span class="d-block fw-semibold text-break">{{ a.app_name }}</span>{% if !a.scopes.is_empty() %}<code class="d-block">{{ a.scopes }}</code>{% endif %}{% if !a.last_issued_at.is_empty() %}<span class="d-block text-muted">{{ messages.get("user-security-signins-app-last") }} <time class="local-time" datetime="{{ a.last_issued_at }}">{{ crate::templates::utc_short(a.last_issued_at.as_str()) }}</time></span>{% endif %}</td>
+            <td data-label="{{ messages.get("user-security-status-token") }}" data-status="token">{{ messages.get(a.token_key) }}{% if a.active_refresh_tokens > 0 %}<span class="d-block text-muted">{{ messages.get_arg("user-security-status-token-count", "n", a.active_refresh_tokens.to_string().as_str()) }}</span>{% endif %}</td>
+            <td data-label="{{ messages.get("user-security-signins-refresh") }}">{{ messages.get("user-security-signins-refresh-count") }} {{ a.refresh_use_count }}{% if !a.refresh_last_used_at.is_empty() %}<span class="d-block text-muted">{{ messages.get("user-security-signins-refresh-last") }} <time class="local-time" datetime="{{ a.refresh_last_used_at }}">{{ crate::templates::utc_short(a.refresh_last_used_at.as_str()) }}</time>{% if !a.refresh_last_sender.is_empty() %} · {{ a.refresh_last_sender }}{% endif %}</span>{% endif %}{% if !a.refresh_reuse_detected_at.is_empty() %}<span class="d-block text-danger">{{ messages.get("user-security-status-warning-reuse") }} <time class="local-time" datetime="{{ a.refresh_reuse_detected_at }}">{{ crate::templates::utc_short(a.refresh_reuse_detected_at.as_str()) }}</time></span>{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+    <p class="text-muted small mb-3">{{ messages.get("user-security-status-access-token-note") }}</p>
+
+    <h2 class="h6 mt-4" id="status-policy">{{ messages.get("user-security-status-policy") }}</h2>
+    <dl class="row small mb-0" data-status="policy">
+      <dt class="col-sm-6">{{ messages.get("user-security-status-policy-alerts") }}</dt>
+      <dd class="col-sm-6 mb-1">{% if st.policy.unregistered_device_alerts %}{{ messages.get("user-security-status-on") }}{% else %}{{ messages.get("user-security-status-off") }}{% endif %}</dd>
+      <dt class="col-sm-6">{{ messages.get("user-security-status-policy-ssh") }}</dt>
+      <dd class="col-sm-6 mb-1">{% if st.policy.ssh_keys_enabled %}{{ messages.get("user-security-status-on") }}{% else %}{{ messages.get("user-security-status-off") }}{% endif %}</dd>
+      <dt class="col-sm-6">{{ messages.get("user-security-status-policy-long") }}</dt>
+      <dd class="col-sm-6 mb-1">{{ st.policy.bound_ttl }}</dd>
+      <dt class="col-sm-6">{{ messages.get("user-security-status-policy-short") }}</dt>
+      <dd class="col-sm-6 mb-1">{{ st.policy.absolute_ttl }}{% if st.policy.idle_ttl != st.policy.absolute_ttl %}<span class="d-block text-muted">{{ messages.get_arg("user-security-status-policy-idle", "length", st.policy.idle_ttl.as_str()) }}</span>{% endif %}</dd>
+      <dt class="col-sm-6">{{ messages.get("user-security-status-policy-device-expiry") }}</dt>
+      <dd class="col-sm-6 mb-1">{{ messages.get_arg("user-security-status-device-expiry", "days", st.policy.device_expiry_days.to_string().as_str()) }}</dd>
+    </dl>
+  </div>
+</div>
+{% else %}
+<div class="alert alert-warning" role="alert" id="status-unavailable">{{ messages.get("user-security-status-unavailable") }}</div>
+{% endif %}
