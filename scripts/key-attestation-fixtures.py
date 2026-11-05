@@ -206,7 +206,8 @@ def build_chain(options: KeyOptions | None = None, root=None, leaf_key=None, int
     options = options or KeyOptions()
     root_key, root_cert = root or make_root("rsa")
     inter_key = ec.generate_private_key(ec.SECP256R1())
-    inter = _cert("Test Attestation Intermediate", "Test Attestation Root", inter_key.public_key(), root_key, ca=intermediate_ca)
+    root_name = root_cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
+    inter = _cert("Test Attestation Intermediate", root_name, inter_key.public_key(), root_key, ca=intermediate_ca)
     leaf_key = leaf_key or ec.generate_private_key(ec.SECP256R1())
     leaf = _cert(
         "Android Keystore Key", "Test Attestation Intermediate", leaf_key.public_key(), inter_key, ca=False,
