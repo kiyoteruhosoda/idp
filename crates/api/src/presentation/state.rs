@@ -1160,7 +1160,7 @@ impl AppState {
         let session_key_binding = Arc::new(SessionKeyBindingService::new(
             Arc::new(SqlxSessionKeyBindingRepository::new(pool.clone())),
             sso_sessions.clone(),
-            user_devices,
+            user_devices.clone(),
             users.clone(),
             refresh_tokens.clone(),
             tenant_settings.clone(),
