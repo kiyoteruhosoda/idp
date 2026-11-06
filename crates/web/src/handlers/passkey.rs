@@ -512,7 +512,6 @@ pub async fn login_complete_api(
             )
                 .into_response()
         }
-        // 認証ポリシーによる拒否。フロント側スクリプトはこのコードを翻訳キーへ写す。
         // 登録した端末に限る組織で、登録していない端末だった（task #916）。札を置いて登録の画面へ。
         InternalPasskeyLoginCompleteResponse::DeviceEnrollmentRequired { ticket } => (
             crate::handlers::device_enrollment::ticket_cookie(&state, &ticket).into_headers(),
@@ -524,6 +523,7 @@ pub async fn login_complete_api(
             )),
         )
             .into_response(),
+        // 認証ポリシーによる拒否。フロント側スクリプトはこのコードを翻訳キーへ写す。
         InternalPasskeyLoginCompleteResponse::PolicyDenied => Json(LoginCompleteJsonResponse {
             redirect_to: None,
             form_post: None,

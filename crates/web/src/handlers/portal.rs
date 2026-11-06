@@ -193,16 +193,16 @@ pub async fn login(
             &csrf,
             "login-error-locked",
         ),
-        // 認証ポリシー（AP2）。資格情報は検証済みなので資格情報エラーとは別の文言を出す。
         // 登録した端末に限る組織で、登録していない端末だった（task #916）。札を置いて登録の画面へ。
         InternalPortalAuthenticateResponse::DeviceEnrollmentRequired { ticket } => {
             crate::handlers::device_enrollment::redirect(
-                &state,
-                &tenant,
+                state,
+                tenant,
                 &ticket,
-                &portal_destination(&state, &headers, &tenant),
+                &portal_destination(state, headers, tenant),
             )
         }
+        // 認証ポリシー（AP2）。資格情報は検証済みなので資格情報エラーとは別の文言を出す。
         InternalPortalAuthenticateResponse::PolicyDenied => reshow_login(
             &messages,
             &tenant.prefix(),
@@ -521,7 +521,6 @@ pub async fn mfa_submit(
             )
                 .into_response()
         }
-        // ポリシー拒否はチケットを失効させて終える（再試行しても結果は変わらない）。
         // 登録した端末に限る組織で、登録していない端末だった（task #916）。札を置いて登録の画面へ。
         InternalPortalMfaResponse::DeviceEnrollmentRequired { ticket } => {
             crate::handlers::device_enrollment::redirect(
@@ -531,6 +530,7 @@ pub async fn mfa_submit(
                 &portal_destination(&state, &headers, &tenant),
             )
         }
+        // ポリシー拒否はチケットを失効させて終える（再試行しても結果は変わらない）。
         InternalPortalMfaResponse::PolicyDenied => {
             let set_cookies = state
                 .set_cookies()

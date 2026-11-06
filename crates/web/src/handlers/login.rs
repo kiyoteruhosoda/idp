@@ -495,7 +495,6 @@ pub async fn login(
             crate::application_denied::page(&messages, &tenant.prefix(), &application_name),
         )
             .into_response(),
-        // 認証ポリシーによる拒否。資格情報は検証済みのため、資格情報エラーとは別の文言で表示する。
         // 登録した端末に限る組織で、登録していない端末だった（task #916）。札を置いて登録の画面へ。
         InternalAuthenticateResponse::DeviceEnrollmentRequired { ticket } => {
             crate::handlers::device_enrollment::redirect(
@@ -505,6 +504,7 @@ pub async fn login(
                 &format!("{}/login", tenant.prefix()),
             )
         }
+        // 認証ポリシーによる拒否。資格情報は検証済みのため、資格情報エラーとは別の文言で表示する。
         InternalAuthenticateResponse::PolicyDenied => reshow_form(
             &messages,
             &tenant.prefix(),

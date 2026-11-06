@@ -262,7 +262,6 @@ pub async fn login(
             &csrf,
             "admin-login-error-forbidden",
         ),
-        // 認証ポリシー（AP2）。資格情報は検証済みなので、資格情報エラーとは別の文言を出す。
         // 登録した端末に限る組織で、登録していない端末だった（task #916）。札を置いて登録の画面へ。
         InternalAdminAuthenticateResponse::DeviceEnrollmentRequired { ticket } => {
             crate::handlers::device_enrollment::redirect(
@@ -272,6 +271,7 @@ pub async fn login(
                 &admin_home_path(&tenant),
             )
         }
+        // 認証ポリシー（AP2）。資格情報は検証済みなので、資格情報エラーとは別の文言を出す。
         InternalAdminAuthenticateResponse::PolicyDenied => reshow_login(
             &messages,
             &tenant.prefix(),
