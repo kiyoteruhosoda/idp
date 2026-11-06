@@ -13,7 +13,9 @@ use axum::http::header::CONTENT_TYPE;
 use axum::http::{Request, StatusCode};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use support::{body_json, mark_email_verified, register_user, send, unique, TestEnv, SERVICE_TOKEN};
+use support::{
+    body_json, mark_email_verified, register_user, send, unique, TestEnv, SERVICE_TOKEN,
+};
 
 const PASSWORD: &str = "correct-horse-battery";
 const DEVICE_HEADER: &str = "x-assay-client-device";
@@ -196,7 +198,10 @@ async fn the_ticket_opens_only_in_the_same_browser_and_needs_a_passkey() {
     assert_eq!(same["result"], "ok", "{same}");
     assert_eq!(same["username"], username);
     let other = describe(device_token()).await;
-    assert_eq!(other["result"], "ticket_invalid", "another browser: {other}");
+    assert_eq!(
+        other["result"], "ticket_invalid",
+        "another browser: {other}"
+    );
 
     // 書き換えた札は開かない。
     let response = send(
