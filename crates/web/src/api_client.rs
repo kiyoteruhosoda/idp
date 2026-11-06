@@ -276,14 +276,20 @@ impl ApiClient {
         }
     }
 
-    /// `Accept-Language` を（決まっていれば）付与し、今の要求の信じてよい国（task #895）も添える。
+    /// `Accept-Language` を（決まっていれば）付与し、今の要求の信じてよい国（task #895）と端末の印
+    /// （task #916）も添える。
     fn with_language(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         let request = match self.accept_language {
             Some(tag) => request.header(reqwest::header::ACCEPT_LANGUAGE, tag),
             None => request,
         };
-        match crate::client_country::current() {
+        let request = match crate::client_country::current() {
             Some(country) => request.header(assay_contracts::auth::CLIENT_COUNTRY_HEADER, country),
+            None => request,
+        };
+        // 今のブラウザの端末の印（task #916）。api はログインのその場で「登録した端末か」を決める。
+        match crate::device_observation::current_device_token() {
+            Some(token) => request.header(assay_contracts::auth::CLIENT_DEVICE_HEADER, token),
             None => request,
         }
     }
@@ -3326,6 +3332,47 @@ impl ApiClient {
     ) -> Result<assay_contracts::auth::InternalDeviceObserveResponse, InternalCallError> {
         self.post_internal("/internal/devices/observe", correlation_id, req)
             .await
+    }
+
+    /// 端末の登録の札の中身（task #916）。
+    pub async fn device_enrollment_describe(
+        &self,
+        correlation_id: &str,
+        req: &assay_contracts::auth::InternalDeviceEnrollmentDescribeRequest,
+    ) -> Result<assay_contracts::auth::InternalDeviceEnrollmentDescribeResponse, InternalCallError>
+    {
+        self.post_internal("/internal/device-enrollment/describe", correlation_id, req)
+            .await
+    }
+
+    /// 端末の登録のパスキーの確かめを始める（task #916）。
+    pub async fn device_enrollment_begin(
+        &self,
+        correlation_id: &str,
+        req: &assay_contracts::auth::InternalDeviceEnrollmentBeginRequest,
+    ) -> Result<assay_contracts::auth::InternalDeviceEnrollmentBeginResponse, InternalCallError>
+    {
+        self.post_internal(
+            "/internal/device-enrollment/passkey/begin",
+            correlation_id,
+            req,
+        )
+        .await
+    }
+
+    /// パスキーで確かめて端末を登録し、ログインする（task #916）。
+    pub async fn device_enrollment_complete(
+        &self,
+        correlation_id: &str,
+        req: &assay_contracts::auth::InternalDeviceEnrollmentCompleteRequest,
+    ) -> Result<assay_contracts::auth::InternalDeviceEnrollmentCompleteResponse, InternalCallError>
+    {
+        self.post_internal(
+            "/internal/device-enrollment/passkey/complete",
+            correlation_id,
+            req,
+        )
+        .await
     }
 
     /// SSO セッションを端末の鍵へ結び付ける（DBSC の登録。task #887）。

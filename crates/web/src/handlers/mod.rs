@@ -22,6 +22,7 @@ pub mod app_approval;
 pub mod authenticators;
 pub mod consent;
 pub mod console_script;
+pub mod device_enrollment;
 pub mod external_login;
 pub mod health;
 pub mod invitation_accept;

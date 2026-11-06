@@ -20,6 +20,7 @@ use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authentication_policy_gate::{
     AuthenticationPolicyGate, PolicyAudience, PolicyQuery,
 };
+use crate::application::device_enrollment::{Admission, AdmissionAttempt, DeviceGate};
 use crate::application::login_user_resolution::resolve_login_user;
 use crate::application::passkey_assertion::{
     PasskeyAssertionError, PasskeyAssertionService, PasskeyFlow,
@@ -130,6 +131,10 @@ pub enum AdminLoginOutcome {
     /// 第二要素の入力ステップを持たないため、ポータルログイン（`/{tenant_id}/login`）で MFA まで
     /// 通してから管理コンソールへ入るよう案内する。
     MfaRequired,
+    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916）。SSO は作っていない。
+    DeviceEnrollmentRequired {
+        ticket: String,
+    },
     Internal(String),
 }
 
@@ -153,6 +158,15 @@ pub struct AdminLoginService {
     /// テナントが上書きできる設定（ADR-0058）。参照のたびに引く。一致するポリシーが無い場合の
     /// 既定動作（AP2・§4）もここから引く。
     settings: Arc<dyn EffectiveTenantSettings>,
+    /// 登録した端末の関門（task #916）。`None` は関門なし（試験だけ。api は必ず付ける）。
+    device_gate: Option<Arc<DeviceGate>>,
+}
+
+/// 管理コンソールで SSO を作ろうとした結論。
+enum AdminSso {
+    Issued(String, u64),
+    /// 登録していない端末だった（task #916）。
+    EnrollmentRequired(String),
 }
 
 impl AdminLoginService {
@@ -186,7 +200,14 @@ impl AdminLoginService {
             audit,
             clock,
             settings,
+            device_gate: None,
         }
+    }
+
+    /// 登録した端末の関門を付ける（task #916。⚠ api の組み立てでは必ず呼ぶ）。
+    pub fn with_device_gate(mut self, gate: Arc<DeviceGate>) -> Self {
+        self.device_gate = Some(gate);
+        self
     }
 
     /// 認証ポリシーを評価し、SSO を発行してよいかを判定する（AP2）。
@@ -510,10 +531,15 @@ impl AdminLoginService {
             )
             .await
         {
-            Ok((sso_session_id, sso_absolute_ttl_secs)) => AdminLoginOutcome::Success {
-                sso_session_id,
-                sso_absolute_ttl_secs,
-            },
+            Ok(AdminSso::Issued(sso_session_id, sso_absolute_ttl_secs)) => {
+                AdminLoginOutcome::Success {
+                    sso_session_id,
+                    sso_absolute_ttl_secs,
+                }
+            }
+            Ok(AdminSso::EnrollmentRequired(ticket)) => {
+                AdminLoginOutcome::DeviceEnrollmentRequired { ticket }
+            }
             Err(e) => AdminLoginOutcome::Internal(e),
         }
     }
@@ -630,10 +656,15 @@ impl AdminLoginService {
             )
             .await
         {
-            Ok((sso_session_id, sso_absolute_ttl_secs)) => AdminLoginOutcome::Success {
-                sso_session_id,
-                sso_absolute_ttl_secs,
-            },
+            Ok(AdminSso::Issued(sso_session_id, sso_absolute_ttl_secs)) => {
+                AdminLoginOutcome::Success {
+                    sso_session_id,
+                    sso_absolute_ttl_secs,
+                }
+            }
+            Ok(AdminSso::EnrollmentRequired(ticket)) => {
+                AdminLoginOutcome::DeviceEnrollmentRequired { ticket }
+            }
             Err(e) => AdminLoginOutcome::Internal(e),
         }
     }
@@ -651,7 +682,27 @@ impl AdminLoginService {
         methods: Vec<AuthenticationMethod>,
         ctx: &RequestContext,
         now: chrono::DateTime<chrono::Utc>,
-    ) -> Result<(String, u64), String> {
+    ) -> Result<AdminSso, String> {
+        if let Some(gate) = &self.device_gate {
+            let admission = gate
+                .admit(
+                    AdmissionAttempt {
+                        tenant_id,
+                        user_id,
+                        home_tenant_id,
+                        methods: &methods,
+                        client_id: None,
+                        app_approved: false,
+                    },
+                    ctx,
+                    now,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            if let Admission::EnrollmentRequired { ticket } = admission {
+                return Ok(AdminSso::EnrollmentRequired(ticket));
+            }
+        }
         let lifetime = self
             .settings
             .sso_session_lifetime(home_tenant_id)
@@ -693,7 +744,7 @@ impl AdminLoginService {
                 ctx,
             )
             .await;
-        Ok((sso_session_id, sso.absolute_ttl_secs()))
+        Ok(AdminSso::Issued(sso_session_id, sso.absolute_ttl_secs()))
     }
 
     /// 強制パスワード変更（ADR-0009 §5）。管理ログインを現行パスワードを含めフルに再検証し、成功時に
@@ -884,10 +935,15 @@ impl AdminLoginService {
             )
             .await
         {
-            Ok((sso_session_id, sso_absolute_ttl_secs)) => AdminLoginOutcome::Success {
-                sso_session_id,
-                sso_absolute_ttl_secs,
-            },
+            Ok(AdminSso::Issued(sso_session_id, sso_absolute_ttl_secs)) => {
+                AdminLoginOutcome::Success {
+                    sso_session_id,
+                    sso_absolute_ttl_secs,
+                }
+            }
+            Ok(AdminSso::EnrollmentRequired(ticket)) => {
+                AdminLoginOutcome::DeviceEnrollmentRequired { ticket }
+            }
             Err(e) => AdminLoginOutcome::Internal(e),
         }
     }

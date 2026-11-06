@@ -23,7 +23,9 @@ use crate::application::authentication_policy_gate::{
 use crate::application::authenticator_management::{
     consume_single_use_code, is_blocked_in_registry,
 };
-use crate::application::sign_in_completion::{AuthorizationContinuation, SignIn, SignInCompletion};
+use crate::application::sign_in_completion::{
+    AuthorizationContinuation, Establishment, SignIn, SignInCompletion,
+};
 use crate::application::totp_registration::verify_totp_code;
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session::AuthSessionIdHash;
@@ -86,6 +88,11 @@ pub enum MfaLoginOutcome {
     },
     PolicyDenied,
     /// 内部エラー。
+    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916）。SSO セッションは
+    /// 作っていない。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    DeviceEnrollmentRequired {
+        ticket: String,
+    },
     Internal(String),
 }
 
@@ -307,7 +314,10 @@ impl MfaLoginService {
             )
             .await
         {
-            Ok(sso) => sso,
+            Ok(Establishment::Established(sso)) => sso,
+            Ok(Establishment::DeviceEnrollmentRequired { ticket }) => {
+                return MfaLoginOutcome::DeviceEnrollmentRequired { ticket }
+            }
             Err(e) => return MfaLoginOutcome::Internal(e.to_string()),
         };
         let sso_session_id = sso.session_id().to_string();

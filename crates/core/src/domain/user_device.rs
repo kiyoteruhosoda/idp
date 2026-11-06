@@ -179,6 +179,23 @@ pub enum SignInDevice {
     Unknown,
 }
 
+/// 今の要求のブラウザの端末の印（web が内部の呼び出しに添えた平文。task #916）。
+///
+/// 登録した端末に限る組織で、ログインを成立させてよいかを決める所（[`crate::application::device_enrollment::DeviceGate`]）
+/// が引く。要求の外（見回りなど）や、外から直接 api に来た要求では `None`。
+pub trait RequestDevice: Send + Sync {
+    fn current(&self) -> Option<DeviceRef>;
+}
+
+/// 端末の印を持たない（試験・要求の外）。
+pub struct NoRequestDevice;
+
+impl RequestDevice for NoRequestDevice {
+    fn current(&self) -> Option<DeviceRef> {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

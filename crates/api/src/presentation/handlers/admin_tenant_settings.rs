@@ -90,6 +90,25 @@ pub async fn set_tenant_setting(
         &correlation,
         state.config.trust_forwarded_headers(),
     );
+    // 登録した端末に限る設定（task #916）は、有効にすると入れなくなる人が居るうちは有効にしない
+    // （締め出しが一番の危険。その人たちに先に端末を登録してもらう）。
+    if key == crate::domain::effective_tenant_settings::REGISTERED_DEVICE_REQUIRED
+        && body.value.trim() == "true"
+    {
+        let unready = state
+            .device_gate
+            .members_without_trusted_device(tenant.context().tenant_id())
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        if !unready.is_empty() {
+            return Err(ApiError::BadRequest(ApiMessages::new(locale).get_message(
+                &crate::domain::message::MessageKey::with_value(
+                    "api-registered-device-required-unready",
+                    unready.join("、"),
+                ),
+            )));
+        }
+    }
     state
         .tenant_settings
         .set(

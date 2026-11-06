@@ -222,6 +222,9 @@ pub async fn login_complete(
             InternalPasskeyLoginCompleteResponse::InvalidCredential
         }
         PasskeyAuthOutcome::PolicyDenied => InternalPasskeyLoginCompleteResponse::PolicyDenied,
+        PasskeyAuthOutcome::DeviceEnrollmentRequired { ticket } => {
+            InternalPasskeyLoginCompleteResponse::DeviceEnrollmentRequired { ticket }
+        }
         PasskeyAuthOutcome::ApplicationNotPermitted {
             application_name,
             sso_session_id,
@@ -291,6 +294,9 @@ pub async fn admin_login_complete(
         }
         AdminLoginOutcome::Forbidden => InternalAdminPasskeyLoginCompleteResponse::Forbidden,
         AdminLoginOutcome::PolicyDenied => InternalAdminPasskeyLoginCompleteResponse::PolicyDenied,
+        AdminLoginOutcome::DeviceEnrollmentRequired { ticket } => {
+            InternalAdminPasskeyLoginCompleteResponse::DeviceEnrollmentRequired { ticket }
+        }
         AdminLoginOutcome::RateLimited => InternalAdminPasskeyLoginCompleteResponse::RateLimited,
         // パスワード経路でしか出ない outcome（パスキー経路では到達しない）。
         other => {
@@ -360,6 +366,9 @@ pub async fn portal_login_complete(
         PortalLoginOutcome::PolicyDenied => {
             InternalPortalPasskeyLoginCompleteResponse::PolicyDenied
         }
+        PortalLoginOutcome::DeviceEnrollmentRequired { ticket } => {
+            InternalPortalPasskeyLoginCompleteResponse::DeviceEnrollmentRequired { ticket }
+        }
         PortalLoginOutcome::RateLimited => InternalPortalPasskeyLoginCompleteResponse::RateLimited,
         // パスワード経路でしか出ない outcome（パスキー経路では到達しない）。
         other => {
@@ -383,6 +392,7 @@ fn admin_outcome_label(outcome: &AdminLoginOutcome) -> &'static str {
         AdminLoginOutcome::Forbidden => "forbidden",
         AdminLoginOutcome::WeakPassword(_) => "weak_password",
         AdminLoginOutcome::PolicyDenied => "policy_denied",
+        AdminLoginOutcome::DeviceEnrollmentRequired { .. } => "device_enrollment_required",
         AdminLoginOutcome::PasskeyChallengeNotFound => "passkey_challenge_not_found",
         AdminLoginOutcome::MfaEnrollmentRequired => "mfa_enrollment_required",
         AdminLoginOutcome::MfaRequired => "mfa_required",
@@ -398,6 +408,7 @@ fn portal_outcome_label(outcome: &PortalLoginOutcome) -> &'static str {
         PortalLoginOutcome::EmailVerificationRequired => "email_verification_required",
         PortalLoginOutcome::PasswordChangeRequired { .. } => "password_change_required",
         PortalLoginOutcome::PolicyDenied => "policy_denied",
+        PortalLoginOutcome::DeviceEnrollmentRequired { .. } => "device_enrollment_required",
         PortalLoginOutcome::MfaEnrollmentRequired => "mfa_enrollment_required",
         PortalLoginOutcome::PasskeyChallengeNotFound => "passkey_challenge_not_found",
         PortalLoginOutcome::RateLimited => "rate_limited",

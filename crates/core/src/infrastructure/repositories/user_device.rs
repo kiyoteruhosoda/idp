@@ -61,6 +61,26 @@ fn clip(value: Option<&str>, max_chars: usize) -> Option<String> {
 
 #[async_trait]
 impl UserDeviceRepository for SqlxUserDeviceRepository {
+    async fn home_members_without_trusted_device(
+        &self,
+        tenant_id: crate::domain::tenant::TenantId,
+    ) -> Result<Vec<String>> {
+        let rows = sqlx::query(
+            "SELECT COALESCE(NULLIF(u.preferred_username, ''), u.email) AS label FROM users u \
+             WHERE u.tenant_id = ? AND u.status = 'ACTIVE' AND u.pending_setup = FALSE \
+             AND NOT EXISTS (SELECT 1 FROM user_devices d WHERE d.user_id = u.id) \
+             AND NOT EXISTS (SELECT 1 FROM app_approver_keys k WHERE k.user_id = u.id) \
+             ORDER BY label LIMIT 50",
+        )
+        .bind(tenant_id.as_uuid().to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(repo_err)?;
+        rows.iter()
+            .map(|row| row.try_get::<String, _>("label").map_err(repo_err))
+            .collect()
+    }
+
     async fn find(&self, user_id: Uuid, device: &DeviceRef) -> Result<Option<UserDevice>> {
         let sql = format!(
             "SELECT {SELECT_COLUMNS} FROM user_devices WHERE user_id = ? AND device_hash = ?"

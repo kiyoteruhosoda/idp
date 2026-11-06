@@ -24,7 +24,9 @@ use crate::application::authentication_policy_gate::{
 use crate::application::passkey_assertion::{
     PasskeyAssertionError, PasskeyAssertionService, PasskeyFlow,
 };
-use crate::application::sign_in_completion::{AuthorizationContinuation, SignIn, SignInCompletion};
+use crate::application::sign_in_completion::{
+    AuthorizationContinuation, Establishment, SignIn, SignInCompletion,
+};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session::AuthSessionIdHash;
 use crate::domain::authentication_policy::PolicyDecision;
@@ -75,6 +77,11 @@ pub enum PasskeyAuthOutcome {
     /// IP 単位のレート制限超過（ログイン・直接ログインと同じ枠）。
     RateLimited,
     /// 内部エラー。
+    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916）。SSO セッションは
+    /// 作っていない。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    DeviceEnrollmentRequired {
+        ticket: String,
+    },
     Internal(String),
 }
 
@@ -269,7 +276,10 @@ impl PasskeyAuthenticationService {
             )
             .await
         {
-            Ok(sso) => sso,
+            Ok(Establishment::Established(sso)) => sso,
+            Ok(Establishment::DeviceEnrollmentRequired { ticket }) => {
+                return PasskeyAuthOutcome::DeviceEnrollmentRequired { ticket }
+            }
             Err(e) => return PasskeyAuthOutcome::Internal(e.to_string()),
         };
         let sso_session_id = sso.session_id().to_string();

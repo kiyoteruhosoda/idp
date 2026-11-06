@@ -9,9 +9,10 @@ use crate::presentation::handlers::{
     admin_restart, admin_saml_service_providers, admin_signing_keys, admin_ssh_keys,
     admin_system_settings, admin_tenant_settings, admin_tenant_smtp, admin_tenants, admin_users,
     app_approver, authorize, consent, discovery, health, internal_admin_token,
-    internal_app_approval, internal_auth, internal_devices, internal_runtime_settings,
-    internal_security_status, internal_session_keys, internal_sign_in_history, internal_ssh_keys,
-    introspect, invitations, logout, mfa, passkey, register, revoke, saml_sso, token, userinfo,
+    internal_app_approval, internal_auth, internal_device_enrollment, internal_devices,
+    internal_runtime_settings, internal_security_status, internal_session_keys,
+    internal_sign_in_history, internal_ssh_keys, introspect, invitations, logout, mfa, passkey,
+    register, revoke, saml_sso, token, userinfo,
 };
 use crate::presentation::openapi::ApiDoc;
 use crate::presentation::security_headers::add_security_headers;
@@ -192,6 +193,19 @@ pub fn build(state: AppState) -> Router {
         )
         // 利用者の端末（task #872）。ログインした端末の結び付けと「端末」の欄。
         .route("/internal/devices/observe", post(internal_devices::observe))
+        // 登録していない端末で正しく入ろうとしたときの、その場での端末の登録（task #916）。
+        .route(
+            "/internal/device-enrollment/describe",
+            post(internal_device_enrollment::describe),
+        )
+        .route(
+            "/internal/device-enrollment/passkey/begin",
+            post(internal_device_enrollment::begin),
+        )
+        .route(
+            "/internal/device-enrollment/passkey/complete",
+            post(internal_device_enrollment::complete),
+        )
         // 「アプリで続ける」と認証アプリの鍵（task #892・ADR-0077）。
         .route(
             "/internal/app-approval/start",
@@ -358,6 +372,10 @@ pub fn build(state: AppState) -> Router {
         // web が添えた「信じてよい国」（task #895）。サービストークンの確かめ（外側）を通った要求でだけ読む。
         .route_layer(axum::middleware::from_fn(
             crate::presentation::client_country::capture_client_country,
+        ))
+        // web が添えた今のブラウザの端末の印（task #916）。同じくサービストークンの内側でだけ読む。
+        .route_layer(axum::middleware::from_fn(
+            crate::presentation::client_device::capture_client_device,
         ))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),

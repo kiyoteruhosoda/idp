@@ -1,0 +1,43 @@
+{% extends "page.html" %}
+{% block title %}{{ messages.get("device-enrollment-title") }}{% endblock %}
+{% block content %}
+<div class="card border-0 bg-transparent">
+  <div class="card-header px-4 pb-3 border-0 bg-transparent">
+    <h1 class="h4 mb-0">{{ messages.get("device-enrollment-title") }}</h1>
+  </div>
+  <div class="card-body p-4">
+    {#- 登録した端末に限る組織（task #916）。パスワード等は通っているが、このブラウザはまだ登録されていない。
+        パスキーで確かめるとこのブラウザを登録し、元の画面へ戻る。 -#}
+    <p>{{ messages.get_arg("device-enrollment-lead", "username", username) }}</p>
+    <p class="small text-body-secondary">{{ messages.get("device-enrollment-why") }}</p>
+    <div class="mb-3">
+      <label class="form-label" for="passkey-device-name">{{ messages.get("device-enrollment-name") }}{% include "required_mark.html" %}</label>
+      <input type="text" class="form-control" id="passkey-device-name" name="device_name" value="{{ device_name }}" maxlength="100" required>
+      <div class="form-text">{{ messages.get("device-enrollment-name-help") }}</div>
+    </div>
+    <div id="passkey-login" hidden>
+      <div class="d-grid mb-3">
+        <button type="button" class="btn btn-primary" id="btn-passkey-login"><i class="fa-solid fa-key me-2" aria-hidden="true"></i>{{ messages.get("device-enrollment-submit") }}</button>
+      </div>
+      <div id="passkey-error" style="display:none"
+           data-tenant-prefix="{{ tenant_prefix }}"
+           data-begin-path="/device-enrollment/begin"
+           data-complete-path="/device-enrollment/complete"
+           data-next="{{ next }}"
+           data-msg-invalid-credential="{{ messages.get("device-enrollment-error-passkey") }}"
+           data-msg-ticket-invalid="{{ messages.get("device-enrollment-expired") }}"
+           data-msg-invalid-name="{{ messages.get("device-enrollment-error-name") }}"
+           data-msg-account-unavailable="{{ messages.get("device-enrollment-error-account") }}"
+           data-msg-cancelled="{{ messages.get("passkey-error-cancelled") }}"
+           data-msg-server="{{ messages.get("passkey-error-server") }}">
+        <p class="text-danger small text-center mb-0" role="alert" id="passkey-error-msg"></p>
+      </div>
+    </div>
+    <p class="small text-body-secondary mb-2">{{ messages.get("device-enrollment-no-passkey") }}</p>
+    {% if app_approval_offered %}
+    <p class="small text-body-secondary mb-0">{{ messages.get("device-enrollment-app-hint") }} <a href="{{ next }}">{{ messages.get("device-enrollment-back") }}</a></p>
+    {% endif %}
+  </div>
+</div>
+<script src="/assets/passkey-login.js?v={{ crate::templates::asset_version() }}" defer></script>
+{% endblock %}

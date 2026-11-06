@@ -640,6 +640,7 @@ api-register-rate-limited = Too many sign-up attempts. Please wait a moment and 
 api-runtime-setting-invalid = The runtime setting could not be saved. Check the key and the value.
 api-runtime-setting-not-bootable = The value is valid, but the services could not start with it, so it was not saved. (1) An https ISSUER requires KEY_ENCRYPTION_KEY, INTERNAL_SERVICE_TOKEN and CSRF_SECRET to be set as environment variables first. (2) When COOKIE_DOMAIN is set, the ISSUER host must stay under that domain and use the same scheme as PUBLIC_WEB_BASE_URL. The exact reason is in the api log.
 api-tenant-setting-invalid = The setting could not be saved. Settings decided by the whole IdP cannot be changed per tenant; check the key and the value.
+api-registered-device-required-unready = Not enabled: these people have neither a registered device nor the authenticator app, and would not be able to sign in: { $value }. Ask them to register the device they usually use (Account security → Devices) first.
 api-tenant-setting-needs-confirmation = This value can stop people in this tenant from signing in. Confirm the change and save again.
 api-tenant-name-empty = The tenant name must not be empty.
 # Tenant domain assignment (ADR-0029)
@@ -1784,3 +1785,18 @@ user-security-approver-never-used = Not used yet
 user-security-approver-revoke-confirm = Revoke this authenticator app's key? Sign-ins approved with it will also end.
 user-security-saved-approver-key-revoked = The authenticator app's key was revoked. Sign-ins approved with it have ended.
 user-security-error-approver-key-not-found = That authenticator app's key was not found (it has already been revoked).
+
+## Device enrollment (task #916)
+device-enrollment-title = Register this device
+device-enrollment-lead = You were verified as { $username }, but this device (browser) is not registered yet. This organization only allows sign-in from registered devices.
+device-enrollment-why = Confirm it is you with a passkey to register this device and continue signing in. A password alone cannot register a device, so someone who learns your password still cannot sign in from their own device.
+device-enrollment-name = Device name
+device-enrollment-name-help = A name to tell it apart in your device list (for example: Home Windows).
+device-enrollment-submit = Confirm with a passkey and register
+device-enrollment-no-passkey = If you cannot use a passkey, sign in from a registered device and create a passkey under Account security.
+device-enrollment-app-hint = On a phone with the authenticator app, you can also use "Continue with the app" on the sign-in screen.
+device-enrollment-back = Back to sign-in
+device-enrollment-expired = The registration has expired or was opened in another browser. Please sign in again.
+device-enrollment-error-passkey = The passkey could not be verified. Use the passkey of the person who signed in.
+device-enrollment-error-name = Enter a device name of 1 to 100 characters.
+device-enrollment-error-account = This account cannot be used right now. Contact your administrator.

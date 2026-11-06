@@ -193,6 +193,15 @@ pub async fn login(
             &csrf,
             "login-error-locked",
         ),
+        // 登録した端末に限る組織で、登録していない端末だった（task #916）。札を置いて登録の画面へ。
+        InternalPortalAuthenticateResponse::DeviceEnrollmentRequired { ticket } => {
+            crate::handlers::device_enrollment::redirect(
+                state,
+                tenant,
+                &ticket,
+                &portal_destination(state, headers, tenant),
+            )
+        }
         // 認証ポリシー（AP2）。資格情報は検証済みなので資格情報エラーとは別の文言を出す。
         InternalPortalAuthenticateResponse::PolicyDenied => reshow_login(
             &messages,
@@ -319,6 +328,15 @@ pub async fn password_change(
             "login-error-email-not-verified",
             StatusCode::FORBIDDEN,
         ),
+        // 登録した端末に限る組織で、登録していない端末だった（task #916）。札を置いて登録の画面へ。
+        InternalPortalChangePasswordResponse::DeviceEnrollmentRequired { ticket } => {
+            crate::handlers::device_enrollment::redirect(
+                &state,
+                &tenant,
+                &ticket,
+                &portal_destination(&state, &headers, &tenant),
+            )
+        }
         InternalPortalChangePasswordResponse::PolicyDenied => message_page(
             &messages,
             "login-error-policy-denied",
@@ -503,6 +521,15 @@ pub async fn mfa_submit(
             )
                 .into_response()
         }
+        // 登録した端末に限る組織で、登録していない端末だった（task #916）。札を置いて登録の画面へ。
+        InternalPortalMfaResponse::DeviceEnrollmentRequired { ticket } => {
+            crate::handlers::device_enrollment::redirect(
+                &state,
+                &tenant,
+                &ticket,
+                &portal_destination(&state, &headers, &tenant),
+            )
+        }
         // ポリシー拒否はチケットを失効させて終える（再試行しても結果は変わらない）。
         InternalPortalMfaResponse::PolicyDenied => {
             let set_cookies = state
@@ -634,12 +661,23 @@ pub(crate) fn sso_success_parts(
             cookies::PREFERENCE_COOKIE_MAX_AGE_SECS,
         );
     }
+    (set_cookies, portal_destination(state, headers, tenant))
+}
+
+/// ポータルのログインの後の行き先（SAML の続き・認証アプリの登録の確認・設定の画面）。
+///
+/// 端末の登録（task #916）を挟んだときも、登録の後に同じ所へ戻すために使う。
+pub(crate) fn portal_destination(
+    state: &WebState,
+    headers: &HeaderMap,
+    tenant: &WebTenant,
+) -> String {
     let enrollment = cookies::get(
         headers,
         &state.origin_bound_cookie(cookies::APP_APPROVER_ENROLLMENT_COOKIE),
     )
     .filter(|id| crate::handlers::app_approval::is_enrollment_id(id));
-    let destination = if cookies::get(
+    if cookies::get(
         headers,
         &state.origin_bound_cookie(cookies::SAML_REQUEST_COOKIE),
     )
@@ -654,8 +692,7 @@ pub(crate) fn sso_success_parts(
         )
     } else {
         format!("{}/settings", tenant.prefix())
-    };
-    (set_cookies, destination)
+    }
 }
 
 fn render_login_form(

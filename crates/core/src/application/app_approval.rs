@@ -931,7 +931,17 @@ impl AppApprovalService {
             )
             .await
         {
-            Ok(sso) => sso,
+            Ok(crate::application::sign_in_completion::Establishment::Established(sso)) => sso,
+            // 認証アプリで承認したログインは関門を通る（task #916。承認した鍵がパスキーで登録した端末の鍵）。
+            Ok(
+                crate::application::sign_in_completion::Establishment::DeviceEnrollmentRequired {
+                    ..
+                },
+            ) => {
+                return CompleteApprovalOutcome::Internal(
+                    "app approval was sent to device enrollment".to_string(),
+                )
+            }
             Err(e) => return CompleteApprovalOutcome::Internal(e.to_string()),
         };
         if let Err(e) = self

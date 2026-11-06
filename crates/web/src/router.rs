@@ -14,9 +14,9 @@ use crate::handlers::{
     admin_members_console, admin_resources_console, admin_restart_console,
     admin_saml_clients_console, admin_settings, admin_signing_keys_console, admin_status_console,
     admin_tenants_console, admin_users_console, app_approval, authenticators, consent,
-    console_script, external_login, health, invitation_accept, locale, login, mfa_totp,
-    page_scripts, passkey, password_change, password_reset, portal, react_assets, rp_logout,
-    saml_sso, step_up, stylesheet, submit_feedback_script, user_security, user_settings,
+    console_script, device_enrollment, external_login, health, invitation_accept, locale, login,
+    mfa_totp, page_scripts, passkey, password_change, password_reset, portal, react_assets,
+    rp_logout, saml_sso, step_up, stylesheet, submit_feedback_script, user_security, user_settings,
     vendor_assets, verify_email, web_app_manifest,
 };
 use crate::i18n::Messages;
@@ -40,6 +40,16 @@ pub fn build(state: WebState) -> Router {
         // エンドユーザー・ポータルの TOTP 入力（`/login` 直接ログイン経路の 2 段階目）。
         .route("/login/mfa", get(portal::mfa_page).post(portal::mfa_submit))
         // 「アプリで続ける」（task #892・ADR-0077）。
+        // 登録していない端末で正しく入ろうとしたときの、その場での端末の登録（task #916）。
+        .route("/device-enrollment", get(device_enrollment::page))
+        .route(
+            "/device-enrollment/begin",
+            post(device_enrollment::begin_api),
+        )
+        .route(
+            "/device-enrollment/complete",
+            post(device_enrollment::complete_api),
+        )
         .route("/login/app/start", post(app_approval::start))
         .route("/login/app/complete", get(app_approval::complete))
         .route(

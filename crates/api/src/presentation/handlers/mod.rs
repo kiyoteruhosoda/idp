@@ -32,6 +32,7 @@ pub mod health;
 pub mod internal_admin_token;
 pub mod internal_app_approval;
 pub mod internal_auth;
+pub mod internal_device_enrollment;
 pub mod internal_devices;
 pub mod internal_runtime_settings;
 pub mod internal_security_status;

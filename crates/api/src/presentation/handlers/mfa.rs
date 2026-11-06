@@ -143,6 +143,9 @@ pub async fn verify_totp(
         MfaLoginOutcome::RateLimited => InternalVerifyTotpResponse::RateLimited,
         MfaLoginOutcome::Locked => InternalVerifyTotpResponse::Locked,
         MfaLoginOutcome::PolicyDenied => InternalVerifyTotpResponse::PolicyDenied,
+        MfaLoginOutcome::DeviceEnrollmentRequired { ticket } => {
+            InternalVerifyTotpResponse::DeviceEnrollmentRequired { ticket }
+        }
         MfaLoginOutcome::ApplicationNotPermitted {
             application_name,
             sso_session_id,

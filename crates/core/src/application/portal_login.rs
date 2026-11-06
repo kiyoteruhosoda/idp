@@ -29,6 +29,7 @@ use crate::application::authentication_policy_gate::{
 use crate::application::authenticator_management::{
     consume_single_use_code, is_blocked_in_registry,
 };
+use crate::application::device_enrollment::{Admission, AdmissionAttempt, DeviceGate};
 use crate::application::login_user_resolution::resolve_login_user;
 use crate::application::mfa_login::user_has_confirmed_totp;
 use crate::application::passkey_assertion::{
@@ -150,6 +151,10 @@ pub enum PortalLoginOutcome {
     InvalidCredentials,
     /// アカウントロック中。
     Locked,
+    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916）。SSO は作っていない。
+    DeviceEnrollmentRequired {
+        ticket: String,
+    },
     Internal(String),
 }
 
@@ -183,6 +188,10 @@ pub enum PortalChangePasswordOutcome {
     /// 新パスワードが強度要件を満たさない。
     /// 新パスワードがポリシーを満たさない（長さ・漏えい済み・再利用。AP7）。
     WeakPassword(PasswordRejection),
+    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916）。SSO は作っていない。
+    DeviceEnrollmentRequired {
+        ticket: String,
+    },
     Internal(String),
 }
 
@@ -201,6 +210,10 @@ pub enum PortalMfaOutcome {
     /// チケットが無効・期限切れ（ログインからやり直し）。
     TicketExpired,
     RateLimited,
+    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916）。SSO は作っていない。
+    DeviceEnrollmentRequired {
+        ticket: String,
+    },
     Internal(String),
 }
 
@@ -228,6 +241,18 @@ pub struct PortalLoginService {
     /// テナントが上書きできる設定（ADR-0058）。参照のたびに引く。一致するポリシーが無い場合の
     /// 既定動作（AP2・§4）もここから引く。
     settings: Arc<dyn EffectiveTenantSettings>,
+    /// 登録した端末の関門（task #916）。`None` は関門なし（試験だけ。api は必ず付ける）。
+    device_gate: Option<Arc<DeviceGate>>,
+}
+
+/// ポータルで SSO を作ろうとした結論。
+enum PortalSso {
+    Issued {
+        sso_session_id: String,
+        sso_absolute_ttl_secs: u64,
+    },
+    /// 登録していない端末だった（task #916）。
+    EnrollmentRequired { ticket: String },
 }
 
 impl PortalLoginService {
@@ -265,7 +290,14 @@ impl PortalLoginService {
             key_encryption_key,
             ticket_secret,
             settings,
+            device_gate: None,
         }
+    }
+
+    /// 登録した端末の関門を付ける（task #916。⚠ api の組み立てでは必ず呼ぶ）。
+    pub fn with_device_gate(mut self, gate: Arc<DeviceGate>) -> Self {
+        self.device_gate = Some(gate);
+        self
     }
 
     /// 認証ポリシーを評価する（AP2）。ポータルはクライアント文脈を持たないため `client_id` は `None`。
@@ -482,7 +514,13 @@ impl PortalLoginService {
             )
             .await
         {
-            Ok(id) => id,
+            Ok(PortalSso::Issued {
+                sso_session_id,
+                sso_absolute_ttl_secs,
+            }) => (sso_session_id, sso_absolute_ttl_secs),
+            Ok(PortalSso::EnrollmentRequired { ticket }) => {
+                return PortalLoginOutcome::DeviceEnrollmentRequired { ticket }
+            }
             Err(e) => return PortalLoginOutcome::Internal(e),
         };
         PortalLoginOutcome::Success {
@@ -598,7 +636,13 @@ impl PortalLoginService {
             )
             .await
         {
-            Ok(id) => id,
+            Ok(PortalSso::Issued {
+                sso_session_id,
+                sso_absolute_ttl_secs,
+            }) => (sso_session_id, sso_absolute_ttl_secs),
+            Ok(PortalSso::EnrollmentRequired { ticket }) => {
+                return PortalLoginOutcome::DeviceEnrollmentRequired { ticket }
+            }
             Err(e) => return PortalLoginOutcome::Internal(e),
         };
         PortalLoginOutcome::Success {
@@ -839,7 +883,13 @@ impl PortalLoginService {
             )
             .await
         {
-            Ok(id) => id,
+            Ok(PortalSso::Issued {
+                sso_session_id,
+                sso_absolute_ttl_secs,
+            }) => (sso_session_id, sso_absolute_ttl_secs),
+            Ok(PortalSso::EnrollmentRequired { ticket }) => {
+                return PortalChangePasswordOutcome::DeviceEnrollmentRequired { ticket }
+            }
             Err(e) => return PortalChangePasswordOutcome::Internal(e),
         };
         PortalChangePasswordOutcome::Success {
@@ -948,7 +998,13 @@ impl PortalLoginService {
             )
             .await
         {
-            Ok(id) => id,
+            Ok(PortalSso::Issued {
+                sso_session_id,
+                sso_absolute_ttl_secs,
+            }) => (sso_session_id, sso_absolute_ttl_secs),
+            Ok(PortalSso::EnrollmentRequired { ticket }) => {
+                return PortalMfaOutcome::DeviceEnrollmentRequired { ticket }
+            }
             Err(e) => return PortalMfaOutcome::Internal(e),
         };
         PortalMfaOutcome::Success {
@@ -966,7 +1022,27 @@ impl PortalLoginService {
         methods: Vec<AuthenticationMethod>,
         ctx: &RequestContext,
         now: DateTime<Utc>,
-    ) -> Result<(String, u64), String> {
+    ) -> Result<PortalSso, String> {
+        if let Some(gate) = &self.device_gate {
+            let admission = gate
+                .admit(
+                    AdmissionAttempt {
+                        tenant_id,
+                        user_id: user.id,
+                        home_tenant_id: user.tenant_id,
+                        methods: &methods,
+                        client_id: None,
+                        app_approved: false,
+                    },
+                    ctx,
+                    now,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            if let Admission::EnrollmentRequired { ticket } = admission {
+                return Ok(PortalSso::EnrollmentRequired { ticket });
+            }
+        }
         // 寿命は利用者の所属元テナントの値（SSO セッションは全テナントで共有されるため。ADR-0058）。
         let lifetime = self
             .settings
@@ -1009,7 +1085,10 @@ impl PortalLoginService {
                 ctx,
             )
             .await;
-        Ok((sso_session_id, sso.absolute_ttl_secs()))
+        Ok(PortalSso::Issued {
+            sso_session_id,
+            sso_absolute_ttl_secs: sso.absolute_ttl_secs(),
+        })
     }
 
     /// `mfa_ticket` から MFA 待ちの利用者を解決する（AP9。email OTP の送信先を決めるために使う）。

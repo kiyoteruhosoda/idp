@@ -512,6 +512,17 @@ pub async fn login_complete_api(
             )
                 .into_response()
         }
+        // 登録した端末に限る組織で、登録していない端末だった（task #916）。札を置いて登録の画面へ。
+        InternalPasskeyLoginCompleteResponse::DeviceEnrollmentRequired { ticket } => (
+            crate::handlers::device_enrollment::ticket_cookie(&state, &ticket).into_headers(),
+            Json(login_redirect(
+                &crate::handlers::device_enrollment::enrollment_location(
+                    &tenant,
+                    &format!("{}/login", tenant.prefix()),
+                ),
+            )),
+        )
+            .into_response(),
         // 認証ポリシーによる拒否。フロント側スクリプトはこのコードを翻訳キーへ写す。
         InternalPasskeyLoginCompleteResponse::PolicyDenied => Json(LoginCompleteJsonResponse {
             redirect_to: None,
@@ -594,6 +605,17 @@ pub async fn admin_login_complete_api(
         InternalAdminPasskeyLoginCompleteResponse::Forbidden => {
             Json(login_error("forbidden")).into_response()
         }
+        // 登録した端末に限る組織で、登録していない端末だった（task #916）。札を置いて登録の画面へ。
+        InternalAdminPasskeyLoginCompleteResponse::DeviceEnrollmentRequired { ticket } => (
+            crate::handlers::device_enrollment::ticket_cookie(&state, &ticket).into_headers(),
+            Json(login_redirect(
+                &crate::handlers::device_enrollment::enrollment_location(
+                    &tenant,
+                    &super::admin_console::admin_home_path(&tenant),
+                ),
+            )),
+        )
+            .into_response(),
         InternalAdminPasskeyLoginCompleteResponse::PolicyDenied => {
             Json(login_error("policy_denied")).into_response()
         }
@@ -668,6 +690,17 @@ pub async fn portal_login_complete_api(
         InternalPortalPasskeyLoginCompleteResponse::EmailVerificationRequired => {
             Json(login_error("email_verification_required")).into_response()
         }
+        // 登録した端末に限る組織で、登録していない端末だった（task #916）。札を置いて登録の画面へ。
+        InternalPortalPasskeyLoginCompleteResponse::DeviceEnrollmentRequired { ticket } => (
+            crate::handlers::device_enrollment::ticket_cookie(&state, &ticket).into_headers(),
+            Json(login_redirect(
+                &crate::handlers::device_enrollment::enrollment_location(
+                    &tenant,
+                    &super::portal::portal_destination(&state, &headers, &tenant),
+                ),
+            )),
+        )
+            .into_response(),
         InternalPortalPasskeyLoginCompleteResponse::PolicyDenied => {
             Json(login_error("policy_denied")).into_response()
         }

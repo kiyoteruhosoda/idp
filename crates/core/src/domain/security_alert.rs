@@ -24,6 +24,11 @@ pub enum SecurityAlertKind {
         first_seen: bool,
         methods: Vec<AuthenticationMethod>,
     },
+    /// 登録した端末に限る組織で、登録していない端末で正しく認証された（パスワードが漏れた合図になりうる）。
+    /// ログインは成立させていない（task #916）。
+    UnregisteredDeviceRefused {
+        methods: Vec<AuthenticationMethod>,
+    },
     /// 端末を登録した。
     DeviceRegistered {
         device_name: String,
@@ -68,6 +73,7 @@ impl SecurityAlertKind {
     pub fn severity(&self) -> SecurityAlertSeverity {
         match self {
             Self::UnregisteredDeviceSignIn { .. }
+            | Self::UnregisteredDeviceRefused { .. }
             | Self::DeviceRegistered { .. }
             | Self::DeviceRevoked { .. }
             | Self::SshKeyRegistered { .. }

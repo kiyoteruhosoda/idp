@@ -134,6 +134,13 @@ pub(crate) fn notice_body(alert: &SecurityAlert) -> Value {
             },
             "unregistered-device",
         ),
+        SecurityAlertKind::UnregisteredDeviceRefused { .. } => (
+            format!(
+                "登録していない端末で {} のログインが正しく行われかけました（ログインはさせていません）",
+                alert.username
+            ),
+            "unregistered-device-refused",
+        ),
         SecurityAlertKind::DeviceRegistered { device_name } => (
             format!("{} が端末「{}」を登録しました", alert.username, device_name),
             "device-registered",
@@ -231,7 +238,9 @@ pub(crate) fn notice_body(alert: &SecurityAlert) -> Value {
     {
         details.push(format!("指紋: {fingerprint}"));
     }
-    if let SecurityAlertKind::UnregisteredDeviceSignIn { methods, .. } = &alert.kind {
+    if let SecurityAlertKind::UnregisteredDeviceSignIn { methods, .. }
+    | SecurityAlertKind::UnregisteredDeviceRefused { methods } = &alert.kind
+    {
         let labels: Vec<&str> = methods.iter().map(method_label).collect();
         details.push(format!(
             "入り方: {}",
@@ -248,6 +257,12 @@ pub(crate) fn notice_body(alert: &SecurityAlert) -> Value {
             "自分のログインなら、その端末で assay の「アカウントのセキュリティ」→「端末」から登録すると次から鳴りません"
                 .to_string(),
             "覚えが無ければ、assay の「アカウントのセキュリティ」でそのセッションを切り、パスワードとパスキーを確かめてください"
+                .to_string(),
+        ],
+        SecurityAlertKind::UnregisteredDeviceRefused { .. } => vec![
+            "自分なら、その端末でパスキーで確かめて登録すれば入れます（登録すると「端末を登録しました」の知らせも届きます）"
+                .to_string(),
+            "覚えが無ければ、「入り方」の資格情報（パスワードなど）が他人に使われています。すぐに変えてください（登録していない端末なので、まだ入られてはいません）"
                 .to_string(),
         ],
         SecurityAlertKind::DeviceRegistered { .. } => vec![
