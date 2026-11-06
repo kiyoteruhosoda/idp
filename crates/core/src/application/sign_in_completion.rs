@@ -19,6 +19,7 @@ use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authorize::AuthorizationDispatch;
 use crate::application::code_issuance::{CodeIssuance, CodeIssuanceService, IssueCodeCommand};
 use crate::application::consent::consent_is_granted;
+use crate::application::device_enrollment::{Admission, AdmissionAttempt, DeviceGate};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session::{AuthSession, Authentication};
 use crate::domain::crypto;
@@ -75,6 +76,28 @@ impl EstablishedSso {
     }
 }
 
+/// SSO セッションを作ろうとした結論。
+pub enum Establishment {
+    /// 作った。
+    Established(EstablishedSso),
+    /// 登録した端末に限る組織で、登録していない端末だった（task #916。ADR-0079）。SSO セッションは
+    /// 作っていない。web は `ticket` を Cookie に置き、端末の登録の画面へ回す。
+    ///
+    /// ⚠ 経路ごとの outcome はこれを「ログインできた」に写してはならない。
+    DeviceEnrollmentRequired { ticket: String },
+}
+
+impl Establishment {
+    /// 試験・登録の直後など、関門を通ると分かっている所で使う。
+    #[cfg(test)]
+    pub fn expect_established(self) -> EstablishedSso {
+        match self {
+            Self::Established(sso) => sso,
+            Self::DeviceEnrollmentRequired { .. } => panic!("device enrollment was required"),
+        }
+    }
+}
+
 /// 認可フローの続きの結論。
 pub enum AuthorizationContinuation {
     /// 同意が要る。web は新しい `auth_session_id` で同意画面へ進む。
@@ -92,6 +115,8 @@ pub struct SignInCompletion {
     code_issuance: Arc<CodeIssuanceService>,
     audit: Arc<AuditService>,
     settings: Arc<dyn EffectiveTenantSettings>,
+    /// 登録した端末の関門（task #916）。`None` は関門なし（試験だけ。api は必ず付ける）。
+    device_gate: Option<Arc<DeviceGate>>,
 }
 
 impl SignInCompletion {
@@ -110,16 +135,52 @@ impl SignInCompletion {
             code_issuance,
             audit,
             settings,
+            device_gate: None,
         }
     }
 
+    /// 登録した端末の関門を付ける（task #916。⚠ api の組み立てでは必ず呼ぶ）。
+    pub fn with_device_gate(mut self, gate: Arc<DeviceGate>) -> Self {
+        self.device_gate = Some(gate);
+        self
+    }
+
+    /// 関門を通るかを決める（関門が無ければ通す）。
+    async fn admit(
+        &self,
+        sign_in: &SignIn<'_>,
+        binding: SessionBinding,
+        ctx: &RequestContext,
+        now: DateTime<Utc>,
+    ) -> Result<Admission, DomainError> {
+        let Some(gate) = &self.device_gate else {
+            return Ok(Admission::Admitted);
+        };
+        gate.admit(
+            AdmissionAttempt {
+                tenant_id: sign_in.tenant_id,
+                user_id: sign_in.user_id,
+                home_tenant_id: sign_in.home_tenant_id,
+                methods: &sign_in.methods,
+                client_id: sign_in.client_id,
+                app_approved: matches!(binding, SessionBinding::AppApproval),
+            },
+            ctx,
+            now,
+        )
+        .await
+    }
+
     /// SSO セッションを作って保存し、監査に残す（`SsoSessionCreated` と成功のイベント）。
+    ///
+    /// 登録した端末に限る組織で登録していない端末なら、作らずに
+    /// [`Establishment::DeviceEnrollmentRequired`] を返す（task #916）。
     pub async fn establish_sso(
         &self,
         sign_in: SignIn<'_>,
         ctx: &RequestContext,
         now: DateTime<Utc>,
-    ) -> Result<EstablishedSso, DomainError> {
+    ) -> Result<Establishment, DomainError> {
         self.establish_sso_with_binding(sign_in, SessionBinding::Unbound, ctx, now)
             .await
     }
@@ -134,7 +195,12 @@ impl SignInCompletion {
         binding: SessionBinding,
         ctx: &RequestContext,
         now: DateTime<Utc>,
-    ) -> Result<EstablishedSso, DomainError> {
+    ) -> Result<Establishment, DomainError> {
+        if let Admission::EnrollmentRequired { ticket } =
+            self.admit(&sign_in, binding, ctx, now).await?
+        {
+            return Ok(Establishment::DeviceEnrollmentRequired { ticket });
+        }
         let lifetime = self
             .settings
             .sso_session_lifetime(sign_in.home_tenant_id)
@@ -181,10 +247,10 @@ impl SignInCompletion {
                 ctx,
             )
             .await;
-        Ok(EstablishedSso {
+        Ok(Establishment::Established(EstablishedSso {
             session,
             session_id,
-        })
+        }))
     }
 
     /// 認可フローを続ける: 認証を記録し（id を付け替える）、同意を確かめ、code を発行する。

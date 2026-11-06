@@ -362,6 +362,9 @@ pub enum InternalAuthenticateResponse {
     Locked,
     /// api 内部エラー。
     Internal,
+    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916。ADR-0079）。
+    /// SSO Cookie は無い。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    DeviceEnrollmentRequired { ticket: String },
 }
 
 /// TOTP セットアップ開始 API（`POST /internal/mfa/totp/setup`）のリクエスト。
@@ -482,6 +485,11 @@ pub enum InternalVerifyTotpResponse {
         sso_absolute_ttl_secs: u64,
     },
     Internal,
+    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916。ADR-0079）。
+    /// SSO Cookie は無い。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    DeviceEnrollmentRequired {
+        ticket: String,
+    },
 }
 
 /// パスワード変更 API（`POST /internal/change-password`、ADR-0009 §5）のリクエスト。
@@ -569,6 +577,11 @@ pub enum InternalChangePasswordResponse {
         reason: PasswordRejectionReason,
     },
     Internal,
+    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916。ADR-0079）。
+    /// SSO Cookie は無い。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    DeviceEnrollmentRequired {
+        ticket: String,
+    },
 }
 
 /// セルフサービスのパスワード変更 API（`POST /internal/account/change-password`、MT15）のリクエスト。
@@ -803,6 +816,9 @@ pub enum InternalAdminAuthenticateResponse {
     MfaRequired,
     /// api 内部エラー。
     Internal,
+    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916。ADR-0079）。
+    /// SSO Cookie は無い。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    DeviceEnrollmentRequired { ticket: String },
 }
 
 /// 管理コンソールの強制パスワード変更 API（`POST /internal/authenticate/admin/change-password`、
@@ -847,6 +863,11 @@ pub enum InternalAdminChangePasswordResponse {
     /// 変更は成功したが認証ポリシーが MFA を必須（認証器は登録済み。AP2）。
     MfaRequired,
     Internal,
+    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916。ADR-0079）。
+    /// SSO Cookie は無い。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    DeviceEnrollmentRequired {
+        ticket: String,
+    },
 }
 
 /// エンドユーザー・ポータル内部認証 API（`POST /internal/authenticate/portal`）のリクエスト。
@@ -899,6 +920,9 @@ pub enum InternalPortalAuthenticateResponse {
     Locked,
     /// api 内部エラー。
     Internal,
+    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916。ADR-0079）。
+    /// SSO Cookie は無い。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    DeviceEnrollmentRequired { ticket: String },
 }
 
 /// ポータルの強制パスワード変更 API（`POST /internal/authenticate/portal/change-password`、
@@ -950,6 +974,11 @@ pub enum InternalPortalChangePasswordResponse {
         reason: PasswordRejectionReason,
     },
     Internal,
+    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916。ADR-0079）。
+    /// SSO Cookie は無い。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    DeviceEnrollmentRequired {
+        ticket: String,
+    },
 }
 
 /// ポータルの TOTP 検証 API（`POST /internal/authenticate/portal/mfa`）のリクエスト。
@@ -986,6 +1015,9 @@ pub enum InternalPortalMfaResponse {
     RateLimited,
     /// api 内部エラー。
     Internal,
+    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916。ADR-0079）。
+    /// SSO Cookie は無い。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    DeviceEnrollmentRequired { ticket: String },
 }
 
 /// 同意画面情報 API（`GET /internal/consent-info`）のリクエスト。
@@ -1273,6 +1305,9 @@ pub enum InternalPasskeyLoginCompleteResponse {
     RateLimited,
     /// api 内部エラー。
     Internal,
+    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916。ADR-0079）。
+    /// SSO Cookie は無い。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    DeviceEnrollmentRequired { ticket: String },
 }
 
 /// 管理コンソールの Passkey ログイン完了 API（`POST /internal/passkey/login/admin/complete`）の
@@ -1317,6 +1352,9 @@ pub enum InternalAdminPasskeyLoginCompleteResponse {
     RateLimited,
     /// api 内部エラー。
     Internal,
+    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916。ADR-0079）。
+    /// SSO Cookie は無い。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    DeviceEnrollmentRequired { ticket: String },
 }
 
 /// ポータルの Passkey ログイン完了 API（`POST /internal/passkey/login/portal/complete`）の
@@ -1363,6 +1401,9 @@ pub enum InternalPortalPasskeyLoginCompleteResponse {
     RateLimited,
     /// api 内部エラー。
     Internal,
+    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916。ADR-0079）。
+    /// SSO Cookie は無い。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    DeviceEnrollmentRequired { ticket: String },
 }
 
 /// セルフサービスの表示言語更新 API（`POST /internal/account/update-language`。MT20）のリクエスト。
@@ -2355,6 +2396,11 @@ pub enum InternalExternalCallbackResponse {
     /// 外部 IdP との通信・トークン検証に失敗した。
     ExternalFailure,
     Internal,
+    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916。ADR-0079）。
+    /// SSO Cookie は無い。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    DeviceEnrollmentRequired {
+        ticket: String,
+    },
 }
 
 /// ログイン履歴の取得 API（`POST /internal/account/sign-in-history`。task #879）のリクエスト。
@@ -2457,6 +2503,12 @@ pub struct AccountRefreshUsage {
 /// api は `/internal/*`（サービストークンの内側）でだけこの見出しを読む。外から直接 api に来た要求の
 /// 同じ見出しは読まない（誰でも付けられるため）。
 pub const CLIENT_COUNTRY_HEADER: &str = "x-assay-client-country";
+
+/// web が今のブラウザの端末の印（Cookie `assay_device` の平文）を api への内部の呼び出しに添える見出し
+/// （task #916。ADR-0079）。登録した端末に限る組織で、ログインを成立させてよいかを api が決めるのに使う。
+///
+/// api は `/internal/*`（サービストークンの内側）でだけこの見出しを読む。
+pub const CLIENT_DEVICE_HEADER: &str = "x-assay-client-device";
 
 /// SSO セッションを端末の鍵へ結び付ける（DBSC の登録。`POST /internal/sso/key-binding/register`。task #887・ADR-0074）。
 ///
@@ -2846,4 +2898,80 @@ pub struct AccountOccurrences {
 pub struct AccountFailureDay {
     pub day: String,
     pub count: u32,
+}
+
+/// 端末の登録の札（task #916）の中身を見る（`POST /internal/device-enrollment/describe`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalDeviceEnrollmentDescribeRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    /// Cookie `__Host-device_enrollment` の値。
+    pub ticket: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalDeviceEnrollmentDescribeResponse {
+    Ok {
+        /// だれのログインか（画面に出す）。
+        username: String,
+    },
+    /// 札が無い・期限切れ・別のブラウザ。**言い分けない**（ログインからやり直す）。
+    TicketInvalid,
+    Internal,
+}
+
+/// 端末の登録のパスキーの確かめを始める（`POST /internal/device-enrollment/passkey/begin`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalDeviceEnrollmentBeginRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub ticket: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalDeviceEnrollmentBeginResponse {
+    Ok {
+        challenge_id: String,
+        /// ブラウザの `navigator.credentials.get()` に渡す JSON。
+        options: serde_json::Value,
+    },
+    TicketInvalid,
+    Internal,
+}
+
+/// パスキーで確かめ、このブラウザを端末として登録してログインする
+/// （`POST /internal/device-enrollment/passkey/complete`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InternalDeviceEnrollmentCompleteRequest {
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    pub ticket: String,
+    pub challenge_id: String,
+    pub credential: serde_json::Value,
+    /// 端末に付ける名前（画面で打てる）。
+    pub device_name: String,
+    #[serde(default)]
+    pub ip_address: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum InternalDeviceEnrollmentCompleteResponse {
+    /// 登録してログインした。web は `sso_session_id` を Cookie 化し、札の Cookie を消して元の画面へ戻す。
+    Enrolled {
+        sso_session_id: String,
+        sso_absolute_ttl_secs: u64,
+    },
+    TicketInvalid,
+    /// パスキーが通らない・札の人のパスキーではない。
+    PasskeyRejected,
+    /// 端末の名前が空・長すぎ。
+    InvalidName,
+    /// アカウントが使えない（無効・ロック等）。
+    AccountUnavailable,
+    Internal,
 }

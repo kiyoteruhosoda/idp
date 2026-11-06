@@ -171,6 +171,9 @@ pub enum AuditEventType {
     /// 登録していない端末でログインした（task #872。ADR-0071）。`reason` に「初めての端末か」を残す。
     /// 端末の印・セッション id は記録しない。
     UnregisteredDeviceSignIn,
+    /// 登録した端末に限る組織（task #916。ADR-0079）で、登録していない端末で正しく認証した。ログインは
+    /// 成立させず、端末の登録へ回した。`reason` に方式と「端末の印があったか」を残す。
+    UnregisteredDeviceRefused,
     /// 利用者が端末を登録した・取り消した（task #872）。`reason` に端末の id を残す（名前は残さない）。
     DeviceRegistered,
     DeviceRevoked,
@@ -289,6 +292,7 @@ impl AuditEventType {
             Self::EmailVerified => "email_verification.verified",
             Self::AccountSetupCompleted => "account_setup.completed",
             Self::UnregisteredDeviceSignIn => "login.unregistered_device",
+            Self::UnregisteredDeviceRefused => "login.unregistered_device_refused",
             Self::DeviceRegistered => "device.registered",
             Self::DeviceRevoked => "device.revoked",
             Self::DeviceExpired => "device.expired",

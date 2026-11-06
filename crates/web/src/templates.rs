@@ -2563,6 +2563,22 @@ pub struct AppApproverConfirmPage<'a> {
     pub created_at: &'a str,
 }
 
+/// 登録していない端末で正しく入ろうとしたときの、端末の登録の画面（task #916）。
+#[derive(Template)]
+#[template(path = "device_enrollment.html")]
+pub struct DeviceEnrollmentPage<'a> {
+    pub messages: &'a Messages,
+    pub tenant_prefix: &'a str,
+    /// だれのログインか。
+    pub username: &'a str,
+    /// 端末の名前の初めの値（ブラウザの名乗りから。打ち直せる）。
+    pub device_name: &'a str,
+    /// 登録の後に戻す画面（このテナントの道だけ）。
+    pub next: &'a str,
+    /// 「アプリで続ける」が使える環境か（案内を出すだけ）。
+    pub app_approval_offered: bool,
+}
+
 /// タイトルと本文のみの最小ページ（ログインのエラー・権限不足など、共通レイアウトに載せない画面）。
 #[derive(Template)]
 #[template(path = "message_page.html")]

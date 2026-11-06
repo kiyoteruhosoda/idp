@@ -178,6 +178,15 @@ pub async fn submit(
             crate::application_denied::page(&messages, &tenant.prefix(), &application_name),
         )
             .into_response(),
+        // 登録した端末に限る組織で、登録していない端末だった（task #916）。札を置いて登録の画面へ。
+        InternalChangePasswordResponse::DeviceEnrollmentRequired { ticket } => {
+            crate::handlers::device_enrollment::redirect(
+                &state,
+                &tenant,
+                &ticket,
+                &format!("{}/login", tenant.prefix()),
+            )
+        }
         InternalChangePasswordResponse::PolicyDenied => error_page(
             &messages,
             StatusCode::FORBIDDEN,

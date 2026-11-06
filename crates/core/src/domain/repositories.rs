@@ -874,6 +874,10 @@ pub trait UserDeviceRepository: Send + Sync {
     ) -> Result<bool>;
     /// 利用者のこの端末で作られた SSO セッションの `session_hash`（取り消しの巻き添えで切る）。
     async fn sessions_for_device(&self, user_id: Uuid, device: &DeviceRef) -> Result<Vec<String>>;
+    /// このテナントに属する有効な人のうち、登録した端末も認証アプリの鍵も持たない人のログイン名
+    /// （task #916。登録した端末に限る設定を有効にすると入れなくなる人）。名前の順・多くて 50 人。
+    async fn home_members_without_trusted_device(&self, tenant_id: TenantId)
+        -> Result<Vec<String>>;
 }
 
 /// 本人が見るログイン履歴（task #879。ADR-0073）。

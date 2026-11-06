@@ -43,7 +43,7 @@ use crate::domain::authentication_policy::{DefaultPolicyEffect, LockoutPolicy};
 use crate::domain::cache::Cache;
 use crate::domain::effective_tenant_settings::{
     EffectiveTenantSettings, SsoSessionLifetime, APPLICATION_ASSIGNMENT_ENFORCEMENT,
-    AUTH_POLICY_DEFAULT_EFFECT,
+    AUTH_POLICY_DEFAULT_EFFECT, REGISTERED_DEVICE_REQUIRED,
 };
 use crate::domain::error::{DomainError, Result};
 use crate::domain::password_policy::{PasswordPolicy, MAX_PASSWORD_LEN};
@@ -450,6 +450,11 @@ impl EffectiveTenantSettings for TenantSettingsService {
     async fn unregistered_device_alerts_enabled(&self, tenant_id: TenantId) -> Result<bool> {
         self.parse(tenant_id, "UNREGISTERED_DEVICE_ALERTS_ENABLED")
             .await
+    }
+
+    /// 登録した端末でしかログインを終わらせないか（task #916）。渡すのは利用者の**所属元**テナント。
+    async fn registered_device_required(&self, tenant_id: TenantId) -> Result<bool> {
+        self.parse(tenant_id, REGISTERED_DEVICE_REQUIRED).await
     }
 
     /// SSH の公開鍵の登録と配布を使うか（task #885）。渡すのは要求のテナント（鍵を登録した組織）。

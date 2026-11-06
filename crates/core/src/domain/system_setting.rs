@@ -553,6 +553,23 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
                       出来事は有効・無効にかかわらず監査ログに残る。",
     },
     SettingDefinition {
+        key: "REGISTERED_DEVICE_REQUIRED",
+        scope: SettingScope::TenantOverridable,
+        shared_with_web: false,
+        owner: SettingOwner::DbManaged,
+        secret: false,
+        restart_required: false,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::Boolean,
+        default_value: Some("false"),
+        description: "登録した端末からだけログインできるようにするか（task #916・ADR-0079）。有効にすると、\
+                      この組織に属する利用者は、登録した端末（ブラウザ）か認証アプリの承認でしかログインを \
+                      終えられない。登録していない端末で正しく入ろうとすると、パスキーで確かめてその端末を \
+                      登録する画面へ進む（パスキーが無ければ入れない）。家の中か外かは見分けない。⚠ 有効に \
+                      する前に、全員がいつもの端末を登録していることを確かめる（登録していない人が居るうちは \
+                      有効にできない）。",
+    },
+    SettingDefinition {
         key: "SSH_KEYS_ENABLED",
         scope: SettingScope::TenantOverridable,
         shared_with_web: false,

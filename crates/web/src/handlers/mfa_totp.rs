@@ -474,6 +474,15 @@ pub async fn verify(
             crate::application_denied::page(&messages, &tenant.prefix(), &application_name),
         )
             .into_response(),
+        // 登録した端末に限る組織で、登録していない端末だった（task #916）。札を置いて登録の画面へ。
+        InternalVerifyTotpResponse::DeviceEnrollmentRequired { ticket } => {
+            crate::handlers::device_enrollment::redirect(
+                &state,
+                &tenant,
+                &ticket,
+                &format!("{}/login", tenant.prefix()),
+            )
+        }
         InternalVerifyTotpResponse::PolicyDenied => error_page(
             &messages,
             StatusCode::FORBIDDEN,

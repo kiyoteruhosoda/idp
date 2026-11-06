@@ -20,7 +20,9 @@ use crate::application::authentication_policy_gate::{
 };
 use crate::application::mfa_login::user_has_confirmed_totp;
 use crate::application::password_policy::PasswordPolicyService;
-use crate::application::sign_in_completion::{AuthorizationContinuation, SignIn, SignInCompletion};
+use crate::application::sign_in_completion::{
+    AuthorizationContinuation, Establishment, SignIn, SignInCompletion,
+};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session::AuthSessionIdHash;
 use crate::domain::authentication_policy::PolicyDecision;
@@ -84,6 +86,11 @@ pub enum ChangePasswordOutcome {
     InvalidCurrentPassword,
     /// 新パスワードがポリシーを満たさない（長さ・漏えい済み・再利用。AP7）。
     WeakPassword(PasswordRejection),
+    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916）。SSO セッションは
+    /// 作っていない。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    DeviceEnrollmentRequired {
+        ticket: String,
+    },
     Internal(String),
 }
 
@@ -399,7 +406,10 @@ impl ChangePasswordService {
             )
             .await
         {
-            Ok(sso) => sso,
+            Ok(Establishment::Established(sso)) => sso,
+            Ok(Establishment::DeviceEnrollmentRequired { ticket }) => {
+                return ChangePasswordOutcome::DeviceEnrollmentRequired { ticket }
+            }
             Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
         };
         let sso_session_id = sso.session_id().to_string();

@@ -1397,6 +1397,8 @@ mod tests {
             ("SSH_KEYS_ENABLED", "false"),
             // task #887 で足した（端末の鍵に結び付いたログイン状態の長さ）。
             ("SSO_BOUND_TTL_SECS", "2592000"),
+            // task #916 で足した（既定は「登録していない端末でも入れる」）。
+            ("REGISTERED_DEVICE_REQUIRED", "false"),
         ];
         assert_eq!(
             tenant_overridable_setting_keys().count(),

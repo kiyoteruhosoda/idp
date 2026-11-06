@@ -161,7 +161,7 @@ pub async fn callback(
         }
     };
 
-    render_outcome(&state, &tenant, locale, outcome)
+    render_outcome(&state, &tenant, &headers, locale, outcome)
 }
 
 /// 開始時に置いた値（[`cookies::EXTERNAL_LOGIN_BINDING_COOKIE`]）を読む。
@@ -205,7 +205,7 @@ pub async fn saml_acs(
             return internal_call_status(&e).into_response();
         }
     };
-    render_outcome(&state, &tenant, locale, outcome)
+    render_outcome(&state, &tenant, &headers, locale, outcome)
 }
 
 /// ACS が受け取るフォーム（HTTP-POST binding）。`RelayState` は仕様上は任意だが、assay は
@@ -226,6 +226,7 @@ pub struct SamlAcsForm {
 fn render_outcome(
     state: &WebState,
     tenant: &WebTenant,
+    headers: &HeaderMap,
     locale: Locale,
     outcome: InternalExternalCallbackResponse,
 ) -> Response {
@@ -237,7 +238,7 @@ fn render_outcome(
                 &state.origin_bound_cookie(cookies::EXTERNAL_LOGIN_BINDING_COOKIE),
             )
             .into_headers(),
-        render_callback_result(state, tenant, locale, outcome),
+        render_callback_result(state, tenant, headers, locale, outcome),
     )
         .into_response()
 }
@@ -245,6 +246,7 @@ fn render_outcome(
 fn render_callback_result(
     state: &WebState,
     tenant: &WebTenant,
+    headers: &HeaderMap,
     locale: Locale,
     outcome: InternalExternalCallbackResponse,
 ) -> Response {
@@ -361,6 +363,16 @@ fn render_callback_result(
                 crate::application_denied::page(&messages, &tenant.prefix(), &application_name),
             )
                 .into_response()
+        }
+        // 登録した端末に限る組織で、登録していない端末だった（task #916）。札を置いて登録の画面へ。
+        InternalExternalCallbackResponse::DeviceEnrollmentRequired { ticket } => {
+            // 認可フローの途中ならログイン画面へ（開き直すと、登録の後の SSO から続ける）。
+            let next = if cookies::get(headers, cookies::AUTH_SESSION_COOKIE).is_some() {
+                format!("{}/login", tenant.prefix())
+            } else {
+                crate::handlers::portal::portal_destination(state, headers, tenant)
+            };
+            crate::handlers::device_enrollment::redirect(state, tenant, &ticket, &next)
         }
         InternalExternalCallbackResponse::PolicyDenied => message_page(
             &messages,

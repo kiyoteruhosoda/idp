@@ -504,7 +504,8 @@ impl DeviceRegistryService {
         }
     }
 
-    /// 知らせる（所属元テナントで有効なときだけ）。設定を読めなければ知らせる側へ倒す。
+    /// 知らせる（所属元テナントで知らせが有効か、登録した端末に限る組織のとき。task #916）。設定を
+    /// 読めなければ知らせる側へ倒す。
     async fn alert(
         &self,
         user: &User,
@@ -514,11 +515,19 @@ impl DeviceRegistryService {
         ctx: &RequestContext,
         device: Option<&DeviceRef>,
     ) {
-        let enabled = match self
+        let alerts = self
             .settings
             .unregistered_device_alerts_enabled(user.tenant_id)
-            .await
-        {
+            .await;
+        let required = self
+            .settings
+            .registered_device_required(user.tenant_id)
+            .await;
+        let enabled = match (alerts, required) {
+            (Ok(alerts), Ok(required)) => Ok(alerts || required),
+            (Err(e), _) | (_, Err(e)) => Err(e),
+        };
+        let enabled = match enabled {
             Ok(enabled) => enabled,
             Err(e) => {
                 tracing::warn!(error = %e, "device alert setting could not be read; sending anyway");
@@ -647,6 +656,12 @@ mod tests {
     }
     #[async_trait]
     impl UserDeviceRepository for FakeDevices {
+        async fn home_members_without_trusted_device(
+            &self,
+            _tenant_id: TenantId,
+        ) -> DomainResult<Vec<String>> {
+            Ok(Vec::new())
+        }
         async fn find(&self, u: Uuid, d: &DeviceRef) -> DomainResult<Option<UserDevice>> {
             Ok(self
                 .rows

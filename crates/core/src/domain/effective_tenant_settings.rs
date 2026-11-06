@@ -45,6 +45,7 @@ use chrono::Duration;
 
 pub const AUTH_POLICY_DEFAULT_EFFECT: &str = "AUTH_POLICY_DEFAULT_EFFECT";
 pub const APPLICATION_ASSIGNMENT_ENFORCEMENT: &str = "APPLICATION_ASSIGNMENT_ENFORCEMENT";
+pub const REGISTERED_DEVICE_REQUIRED: &str = "REGISTERED_DEVICE_REQUIRED";
 
 /// SSO セッションの寿命（`SSO_IDLE_TTL_SECS` / `SSO_ABSOLUTE_TTL_SECS` / `SSO_BOUND_TTL_SECS`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +86,9 @@ pub trait EffectiveTenantSettings: Send + Sync {
     async fn assignment_enforcement(&self, tenant_id: TenantId) -> Result<AssignmentEnforcement>;
     /// 登録していない端末でのログイン・端末の登録などを知らせるか（task #872）。
     async fn unregistered_device_alerts_enabled(&self, tenant_id: TenantId) -> Result<bool>;
+    /// 登録した端末（と認証アプリの承認）でしかログインを終わらせないか（task #916）。渡すのは利用者の
+    /// **所属元**テナント。
+    async fn registered_device_required(&self, tenant_id: TenantId) -> Result<bool>;
     /// 利用者が SSH の公開鍵を登録でき、配る機械へ一覧を渡すか（task #885）。渡すのは**要求の**テナント。
     async fn ssh_keys_enabled(&self, tenant_id: TenantId) -> Result<bool>;
 }

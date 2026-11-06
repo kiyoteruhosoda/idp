@@ -32,6 +32,8 @@ pub const PORTAL_CSRF_COOKIE: &str = "portal_csrf_id";
 /// ポータルの TOTP 入力ステップで `mfa_ticket`（署名付き短命チケット）を保持する Cookie。
 /// **オリジン束縛**（SEC5）。
 pub const PORTAL_MFA_COOKIE: &str = "portal_mfa_ticket";
+/// 登録していない端末で正しく入ろうとしたときの「登録の札」（task #916。10 分。オリジン束縛名で置く）。
+pub const DEVICE_ENROLLMENT_COOKIE: &str = "device_enrollment";
 /// SAML SSO の進行状態 id を保持する Cookie。SSO 未確立で `/saml/continue` から
 /// ログインへ誘導したあと、ログイン成功時にフローへ復帰するために使う（web ローカル）。
 /// **オリジン束縛**（SEC5）。

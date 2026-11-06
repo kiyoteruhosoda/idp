@@ -263,6 +263,15 @@ pub async fn login(
             "admin-login-error-forbidden",
         ),
         // 認証ポリシー（AP2）。資格情報は検証済みなので、資格情報エラーとは別の文言を出す。
+        // 登録した端末に限る組織で、登録していない端末だった（task #916）。札を置いて登録の画面へ。
+        InternalAdminAuthenticateResponse::DeviceEnrollmentRequired { ticket } => {
+            crate::handlers::device_enrollment::redirect(
+                &state,
+                &tenant,
+                &ticket,
+                &admin_home_path(&tenant),
+            )
+        }
         InternalAdminAuthenticateResponse::PolicyDenied => reshow_login(
             &messages,
             &tenant.prefix(),
@@ -416,6 +425,15 @@ pub async fn password_change(
             &form.username,
             super::password_rejection_key(reason, "password-change-error-weak"),
         ),
+        // 登録した端末に限る組織で、登録していない端末だった（task #916）。札を置いて登録の画面へ。
+        InternalAdminChangePasswordResponse::DeviceEnrollmentRequired { ticket } => {
+            crate::handlers::device_enrollment::redirect(
+                &state,
+                &tenant,
+                &ticket,
+                &admin_home_path(&tenant),
+            )
+        }
         InternalAdminChangePasswordResponse::PolicyDenied => reshow_password_change(
             &messages,
             &tenant.prefix(),

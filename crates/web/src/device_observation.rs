@@ -79,13 +79,53 @@ pub(crate) fn trusted_country(headers: &HeaderMap, trust_forwarded: bool) -> Opt
         .map(str::to_string)
 }
 
+tokio::task_local! {
+    /// 今の要求のブラウザの端末の印（task #916）。api クライアントが内部の呼び出しへ添える。
+    static CLIENT_DEVICE: Option<String>;
+}
+
+/// 今の要求の端末の印（middleware の外・要求の外では `None`）。
+pub fn current_device_token() -> Option<String> {
+    CLIENT_DEVICE.try_with(Clone::clone).ok().flatten()
+}
+
+/// 応答が登録の札（task #916）を新しく置いたか（消す応答は除く）。
+fn issued_enrollment_ticket(headers: &HeaderMap) -> bool {
+    let base = crate::cookies::DEVICE_ENROLLMENT_COOKIE;
+    headers
+        .get_all(SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|raw| {
+            let mut parts = raw.split(';');
+            let Some((name, value)) = parts.next().and_then(|p| p.trim().split_once('=')) else {
+                return false;
+            };
+            let name = name
+                .strip_prefix(assay_contracts::cookies::HOST_PREFIX)
+                .unwrap_or(name);
+            name == base
+                && !value.is_empty()
+                && !parts.any(|attr| attr.trim().eq_ignore_ascii_case("max-age=0"))
+        })
+}
+
 /// middleware 本体（router の外側寄り、`correlation::propagate` の内側に置く）。
+///
+/// 端末の印は**要求の前に**決める（task #916）。無ければここで作り、要求の間だけ
+/// [`current_device_token`] に置く。api はログインのその場で「登録した端末か」を決めるので、初めての
+/// ブラウザでも印が届いている必要がある。作った印を Cookie に置くのは、応答がログイン状態か登録の札を
+/// 置いたときだけ（ただ見に来ただけのブラウザには置かない）。
 pub async fn observe_sign_ins(
     State(state): State<WebState>,
     request: Request,
     next: Next,
 ) -> Response {
     let existing = cookies::get(request.headers(), DEVICE_COOKIE).filter(|v| is_device_token(v));
+    let (token, generated) = match existing {
+        Some(token) => (token, false),
+        None => (new_device_token(), true),
+    };
     let country = trusted_country(request.headers(), state.config.trust_forwarded_headers());
     let user_agent = request
         .headers()
@@ -108,11 +148,27 @@ pub async fn observe_sign_ins(
     // 結び付けを求めるのは**値が変わった**とき（新しいログイン状態）だけにする。同じログイン状態で
     // Chrome に登録をやり直させると、新しい鍵が「別の鍵」になり、ログイン状態を終わらせてしまう。
     let incoming_sso = cookies::get(request.headers(), cookies::SSO_SESSION_COOKIE);
-    let mut response = next.run(request).await;
+    let mut response = CLIENT_DEVICE
+        .scope(Some(token.clone()), next.run(request))
+        .await;
     if key_binding_path {
         return response;
     }
-    let Some(sso_session_id) = issued_sso_session(response.headers()) else {
+    let issued_sso = issued_sso_session(response.headers());
+    if generated && (issued_sso.is_some() || issued_enrollment_ticket(response.headers())) {
+        let cookie = state.config.cookie_policy().set_local(
+            DEVICE_COOKIE,
+            &token,
+            DEVICE_COOKIE_MAX_AGE_SECS,
+        );
+        match HeaderValue::from_str(&cookie) {
+            Ok(value) => {
+                response.headers_mut().append(SET_COOKIE, value);
+            }
+            Err(e) => tracing::error!(error = %e, "device cookie is not a valid header value"),
+        }
+    }
+    let Some(sso_session_id) = issued_sso else {
         return response;
     };
     // 新しいログイン状態を端末の鍵へ結び付けるよう Chrome に求める（DBSC。task #887・ADR-0074）。
@@ -126,25 +182,6 @@ pub async fn observe_sign_ins(
             value,
         );
     }
-
-    let token = match existing {
-        Some(token) => token,
-        None => {
-            let token = new_device_token();
-            let cookie = state.config.cookie_policy().set_local(
-                DEVICE_COOKIE,
-                &token,
-                DEVICE_COOKIE_MAX_AGE_SECS,
-            );
-            match HeaderValue::from_str(&cookie) {
-                Ok(value) => {
-                    response.headers_mut().append(SET_COOKIE, value);
-                }
-                Err(e) => tracing::error!(error = %e, "device cookie is not a valid header value"),
-            }
-            token
-        }
-    };
 
     let request = InternalDeviceObserveRequest {
         sso_session_id,

@@ -27,7 +27,7 @@ use crate::application::authentication_policy_gate::{
     AuthenticationPolicyGate, PolicyAudience, PolicyQuery,
 };
 use crate::application::sign_in_completion::{
-    AuthorizationContinuation, EstablishedSso, SignIn, SignInCompletion,
+    AuthorizationContinuation, EstablishedSso, Establishment, SignIn, SignInCompletion,
 };
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session::AuthSessionIdHash;
@@ -131,6 +131,11 @@ pub enum CallbackOutcome {
     PolicyDenied,
     /// 外部 IdP との通信・トークン検証に失敗した。
     ExternalFailure,
+    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916）。SSO セッションは
+    /// 作っていない。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    DeviceEnrollmentRequired {
+        ticket: String,
+    },
     Internal(String),
 }
 
@@ -669,7 +674,10 @@ impl ExternalLoginService {
             )
             .await
         {
-            Ok(sso) => sso,
+            Ok(Establishment::Established(sso)) => sso,
+            Ok(Establishment::DeviceEnrollmentRequired { ticket }) => {
+                return CallbackOutcome::DeviceEnrollmentRequired { ticket }
+            }
             Err(e) => return CallbackOutcome::Internal(e.to_string()),
         };
 

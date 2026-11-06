@@ -173,6 +173,9 @@ pub async fn authenticate(
             InternalAuthenticateResponse::EmailVerificationRequired
         }
         LoginOutcome::PolicyDenied => InternalAuthenticateResponse::PolicyDenied,
+        LoginOutcome::DeviceEnrollmentRequired { ticket } => {
+            InternalAuthenticateResponse::DeviceEnrollmentRequired { ticket }
+        }
         LoginOutcome::ApplicationNotPermitted {
             application_name,
             sso_session_id,
@@ -290,6 +293,9 @@ pub async fn change_password(
             InternalChangePasswordResponse::MfaRequired { auth_session_id }
         }
         ChangePasswordOutcome::PolicyDenied => InternalChangePasswordResponse::PolicyDenied,
+        ChangePasswordOutcome::DeviceEnrollmentRequired { ticket } => {
+            InternalChangePasswordResponse::DeviceEnrollmentRequired { ticket }
+        }
         ChangePasswordOutcome::ApplicationNotPermitted {
             application_name,
             sso_session_id,
@@ -373,6 +379,9 @@ pub async fn authenticate_admin(
             InternalAdminAuthenticateResponse::PasswordChangeRequired { username }
         }
         AdminLoginOutcome::PolicyDenied => InternalAdminAuthenticateResponse::PolicyDenied,
+        AdminLoginOutcome::DeviceEnrollmentRequired { ticket } => {
+            InternalAdminAuthenticateResponse::DeviceEnrollmentRequired { ticket }
+        }
         AdminLoginOutcome::MfaEnrollmentRequired => {
             InternalAdminAuthenticateResponse::MfaEnrollmentRequired
         }
@@ -440,6 +449,9 @@ pub async fn authenticate_portal(
             InternalPortalAuthenticateResponse::PasswordChangeRequired { username }
         }
         PortalLoginOutcome::PolicyDenied => InternalPortalAuthenticateResponse::PolicyDenied,
+        PortalLoginOutcome::DeviceEnrollmentRequired { ticket } => {
+            InternalPortalAuthenticateResponse::DeviceEnrollmentRequired { ticket }
+        }
         PortalLoginOutcome::MfaEnrollmentRequired => {
             InternalPortalAuthenticateResponse::MfaEnrollmentRequired
         }
@@ -500,6 +512,9 @@ pub async fn authenticate_portal_mfa(
         PortalMfaOutcome::InvalidCode => InternalPortalMfaResponse::InvalidCode,
         PortalMfaOutcome::TicketExpired => InternalPortalMfaResponse::TicketExpired,
         PortalMfaOutcome::PolicyDenied => InternalPortalMfaResponse::PolicyDenied,
+        PortalMfaOutcome::DeviceEnrollmentRequired { ticket } => {
+            InternalPortalMfaResponse::DeviceEnrollmentRequired { ticket }
+        }
         PortalMfaOutcome::RateLimited => InternalPortalMfaResponse::RateLimited,
         PortalMfaOutcome::Internal(e) => {
             tracing::error!(error = %e, "internal portal mfa failed with internal error");
@@ -549,6 +564,9 @@ pub async fn authenticate_portal_change_password(
         }
         PortalChangePasswordOutcome::PolicyDenied => {
             InternalPortalChangePasswordResponse::PolicyDenied
+        }
+        PortalChangePasswordOutcome::DeviceEnrollmentRequired { ticket } => {
+            InternalPortalChangePasswordResponse::DeviceEnrollmentRequired { ticket }
         }
         PortalChangePasswordOutcome::MfaEnrollmentRequired => {
             InternalPortalChangePasswordResponse::MfaEnrollmentRequired
@@ -621,6 +639,9 @@ pub async fn admin_change_password(
             }
         }
         AdminLoginOutcome::PolicyDenied => InternalAdminChangePasswordResponse::PolicyDenied,
+        AdminLoginOutcome::DeviceEnrollmentRequired { ticket } => {
+            InternalAdminChangePasswordResponse::DeviceEnrollmentRequired { ticket }
+        }
         AdminLoginOutcome::MfaEnrollmentRequired => {
             InternalAdminChangePasswordResponse::MfaEnrollmentRequired
         }
@@ -1631,6 +1652,9 @@ pub async fn external_callback(
             CallbackOutcome::NotLinked => InternalExternalCallbackResponse::NotLinked,
             CallbackOutcome::UserUnavailable => InternalExternalCallbackResponse::UserUnavailable,
             CallbackOutcome::PolicyDenied => InternalExternalCallbackResponse::PolicyDenied,
+            CallbackOutcome::DeviceEnrollmentRequired { ticket } => {
+                InternalExternalCallbackResponse::DeviceEnrollmentRequired { ticket }
+            }
             CallbackOutcome::ApplicationNotPermitted {
                 application_name,
                 sso_session_id,
@@ -1717,6 +1741,9 @@ pub async fn external_saml_acs(
             CallbackOutcome::NotLinked => InternalExternalCallbackResponse::NotLinked,
             CallbackOutcome::UserUnavailable => InternalExternalCallbackResponse::UserUnavailable,
             CallbackOutcome::PolicyDenied => InternalExternalCallbackResponse::PolicyDenied,
+            CallbackOutcome::DeviceEnrollmentRequired { ticket } => {
+                InternalExternalCallbackResponse::DeviceEnrollmentRequired { ticket }
+            }
             CallbackOutcome::ApplicationNotPermitted {
                 application_name,
                 sso_session_id,

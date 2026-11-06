@@ -101,12 +101,16 @@
         credJson.response.userHandle = toB64(credential.response.userHandle);
       }
 
+      // 端末の登録の画面（task #916）だけ、利用者が打った端末の名前を添える。
+      const deviceName = document.getElementById('passkey-device-name');
+      const typedFields = deviceName ? { device_name: deviceName.value } : {};
+
       let completeRes;
       try {
         completeRes = await fetch(tenantPrefix + completePath, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ challenge_id, credential: credJson, ...extraFields })
+          body: JSON.stringify({ challenge_id, credential: credJson, ...extraFields, ...typedFields })
         });
       } catch (e) { fail(messages.msgServer, e); return; }
       if (!completeRes.ok) { fail(messages.msgServer, completeRes.status); return; }
@@ -148,6 +152,10 @@
         'forbidden': messages.msgForbidden,
         'email_verification_required': messages.msgEmailVerificationRequired,
         'rate_limited': messages.msgRateLimited,
+        // 端末の登録の画面（task #916）。
+        'ticket_invalid': messages.msgTicketInvalid,
+        'invalid_name': messages.msgInvalidName,
+        'account_unavailable': messages.msgAccountUnavailable,
       }[result.error], result.error);
     } catch (e) {
       // ここへ来るのは想定外（応答の JSON が壊れている等）。文言は既定へ落とす。

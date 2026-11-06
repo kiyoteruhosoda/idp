@@ -22,7 +22,9 @@ use crate::application::authentication_policy_gate::{
 };
 use crate::application::login_user_resolution::resolve_login_user;
 use crate::application::mfa_login::user_has_confirmed_totp;
-use crate::application::sign_in_completion::{AuthorizationContinuation, SignIn, SignInCompletion};
+use crate::application::sign_in_completion::{
+    AuthorizationContinuation, Establishment, SignIn, SignInCompletion,
+};
 use crate::domain::audit::{AuditEventType, AuditResult};
 use crate::domain::auth_session::AuthSessionIdHash;
 use crate::domain::authentication_policy::PolicyDecision;
@@ -114,6 +116,12 @@ pub enum LoginOutcome {
         sso_session_id: String,
         /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
         sso_absolute_ttl_secs: u64,
+    },
+    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916）。SSO Cookie は
+    /// 発行しない。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。AuthSession は残す
+    /// （登録してからログイン画面を開き直すと、できた SSO から認可フローを続ける）。
+    DeviceEnrollmentRequired {
+        ticket: String,
     },
     /// 認証ポリシーが MFA を必須としたが、ユーザーに使用可能な認証器（確認済み TOTP）が無い。
     /// ポータルから MFA を設定するよう案内する。SSO Cookie は発行しない。
@@ -520,7 +528,10 @@ impl LoginService {
             )
             .await
         {
-            Ok(sso) => sso,
+            Ok(Establishment::Established(sso)) => sso,
+            Ok(Establishment::DeviceEnrollmentRequired { ticket }) => {
+                return LoginOutcome::DeviceEnrollmentRequired { ticket }
+            }
             Err(e) => return LoginOutcome::Internal(e.to_string()),
         };
         let sso_session_id = sso.session_id().to_string();

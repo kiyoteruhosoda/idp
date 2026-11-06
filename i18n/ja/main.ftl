@@ -640,6 +640,7 @@ api-register-rate-limited = 登録の試行回数が多すぎます。しばら�
 api-runtime-setting-invalid = ランタイム設定を保存できませんでした。キーと値を確認してください。
 api-runtime-setting-not-bootable = 値の書式は正しいものの、この値ではサービスが起動できないため保存しませんでした。(1) ISSUER を https にするには、先に KEY_ENCRYPTION_KEY・INTERNAL_SERVICE_TOKEN・CSRF_SECRET を環境変数で設定してください。(2) COOKIE_DOMAIN を設定している場合、ISSUER のホストはそのドメイン配下で、PUBLIC_WEB_BASE_URL とスキーム（http/https）が一致している必要があります。具体的な理由は api のログに出ます。
 api-tenant-setting-invalid = 設定を保存できませんでした。IdP 全体で決める設定はテナントでは変えられません。キーと値を確認してください。
+api-registered-device-required-unready = 有効にしていません。次の人は登録した端末も認証アプリも無いので、有効にするとログインできなくなります: { $value }。先に、いつも使う端末を「アカウントのセキュリティ」→「端末」で登録してもらってください。
 api-tenant-setting-needs-confirmation = この値にすると、このテナントの利用者がログインできなくなることがあります。確認したうえで、もう一度保存してください。
 api-tenant-name-empty = テナント名を入力してください。
 # テナントへのドメイン割り当て（ADR-0029）
@@ -1784,3 +1785,18 @@ user-security-approver-never-used = まだ使っていません
 user-security-approver-revoke-confirm = この認証アプリの鍵を取り消しますか？ この鍵で承認したログイン状態も終わります。
 user-security-saved-approver-key-revoked = 認証アプリの鍵を取り消しました。その鍵で承認したログイン状態も終わりました。
 user-security-error-approver-key-not-found = その認証アプリの鍵は見つかりませんでした（もう取り消されています）。
+
+## 端末の登録（task #916）
+device-enrollment-title = この端末を登録する
+device-enrollment-lead = { $username } さんとして確かめられましたが、この端末（ブラウザ）はまだ登録されていません。この組織では、登録した端末からしかログインできません。
+device-enrollment-why = パスキーで本人と確かめると、この端末を登録してログインを続けます。パスワードだけでは登録できないので、パスワードが他人に知られても、その人の端末からは入れません。
+device-enrollment-name = 端末の名前
+device-enrollment-name-help = 「自分の端末」の一覧で見分けるための名前です（例: 自宅の Windows）。
+device-enrollment-submit = パスキーで確かめて登録する
+device-enrollment-no-passkey = パスキーが使えないときは、登録済みの端末からログインして、「アカウントのセキュリティ」でパスキーを作ってください。
+device-enrollment-app-hint = スマホで認証アプリを使っているときは、ログイン画面の「アプリで続ける」でも入れます。
+device-enrollment-back = ログイン画面へ戻る
+device-enrollment-expired = 登録の手続きの期限が切れたか、別のブラウザで開かれました。もう一度ログインしてください。
+device-enrollment-error-passkey = パスキーで確かめられませんでした。ログインした本人のパスキーを使ってください。
+device-enrollment-error-name = 端末の名前を 1〜100 文字で入れてください。
+device-enrollment-error-account = このアカウントは今は使えません。管理者に問い合わせてください。

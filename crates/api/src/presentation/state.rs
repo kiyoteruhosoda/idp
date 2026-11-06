@@ -43,6 +43,7 @@ use crate::application::client_status::ClientStatusService;
 use crate::application::code_issuance::CodeIssuanceService;
 use crate::application::consent::ConsentService;
 use crate::application::cors_policy::ApiCorsPolicy;
+use crate::application::device_enrollment::{DeviceEnrollmentService, DeviceGate};
 use crate::application::device_registry::DeviceRegistryService;
 use crate::application::email_verification::EmailVerificationService;
 use crate::application::expired_record_purge::ExpiredRecordPurgeService;
@@ -276,6 +277,10 @@ pub struct AppState {
     pub account_security: Arc<AccountSecurityService>,
     /// 利用者の端末の一覧と、登録していない端末でのログインの知らせ（task #872）。
     pub device_registry: Arc<DeviceRegistryService>,
+    /// 登録した端末の関門（task #916）。組織の設定を有効にする前の「入れなくなる人」もここで引く。
+    pub device_gate: Arc<DeviceGate>,
+    /// 登録していない端末で正しく入ろうとしたときの、その場での端末の登録（task #916）。
+    pub device_enrollment: Arc<DeviceEnrollmentService>,
     /// 本人が見るログイン履歴（task #879）。
     pub sign_in_history: Arc<SignInHistoryService>,
     /// 本人が見る「状況」（task #896）。
@@ -593,15 +598,35 @@ impl AppState {
             clock.clone(),
             config.authorization_code_ttl(),
         ));
-        // 認証が成立した後の共通の後段（5 経路で共有する。`sign_in_completion`）。
-        let sign_in = Arc::new(SignInCompletion::new(
-            sso_sessions.clone(),
-            auth_sessions.clone(),
-            client_consents.clone(),
-            code_issuance.clone(),
-            audit.clone(),
+        // task #872: 利用者の端末の一覧と、知らせの送り口。task #916 の関門も使う。
+        let security_alerts = security_alert_sink(&config);
+        let user_devices: Arc<dyn UserDeviceRepository> =
+            Arc::new(SqlxUserDeviceRepository::new(pool.clone()));
+        // 登録した端末からだけログインを終わらせる関門（task #916・ADR-0079）。SSO セッションを作る
+        // 8 か所（`sign_in_completion`・ポータル・管理コンソール）がどれもここを通る。
+        let device_gate = Arc::new(DeviceGate::new(
+            user_devices.clone(),
+            users.clone(),
             tenant_settings.clone(),
+            // 端末の印は web が内部の呼び出しに添えた値だけ（`/internal/*` でだけ読む）。
+            Arc::new(crate::presentation::client_device::TaskLocalRequestDevice),
+            Arc::new(crate::presentation::client_country::TaskLocalRequestCountry),
+            security_alerts.clone(),
+            audit.clone(),
+            *config.csrf_secret(),
         ));
+        // 認証が成立した後の共通の後段（5 経路で共有する。`sign_in_completion`）。
+        let sign_in = Arc::new(
+            SignInCompletion::new(
+                sso_sessions.clone(),
+                auth_sessions.clone(),
+                client_consents.clone(),
+                code_issuance.clone(),
+                audit.clone(),
+                tenant_settings.clone(),
+            )
+            .with_device_gate(device_gate.clone()),
+        );
 
         // 自己登録（SEC6）: テナント設定トグル（既定 OFF）＋ IP 単位レート制限。ログインとは別の
         // 制限器を使う（登録の失敗でログイン試行枠を消費させない）。
@@ -751,39 +776,56 @@ impl AppState {
             clock.clone(),
         ));
         // 管理コンソールのログイン（ADR-0006 §6）。IP レート制限は通常ログインと同一の制限器を共有する。
-        let admin_login = Arc::new(AdminLoginService::new(
-            users.clone(),
-            passkey_assertion.clone(),
-            tenant_domains.clone(),
-            sso_sessions.clone(),
-            user_permissions.clone(),
-            totp_secrets.clone(),
-            policy_gate.clone(),
-            hasher.clone(),
-            password_policy.clone(),
-            rate_limiter.clone(),
-            audit.clone(),
-            clock.clone(),
-            tenant_settings.clone(),
-        ));
+        let admin_login = Arc::new(
+            AdminLoginService::new(
+                users.clone(),
+                passkey_assertion.clone(),
+                tenant_domains.clone(),
+                sso_sessions.clone(),
+                user_permissions.clone(),
+                totp_secrets.clone(),
+                policy_gate.clone(),
+                hasher.clone(),
+                password_policy.clone(),
+                rate_limiter.clone(),
+                audit.clone(),
+                clock.clone(),
+                tenant_settings.clone(),
+            )
+            .with_device_gate(device_gate.clone()),
+        );
         // エンドユーザー・ポータルの直接ログイン。admin_login と同機構（クライアント非依存の SSO 直接発行）
         // だが admin 権限を要求せず、TOTP（MFA）を尊重する。`mfa_ticket` の署名鍵は CSRF 秘密鍵を流用する。
-        let portal_login = Arc::new(PortalLoginService::new(
-            authenticator_repository.clone(),
+        let portal_login = Arc::new(
+            PortalLoginService::new(
+                authenticator_repository.clone(),
+                users.clone(),
+                passkey_assertion.clone(),
+                tenant_domains.clone(),
+                sso_sessions.clone(),
+                totp_secrets.clone(),
+                policy_gate.clone(),
+                hasher.clone(),
+                password_policy.clone(),
+                rate_limiter.clone(),
+                audit.clone(),
+                clock.clone(),
+                *config.key_encryption_key(),
+                *config.csrf_secret(),
+                tenant_settings.clone(),
+            )
+            .with_device_gate(device_gate.clone()),
+        );
+        // 登録していない端末で正しく入ろうとした人が、パスキーで確かめてその端末を登録する（task #916）。
+        let device_enrollment = Arc::new(DeviceEnrollmentService::new(
+            device_gate.clone(),
+            user_devices.clone(),
             users.clone(),
             passkey_assertion.clone(),
-            tenant_domains.clone(),
-            sso_sessions.clone(),
-            totp_secrets.clone(),
-            policy_gate.clone(),
-            hasher.clone(),
-            password_policy.clone(),
-            rate_limiter.clone(),
+            sign_in.clone(),
+            security_alerts.clone(),
             audit.clone(),
             clock.clone(),
-            *config.key_encryption_key(),
-            *config.csrf_secret(),
-            tenant_settings.clone(),
         ));
         // 管理者メモ（ADR-0063 / ADR-0065）。人とサービスアカウントで 1 つの表・1 つのリポジトリ。
         let account_note_repository: Arc<dyn AccountNoteRepository> =
@@ -1133,9 +1175,6 @@ impl AppState {
         ));
 
         // task #872: 利用者の端末の一覧と、登録していない端末でのログインの知らせ。
-        let security_alerts = security_alert_sink(&config);
-        let user_devices: Arc<dyn UserDeviceRepository> =
-            Arc::new(SqlxUserDeviceRepository::new(pool.clone()));
         let device_registry = Arc::new(DeviceRegistryService::new(
             user_devices.clone(),
             sso_sessions.clone(),
@@ -1360,6 +1399,8 @@ impl AppState {
             logout,
             account_security,
             device_registry,
+            device_gate,
+            device_enrollment,
             sign_in_history,
             security_status,
             ssh_keys,
