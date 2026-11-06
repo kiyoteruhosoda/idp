@@ -20,17 +20,20 @@
     {% if current_device_registered %}
     <p class="mb-3"><span class="badge text-bg-success">{{ messages.get("user-security-devices-current-registered") }}</span></p>
     {% else if current_device_identified %}
-    <form method="post" action="{{ tenant }}/settings/security/register-device" class="row g-2 align-items-end mb-3">
+    {%- let resuming = passkey_fresh && resume_device_name.is_some() -%}
+    {#- パスキーでの本人確認から戻ったところ（task #916）。打った名前のまま自動で送る（`auto-submit.js`）。 -#}
+    <form method="post" action="{{ tenant }}/settings/security/register-device" class="row g-2 align-items-end mb-3"{% if resuming %} data-auto-submit{% endif %}>
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <div class="col-sm-8">
         <label class="form-label" for="device_name">{{ messages.get("user-security-devices-name") }}{% include "required_mark.html" %}</label>
-        <input type="text" class="form-control" id="device_name" name="name" maxlength="100" required placeholder="{{ messages.get("user-security-devices-name-placeholder") }}">
+        <input type="text" class="form-control" id="device_name" name="name" maxlength="100" required placeholder="{{ messages.get("user-security-devices-name-placeholder") }}"{% if let Some(name) = resume_device_name %} value="{{ name }}"{% endif %}>
       </div>
       <div class="col-sm-4 d-grid">
         <button type="submit" class="btn btn-primary"><i class="fa-solid fa-key me-2" aria-hidden="true"></i>{{ messages.get("user-security-devices-register") }}</button>
       </div>
       <div class="col-12 form-text">{% if passkey_fresh %}{{ messages.get("user-security-devices-register-ready") }}{% else %}{{ messages.get("user-security-devices-register-passkey") }}{% endif %}</div>
     </form>
+    {% if resuming %}<script src="/assets/auto-submit.js?v={{ crate::templates::asset_version() }}" defer></script>{% endif %}
     {% else %}
     <div class="alert alert-warning" role="alert">{{ messages.get("user-security-devices-unidentified") }}</div>
     {% endif %}
