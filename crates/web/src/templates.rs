@@ -1162,6 +1162,7 @@ mod tests {
             current_device_registered: false,
             current_device_identified: true,
             passkey_fresh: false,
+            resume_device_name: None,
             devices_alerts_enabled: true,
             approver_keys: &[],
             sign_ins: &[],
@@ -1508,6 +1509,7 @@ mod tests {
                 current_device_registered: registered,
                 current_device_identified: identified,
                 passkey_fresh: false,
+                resume_device_name: None,
                 devices_alerts_enabled: true,
                 approver_keys: &[],
                 sign_ins: &[],
@@ -1532,6 +1534,49 @@ mod tests {
 
         let html = render_with(false, false);
         assert!(!html.contains(r#"action="/t/settings/security/register-device""#));
+    }
+
+    /// パスキーでの本人確認から戻ったら、打った名前のまま登録を自動で送る（task #916。押すのは 1 回）。
+    /// 確認がまだ新しくないとき・名前が持ち越されていないときは送らない。
+    #[test]
+    fn returning_from_the_passkey_check_finishes_the_device_registration() {
+        let messages = Messages::new(Locale::Ja);
+        let render_with = |passkey_fresh: bool, resume: Option<&str>| {
+            render(&UserSecurity {
+                messages: &messages,
+                tenant: "/t",
+                csrf: "csrf",
+                sessions: &[],
+                connected_apps: &[],
+                devices: &[],
+                current_device_registered: false,
+                current_device_identified: true,
+                passkey_fresh,
+                resume_device_name: resume,
+                devices_alerts_enabled: true,
+                approver_keys: &[],
+                sign_ins: &[],
+                sign_ins_older: None,
+                sign_ins_paged: false,
+                ssh_keys_enabled: false,
+                ssh_keys: &[],
+                ssh_keys_passkey_fresh: false,
+                status: None,
+                saved_key: None,
+                error_key: None,
+            })
+        };
+        let html = render_with(true, Some("自宅の Windows"));
+        assert!(html.contains("data-auto-submit"), "{html}");
+        assert!(html.contains(r#"value="自宅の Windows""#), "{html}");
+        assert!(html.contains("/assets/auto-submit.js"));
+        for (fresh, resume) in [(false, Some("自宅の Windows")), (true, None)] {
+            let html = render_with(fresh, resume);
+            assert!(
+                !html.contains("data-auto-submit"),
+                "fresh={fresh} resume={resume:?}"
+            );
+        }
     }
 
     /// 「ログイン履歴」の欄（task #879）: 成功と失敗を見分けられ、リフレッシュの「送ってきた相手」は
@@ -1598,6 +1643,7 @@ mod tests {
             current_device_registered: false,
             current_device_identified: true,
             passkey_fresh: false,
+            resume_device_name: None,
             devices_alerts_enabled: true,
             approver_keys: &[],
             sign_ins: &sign_ins,
@@ -1677,6 +1723,7 @@ mod tests {
                 current_device_registered: false,
                 current_device_identified: true,
                 passkey_fresh: false,
+                resume_device_name: None,
                 devices_alerts_enabled: true,
                 approver_keys: &[],
                 ssh_keys_enabled: enabled,
@@ -1732,6 +1779,7 @@ mod tests {
             current_device_registered: false,
             current_device_identified: true,
             passkey_fresh: false,
+            resume_device_name: None,
             devices_alerts_enabled: true,
             approver_keys: &[],
             sign_ins: &[],
@@ -1874,6 +1922,7 @@ mod tests {
                 current_device_registered: false,
                 current_device_identified: true,
                 passkey_fresh: false,
+                resume_device_name: None,
                 devices_alerts_enabled: true,
                 approver_keys: &[],
                 sign_ins: &[],
@@ -4253,6 +4302,9 @@ pub struct UserSecurity<'a> {
     pub current_device_identified: bool,
     /// パスキーでの本人確認がまだ有効か（有効なら登録はそのまま通る）。
     pub passkey_fresh: bool,
+    /// パスキーでの本人確認から戻ってきたときの端末の名前（task #916）。確認が新しく、このブラウザが
+    /// まだ登録されていなければ、登録のフォームをこの名前で自動で送る（押すのを 1 回にする）。
+    pub resume_device_name: Option<&'a str>,
     /// この組織で「登録していない端末」の知らせが有効か。
     pub devices_alerts_enabled: bool,
     /// 登録済みの認証アプリの鍵（task #892。「端末」の欄に「認証アプリ」として並ぶ）。

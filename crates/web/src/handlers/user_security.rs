@@ -55,6 +55,9 @@ pub struct SecurityQuery {
     /// ログイン履歴のこれより古い行を見る（task #879）。
     #[serde(default)]
     pub history_before: Option<i64>,
+    /// 端末の登録の途中でパスキーの本人確認へ回ったとき、戻り先に付ける端末の名前（task #916）。
+    #[serde(default)]
+    pub resume_device: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -431,6 +434,11 @@ pub async fn page(
         current_device_registered: devices.current_registered,
         current_device_identified: devices.current_identified,
         passkey_fresh: devices.passkey_fresh,
+        resume_device_name: query
+            .resume_device
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty() && n.chars().count() <= 100),
         devices_alerts_enabled: devices.alerts_enabled,
         approver_keys: &approver_keys,
         sign_ins: &sign_ins,
@@ -803,7 +811,8 @@ struct DevicesSection {
 /// 今のブラウザを端末として登録する（`POST /{tenant_id}/settings/security/register-device`。task #872）。
 ///
 /// **パスキーで確かめてから 5 分以内**だけ通す。まだなら本人確認の画面（パスキーだけ）へ回し、
-/// 戻ってきたら利用者がもう一度押す（他の重要操作と同じく、フォームの中身は持ち越さない）。
+/// 戻り先に打った名前（`resume_device`）を持ち越す。戻った画面は、確認が新しくこのブラウザが未登録なら
+/// 登録のフォームを自動で送る（task #916。前は戻ってからもう一度押す作りで、押し忘れて未登録のままになった）。
 pub async fn register_device(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -824,13 +833,18 @@ pub async fn register_device(
         return see_other(&format!("{base}?error=csrf"));
     }
     // パスキーでしか通らない本人確認（api が判定する。パスワードの確認では満たされない）。
+    // 戻り先に打った名前を持ち越し、戻った画面が登録を自動で終える（task #916。押すのは 1 回）。
+    let resume = format!(
+        "{base}?resume_device={}#devices",
+        percent_encoding::utf8_percent_encode(form.name.trim(), percent_encoding::NON_ALPHANUMERIC)
+    );
     if let Err(response) = step_up::require_step_up(
         &state,
         &correlation,
         &tenant,
         &headers,
         step_up::REGISTER_DEVICE,
-        &format!("{base}#devices"),
+        &resume,
     )
     .await
     {
