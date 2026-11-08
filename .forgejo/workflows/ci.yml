@@ -39,7 +39,7 @@ jobs:
     # ⚠ **digest で固定する。** タグのままだと、焼き直した日に
     #   「昨日は通ったものが通らない」が起きて原因を追えない。
     container:
-      image: hub.nolumia.com:5000/builder/ci-rust@sha256:1eb2043a4c7d0425f2beb13ce4a777cac799fa998e06532f143cf9f6864eebf6
+      image: hub.nolumia.com:5000/builder/ci-rust@sha256:bf1efa0fcafc9c2b750b662f65d4173e6a707e734b67da612b385ff3e72f27a6
       # `target/` の置き場は 3 つ（番 1〜3）。ランナーの台が 3 台なので 4 つ目は要らない。
       #   どのジョブにも 3 つとも付け、使うのは最初の段で取った 1 つだけ
       #   （`scripts/with-target-lock.sh --take`、https://task.nolumia.com/issues/702）。
@@ -143,7 +143,7 @@ jobs:
     if: github.event.pull_request.user.login != 'renovate'
     timeout-minutes: 45
     container:
-      image: hub.nolumia.com:5000/builder/ci-docker@sha256:70dd735b28706c1e2b5a8b1946923dea0e421a896da99b92e3f3693b862578b7
+      image: hub.nolumia.com:5000/builder/ci-docker@sha256:355d2a6999444d413b778291aa189459e933677a766183e27083d26d93189546
     # ⚠ **`docker compose config` は値を解決するので、秘密の「形」が要る。**
     #   GitHub では 1 つのジョブが全部やっていて、`test` 側に置いた env が
     #   そのまま効いていた ——**割った側でここが抜けると
