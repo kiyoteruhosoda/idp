@@ -208,6 +208,27 @@ fn expire_cookies(state: &WebState, response: &mut Response) {
     }
 }
 
+/// 登録と更新の応答の本文（結び付けの設定。草案 §9.6）。
+///
+/// 範囲は assay のオリジンだけ（`include_site: false`）。各アプリから始まった要求（見えない枠の `prompt=none`）でも
+/// Chrome が短い Cookie を取り直すよう、`allowed_refresh_initiators` に設定のホストの型を入れる（task #934）。
+fn session_instructions(state: &WebState, session_identifier: &str) -> serde_json::Value {
+    serde_json::json!({
+        "session_identifier": session_identifier,
+        "refresh_url": contract::REFRESH_PATH,
+        "scope": {
+            "include_site": false,
+            "scope_specification": [],
+        },
+        "credentials": [{
+            "type": "cookie",
+            "name": bound_cookie_name(state),
+            "attributes": bound_cookie_attributes(state),
+        }],
+        "allowed_refresh_initiators": state.config.dbsc_allowed_refresh_initiators(),
+    })
+}
+
 /// 登録（`POST /dbsc/register`）。
 pub async fn register(State(state): State<WebState>, request: Request) -> Response {
     let who = caller(&request);
@@ -236,19 +257,7 @@ pub async fn register(State(state): State<WebState>, request: Request) -> Respon
             state.session_keys.mark_bound(&sso_session_id);
             let mut response = json_response(
                 StatusCode::OK,
-                serde_json::json!({
-                    "session_identifier": session_identifier,
-                    "refresh_url": contract::REFRESH_PATH,
-                    "scope": {
-                        "include_site": false,
-                        "scope_specification": [],
-                    },
-                    "credentials": [{
-                        "type": "cookie",
-                        "name": bound_cookie_name(&state),
-                        "attributes": bound_cookie_attributes(&state),
-                    }],
-                }),
+                session_instructions(&state, &session_identifier),
             );
             add_bound_cookies(&state, &mut response, &sso_session_id, remaining_secs);
             response
@@ -295,10 +304,12 @@ pub async fn refresh(State(state): State<WebState>, request: Request) -> Respons
         .await
     {
         Ok(InternalSessionKeyResponse::Bound { remaining_secs, .. }) => {
-            let mut response = StatusCode::OK.into_response();
-            response
-                .headers_mut()
-                .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            // 登録と同じ設定を返す。草案（§8.8・§8.9）では本文のある更新の応答で結び付けの設定が置き換わるので、
+            // 設定を足す前に結び付いたログイン状態にも、次の更新で `allowed_refresh_initiators` が届く。
+            let mut response = json_response(
+                StatusCode::OK,
+                session_instructions(&state, &session_identifier),
+            );
             add_bound_cookies(&state, &mut response, &sso_session_id, remaining_secs);
             response
         }

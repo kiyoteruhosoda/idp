@@ -127,6 +127,47 @@ pub fn challenge_header(challenge: &str, session_identifier: &str) -> String {
     format!("\"{challenge}\";id=\"{session_identifier}\"")
 }
 
+/// `DBSC_ALLOWED_REFRESH_INITIATORS` を検査する（task #934）。登録・更新の応答の `allowed_refresh_initiators` に入る。
+///
+/// DBSC の草案（§8.3・§8.4）では、結び付けの範囲は assay のオリジンだけ（`include_site: false`）なので、
+/// 要求を出したオリジンが assay でないとき（各アプリの見えない枠の `prompt=none` など）は、ここに当たる
+/// ホストでないと Chrome は短い Cookie を取り直さない。
+///
+/// 書けるのは `*.<名前>` と `<名前>`（ホスト名だけ）を空白で区切ったもの。草案の照合はホストの文字列なので、
+/// スキーム・ポート・パスは書けない。何にでも当たる `*` と、`*.` の後ろが 1 段のもの（`*.com`）は断る。
+/// `*.example.com` は `example.com` 自身には当たらない（要るなら両方書く）。1 つでも書けないものがあれば全体を断る。
+pub fn parse_refresh_initiators(raw: &str) -> Result<Vec<String>, String> {
+    raw.split_whitespace()
+        .map(parse_refresh_initiator)
+        .collect()
+}
+
+fn parse_refresh_initiator(raw: &str) -> Result<String, String> {
+    let refuse = |why: &str| {
+        Err(format!(
+            "DBSC_ALLOWED_REFRESH_INITIATORS: `{raw}` {why} (write `*.example.com` or `app.example.com`)"
+        ))
+    };
+    let (wildcard, host) = match raw.strip_prefix("*.") {
+        Some(rest) => (true, rest),
+        None => (false, raw),
+    };
+    if host.is_empty()
+        || !host
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.')
+    {
+        return refuse("is not a lowercase host name");
+    }
+    if host.split('.').any(str::is_empty) {
+        return refuse("is not a host name");
+    }
+    if wildcard && !host.contains('.') {
+        return refuse("is too broad");
+    }
+    Ok(raw.to_string())
+}
+
 /// 結び付けの識別子として受け付ける形か（32 文字の 16 進。assay が作る）。
 pub fn is_session_identifier(value: &str) -> bool {
     value.len() == 32 && value.bytes().all(|b| b.is_ascii_hexdigit())
@@ -137,6 +178,41 @@ mod tests {
     use super::*;
 
     const KEY: &[u8] = b"test-key-for-unit-tests-32bytes!";
+
+    #[test]
+    fn refresh_initiators_accept_host_patterns() {
+        assert_eq!(
+            parse_refresh_initiators(" *.nolumia.com  nolumia.com ").unwrap(),
+            vec!["*.nolumia.com".to_string(), "nolumia.com".to_string()]
+        );
+        assert!(parse_refresh_initiators("").unwrap().is_empty());
+        assert_eq!(
+            parse_refresh_initiators("localhost").unwrap(),
+            vec!["localhost".to_string()]
+        );
+    }
+
+    #[test]
+    fn refresh_initiators_refuse_what_the_draft_cannot_match() {
+        for raw in [
+            "*",
+            "*.com",
+            "https://*.nolumia.com",
+            "*.nolumia.com:443",
+            "*.nolumia.com/",
+            "*.Nolumia.com",
+            "a..nolumia.com",
+            "*.",
+            "**.nolumia.com",
+        ] {
+            assert!(
+                parse_refresh_initiators(raw).is_err(),
+                "{raw} must be refused"
+            );
+        }
+        // 1 つでも書けないものがあれば全体を断る
+        assert!(parse_refresh_initiators("*.nolumia.com *").is_err());
+    }
     const SESSION: &str = "session-a";
 
     #[test]

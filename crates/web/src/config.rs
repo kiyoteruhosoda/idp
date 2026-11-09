@@ -59,6 +59,9 @@ pub struct Config {
     /// 画面を出さずに試す往復を枠に入れてよい親（`SILENT_AUTH_FRAME_ANCESTORS`。api と同キー・環境変数だけ。
     /// task #888・ADR-0076）。
     silent_auth_frame_ancestors: assay_contracts::frame_ancestors::FrameAncestors,
+    /// 結び付けたログイン状態の短い Cookie の更新を、assay 以外のどのホストから始まった要求でも許すか
+    /// （`DBSC_ALLOWED_REFRESH_INITIATORS`。環境変数だけ。task #934・ADR-0074）。空なら assay 自身からだけ。
+    dbsc_allowed_refresh_initiators: Vec<String>,
     /// 「アプリで続ける」を出すか（`APP_APPROVER_PACKAGE_NAME` が空でない。task #892）。
     /// 判定そのものは api（口が閉じていれば依頼を断る）。ここは画面に出すかだけ。
     app_approver_enabled: bool,
@@ -230,6 +233,12 @@ impl Config {
                 &env_or("SILENT_AUTH_FRAME_ANCESTORS", ""),
             )
             .map_err(|e| anyhow::anyhow!(e))?,
+            dbsc_allowed_refresh_initiators:
+                assay_contracts::session_key::parse_refresh_initiators(&env_or(
+                    "DBSC_ALLOWED_REFRESH_INITIATORS",
+                    "",
+                ))
+                .map_err(|e| anyhow::anyhow!(e))?,
             app_approver_enabled: !env_or("APP_APPROVER_PACKAGE_NAME", "").trim().is_empty(),
             log_format: parse_log_format(),
             shared_settings_from_api: resolver.applied_keys(),
@@ -294,6 +303,10 @@ impl Config {
     /// 画面を出さずに試す往復を枠に入れてよい親（空なら許さない。task #888・ADR-0076）。
     pub fn silent_auth_frame_ancestors(&self) -> &assay_contracts::frame_ancestors::FrameAncestors {
         &self.silent_auth_frame_ancestors
+    }
+    /// 短い Cookie の更新を許す、assay 以外の要求元のホストの型（登録・更新の応答の `allowed_refresh_initiators`）。
+    pub fn dbsc_allowed_refresh_initiators(&self) -> &[String] {
+        &self.dbsc_allowed_refresh_initiators
     }
     /// `X-Forwarded-For` を信頼してクライアント IP を採るか（SEC1）。`false`（既定）なら
     /// ヘッダを無視し、TCP 接続元アドレス（`ConnectInfo`）を使う。api 側と同じキー・同じ既定で、

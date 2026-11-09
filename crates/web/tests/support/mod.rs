@@ -70,9 +70,14 @@ fn env_lock() -> &'static Mutex<()> {
 /// 同じ 1 行を書くことになる。交換の失敗（未ログイン）を見たいテストは
 /// [`mount_unauthenticated_management_token`] で上書きする。
 pub async fn setup() -> WebEnv {
+    setup_with_env(&[]).await
+}
+
+/// `setup()` に、web の起動のときだけ環境変数を足す（環境変数だけの設定を試すため。起動の後は外す）。
+pub async fn setup_with_env(extra: &[(&str, &str)]) -> WebEnv {
     let api = MockServer::start().await;
     let uri = api.uri();
-    let app = build_app(&uri);
+    let app = build_app_with(&uri, extra);
     let env = WebEnv {
         app,
         api,
@@ -130,6 +135,10 @@ pub fn unreachable_api_app() -> axum::Router {
 }
 
 fn build_app(api_base_url: &str) -> axum::Router {
+    build_app_with(api_base_url, &[])
+}
+
+fn build_app_with(api_base_url: &str, extra: &[(&str, &str)]) -> axum::Router {
     let config = {
         let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("API_BASE_URL", api_base_url);
@@ -140,7 +149,14 @@ fn build_app(api_base_url: &str) -> axum::Router {
         //（本番相当のオリジンでは fail-fast する。SEC11）。
         std::env::remove_var("PUBLIC_WEB_BASE_URL");
         std::env::remove_var("COOKIE_DOMAIN");
-        Config::from_env().expect("load web config")
+        for (key, value) in extra {
+            std::env::set_var(key, value);
+        }
+        let config = Config::from_env();
+        for (key, _) in extra {
+            std::env::remove_var(key);
+        }
+        config.expect("load web config")
     };
     router::build(WebState::build(Arc::new(config)))
 }
