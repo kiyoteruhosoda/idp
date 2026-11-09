@@ -3,6 +3,7 @@
 //! - 入口: 結び付いたログイン状態で、合う短い Cookie が無ければ長い Cookie を外す（api へ渡さない）
 //! - 入口: 合う短い Cookie があれば api に聞かずに通す
 //! - `/dbsc/register`・`/dbsc/refresh` の応答の形
+//! - 各アプリから始まった要求でも更新できるよう、登録・更新の応答に `allowed_refresh_initiators`（task #934）
 
 mod support;
 
@@ -11,7 +12,9 @@ use assay_contracts::session_key as contract;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use serde_json::json;
-use support::{body_text, get_with_cookies, send, set_cookie, setup, WebEnv, TEST_CSRF_SECRET};
+use support::{
+    body_text, get_with_cookies, send, set_cookie, setup, setup_with_env, WebEnv, TEST_CSRF_SECRET,
+};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
@@ -192,6 +195,85 @@ async fn registration_answers_the_session_config_and_sets_the_short_cookie() {
     assert_eq!(body["scope"]["include_site"], false);
     assert_eq!(body["credentials"][0]["type"], "cookie");
     assert_eq!(body["credentials"][0]["name"], contract::BOUND_COOKIE);
+    // 設定が無ければ assay 自身からだけ（空の並び）。
+    assert_eq!(body["allowed_refresh_initiators"], json!([]));
+}
+
+const INITIATORS: &str = "*.nolumia.com";
+
+async fn mount_refresh_bound(env: &WebEnv) {
+    Mock::given(method("POST"))
+        .and(path("/internal/sso/key-binding/refresh"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "result": "bound",
+            "session_identifier": IDENTIFIER,
+            "remaining_secs": 2_592_000u64,
+        })))
+        .mount(&env.api)
+        .await;
+}
+
+#[tokio::test]
+async fn registration_allows_refreshes_started_by_the_configured_hosts() {
+    let env = setup_with_env(&[("DBSC_ALLOWED_REFRESH_INITIATORS", INITIATORS)]).await;
+    Mock::given(method("POST"))
+        .and(path("/internal/sso/key-binding/register"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "result": "bound",
+            "session_identifier": IDENTIFIER,
+            "remaining_secs": 2_592_000u64,
+        })))
+        .mount(&env.api)
+        .await;
+    let response = send(
+        &env.app,
+        post(
+            "/dbsc/register",
+            &format!("{SSO_SESSION_COOKIE}={SSO}"),
+            &[(contract::RESPONSE_HEADER, "a.b.c")],
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_str(&body_text(response).await).unwrap();
+    // 草案 §9.6: 範囲（scope）の中ではなく、いちばん外側に置く。
+    assert_eq!(body["allowed_refresh_initiators"], json!([INITIATORS]));
+    assert!(body["scope"].get("allowed_refresh_initiators").is_none());
+}
+
+/// 設定を足す前に結び付いたログイン状態にも届くよう、更新の応答でも同じ設定を返す（草案 §8.8・§8.9）。
+#[tokio::test]
+async fn a_signed_refresh_answers_the_same_session_config() {
+    let env = setup_with_env(&[("DBSC_ALLOWED_REFRESH_INITIATORS", INITIATORS)]).await;
+    mount_refresh_bound(&env).await;
+    let response = send(
+        &env.app,
+        post(
+            "/dbsc/refresh",
+            &format!("{SSO_SESSION_COOKIE}={SSO}"),
+            &[
+                (contract::SESSION_ID_HEADER, IDENTIFIER),
+                (contract::RESPONSE_HEADER, "a.b.c"),
+            ],
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
+    let short = set_cookie(&response, contract::BOUND_COOKIE).expect("short cookie");
+    assert!(contract::bound_cookie_is_valid(
+        TEST_CSRF_SECRET,
+        SSO,
+        &short,
+        now()
+    ));
+    let body: serde_json::Value = serde_json::from_str(&body_text(response).await).unwrap();
+    // 草案 §8.9: 更新では今の識別子と同じでないと結び付けが終わる。
+    assert_eq!(body["session_identifier"], IDENTIFIER);
+    assert_eq!(body["refresh_url"], contract::REFRESH_PATH);
+    assert_eq!(body["scope"]["include_site"], false);
+    assert_eq!(body["credentials"][0]["name"], contract::BOUND_COOKIE);
+    assert_eq!(body["allowed_refresh_initiators"], json!([INITIATORS]));
 }
 
 #[tokio::test]
