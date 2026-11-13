@@ -1,10 +1,10 @@
-//! 認証ポリシーの管理エンドポイント（`/{tenant_id}/admin/authentication-policies`、
-//! ユーザー認証・認証ポリシー仕様書 §7）。
+//! Authentication policy management endpoints (`/{tenant_id}/admin/authentication-policies`,
+//! user authentication / authentication policy spec §7).
 //!
-//! 参照は `idp.authentication-policies:read`、作成・更新・削除は `idp.authentication-policies:write` が要る
-//! （`RequirePerms<AuthenticationPoliciesRead>` / `<AuthenticationPoliciesWrite>`。`idp.tenant.admin` は両方を含意する）。作成・更新・削除は `audit_log`
-//! に記録する（`authentication_policy.created` / `.updated` / `.deleted`）。検証・判定は Application 層
-//! （`AuthenticationPolicyManagementService`）が行い、本ハンドラは HTTP への写像のみを担う。
+//! Reading needs `idp.authentication-policies:read`; create/update/delete need `idp.authentication-policies:write`
+//! (`RequirePerms<AuthenticationPoliciesRead>` / `<AuthenticationPoliciesWrite>`; `idp.tenant.admin` implies both). Create/update/delete are recorded in `audit_log`
+//! (`authentication_policy.created` / `.updated` / `.deleted`). Validation and decisions are done by the application layer
+//! (`AuthenticationPolicyManagementService`); this handler only maps to HTTP.
 
 use crate::application::authentication_policy_management::{
     AuthenticationPolicyDraft, AuthenticationPolicyManagementError,
@@ -30,7 +30,7 @@ use axum::http::HeaderMap;
 use axum::Json;
 use uuid::Uuid;
 
-/// テナントの認証ポリシーを一覧する（無効を含む。priority 昇順）。
+/// Lists the tenant's authentication policies (including disabled ones, priority ascending).
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/authentication-policies",
@@ -53,8 +53,8 @@ pub async fn list_authentication_policies(
         .list(tenant.context())
         .await
         .map_err(|e| map_error(e, locale))?;
-    // 既定動作はテナントの値（ADR-0058 §4）。判定する認証の各経路と同じ口から引くので、画面の表示と
-    // 実際の判定は食い違わない。
+    // The default behaviour is the tenant's value (ADR-0058 §4). It is read from the same place as each auth path's decision,
+    // so what the screen shows never diverges from the actual decision.
     let default_effect = state
         .tenant_settings
         .policy_default_effect(tenant.context().tenant_id())
@@ -66,7 +66,7 @@ pub async fn list_authentication_policies(
     }))
 }
 
-/// 認証ポリシーを作成する。
+/// Creates an authentication policy.
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/authentication-policies",
@@ -104,7 +104,7 @@ pub async fn create_authentication_policy(
     Ok(Json(to_response(&policy)))
 }
 
-/// 認証ポリシーを全項目置換で更新する。
+/// Updates an authentication policy by replacing all fields.
 #[utoipa::path(
     put,
     path = "/{tenant_id}/admin/authentication-policies/{policy_id}",
@@ -147,7 +147,7 @@ pub async fn update_authentication_policy(
     Ok(Json(to_response(&policy)))
 }
 
-/// 認証ポリシーを削除する。
+/// Deletes an authentication policy.
 #[utoipa::path(
     delete,
     path = "/{tenant_id}/admin/authentication-policies/{policy_id}",
@@ -226,8 +226,8 @@ fn to_response(policy: &AuthenticationPolicy) -> AuthenticationPolicyResponse {
     }
 }
 
-/// リクエスト DTO を Application 層の入力へ変換する（`application_ids` / `user_ids` の UUID 形式
-/// のみここで検証する。意味的な検証は Application 層）。
+/// Converts the request DTO to the application layer's input (only the UUID format of `application_ids` / `user_ids`
+/// is validated here; semantic validation is in the application layer).
 fn parse_draft(
     body: AuthenticationPolicyUpsertRequest,
     locale: ApiLocale,
@@ -242,7 +242,7 @@ fn parse_draft(
         .iter()
         .map(|raw| parse_uuid(raw, locale))
         .collect::<Result<Vec<_>, _>>()?;
-    // 認証方式は DTO では文字列。ここで許可値へ写す（許可値の単一の出所はドメインの enum）。
+    // Auth methods are strings in the DTO. Map them to allowed values here (the single source of allowed values is the domain enum).
     let effect_params = body
         .effect_params
         .map(|p| {

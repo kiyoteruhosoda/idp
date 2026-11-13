@@ -1,8 +1,8 @@
-//! 配る機械が読む SSH の鍵の一覧（`GET /{tenant_id}/admin/ssh-keys`。task #885。ADR-0072）。
+//! List of SSH keys read by the distributing machine (`GET /{tenant_id}/admin/ssh-keys`, task #885, ADR-0072).
 //!
-//! 保護は `idp.ssh-keys:read`。⚠ **機械クライアントのトークンだけ**を通す（人の管理トークンは
-//! `idp.tenant.admin` がこのコードを含意していても 403）。判定は Application 層
-//! （`SshKeyRegistryService::distributable`）。
+//! Protected by `idp.ssh-keys:read`. ⚠ **Only machine client tokens** pass (a human's admin token gets 403
+//! even if `idp.tenant.admin` implies this code). The decision is in the application layer
+//! (`SshKeyRegistryService::distributable`).
 
 use crate::application::ssh_key_registry::SshKeyDistributionError;
 use crate::presentation::admin::{RequirePerms, SshKeysRead};
@@ -14,10 +14,10 @@ use crate::presentation::tenant::ResolvedTenant;
 use axum::extract::{Extension, State};
 use axum::Json;
 
-/// 組織の有効な SSH の鍵を一覧する（`GET /{tenant_id}/admin/ssh-keys`）。
+/// Lists the organization's active SSH keys (`GET /{tenant_id}/admin/ssh-keys`).
 ///
-/// 取り消した鍵・止めた利用者・組織から外れた利用者・利用者名の無い利用者の鍵は出ない。
-/// 組織で `SSH_KEYS_ENABLED` が無効なら `keys` は空。
+/// Keys that were revoked, or belong to disabled users, users removed from the org or users without a username, are omitted.
+/// If `SSH_KEYS_ENABLED` is off for the org, `keys` is empty.
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/ssh-keys",

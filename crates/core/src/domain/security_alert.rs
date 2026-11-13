@@ -1,11 +1,12 @@
-//! セキュリティの知らせ（task #872。ADR-0071）。
+//! Security alerts (task #872; ADR-0071).
 //!
-//! 「登録していない端末でログインした」「端末を登録した・取り消した・登録が切れた」を、運用者の
-//! 知らせの宛先へ送る。**送れなくても元の処理は止めない**（ログインを知らせの失敗で断らない）。
-//! 同じ出来事は必ず監査ログにも残るので、知らせは「気付くのを早くする」ための写しにあたる。
+//! Sends "signed in from an unregistered device" and "registered / revoked a device, registration
+//! expired" to the operators' alert destination. **Failure to send never stops the original
+//! operation** (a login is not refused because an alert failed). The same event is always recorded
+//! in the audit log too, so the alert is a copy meant to "notice sooner".
 //!
-//! 知らせに載せるのは表示の材料（時刻・国・ブラウザの名乗り・入り方・端末の名前）だけで、
-//! 端末の印・セッション id・メールアドレスは載せない。
+//! Alerts carry only display material (time, country, browser's self-identification, sign-in
+//! method, device name); device marks, session ids, and email addresses are not included.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -15,61 +16,65 @@ use crate::domain::tenant::TenantId;
 use crate::domain::user_device::CountryCode;
 use crate::domain::values::AuthenticationMethod;
 
-/// 知らせる出来事。
+/// The event to report.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SecurityAlertKind {
-    /// 登録していない端末でログインした。
+    /// Signed in from an unregistered device.
     UnregisteredDeviceSignIn {
-        /// その端末で初めて見たログインか（同じ印でのログインが前にもあれば `false`）。
+        /// Whether this is the first sign-in seen on that device (`false` if there was an earlier
+        /// sign-in with the same mark).
         first_seen: bool,
         methods: Vec<AuthenticationMethod>,
     },
-    /// 登録した端末に限る組織で、登録していない端末で正しく認証された（パスワードが漏れた合図になりうる）。
-    /// ログインは成立させていない（task #916）。
+    /// In an organization limited to registered devices, authentication succeeded on an
+    /// unregistered device (may signal a leaked password). The sign-in was not completed (task
+    /// #916).
     UnregisteredDeviceRefused {
         methods: Vec<AuthenticationMethod>,
     },
-    /// 端末を登録した。
+    /// Registered a device.
     DeviceRegistered {
         device_name: String,
     },
-    /// 利用者が端末の登録を取り消した。
+    /// The user revoked a device registration.
     DeviceRevoked {
         device_name: String,
     },
-    /// 使われないまま期限が過ぎ、端末の登録が切れた。
+    /// The device registration expired after going unused past its deadline.
     DeviceExpired {
         device_name: String,
     },
-    /// SSH の公開鍵を登録した（task #885）。
+    /// Registered an SSH public key (task #885).
     SshKeyRegistered {
         key_name: String,
         fingerprint: String,
     },
-    /// SSH の公開鍵を取り消した（task #885）。
+    /// Revoked an SSH public key (task #885).
     SshKeyRevoked {
         key_name: String,
         fingerprint: String,
     },
-    /// 端末の鍵に結び付いたログイン状態へ、別の鍵の署名が来た（Cookie の持ち出しの疑い。task #887）。
-    /// そのログイン状態は終わらせてある。
+    /// A signature from a different key arrived for a sign-in state bound to a device key
+    /// (suspected cookie theft; task #887). That sign-in state has been ended.
     SessionKeyMismatch,
-    /// 認証アプリの鍵を登録した・取り消した（task #892）。
+    /// Registered / revoked an authenticator app key (task #892).
     ApproverKeyRegistered {
         device_name: String,
     },
     ApproverKeyRevoked {
         device_name: String,
     },
-    /// 認証アプリで承認したログインを、依頼を始めたのとは別のブラウザで完了しようとした
-    /// （別の端末で始めた依頼を、だまされて承認した疑い）。ログインはさせていない。
+    /// A sign-in approved in the authenticator app was being completed in a different browser than
+    /// the one that started the request (suspected of being tricked into approving a request
+    /// started on another device). The sign-in was not allowed.
     AppApprovalFromAnotherBrowser {
         device_name: String,
     },
 }
 
 impl SecurityAlertKind {
-    /// 知らせの重さ。登録していない端末でのログインと登録・取り消しは「注意」、期限切れは「お知らせ」。
+    /// Severity of the alert. Unregistered-device sign-ins and registration/revocation are
+    /// "warning"; expiry is "info".
     pub fn severity(&self) -> SecurityAlertSeverity {
         match self {
             Self::UnregisteredDeviceSignIn { .. }
@@ -93,29 +98,31 @@ pub enum SecurityAlertSeverity {
     Warning,
 }
 
-/// 知らせ 1 件。
+/// One alert.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecurityAlert {
     pub kind: SecurityAlertKind,
     pub tenant_id: TenantId,
     pub user_id: Uuid,
-    /// 利用者の表示名（ログイン id）。知らせを読む人が「誰の話か」を分かるようにする。
+    /// The user's display name (login id). Lets the reader know "who this is about".
     pub username: String,
     pub occurred_at: DateTime<Utc>,
     pub country: Option<CountryCode>,
     pub ip_address: Option<String>,
     pub user_agent: Option<String>,
-    /// 同じ端末の知らせを 1 件へ束ねるための鍵（端末の印の指紋の先頭。印そのものではない）。
+    /// Key for bundling alerts of the same device into one (prefix of the device mark's
+    /// fingerprint, not the mark itself).
     pub group_key: String,
 }
 
-/// 知らせの送り口。実装は呼び出し元を待たせない（送信と送り直しは裏で行う）。
+/// Sender for alerts. Implementations do not make the caller wait (sending and retries happen in
+/// the background).
 #[async_trait]
 pub trait SecurityAlertSink: Send + Sync {
     async fn send(&self, alert: SecurityAlert);
 }
 
-/// 送り先が設定されていないときの送り口（何もしない）。
+/// Sender used when no destination is configured (does nothing).
 pub struct DisabledSecurityAlertSink;
 
 #[async_trait]

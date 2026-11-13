@@ -1,27 +1,27 @@
-//! 参加先テナントのログイン画面からのゲストログイン（ADR-0009 §8）。
+//! Guest login from the login screen of the joined tenant (ADR-0009 §8).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test guest_login
 //!
-//! 認証してよいのは「当該テナントに ACTIVE なメンバーシップを持つ利用者」（HOME または GUEST）で
-//! あり、所属元（HOME）に限らない。ゲストの識別子は所属元テナントの登録簿にあるため、参加先の
-//! ログイン画面で解決するには専用の引き方が要る（`UserRepository::find_active_guest_by_login_identifier`）。
-//! 検証する保証:
+//! Those allowed to authenticate are "users with an ACTIVE membership in the tenant" (HOME or GUEST),
+//! not only those homed there. A guest's identifier is in the home tenant's registry, so resolving it on the
+//! joined tenant's login screen needs a dedicated lookup (`UserRepository::find_active_guest_by_login_identifier`).
+//! Guarantees checked:
 //!
-//! 1. **ゲストは参加先テナントのログイン画面から入れる**（OIDC 認可フロー・ポータル・管理
-//!    コンソールの 3 経路とも）。
-//!    テナント作成者は作成先の ACTIVE GUEST 管理者になる（§4）ので、これが無いと自分が作った
-//!    テナントのコンソールへ直接ログインできない。
-//! 2. **メンバーでないテナントからは入れない**（テナント境界。資格情報が正しくても解決しない）。
-//! 3. **停止中（SUSPENDED）のゲストは入れない**（MT24。停止はアクセスを止める手段として効く）。
-//! 4. **所属元テナントが DISABLED のゲストは入れない** —— 所属元の無効化はその組織の利用者を
-//!    止める操作であって、参加先テナント経由の裏口を残す意味ではない。無効化したテナント自身の
-//!    利用者も、内部 API 経由で入れない。
-//! 5. **参加先の同名 HOME 利用者を巻き添えにしない**（解決は所属元優先。同じユーザー名のゲストが
-//!    参加してきても、そのテナントの HOME 利用者は従来どおり解決される）。
-//! 6. **所属元テナントを無効化すると、発行済みのリフレッシュトークンも次の更新で止まる**（MT27）。
-//!    参加先の `/{tenant_id}/token` は生きているため、ここを塞がないと最長で寿命（既定 30 日）
-//!    まで更新し続けられる。
+//! 1. **Guests can sign in from the joined tenant's login screen** (all 3 paths: OIDC authorization flow, portal,
+//!    admin console).
+//!    A tenant creator becomes an ACTIVE GUEST admin of the created tenant (§4), so without this they could not
+//!    sign in directly to the console of the tenant they created.
+//! 2. **Cannot sign in from tenants one is not a member of** (tenant boundary; does not resolve even with correct credentials).
+//! 3. **Suspended (SUSPENDED) guests cannot sign in** (MT24; suspension works as a way to stop access).
+//! 4. **Guests whose home tenant is DISABLED cannot sign in** — disabling the home tenant stops that organization's
+//!    users, not leaving a back door via joined tenants. Users of the disabled tenant itself
+//!    cannot sign in via the internal API either.
+//! 5. **HOME users of the joined tenant with the same name are not affected** (resolution prefers the home tenant;
+//!    even if a guest with the same username joins, that tenant's HOME user resolves as before).
+//! 6. **Disabling the home tenant also stops issued refresh tokens at the next refresh** (MT27).
+//!    The joined tenant's `/{tenant_id}/token` is alive, so without blocking here they could keep refreshing
+//!    up to the lifetime (30 days by default).
 
 mod support;
 
@@ -38,8 +38,8 @@ async fn setup() -> Option<TestEnv> {
     support_setup("guest login").await
 }
 
-/// 所属元を root とする、パスワードの分かっている利用者を 1 人作る（自己登録 → メール検証済み）。
-/// 返すのは `(user_id, username, password)`。
+/// Creates one user homed in root with a known password (self-registration → email verified).
+/// Returns `(user_id, username, password)`.
 async fn create_home_user(env: &TestEnv) -> (String, String, String) {
     let username = format!("guest{}", unique());
     let password = format!("guest-password-{}", unique());
@@ -51,8 +51,8 @@ async fn create_home_user(env: &TestEnv) -> (String, String, String) {
     (user_id, username, password)
 }
 
-/// root がテナントを作成し、その ID を返す（作成者は当該テナントの ACTIVE GUEST 管理者になる）。
-/// SSO セッションを、指定テナント向けの管理トークンへ交換する（ADR-0037）。
+/// root creates a tenant and returns its ID (the creator becomes the tenant's ACTIVE GUEST admin).
+/// Exchanges the SSO session for an admin token for the given tenant (ADR-0037).
 async fn tok(env: &TestEnv, sso: &str, tenant_id: &str) -> String {
     exchange_admin_token(&env.app, tenant_id, sso).await
 }
@@ -74,7 +74,7 @@ async fn create_tenant(env: &TestEnv, root_sso: &str, name: &str) -> String {
         .to_string()
 }
 
-/// `user_id` を `tenant_id` の ACTIVE な GUEST にする（招待の作成 → 本人による承諾）。
+/// Makes `user_id` an ACTIVE GUEST of `tenant_id` (create invitation → accepted by the user).
 async fn invite_and_accept(env: &TestEnv, admin_sso: &str, tenant_id: &str, user_id: &str) {
     let res = send(
         &env.app,
@@ -104,10 +104,10 @@ async fn invite_and_accept(env: &TestEnv, admin_sso: &str, tenant_id: &str, user
     assert_eq!(res.status(), StatusCode::NO_CONTENT, "accept invitation");
 }
 
-/// ポータルログイン（`/{tenant}/login` の実体）を 1 回試し、`result` タグを返す。
+/// Tries the portal login (what `/{tenant}/login` does) once and returns the `result` tag.
 ///
-/// `ip` はテスト関数ごとに変える。IP 単位のレートリミッタはプロセス内メモリで、同一バイナリ内で
-/// 並行に走るテストがバケツを共有するため。
+/// `ip` differs per test function. The per-IP rate limiter lives in process memory, and tests running in parallel
+/// in the same binary share buckets.
 async fn portal_login_result(
     env: &TestEnv,
     tenant: &str,
@@ -126,7 +126,7 @@ async fn portal_login_result(
     .await
 }
 
-/// 管理コンソールのログイン（`/{tenant}/admin/login` の実体）を 1 回試し、`result` タグを返す。
+/// Tries the admin console login (what `/{tenant}/admin/login` does) once and returns the `result` tag.
 async fn admin_login_result(
     env: &TestEnv,
     tenant: &str,
@@ -175,8 +175,8 @@ async fn login_result(
         .to_string()
 }
 
-/// 保証 1・2: 参加先テナントのポータルログイン画面からゲストが入れる。メンバーでないテナントの
-/// 同じ画面では、同じ資格情報でも解決しない（テナント境界）。
+/// Guarantees 1 and 2: guests can sign in from the joined tenant's portal login screen. On the same screen of a tenant
+/// they are not a member of, the same credentials do not resolve (tenant boundary).
 #[tokio::test]
 async fn guest_signs_in_from_the_host_tenant_portal() {
     let Some(env) = setup().await else { return };
@@ -191,7 +191,7 @@ async fn guest_signs_in_from_the_host_tenant_portal() {
         "success",
         "an active guest must be able to sign in on the host tenant's login screen"
     );
-    // 所属元テナントからは従来どおり入れる（ゲスト解決を足しても HOME 経路は変わらない）。
+    // Signing in from the home tenant works as before (adding guest resolution does not change the HOME path).
     assert_eq!(
         portal_login_result(
             &env,
@@ -204,7 +204,7 @@ async fn guest_signs_in_from_the_host_tenant_portal() {
         "success",
         "the home tenant keeps working"
     );
-    // メンバーシップの無いテナントでは解決しない。
+    // Does not resolve in a tenant without a membership.
     assert_eq!(
         portal_login_result(&env, &stranger, "203.0.113.13", &username, &password).await,
         "invalid_credentials",
@@ -212,8 +212,8 @@ async fn guest_signs_in_from_the_host_tenant_portal() {
     );
 }
 
-/// 保証 1: テナント作成者（ACTIVE GUEST 管理者）は、作成したテナントの管理コンソールへ直接
-/// ログインできる。root で入ってテナントスイッチする以外に道が無い、という状態にしない。
+/// Guarantee 1: a tenant creator (ACTIVE GUEST admin) can sign in directly to the admin console of the created
+/// tenant. Avoids a state where entering via root and switching tenants is the only way.
 #[tokio::test]
 async fn guest_admin_signs_in_to_the_host_tenant_console() {
     let Some(env) = setup().await else { return };
@@ -222,7 +222,7 @@ async fn guest_admin_signs_in_to_the_host_tenant_console() {
     let (user_id, username, password) = create_home_user(&env).await;
     invite_and_accept(&env, &root_sso, &host, &user_id).await;
 
-    // 権限が無いうちは「利用者は特定できたが管理者ではない」= forbidden（解決自体は成功している）。
+    // Without permission yet, "the user was identified but is not an admin" = forbidden (resolution itself succeeded).
     assert_eq!(
         admin_login_result(&env, &host, "203.0.113.21", &username, &password).await,
         "forbidden",
@@ -247,8 +247,8 @@ async fn guest_admin_signs_in_to_the_host_tenant_console() {
     );
 }
 
-/// 保証 3: 停止中（SUSPENDED）のゲストは参加先の画面から入れない。停止は「メンバーシップ行と
-/// 権限行を残したままアクセスだけを止める」手段（MT24）なので、ここが効かないと止められない。
+/// Guarantee 3: suspended (SUSPENDED) guests cannot sign in from the joined tenant's screen. Suspension is the means
+/// of "stopping only access while keeping membership and permission rows" (MT24), so without this they cannot be stopped.
 #[tokio::test]
 async fn suspended_guest_cannot_sign_in_on_the_host_tenant() {
     let Some(env) = setup().await else { return };
@@ -279,7 +279,7 @@ async fn suspended_guest_cannot_sign_in_on_the_host_tenant() {
         "invalid_credentials",
         "a suspended guest must not sign in on the host tenant"
     );
-    // 所属元テナントへは引き続き入れる（停止したのは参加先へのアクセスだけ）。
+    // Signing in to the home tenant still works (only access to the joined tenant was suspended).
     assert_eq!(
         portal_login_result(
             &env,
@@ -294,20 +294,20 @@ async fn suspended_guest_cannot_sign_in_on_the_host_tenant() {
     );
 }
 
-/// 保証 5: 参加先に同じユーザー名の HOME 利用者が居ても、その HOME 利用者は従来どおり解決される
-/// （解決は所属元優先。1 回で引くと「曖昧」になって双方が締め出される）。
-/// メールでのログインは**所属元テナント**のスイッチで決まる（ADR-0050 決定 3）。
+/// Guarantee 5: even if the joined tenant has a HOME user with the same username, that HOME user resolves as before
+/// (resolution prefers the home tenant; a single lookup would be "ambiguous" and lock both out).
+/// Email login is decided by the switch of **the home tenant** (ADR-0050 decision 3).
 ///
-/// ゲストは参加先の画面からログインするが、識別子が載っているのは所属元の登録簿である。
-/// 参加先のスイッチで所属元の入り口が開いたり閉じたりすると、**自分の設定していない
-/// テナントの都合で自分のログイン手段が変わる**。見るのは識別子のあるテナントだけにしてある。
+/// Guests sign in from the joined tenant's screen, but their identifiers are in the home tenant's registry.
+/// If the joined tenant's switch opened or closed the home tenant's entrance, **one's sign-in methods would change
+/// because of a tenant one did not configure**. Only the tenant holding the identifier is consulted.
 #[tokio::test]
 async fn email_login_follows_the_home_tenant_switch_not_the_host() {
     let Some(env) = setup().await else { return };
     let root_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
     let host = create_tenant(&env, &root_sso, "EmailSwitchHost").await;
 
-    // root 所属の利用者を host のゲストにする。
+    // Make a root-homed user a guest of host.
     let username = format!("es{}", unique());
     let password = format!("guest-password-{}", unique());
     register_user(&env.app, &env.root_tenant_id, &username, &password).await;
@@ -330,32 +330,32 @@ async fn email_login_follows_the_home_tenant_switch_not_the_host() {
         }
     };
 
-    // ⚠ 既定に頼らず両方を明示的に切る（テナントは他のテストと共有で、DB は実行をまたぐ）。
+    // ⚠ Do not rely on defaults; turn both off explicitly (the tenant is shared with other tests and the DB spans runs).
     set_switch(env.root_tenant_id.clone(), false).await;
     set_switch(host.clone(), false).await;
     assert_eq!(
         portal_login_result(&env, &host, "203.0.113.61", &email, &password).await,
         "invalid_credentials",
-        "どちらも切っていればメールでは入れない"
+        "with both off, email does not sign in"
     );
 
-    // 参加先（host）だけ入れても変わらない。
+    // Turning on only the joined tenant (host) changes nothing.
     set_switch(host.clone(), true).await;
     let with_host_only = portal_login_result(&env, &host, "203.0.113.62", &email, &password).await;
 
-    // 所属元（root）を入れると入れる。
+    // Turning on the home tenant (root) lets one in.
     set_switch(env.root_tenant_id.clone(), true).await;
     let with_home = portal_login_result(&env, &host, "203.0.113.63", &email, &password).await;
 
-    // 共有テナントなので必ず戻す。
+    // The tenant is shared, so always restore.
     set_switch(env.root_tenant_id.clone(), false).await;
     set_switch(host, false).await;
 
     assert_eq!(
         with_host_only, "invalid_credentials",
-        "参加先のスイッチでは所属元の入り口は開かない"
+        "the joined tenant's switch does not open the home tenant's entrance"
     );
-    assert_eq!(with_home, "success", "所属元のスイッチで開く");
+    assert_eq!(with_home, "success", "the home tenant's switch opens it");
 }
 
 #[tokio::test]
@@ -364,7 +364,7 @@ async fn a_same_named_guest_does_not_lock_out_the_host_tenants_home_user() {
     let root_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
     let host = create_tenant(&env, &root_sso, "GuestClashHost").await;
 
-    // host 側の HOME 利用者（自己登録を一時的に許可して、パスワードの分かる利用者を作る）。
+    // A HOME user of host (temporarily allow self-registration to create a user with a known password).
     sqlx::query("UPDATE tenants SET self_registration_enabled = 1 WHERE id = ?")
         .bind(&host)
         .execute(&env.pool)
@@ -375,7 +375,7 @@ async fn a_same_named_guest_does_not_lock_out_the_host_tenants_home_user() {
     register_user(&env.app, &host, &shared_username, &home_password).await;
     mark_email_verified(&env.pool, &host, &shared_username).await;
 
-    // 同じユーザー名を持つ root 所属の利用者を host のゲストにする。
+    // Make a root-homed user with the same username a guest of host.
     let guest_password = format!("guest-password-{}", unique());
     register_user(
         &env.app,
@@ -391,7 +391,7 @@ async fn a_same_named_guest_does_not_lock_out_the_host_tenants_home_user() {
             .expect("registered guest");
     invite_and_accept(&env, &root_sso, &host, &guest_id).await;
 
-    // host の HOME 利用者は自分のパスワードで入れる。
+    // The HOME user of host can sign in with their own password.
     assert_eq!(
         portal_login_result(
             &env,
@@ -404,8 +404,8 @@ async fn a_same_named_guest_does_not_lock_out_the_host_tenants_home_user() {
         "success",
         "the host tenant's own user must keep signing in"
     );
-    // 同名のゲストは、host では自分のパスワードでは解決されない（所属元優先で HOME が勝つ）。
-    // 所属元テナントからは従来どおり入れる。
+    // The same-named guest is not resolved at host with their own password (home preference: HOME wins).
+    // Signing in from the home tenant works as before.
     assert_eq!(
         portal_login_result(
             &env,
@@ -432,11 +432,11 @@ async fn a_same_named_guest_does_not_lock_out_the_host_tenants_home_user() {
     );
 }
 
-/// 保証 1: RP から参加先テナントの `/authorize` に来たゲストが、そのままログイン画面で認証を
-/// 済ませて認可コードを受け取れる（SSO セッションを所属元テナントで先に作っておく必要がない）。
+/// Guarantee 1: a guest arriving from an RP at the joined tenant's `/authorize` can authenticate right on the login
+/// screen and receive an authorization code (no need to create an SSO session in the home tenant first).
 ///
-/// ここが通らないと、参加先の RP を踏んだゲストは「自分の所属元テナント ID を URL に打ち込んで
-/// 一度ログインしてから戻る」以外に進む道が無い。
+/// Without this, a guest who opened the joined tenant's RP would have no way forward except "type one's home
+/// tenant ID into the URL, sign in once and come back".
 #[tokio::test]
 async fn guest_completes_the_authorization_flow_on_the_host_tenant() {
     let Some(env) = setup().await else { return };
@@ -445,7 +445,7 @@ async fn guest_completes_the_authorization_flow_on_the_host_tenant() {
     let (user_id, username, password) = create_home_user(&env).await;
     invite_and_accept(&env, &root_sso, &host, &user_id).await;
 
-    // 参加先テナントの RP。`openid` のみなので同意ステップは挟まらない。
+    // The joined tenant's RP. Only `openid`, so no consent step.
     let client_id = support::insert_public_client(&env.pool, &host, &["openid"]).await;
     let authorize_uri = format!(
         "/{host}/authorize?response_type=code&client_id={client_id}&redirect_uri={REDIRECT_URI_ENC}\
@@ -488,11 +488,11 @@ async fn guest_completes_the_authorization_flow_on_the_host_tenant() {
     );
 }
 
-/// テナントの状態を管理 API で切り替える（root の system 管理者のみ。MT11）。
+/// Switches the tenant state via the admin API (root system admins only; MT11).
 ///
-/// **SQL で直接書き換えない。** テナント解決は TTL キャッシュ越しで、無効化を反映させるには
-/// 更新時の invalidate が要る。DB だけ書き換えると、キャッシュが生きている間は「無効化したのに
-/// 解決できる」状態をテストが観測してしまい、本番の経路（管理 API → invalidate）を検証できない。
+/// **Do not rewrite it with SQL directly.** Tenant resolution goes through a TTL cache, and reflecting the disable
+/// needs invalidation on update. Rewriting only the DB would let the test observe "disabled but still resolvable"
+/// while the cache lives, and the production path (admin API → invalidate) would not be tested.
 async fn set_tenant_status(env: &TestEnv, root_sso: &str, tenant_id: &str, status: &str) {
     let res = send(
         &env.app,
@@ -510,17 +510,17 @@ async fn set_tenant_status(env: &TestEnv, root_sso: &str, tenant_id: &str, statu
     );
 }
 
-/// 保証 4: 所属元テナントを無効化すると、参加先テナントのログイン画面からも入れなくなる。
+/// Guarantee 4: disabling the home tenant also blocks signing in from the joined tenant's login screen.
 ///
-/// 所属元テナント自身の URL は `TenantResolutionService` が 404 で止めるが、参加先の URL は生きて
-/// いる。ここを見ないと「所属元は止めたのに参加先からは入れる」利用者ができる。復帰も確認する
-/// （無効化は可逆な操作で、`ACTIVE` へ戻せば元どおり入れる）。
+/// The home tenant's own URLs are stopped with 404 by `TenantResolutionService`, but the joined tenant's URLs are
+/// alive. Without checking here, users could "be stopped at home but get in from the joined tenant". Recovery is checked
+/// too (disabling is reversible; returning to `ACTIVE` lets them in again).
 #[tokio::test]
 async fn a_guest_whose_home_tenant_is_disabled_cannot_sign_in_anywhere() {
     let Some(env) = setup().await else { return };
     let root_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
     let host = create_tenant(&env, &root_sso, "DisabledHomeHost").await;
-    // 所属元を root にすると他テストの共有 root を止めてしまうため、専用の所属元テナントを作る。
+    // Using root as home would stop the root shared by other tests, so create a dedicated home tenant.
     let home = create_tenant(&env, &root_sso, "DisabledHomeHome").await;
     sqlx::query("UPDATE tenants SET self_registration_enabled = 1 WHERE id = ?")
         .bind(&home)
@@ -545,15 +545,15 @@ async fn a_guest_whose_home_tenant_is_disabled_cannot_sign_in_anywhere() {
 
     set_tenant_status(&env, &root_sso, &home, "DISABLED").await;
 
-    // パスワード経路（解決クエリの `home.status = 'ACTIVE'`）。
+    // Password path (`home.status = 'ACTIVE'` in the resolution query).
     assert_eq!(
         portal_login_result(&env, &host, "203.0.113.62", &username, &password).await,
         "invalid_credentials",
         "a guest whose home tenant is disabled must not sign in on the host tenant"
     );
-    // 所属元テナント自身のログインも止まる（無効化したテナントの利用者はどこからも入れない）。
-    // 内部 API はテナントプレフィクスを持たず `TenantResolver` を通らないため、`DISABLED` の拒否は
-    // `require_internal_tenant` が担う。資格情報を見る前に 400 で落ちる。
+    // Signing in to the home tenant itself also stops (users of a disabled tenant cannot sign in anywhere).
+    // The internal API has no tenant prefix and does not go through `TenantResolver`, so rejecting `DISABLED` is
+    // done by `require_internal_tenant`. It fails with 400 before credentials are looked at.
     let res = send(
         &env.app,
         post_internal(
@@ -575,9 +575,9 @@ async fn a_guest_whose_home_tenant_is_disabled_cannot_sign_in_anywhere() {
         "a disabled tenant must be rejected by the internal auth API before credentials are checked"
     );
 
-    // 既存の SSO セッション経由（`is_active_member`）も止まる。管理コンソールの入口で確認する。
-    // 管理トークンへの交換が拒まれるか、交換できても権限が 0 件で whoami が通らないかの
-    // いずれか（どちらで止まるかは実装の詳細で、要件は「入れないこと」。ADR-0037）。
+    // Via an existing SSO session (`is_active_member`) it stops too. Checked at the admin console entrance.
+    // Either the exchange for an admin token is refused, or it succeeds with zero permissions and whoami fails
+    // (which one is an implementation detail; the requirement is "cannot get in"; ADR-0037).
     let sso = create_sso_session(&env.pool, &user_id).await;
     let exchanged = send(
         &env.app,
@@ -605,7 +605,7 @@ async fn a_guest_whose_home_tenant_is_disabled_cannot_sign_in_anywhere() {
         "an existing SSO session must not grant access once the home tenant is disabled"
     );
 
-    // 復帰: 所属元を ACTIVE へ戻せば元どおり入れる。
+    // Recovery: returning the home tenant to ACTIVE lets them in again.
     set_tenant_status(&env, &root_sso, &home, "ACTIVE").await;
     assert_eq!(
         portal_login_result(&env, &host, "203.0.113.64", &username, &password).await,
@@ -614,12 +614,12 @@ async fn a_guest_whose_home_tenant_is_disabled_cannot_sign_in_anywhere() {
     );
 }
 
-/// 保証 6: 所属元テナントを無効化すると、参加先テナントで発行済みのリフレッシュトークンも
-/// 次の更新で止まる（MT27）。
+/// Guarantee 6: disabling the home tenant also stops refresh tokens issued in the joined tenant at the next
+/// refresh (MT27).
 ///
-/// **無効化したテナント自身の `/{tenant_id}/token` は `TenantResolver` が 404 で止めるが、その
-/// 利用者がゲストとして参加している他テナントの `/{tenant_id}/token` は生きている。** ここを
-/// 塞がないと、ログインは止まっているのに発行済みトークンだけが寿命（既定 30 日）まで生き残る。
+/// **The disabled tenant's own `/{tenant_id}/token` is stopped with 404 by `TenantResolver`, but the
+/// `/{tenant_id}/token` of other tenants that user joined as a guest is alive.** Without blocking here,
+/// logins would be stopped while issued tokens alone survive until their lifetime (30 days by default).
 #[tokio::test]
 async fn disabling_the_home_tenant_stops_refresh_tokens_issued_by_the_host_tenant() {
     let Some(env) = setup().await else { return };
@@ -641,7 +641,7 @@ async fn disabling_the_home_tenant_stops_refresh_tokens_issued_by_the_host_tenan
         .expect("registered user");
     invite_and_accept(&env, &root_sso, &host, &user_id).await;
 
-    // 参加先テナントの RP から、ゲストがリフレッシュトークンまで取得する。
+    // From the joined tenant's RP, the guest goes as far as obtaining a refresh token.
     let client_id =
         support::insert_public_client(&env.pool, &host, &["openid", "offline_access"]).await;
     let authorize_uri = format!(
@@ -671,7 +671,7 @@ async fn disabling_the_home_tenant_stops_refresh_tokens_issued_by_the_host_tenan
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
-    // `offline_access` は暗黙同意の対象外なので、同意ステップを挟むことがある。
+    // `offline_access` is not covered by implicit consent, so a consent step may come in.
     let callback = if body["result"] == "consent_required" {
         let consent_session = body["auth_session_id"].as_str().expect("auth_session_id");
         let response = send(
@@ -704,7 +704,7 @@ async fn disabling_the_home_tenant_stops_refresh_tokens_issued_by_the_host_tenan
         .expect("refresh_token (offline_access)")
         .to_string();
 
-    // 無効化前は更新できる。
+    // Before disabling, refresh works.
     let response = refresh(&env, &host, &client_id, &refresh_token).await;
     assert_eq!(
         response.status(),
@@ -718,7 +718,7 @@ async fn disabling_the_home_tenant_stops_refresh_tokens_issued_by_the_host_tenan
 
     set_tenant_status(&env, &root_sso, &home, "DISABLED").await;
 
-    // 所属元を止めたら、参加先で発行済みのトークンも更新できない。
+    // Once the home tenant is stopped, tokens issued in the joined tenant cannot be refreshed either.
     let response = refresh(&env, &host, &client_id, &rotated).await;
     assert_eq!(
         response.status(),
@@ -729,7 +729,7 @@ async fn disabling_the_home_tenant_stops_refresh_tokens_issued_by_the_host_tenan
     assert_eq!(body["error"], "invalid_grant", "{body}");
 }
 
-/// `refresh_token` grant を 1 回叩く（public client・PKCE なのでクライアント認証は無い）。
+/// Calls the `refresh_token` grant once (public client with PKCE, so no client authentication).
 async fn refresh(
     env: &TestEnv,
     tenant: &str,
@@ -753,40 +753,40 @@ async fn refresh(
     .await
 }
 
-/// 保証 6（MT25）: 所属元テナントで**曖昧**になった入力は、そこで解決を打ち切る。ゲスト解決へ
-/// 落として「同じ値を持つゲスト」を認証してはいけない。
+/// Guarantee 6 (MT25): input that is **ambiguous** in the home tenant stops resolution there. It must not fall
+/// through to guest resolution and authenticate "a guest holding the same value".
 ///
-/// # この状態への到達経路
+/// # How this state is reached
 ///
-/// 種別ごとに正規化が違うため、1 つの入力が**複数の正規化値**へ広がる。`090-123-4567` は
-/// ユーザー名としては `090-123-4567`、電話番号としては区切りを落とした `0901234567` である。
-/// この 2 つは別の文字列なので、値の一意制約（migration 0041。テナント内で 1 正規化値 1 人）を
-/// すり抜けて別人が持てる。
+/// Normalization differs per kind, so one input spreads into **several normalized values**. `090-123-4567` is
+/// `090-123-4567` as a username and `0901234567` with separators dropped as a phone number.
+/// These are different strings, so different people can hold them, slipping past the value unique constraint
+/// (migration 0041; one normalized value per person within a tenant).
 ///
-/// 追加時の空き判定は「実際のログイン経路と同じ引き方」で他人に当たる値を拒むが、**無効な行には
-/// 当たらない**（無効化した識別子は解決しない）。そこで次の順で、1 つの入力が 2 人に当たる状態を作れる:
+/// The availability check on add rejects values that hit others "the same way the real login path looks them up",
+/// but **does not hit inactive rows** (disabled identifiers do not resolve). So in this order one input can hit two people:
 ///
-/// 1. A に電話番号 `0901234567` を**無効な状態で**割り当てる（無効化した既存の識別子と同じ状態）。
-/// 2. B がユーザー名 `090-123-4567` を取る。A の行は無効なので空き判定に当たらず、正規化値も
-///    違うので一意制約にも当たらない。
-/// 3. A の電話番号を有効に戻す。ここで `090-123-4567` は A（電話番号）と B（ユーザー名）の
-///    両方に当たる。
+/// 1. Assign phone number `0901234567` to A **in an inactive state** (the same state as a disabled existing identifier).
+/// 2. B takes username `090-123-4567`. A's row is inactive, so the availability check misses it, and the normalized
+///    value differs, so the unique constraint misses it too.
+/// 3. Re-enable A's phone number. Now `090-123-4567` hits both A (phone number) and B (username).
 ///
-/// この状態で host のログイン欄に `090-123-4567` を入れると、修正前は「所属元で曖昧」が
-/// 「所属元に不在」へ潰れてゲスト解決まで落ち、同じ値をユーザー名に持つゲストが**自分の
-/// パスワードで入れて**いた。なりすましではないが、「曖昧なら通さない」「所属元がテナント内の
-/// 名前の取り合いに勝つ」という 2 つの決めごとが同時に破れていた。
+///
+/// Entering `090-123-4567` in host's login field in this state used to collapse "ambiguous at home" into
+/// "absent at home" and fall through to guest resolution, letting a guest who holds the same value as a username
+/// **sign in with their own password**. Not impersonation, but two rules — "ambiguous does not pass" and "the home
+/// tenant wins name contention within the tenant" — were broken at once.
 #[tokio::test]
 async fn an_ambiguous_home_identifier_does_not_let_a_guest_sign_in() {
     let Some(env) = setup().await else { return };
     let root_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
     let host = create_tenant(&env, &root_sso, "AmbiguousIdentifierHost").await;
 
-    // 同じ入力が 2 通りに正規化される値を選ぶ（電話番号は区切りを落とし、ユーザー名は落とさない）。
+    // Pick a value the same input normalizes two ways (phone numbers drop separators, usernames do not).
     let digits = format!("0{:09}", uuid::Uuid::new_v4().as_u128() % 1_000_000_000);
     let dashed = format!("{}-{}-{}", &digits[0..3], &digits[3..6], &digits[6..10]);
 
-    // host に HOME 利用者を 2 人（自己登録を一時的に許可してパスワードの分かる利用者を作る）。
+    // Two HOME users in host (temporarily allow self-registration to create users with known passwords).
     sqlx::query("UPDATE tenants SET self_registration_enabled = 1 WHERE id = ?")
         .bind(&host)
         .execute(&env.pool)
@@ -807,7 +807,7 @@ async fn an_ambiguous_home_identifier_does_not_let_a_guest_sign_in() {
         .await
         .expect("registered bob");
 
-    // 1. A の電話番号（無効）。
+    // 1. A's phone number (inactive).
     let res = send(
         &env.app,
         post(
@@ -817,13 +817,13 @@ async fn an_ambiguous_home_identifier_does_not_let_a_guest_sign_in() {
         ),
     )
     .await;
-    assert_eq!(res.status(), StatusCode::CREATED, "alice の電話番号");
+    assert_eq!(res.status(), StatusCode::CREATED, "alice's phone number");
     let alice_identifier = body_json(res).await["id"]
         .as_str()
         .expect("identifier id")
         .to_string();
 
-    // 2. B のユーザー名（区切り付き）。A の行は無効なので空き判定に当たらない。
+    // 2. B's username (with separators). A's row is inactive, so the availability check misses it.
     let res = send(
         &env.app,
         post(
@@ -836,10 +836,10 @@ async fn an_ambiguous_home_identifier_does_not_let_a_guest_sign_in() {
     assert_eq!(
         res.status(),
         StatusCode::CREATED,
-        "無効な行には空き判定が当たらない（この前提が崩れたら経路ごと再検討する）"
+        "the availability check does not hit inactive rows (if this premise breaks, revisit the whole path)"
     );
 
-    // 3. A の電話番号を有効へ戻す。ここから `dashed` は 2 人に当たる。
+    // 3. Re-enable A's phone number. From here `dashed` hits two people.
     let res = send(
         &env.app,
         patch(
@@ -849,9 +849,9 @@ async fn an_ambiguous_home_identifier_does_not_let_a_guest_sign_in() {
         ),
     )
     .await;
-    assert_eq!(res.status(), StatusCode::OK, "alice の電話番号を有効化");
+    assert_eq!(res.status(), StatusCode::OK, "enable alice's phone number");
 
-    // 同じ値をユーザー名に持つ root 所属の利用者を host のゲストにする。
+    // Make a root-homed user holding the same value as a username a guest of host.
     let guest_password = format!("guest-password-{}", unique());
     register_user(&env.app, &env.root_tenant_id, &dashed, &guest_password).await;
     mark_email_verified(&env.pool, &env.root_tenant_id, &dashed).await;
@@ -860,30 +860,30 @@ async fn an_ambiguous_home_identifier_does_not_let_a_guest_sign_in() {
         .expect("registered guest");
     invite_and_accept(&env, &root_sso, &host, &guest_id).await;
 
-    // ── 本体: 曖昧な入力ではゲストも解決されない。
+    // ── Main check: ambiguous input does not resolve guests either.
     assert_eq!(
         portal_login_result(&env, &host, "203.0.113.61", &dashed, &guest_password).await,
         "invalid_credentials",
-        "曖昧な入力がゲスト解決へ落ちてはいけない"
+        "ambiguous input must not fall through to guest resolution"
     );
-    // 曖昧の当事者である HOME 利用者も、その値では入れない（「曖昧なら通さない」の一貫性）。
+    // The HOME users party to the ambiguity cannot sign in with that value either (consistency of "ambiguous does not pass").
     assert_eq!(
         portal_login_result(&env, &host, "203.0.113.62", &dashed, &bob_password).await,
         "invalid_credentials",
-        "曖昧な入力は誰にも解決しない"
+        "ambiguous input resolves to nobody"
     );
-    // 拒否されるのは曖昧な入力だけで、当人たちの一意な識別子は影響を受けない。
+    // Only the ambiguous input is refused; the people's own unique identifiers are unaffected.
     assert_eq!(
         portal_login_result(&env, &host, "203.0.113.63", &alice, &alice_password).await,
         "success",
-        "自分の一意なユーザー名では従来どおり入れる"
+        "signing in with one's own unique username works as before"
     );
     assert_eq!(
         portal_login_result(&env, &host, "203.0.113.64", &bob, &bob_password).await,
         "success",
-        "自分の一意なユーザー名では従来どおり入れる"
+        "signing in with one's own unique username works as before"
     );
-    // ゲストは所属元テナントでは値が一意なので、そちらからは入れる。
+    // The guest's value is unique in the home tenant, so signing in from there works.
     assert_eq!(
         portal_login_result(
             &env,
@@ -894,11 +894,11 @@ async fn an_ambiguous_home_identifier_does_not_let_a_guest_sign_in() {
         )
         .await,
         "success",
-        "所属元では一意なので解決する"
+        "unique in the home tenant, so it resolves"
     );
 
-    // ── 監査には「不在」ではなく「曖昧」として残る。管理者の是正が要る状態なので、
-    //    正しい資格情報を出しても入れない理由が読めなければならない。
+    // ── The audit log records it as "ambiguous", not "absent". It needs admin correction, so
+    //    the reason one cannot get in with correct credentials must be readable.
     let reasons: Vec<String> = sqlx::query_scalar(
         "SELECT reason FROM audit_log \
          WHERE event_type = 'login.failed' AND tenant_id = ? AND result = 'failure' \
@@ -910,11 +910,11 @@ async fn an_ambiguous_home_identifier_does_not_let_a_guest_sign_in() {
     .expect("audit rows");
     assert!(
         reasons.iter().any(|r| r == "ambiguous_identifier"),
-        "曖昧は unknown_user と区別して監査に残る: {reasons:?}"
+        "ambiguous is recorded in the audit log distinctly from unknown_user: {reasons:?}"
     );
 }
 
-/// テナントへドメインを割り当てる（ADR-0029。`idp.system.admin` が必要なので root の管理トークンで呼ぶ）。
+/// Assigns a domain to a tenant (ADR-0029; needs `idp.system.admin`, so called with root's admin token).
 async fn assign_domain(env: &TestEnv, root_sso: &str, tenant_id: &str, domain: &str) {
     let res = send(
         &env.app,
@@ -928,8 +928,8 @@ async fn assign_domain(env: &TestEnv, root_sso: &str, tenant_id: &str, domain: &
     assert_eq!(res.status(), StatusCode::CREATED, "assign {domain}");
 }
 
-/// テナントを 1 つ作り、自己登録を有効にして、パスワードの分かる利用者を 1 人置く。
-/// 返すのは `(tenant_id, user_id)`。
+/// Creates a tenant, enables self-registration and puts one user with a known password in it.
+/// Returns `(tenant_id, user_id)`.
 async fn tenant_with_user(
     env: &TestEnv,
     root_sso: &str,
@@ -951,23 +951,23 @@ async fn tenant_with_user(
     (tenant, user_id)
 }
 
-/// 保証 7（MT25 / ADR-0029）: 同じユーザー名のゲストが 2 人参加すると、その名前では双方が
-/// 締め出される。**所属元テナントにドメインを割り当てると、ドメイン修飾した入力で入れる。**
+/// Guarantee 7 (MT25 / ADR-0029): when two guests with the same username join, both are locked out under that
+/// name. **Assigning a domain to the home tenant lets them in with domain-qualified input.**
 ///
-/// 締め出しは、識別子の一意性が 1 テナントの中でしか担保されていないのに、参加先の画面が
-/// 解決する範囲は所属元をまたぐことから来る。ドメインは 1 つのテナントへ排他的に割り当てられる
-/// ので、`local@domain` の形の入力からは所属元テナントが 1 つに決まり、引くのはそのテナントの
-/// 登録簿だけで済む（横断走査を通らない ＝ 曖昧さが原理的に起きない）。
+/// The lockout comes from identifier uniqueness being guaranteed only within one tenant, while the joined tenant's
+/// screen resolves across home tenants. A domain is assigned exclusively to one tenant, so input of the form
+/// `local@domain` determines exactly one home tenant, and only that tenant's registry needs to be looked up
+/// (no cross-tenant scan = ambiguity cannot arise in principle).
 ///
-/// **加算であって置き換えではない**ことも確かめる —— 裸のユーザー名は従来どおり走査へ落ち、
-/// 曖昧なら拒まれる。ドメインを持たない利用者の使い勝手は変わらない。
+/// Also checks that it is **additive, not a replacement** — bare usernames still fall through to the scan and are
+/// rejected if ambiguous. Usability for users without a domain is unchanged.
 #[tokio::test]
 async fn a_tenant_domain_lets_a_guest_sign_in_where_the_bare_name_is_ambiguous() {
     let Some(env) = setup().await else { return };
     let root_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
     let host = create_tenant(&env, &root_sso, "DomainHost").await;
 
-    // 同じユーザー名を持つ利用者を、別々の所属元テナントに 1 人ずつ。
+    // One user with the same username in each of two different home tenants.
     let shared_username = format!("dup{}", unique());
     let password_a = format!("a-password-{}", unique());
     let password_b = format!("b-password-{}", unique());
@@ -990,18 +990,18 @@ async fn a_tenant_domain_lets_a_guest_sign_in_where_the_bare_name_is_ambiguous()
     invite_and_accept(&env, &root_sso, &host, &user_a).await;
     invite_and_accept(&env, &root_sso, &host, &user_b).await;
 
-    // ── 裸のユーザー名では双方とも入れない（走査が 2 人に当たり、fail-closed で拒む）。
+    // ── Neither can sign in with the bare username (the scan hits two people and fail-closed rejects).
     assert_eq!(
         portal_login_result(&env, &host, "203.0.113.71", &shared_username, &password_a).await,
         "invalid_credentials",
-        "同名のゲストが 2 人参加すると、その名前では解決できない"
+        "when two same-named guests join, that name cannot be resolved"
     );
     assert_eq!(
         portal_login_result(&env, &host, "203.0.113.72", &shared_username, &password_b).await,
         "invalid_credentials",
-        "締め出しは双方に効く"
+        "the lockout applies to both"
     );
-    // 所属元テナントの画面からは従来どおり入れる（締め出されるのは参加先の画面だけ）。
+    // Signing in from the home tenant's screen works as before (only the joined tenant's screen locks them out).
     assert_eq!(
         portal_login_result(
             &env,
@@ -1012,33 +1012,33 @@ async fn a_tenant_domain_lets_a_guest_sign_in_where_the_bare_name_is_ambiguous()
         )
         .await,
         "success",
-        "所属元では一意なので解決する"
+        "unique in the home tenant, so it resolves"
     );
 
-    // ── A にドメインを割り当てると、A の利用者はドメイン修飾で参加先へ入れる。
+    // ── Assigning a domain to A lets A's user into the joined tenant with domain qualification.
     let domain = format!("a{}.example", unique());
     assign_domain(&env, &root_sso, &tenant_a, &domain).await;
     let qualified = format!("{shared_username}@{domain}");
     assert_eq!(
         portal_login_result(&env, &host, "203.0.113.74", &qualified, &password_a).await,
         "success",
-        "ドメインで所属元が決まれば、走査を通らずに解決される"
+        "once the domain determines the home tenant, it resolves without the scan"
     );
 
-    // ── ドメインは所属元を名指しするので、同名でも B の利用者はこの綴りでは解決されない。
+    // ── The domain names the home tenant, so B's same-named user does not resolve with this spelling.
     assert_eq!(
         portal_login_result(&env, &host, "203.0.113.75", &qualified, &password_b).await,
         "invalid_credentials",
-        "ドメインは所属元テナントを 1 つに決める"
+        "the domain determines exactly one home tenant"
     );
 
-    // ── 加算であって置き換えではない: 裸のユーザー名の扱いは変わらない。
+    // ── Additive, not a replacement: bare usernames are treated the same as before.
     assert_eq!(
         portal_login_result(&env, &host, "203.0.113.76", &shared_username, &password_a).await,
         "invalid_credentials",
-        "裸の入力は従来どおり走査へ落ち、曖昧なら拒まれる"
+        "bare input falls through to the scan as before and is rejected if ambiguous"
     );
-    // 割り当てられていないドメインも同じく走査へ落ちる（B の利用者は入れないまま）。
+    // Unassigned domains also fall through to the scan (B's user still cannot get in).
     assert_eq!(
         portal_login_result(
             &env,
@@ -1049,11 +1049,11 @@ async fn a_tenant_domain_lets_a_guest_sign_in_where_the_bare_name_is_ambiguous()
         )
         .await,
         "invalid_credentials",
-        "未割り当てのドメインは経路に掛からない"
+        "unassigned domains do not take that path"
     );
 }
 
-/// 保証 8（ADR-0029）: ドメインの一意性は**グローバル**で、root の system 管理者だけが割り当てる。
+/// Guarantee 8 (ADR-0029): domain uniqueness is **global**, and only root's system admins assign them.
 #[tokio::test]
 async fn a_domain_belongs_to_exactly_one_tenant() {
     let Some(env) = setup().await else { return };
@@ -1062,13 +1062,13 @@ async fn a_domain_belongs_to_exactly_one_tenant() {
     let second = create_tenant(&env, &root_sso, "DomainRival").await;
     let domain = format!("owned{}.example", unique());
     let uri = |t: &str| format!("/{}/admin/tenants/{t}/domains", env.root_tenant_id);
-    // ドメイン割り当ては root テナントのパスで行う（`idp.system.admin` は root scope のみ）。
-    // 対象テナントはパスの後段に入るだけなので、管理トークンは root のもの 1 本で足りる。
+    // Domain assignment is done on the root tenant's path (`idp.system.admin` exists only in root scope).
+    // The target tenant just goes later in the path, so a single root admin token suffices.
     let root_tok = tok(&env, &root_sso, &env.root_tenant_id).await;
 
     assign_domain(&env, &root_sso, &first, &domain).await;
 
-    // 別のテナントは同じドメインを取れない（一意キーにテナントを含めない）。
+    // Another tenant cannot take the same domain (the unique key does not include the tenant).
     let res = send(
         &env.app,
         post(&root_tok, &uri(&second), json!({ "domain": &domain })),
@@ -1077,9 +1077,9 @@ async fn a_domain_belongs_to_exactly_one_tenant() {
     assert_eq!(
         res.status(),
         StatusCode::CONFLICT,
-        "ドメインは 1 テナントだけのもの"
+        "a domain belongs to only one tenant"
     );
-    // 同じテナントでの重複も同じく 409。
+    // A duplicate within the same tenant is also 409.
     let res = send(
         &env.app,
         post(&root_tok, &uri(&first), json!({ "domain": &domain })),
@@ -1087,7 +1087,7 @@ async fn a_domain_belongs_to_exactly_one_tenant() {
     .await;
     assert_eq!(res.status(), StatusCode::CONFLICT);
 
-    // 大小・末尾ドットは正規化されるので、同じドメインの別綴りも取れない。
+    // Case and trailing dots are normalized, so other spellings of the same domain cannot be taken either.
     let res = send(
         &env.app,
         post(
@@ -1097,9 +1097,13 @@ async fn a_domain_belongs_to_exactly_one_tenant() {
         ),
     )
     .await;
-    assert_eq!(res.status(), StatusCode::CONFLICT, "正規化してから照合する");
+    assert_eq!(
+        res.status(),
+        StatusCode::CONFLICT,
+        "normalized before matching"
+    );
 
-    // ドメインとして読めない値は 400（登録できると、掛からない割り当てが静かに残る）。
+    // Values that cannot be read as a domain are 400 (if registrable, an assignment that never applies would silently remain).
     for bad in ["", "-bad.example", "日本語.example"] {
         let res = send(
             &env.app,
@@ -1109,7 +1113,7 @@ async fn a_domain_belongs_to_exactly_one_tenant() {
         assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{bad:?}");
     }
 
-    // 権限のない利用者は割り当てられない（idp.system.admin は root にしか存在しない）。
+    // Users without permission cannot assign (idp.system.admin exists only in root).
     let outsider = support::create_plain_user(&env.pool, &env.root_tenant_id).await;
     let outsider_sso = create_sso_session(&env.pool, &outsider).await;
     let res = send(
@@ -1123,7 +1127,7 @@ async fn a_domain_belongs_to_exactly_one_tenant() {
     .await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
 
-    // 一覧 → 解除 → 解除後は別テナントが取れる。
+    // List → remove → after removal another tenant can take it.
     let res = send(&env.app, get(&root_tok, &uri(&first))).await;
     assert_eq!(res.status(), StatusCode::OK);
     let listed = body_json(res).await;
@@ -1138,7 +1142,7 @@ async fn a_domain_belongs_to_exactly_one_tenant() {
     )
     .await;
     assert_eq!(res.status(), StatusCode::NO_CONTENT);
-    // 他テナントの id 指定では消せない（先に消えているので 404）。
+    // Cannot delete by specifying another tenant's id (it is already gone, so 404).
     let res = send(
         &env.app,
         support::delete(&root_tok, &format!("{}/{domain_id}", uri(&second))),
@@ -1149,11 +1153,11 @@ async fn a_domain_belongs_to_exactly_one_tenant() {
     assign_domain(&env, &root_sso, &second, &domain).await;
 }
 
-/// 保証 9（ADR-0029）: ドメインを割り当てたテナントでは、`ローカル部@そのドメイン` は
-/// 「ローカル部の利用者」を指す綴りでもある。**その綴りを他人の識別子として登録させない。**
+/// Guarantee 9 (ADR-0029): in a tenant with an assigned domain, `localpart@thatdomain` is also a spelling
+/// pointing at "the user named localpart". **That spelling must not be registered as someone else's identifier.**
 ///
-/// 登録できてしまうと、参加先テナントの画面ではその綴りが唯一の入り口になり得る当人が、
-/// 突然そこから入れなくなる（横取り）。空き判定はログインの解決と同じ範囲を見る必要がある。
+/// If it could be, the owner, for whom that spelling may be the only entrance on joined tenants' screens,
+/// would suddenly be unable to get in (hijacking). The availability check must look at the same scope as login resolution.
 #[tokio::test]
 async fn a_upn_spelling_cannot_be_taken_from_its_owner() {
     let Some(env) = setup().await else { return };
@@ -1165,7 +1169,7 @@ async fn a_upn_spelling_cannot_be_taken_from_its_owner() {
         tenant_with_user(&env, &root_sso, "UpnHome", &owner_name, &password).await;
     assign_domain(&env, &root_sso, &tenant, &domain).await;
 
-    // 同じテナントの別人。
+    // Another person in the same tenant.
     let other_name = format!("other{}", unique());
     register_user(&env.app, &tenant, &other_name, &password).await;
     mark_email_verified(&env.pool, &tenant, &other_name).await;
@@ -1173,7 +1177,7 @@ async fn a_upn_spelling_cannot_be_taken_from_its_owner() {
         .await
         .expect("registered other");
 
-    // `owner@そのドメイン` を別人の識別子にしようとすると 409。
+    // Trying to make `owner@thatdomain` another person's identifier gives 409.
     let res = send(
         &env.app,
         post(
@@ -1189,10 +1193,10 @@ async fn a_upn_spelling_cannot_be_taken_from_its_owner() {
     assert_eq!(
         res.status(),
         StatusCode::CONFLICT,
-        "UPN 綴りは所有者のもの。他人へ足させない"
+        "the UPN spelling belongs to its owner; do not add it to someone else"
     );
 
-    // 割り当てていないドメインなら従来どおり登録できる（判定はこのテナントのドメインに限る）。
+    // For an unassigned domain registration works as before (the check is limited to this tenant's domains).
     let res = send(
         &env.app,
         post(
@@ -1208,10 +1212,10 @@ async fn a_upn_spelling_cannot_be_taken_from_its_owner() {
     assert_eq!(
         res.status(),
         StatusCode::CREATED,
-        "他所のドメインは UPN 解釈の対象外"
+        "other domains are not subject to UPN interpretation"
     );
 
-    // 所有者は自分の UPN 綴りで従来どおり入れる。
+    // The owner can sign in with their own UPN spelling as before.
     assert_eq!(
         portal_login_result(
             &env,
@@ -1222,6 +1226,6 @@ async fn a_upn_spelling_cannot_be_taken_from_its_owner() {
         )
         .await,
         "success",
-        "所有者は UPN 綴りで入れる"
+        "the owner can sign in with the UPN spelling"
     );
 }

@@ -1,14 +1,14 @@
-//! 管理者による利用者作成ユースケース（ADR-0009 §5・§6）。
+//! Use case for admins creating users (ADR-0009 §5, §6).
 //!
-//! テナント管理者（`idp.tenant.admin`）が、所属元が当該テナントの利用者を作成する
-//! （`POST /{tenant_id}/admin/users`）。セルフ登録（[`crate::application::register`]）と異なり、
-//! **パスワードを自動生成**し（32 文字以上のランダム文字列）、`must_change_password = true` を付与する。
-//! 生成パスワードは**この一度だけ**平文でレスポンスに返し（管理者が本人へ別途通知する）、ログ・監査には
-//! 出さない（設定リンク・招待トークンと同じパターン。ADR-0009 §5・ADR-0062）。
+//! A tenant admin (`idp.tenant.admin`) creates a user whose home tenant is that tenant
+//! (`POST /{tenant_id}/admin/users`). Unlike self-registration ([`crate::application::register`]),
+//! it **auto-generates the password** (a random string of 32+ chars) and sets `must_change_password = true`.
+//! The generated password is returned in plaintext in the response **only this once** (the admin notifies the user separately), and is not
+//! output to logs or audits (same pattern as setup links and invitation tokens. ADR-0009 §5, ADR-0062).
 //!
-//! テナント作成フロー（[`crate::application::tenant_management`]）が生成する初期管理者ユーザーも
-//! 本サービスを通す（作成ロジックの単一の出所）。判定・検証は本 Application 層で完結し、Presentation
-//! には結果のみ返す（`CLAUDE.md`「権限管理」）。
+//! The initial admin user created by the tenant creation flow ([`crate::application::tenant_management`]) also
+//! goes through this service (the single source of the creation logic). Decisions and validation are completed in this Application layer,
+//! and only the result is returned to Presentation (`CLAUDE.md` "Permissions").
 
 use crate::application::account_setup::{AccountSetupLinkIssuer, SetupLink};
 use crate::application::audit::{AuditService, RequestContext};
@@ -35,8 +35,8 @@ use crate::domain::values::{
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// 自動生成パスワードのバイト長。base64url（パディング無し）で 43 文字となり、ADR-0009 §5 の
-/// 「32 文字以上」を満たす。
+/// Byte length of the auto-generated password. It is 43 chars in base64url (no padding), meeting ADR-0009 §5's
+/// "32 chars or more".
 const GENERATED_PASSWORD_BYTES: usize = 32;
 
 #[derive(Debug, Clone)]
@@ -44,25 +44,25 @@ pub struct CreateUserCommand {
     pub email: String,
     pub preferred_username: Option<String>,
     pub name: Option<String>,
-    /// 管理者メモ（任意。ADR-0063）。作った利用者の HOME メンバーシップに付く。
+    /// Admin note (optional. ADR-0063). Attached to the created user's HOME membership.
     pub note: Option<String>,
 }
 
-/// 作成結果。`generated_password` は**この一度だけ**平文で返す（保存はハッシュのみ、ログ・監査には出さない）。
+/// Creation result. `generated_password` is returned in plaintext **only this once** (only the hash is stored; not output to logs or audits).
 pub struct CreatedUser {
     pub user_id: Uuid,
     pub sub: Uuid,
-    /// 本人へ渡す**アカウント設定リンク**（ADR-0062）。この一度だけ返す。
+    /// The **account setup link** handed to the user (ADR-0062). Returned only this once.
     ///
-    /// ⚠ **生成パスワードは返さない。** 作った利用者のハッシュは誰も知らない値で埋めてあり、
-    /// 本人はこのリンクでパスキーかパスワードを決めて初めて入れる。管理者が本人の資格情報を
-    /// 一度でも手にする形をやめるための変更である。
+    /// ⚠ **The generated password is not returned.** The created user's hash is filled with a value nobody knows,
+    /// and the user can get in only after choosing a passkey or password via this link. This change ends any form
+    /// in which the admin ever holds the user's credentials.
     pub setup_link: SetupLink,
 }
 
-/// 構築済み（未永続化）の利用者。検証・自動生成パスワードのハッシュ化まで済んでおり、永続化だけが
-/// 残っている状態。テナント開通（REF2）が、テナント行と同一トランザクションで管理者を永続化する
-/// ために使う。`generated_password` の扱いは [`CreatedUser`] と同じ（一度だけ平文、ログに出さない）。
+/// A built (not yet persisted) user. Validation and hashing of the auto-generated password are done, and only persistence
+/// remains. Used by tenant provisioning (REF2) to persist the admin in the same transaction as the tenant row.
+/// `generated_password` is handled the same as in [`CreatedUser`] (plaintext only once, never logged).
 pub struct PreparedUser {
     pub user: User,
     pub generated_password: String,
@@ -82,10 +82,10 @@ pub struct UserManagementService {
     users: Arc<dyn UserRepository>,
     memberships: Arc<dyn TenantMembershipRepository>,
     hasher: Arc<dyn PasswordHasher>,
-    /// 作った直後に本人へ渡すリンクを出す（ADR-0062）。作成とリンクの発行は 1 つの操作なので、
-    /// 画面やハンドラで 2 回呼ぶ形にしない（片方だけ成功した利用者を作らないため）。
+    /// Issues the link handed to the user right after creation (ADR-0062). Creation and link issuance are one operation, so
+    /// screens and handlers must not call them as two steps (so as not to create a user where only one succeeded).
     account_setup: Arc<AccountSetupLinkIssuer>,
-    /// 作成と同時に書く管理者メモ（ADR-0063）。
+    /// The admin note written together with creation (ADR-0063).
     notes: Arc<dyn AccountNoteRepository>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
@@ -116,9 +116,9 @@ impl UserManagementService {
         }
     }
 
-    /// 所属元が `tenant` の利用者を**構築だけ**する（永続化しない）。入力検証・一意性の事前チェック・
-    /// パスワード自動生成とハッシュ化まで行う。永続化とセットで使う（`create_user`、またはテナント
-    /// 開通トランザクション）。
+    /// **Only builds** (does not persist) a user whose home tenant is `tenant`. Performs input validation, uniqueness pre-checks,
+    /// password auto-generation and hashing. Used together with persistence (`create_user`, or the tenant
+    /// provisioning transaction).
     pub async fn prepare_user(
         &self,
         tenant: TenantContext,
@@ -126,19 +126,19 @@ impl UserManagementService {
     ) -> Result<PreparedUser, UserManagementError> {
         let email = cmd.email.trim().to_string();
         validate_email(&email)?;
-        // ログイン識別子は preferred_username。未指定なら email を既定値として採用する（ADR-0009 §8）。
+        // The sign-in identifier is preferred_username. If omitted, email is used as the default (ADR-0009 §8).
         let preferred_username =
             normalize_optional(cmd.preferred_username).unwrap_or_else(|| email.clone());
-        // カラム長（VARCHAR(255)）超過を永続化前に弾く（email は VARCHAR(320) のため既定値化で超え得る）。
+        // Reject column-length (VARCHAR(255)) overflow before persisting (email is VARCHAR(320), so defaulting can exceed it).
         domain_validate_preferred_username(&preferred_username)
             .map_err(UserManagementError::Validation)?;
         let name = normalize_optional(cmd.name);
         let tenant_id = tenant.tenant_id();
 
-        // 一意性の事前チェック（利用者向けの分かりやすいエラー）。最終的な一意性は DB の
-        // `(tenant_id, email)` / `(tenant_id, preferred_username)` UNIQUE 制約と、ログイン識別子の
-        // 登録簿の一意制約（AP8）が保証する。識別子側は**解決経路と同じ引き方**で見る
-        // （`users` だけを見ると、別名として登録済みの値を素通しにしてしまう）。
+        // Pre-check uniqueness (for an error users can understand). Final uniqueness is guaranteed by the DB's
+        // `(tenant_id, email)` / `(tenant_id, preferred_username)` UNIQUE constraints and the sign-in identifier
+        // registry's unique constraint (AP8). Identifiers are looked up **the same way as the resolution path**
+        // (looking only at `users` would let values already registered as aliases slip through).
         if self
             .users
             .find_by_email(tenant_id, &email)
@@ -170,9 +170,9 @@ impl UserManagementService {
             tenant_id,
             sub: self.ids.new_id(),
             email,
-            // 管理者が作成するユーザーは管理者がメール所有を保証する扱いとし、検証済みで作る（SEC6b）。
-            // これにより自己登録（未検証）のみがログイン時のメール検証ゲートに掛かる。テナント作成時の
-            // 初期管理者（本サービス経由）もログイン可能なまま。
+            // Users created by an admin are treated as the admin guaranteeing email ownership, so they are created verified (SEC6b).
+            // This way only self-registered (unverified) users hit the email verification gate at sign-in. The initial admin
+            // created at tenant creation (via this service) also stays able to sign in.
             email_verified: true,
             preferred_username: Some(preferred_username),
             name,
@@ -182,7 +182,7 @@ impl UserManagementService {
             must_change_password: true,
             password_changed_at: Some(now),
             status: UserStatus::Active,
-            // 仮登録（ADR-0064）。本人が設定リンクで資格情報を決めるまで、どこからも入れない。
+            // Provisional registration (ADR-0064). Cannot get in from anywhere until the user sets credentials via the setup link.
             pending_setup: true,
             failed_login_count: 0,
             locked_until: None,
@@ -196,8 +196,8 @@ impl UserManagementService {
         })
     }
 
-    /// 所属元が `tenant` の利用者を、自動生成パスワード付きで作成する。HOME メンバーシップを同時に
-    /// 生成し、`must_change_password = true` を付与する。生成パスワードを一度だけ返す。
+    /// Creates a user whose home tenant is `tenant`, with an auto-generated password. Creates the HOME membership at the same
+    /// time and sets `must_change_password = true`. Returns the generated password only once.
     pub async fn create_user(
         &self,
         tenant: TenantContext,
@@ -206,23 +206,23 @@ impl UserManagementService {
         ctx: &RequestContext,
     ) -> Result<CreatedUser, UserManagementError> {
         let tenant_id = tenant.tenant_id();
-        // ⚠ メモは**何も書く前に**確かめる。利用者を作ったあとで長すぎると分かっても、作成は
-        //   取り消せない（「作れたのにエラー」になる）。
+        // ⚠ Check the note **before writing anything**. Finding out it is too long after creating the user cannot
+        //   undo the creation (it would be "created but errored").
         let note = normalize_account_note(cmd.note.as_deref().unwrap_or(""))
             .map_err(UserManagementError::Validation)?;
         let prepared = self.prepare_user(tenant, cmd).await?;
         let user = prepared.user;
 
         self.users.create(&user).await.map_err(|e| match e {
-            // DB の一意制約違反は (tenant_id, email) / (tenant_id, preferred_username) のいずれか。
-            // 事前チェックとの競合（同時登録）でのみ到達するため、どちらかを特定せず一括で伝える。
+            // A DB unique constraint violation is either (tenant_id, email) or (tenant_id, preferred_username).
+            // It is reached only in a race with the pre-check (concurrent registration), so it is reported as one without identifying which.
             DomainError::Conflict(_) => {
                 UserManagementError::Conflict(MessageKey::new("api-user-identity-conflict"))
             }
             other => UserManagementError::Internal(other.to_string()),
         })?;
 
-        // HOME メンバーシップ（所属元の単一の出所は users.tenant_id。この行はフロー判定用の投影。§3）。
+        // HOME membership (the single source of the home tenant is users.tenant_id. This row is a projection for flow decisions. §3).
         self.memberships
             .create(&TenantMembership::new_home(
                 tenant_id,
@@ -232,7 +232,7 @@ impl UserManagementService {
             .await
             .map_err(internal)?;
 
-        // 監査には内部 ID のみ記録する（生成パスワードは出さない。§5）。
+        // Only the internal ID is recorded in the audit (the generated password is not output. §5).
         self.audit
             .record(
                 AuditEventType::UserCreated,
@@ -245,8 +245,8 @@ impl UserManagementService {
             )
             .await;
 
-        // 管理者メモ（ADR-0063）。メンバーの画面から書くのと同じ行・同じ監査の形にする
-        // （中身は監査に残さない）。
+        // Admin note (ADR-0063). Same row and same audit shape as writing it from the member screen
+        // (the content is not kept in the audit).
         if let Some(text) = note.as_deref() {
             self.notes
                 .save(
@@ -271,8 +271,8 @@ impl UserManagementService {
                 .await;
         }
 
-        // 本人へ渡すリンクを出す。⚠ **ここで失敗したら作成ごと失敗させる** —— リンクの無い
-        // 利用者は、誰も知らないパスワードだけを持つ「入れないアカウント」になる。
+        // Issue the link handed to the user. ⚠ **If this fails, fail the whole creation**: a user without
+        // a link becomes an "account nobody can get into" holding only a password nobody knows.
         let setup_link = self
             .account_setup
             .issue(tenant_id, user.id)
@@ -361,8 +361,8 @@ mod tests {
     }
     #[async_trait]
     impl UserRepository for FakeUsers {
-        /// 本番の sqlx 実装は 1 文の UPDATE で加算する（SEC13）。フェイクは単一スレッドの
-        /// テストでしか動かないので、同じ結果になる素朴な加算で足りる。
+        /// The production sqlx implementation increments in a single UPDATE (SEC13). The fake only runs in
+        /// single-threaded tests, so a naive increment with the same result suffices.
         async fn record_login_failure(
             &self,
             id: Uuid,
@@ -503,7 +503,7 @@ mod tests {
         }
     }
 
-    /// 書かれたメモを記録するだけのフェイク（ADR-0063）。
+    /// A fake that only records written notes (ADR-0063).
     #[derive(Default)]
     struct FakeNotes {
         saved: Mutex<Vec<(TenantId, Uuid, String)>>,
@@ -518,7 +518,9 @@ mod tests {
             _updated_by: Option<Uuid>,
             _now: DateTime<Utc>,
         ) -> DomainResult<()> {
-            let user_id = account.user_id().expect("利用者の作成で書くのは人のメモ");
+            let user_id = account
+                .user_id()
+                .expect("user creation writes only a person's note");
             self.saved
                 .lock()
                 .unwrap()
@@ -526,7 +528,7 @@ mod tests {
             Ok(())
         }
         async fn clear(&self, _t: TenantId, _a: AccountRef) -> DomainResult<()> {
-            unreachable!("作成でメモを消すことはない")
+            unreachable!("creation never deletes a note")
         }
     }
 
@@ -583,7 +585,7 @@ mod tests {
             .await
             .expect("created");
 
-        // 本人へ渡すリンクが出る（ADR-0062）。⚠ **生成パスワードは返らない。**
+        // The link handed to the user is issued (ADR-0062). ⚠ **The generated password is not returned.**
         assert!(created.setup_link.token.len() >= 32);
         assert!(
             created
@@ -595,19 +597,19 @@ mod tests {
         );
         assert!(created.setup_link.url.contains(&created.setup_link.token));
         let stored = users.rows.lock().unwrap()[0].clone();
-        // ⚠ **誰も知らないパスワードで埋まっている**（管理者も本人も入れない。リンクで決める）。
+        // ⚠ **Filled with a password nobody knows** (neither admin nor user can get in. Decided via the link).
         assert!(stored.password_hash.starts_with("hash:"));
         assert!(stored.must_change_password);
-        // ADR-0064: 本人が設定を終えるまで仮登録。
+        // ADR-0064: provisional until the user finishes setup.
         assert!(stored.pending_setup);
         assert!(!stored.is_active());
         assert_eq!(stored.email, "new@example.com");
         assert_eq!(stored.tenant_id, tenant);
-        // HOME メンバーシップが作られる。
+        // The HOME membership is created.
         let m = memberships.rows.lock().unwrap()[0].clone();
         assert!(m.is_home());
         assert_eq!(m.tenant_id, tenant);
-        // 監査にリンクのトークンが漏れていない。
+        // The link token has not leaked into the audit.
         assert!(sink.events.lock().unwrap().iter().all(|e| e
             .reason
             .as_deref()
@@ -679,8 +681,8 @@ mod tests {
         ));
     }
 
-    /// ADR-0063: 作成と同時に書いたメモは、作った利用者の HOME メンバーシップに付く。
-    /// 監査は「作った」と「メモを書いた」の 2 件で、⚠ メモの中身は残らない。
+    /// ADR-0063: a note written together with creation attaches to the created user's HOME membership.
+    /// The audit has 2 entries, "created" and "wrote a note", and ⚠ the note content is not kept.
     #[tokio::test]
     async fn a_note_given_at_creation_goes_on_the_home_membership() {
         let tenant: TenantId = Uuid::now_v7().into();
@@ -726,7 +728,7 @@ mod tests {
             .all(|e| !e.reason.as_deref().unwrap_or("").contains("家族")));
     }
 
-    /// 空のメモは「メモ無し」。行も監査も増えない。
+    /// An empty note means "no note". Neither rows nor audits increase.
     #[tokio::test]
     async fn a_blank_note_at_creation_writes_nothing() {
         let tenant: TenantId = Uuid::now_v7().into();
@@ -755,7 +757,7 @@ mod tests {
         assert_eq!(sink.events.lock().unwrap().len(), 1);
     }
 
-    /// ⚠ 長すぎるメモは**利用者を作る前に**断る（作ったあとで断ると「作れたのにエラー」になる）。
+    /// ⚠ A too-long note is refused **before creating the user** (refusing after creating would be "created but errored").
     #[tokio::test]
     async fn a_too_long_note_is_rejected_before_anything_is_created() {
         let tenant: TenantId = Uuid::now_v7().into();

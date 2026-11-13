@@ -1,14 +1,14 @@
-//! 外部 SAML IdP を認証元として使う経路の統合テスト（DB あり。AP12。ADR-0027）。
+//! Integration tests (with DB; AP12; ADR-0027) for the path using an external SAML IdP as the authentication source.
 //!
-//! 単体テスト（`domain::saml_external_idp`）は署名検証と応答の解釈を固めているが、そこには
-//! **登録した設定が実際に使われるか**が含まれない。ここは管理 API で SAML プロバイダを登録し、
-//! `/internal/external/start` が返した `AuthnRequest` の ID へ答える応答を作って
-//! `/internal/external/saml/acs` へ投げ、ログインが成立するまでを通す。
+//! Unit tests (`domain::saml_external_idp`) pin signature verification and response interpretation, but they do not
+//! cover **whether the registered settings are actually used**. Here a SAML provider is registered via the admin API,
+//! a response answering the `AuthnRequest` ID returned by `/internal/external/start` is built and
+//! posted to `/internal/external/saml/acs`, going all the way to a successful login.
 //!
-//! この経路が壊れる形は「どこかで値の受け渡しがずれる」——SP entityID の組み立て、
-//! `InResponseTo` の保存、証明書の保存形式——で、いずれも単体テストの外にある。
+//! The way this path breaks is "a value handoff slips somewhere" — building the SP entityID,
+//! storing `InResponseTo`, the certificate storage format — all outside the unit tests.
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test external_saml_login
 
 mod support;
@@ -28,8 +28,8 @@ use support::{
     admin_token, body_json, create_plain_user, post, post_internal, send, unique, SERVICE_TOKEN,
 };
 
-/// テスト専用の自己署名証明書と鍵（`domain::saml_external_idp` の単体テストと同じ実物）。
-/// **本番のどこからも参照されない。** 署名は IdP 側の生成器に作らせ、SP 側の検証器で確かめる。
+/// Test-only self-signed certificate and key (the same ones as the `domain::saml_external_idp` unit tests).
+/// **Not referenced anywhere in production.** The IdP-side generator signs and the SP-side verifier checks.
 const TEST_KEY_PEM: &str = concat!(
     "-----BEGIN RSA PRIVATE KEY-----\n",
     "MIIEpAIBAAKCAQEAtNcidptZa/sP2KxNTbEXiEYxtt4F90gKhG3xx/uAcHlHUdmW\n",
@@ -78,17 +78,17 @@ const TEST_CERTIFICATE: &str = concat!(
 
 const IDP_SSO_URL: &str = "https://idp.corp.example.com/sso";
 
-/// 開始応答から取り出した、応答を組み立てるために要る値。
+/// Values taken from the start response that are needed to build the response.
 struct StartedLogin {
-    /// `AuthnRequest` の `ID`（応答の `InResponseTo` に載せる）。
+    /// The `AuthnRequest` `ID` (put in the response's `InResponseTo`).
     request_id: String,
-    /// `RelayState`（進行状態を引く鍵）。
+    /// `RelayState` (the key to look up the progress state).
     relay_state: String,
-    /// 開始したブラウザにだけ渡す値（web が Cookie に置く。task #581）。
+    /// The value given only to the starting browser (web puts it in a cookie; task #581).
     browser_binding: String,
 }
 
-/// SAML の外部 IdP を管理 API で登録し、`(id, provider_code, issuer)` を返す。
+/// Registers a SAML external IdP via the admin API and returns `(id, provider_code, issuer)`.
 async fn register_saml_provider(
     env: &support::TestEnv,
     admin_tok: &str,
@@ -123,8 +123,8 @@ async fn register_saml_provider(
     )
 }
 
-/// 外部の同一性（`issuer` + `NameID`）を利用者へ結び付ける。SAML のアサーションは
-/// `email_verified` を主張できないため自動連携が働かない（ADR-0023）。連携済みの状態を作る。
+/// Links the external identity (`issuer` + `NameID`) to a user. SAML assertions cannot claim
+/// `email_verified`, so auto-linking does not work (ADR-0023). Creates the linked state.
 async fn link_identity(
     pool: &MySqlPool,
     user_id: &str,
@@ -146,7 +146,7 @@ async fn link_identity(
     .expect("link external identity");
 }
 
-/// `/internal/external/start` を呼び、リダイレクト先から `AuthnRequest` の ID と `RelayState` を取り出す。
+/// Calls `/internal/external/start` and extracts the `AuthnRequest` ID and `RelayState` from the redirect target.
 async fn start_login(env: &support::TestEnv, provider_code: &str) -> StartedLogin {
     let res = send(
         &env.app,
@@ -175,7 +175,7 @@ async fn start_login(env: &support::TestEnv, provider_code: &str) -> StartedLogi
     }
 }
 
-/// HTTP-Redirect binding の `SAMLRequest`（base64(raw DEFLATE(XML))）から `ID` を取り出す。
+/// Extracts the `ID` from the HTTP-Redirect binding `SAMLRequest` (base64(raw DEFLATE(XML))).
 fn authn_request_id(location: &str) -> String {
     let encoded = query_value(location, "SAMLRequest");
     let compressed = STANDARD.decode(encoded).expect("base64 SAMLRequest");
@@ -189,7 +189,7 @@ fn authn_request_id(location: &str) -> String {
     rest[..rest.find('"').expect("closing quote")].to_string()
 }
 
-/// リダイレクト先 URL のクエリから値を 1 つ取り出す（percent デコード済み）。
+/// Extracts one value from the redirect URL's query (percent-decoded).
 fn query_value(location: &str, key: &str) -> String {
     url::Url::parse(location)
         .expect("redirect location is a URL")
@@ -199,7 +199,7 @@ fn query_value(location: &str, key: &str) -> String {
         .unwrap_or_else(|| panic!("{key} is missing from {location}"))
 }
 
-/// 外部 IdP になったつもりで、署名付きの `SAMLResponse`（base64）を作る。
+/// Acting as the external IdP, builds a signed `SAMLResponse` (base64).
 fn signed_response(
     env: &support::TestEnv,
     issuer: &str,
@@ -215,8 +215,8 @@ fn signed_response(
             assertion_id: &generate_saml_id(),
             issued_at: now,
             idp_entity_id: issuer,
-            // assay の SP としての entityID・ACS URL。api が組み立てる規則と一致していないと
-            // `AudienceRestriction` の検査に落ちる（この一致こそがここで確かめたいこと）。
+            // assay's entityID and ACS URL as SP. If they do not match the rules api uses to build them,
+            // the `AudienceRestriction` check fails (this match is exactly what we want to check here).
             sp_entity_id: &format!("{}/{}/saml/sp", env.public_web_base_url, env.root_tenant_id),
             acs_url: &format!(
                 "{}/{}/external/{provider_code}/saml/acs",
@@ -236,7 +236,7 @@ fn signed_response(
     STANDARD.encode(xml)
 }
 
-/// ACS へ応答を投げる（開始したブラウザから。開始時の値を添える）。
+/// Posts the response to the ACS (from the starting browser, with the start value).
 async fn post_acs(env: &support::TestEnv, saml_response: &str, started: &StartedLogin) -> Value {
     post_acs_from(
         env,
@@ -247,7 +247,7 @@ async fn post_acs(env: &support::TestEnv, saml_response: &str, started: &Started
     .await
 }
 
-/// ACS へ応答を投げる。`browser_binding` はブラウザが持っていた開始時の値（無ければ `None`）。
+/// Posts the response to the ACS. `browser_binding` is the start value the browser held (`None` if absent).
 async fn post_acs_from(
     env: &support::TestEnv,
     saml_response: &str,
@@ -272,8 +272,8 @@ async fn post_acs_from(
     body_json(res).await
 }
 
-/// **登録 → 開始 → ACS → ログイン成立**まで通る。署名付きの応答が、登録した証明書で検証され、
-/// 保存した `InResponseTo` と突き合わされ、連携済みの利用者へ解決されて SSO セッションになる。
+/// Goes all the way through **register → start → ACS → login**. The signed response is verified with the registered
+/// certificate, matched against the stored `InResponseTo`, resolved to the linked user and becomes an SSO session.
 #[tokio::test]
 async fn a_registered_saml_provider_signs_a_user_in_end_to_end() {
     let Some(env) = support::setup("external saml login").await else {
@@ -292,7 +292,7 @@ async fn a_registered_saml_provider_signs_a_user_in_end_to_end() {
 
     assert_eq!(body["result"], "success", "{body}");
     let sso_session_id = body["sso_session_id"].as_str().expect("sso_session_id");
-    // 発行された SSO セッションは**その利用者のもの**である（誰のログインになったかを確かめる）。
+    // The issued SSO session **belongs to that user** (check whose login it became).
     let owner: String =
         sqlx::query_scalar("SELECT user_id FROM sso_sessions WHERE session_hash = ?")
             .bind(assay_api::infrastructure::crypto::sha256_hex(
@@ -304,8 +304,8 @@ async fn a_registered_saml_provider_signs_a_user_in_end_to_end() {
     assert_eq!(owner, user_id);
 }
 
-/// `RelayState` は単回使用。同じ応答をもう一度投げてもログインにならない
-/// （ブラウザ経由で運ばれる値なので、盗まれた応答の再送は現実的な攻撃である）。
+/// `RelayState` is single-use. Posting the same response again does not sign in
+/// (it is carried through the browser, so replaying a stolen response is a realistic attack).
 #[tokio::test]
 async fn a_replayed_assertion_does_not_sign_anyone_in_twice() {
     let Some(env) = support::setup("external saml replay").await else {
@@ -328,8 +328,8 @@ async fn a_replayed_assertion_does_not_sign_anyone_in_twice() {
     assert_eq!(replayed["result"], "state_expired", "{replayed}");
 }
 
-/// 改竄された応答は通らない。登録した証明書で検証していることの確認でもある——保存の途中で
-/// 証明書が壊れていれば、正しい応答すら通らずここが落ちる。
+/// A tampered response does not pass. This also confirms verification uses the registered certificate — if the
+/// certificate were corrupted during storage, even a correct response would fail here.
 #[tokio::test]
 async fn a_tampered_assertion_is_rejected_by_the_registered_certificate() {
     let Some(env) = support::setup("external saml tampered").await else {
@@ -351,8 +351,8 @@ async fn a_tampered_assertion_is_rejected_by_the_registered_certificate() {
     assert_eq!(body["result"], "external_failure", "{body}");
 }
 
-/// 連携されていない `NameID` はログインにならない。SAML のアサーションは「メールを検証した」と
-/// 主張できないため、`allow_auto_link` があってもメール一致では入れない（ADR-0023）。
+/// An unlinked `NameID` does not sign in. SAML assertions cannot claim "the email was verified",
+/// so even with `allow_auto_link` an email match does not let one in (ADR-0023).
 #[tokio::test]
 async fn an_unlinked_name_id_does_not_sign_anyone_in() {
     let Some(env) = support::setup("external saml unlinked").await else {
@@ -373,8 +373,8 @@ async fn an_unlinked_name_id_does_not_sign_anyone_in() {
     assert_eq!(body["result"], "not_linked", "{body}");
 }
 
-/// IdP メタデータの取り込みは entityID・SSO URL・**すべての**署名証明書を返し、何も保存しない。
-/// 権限の無い利用者は使えない（登録に至る前段でも管理操作である）。
+/// IdP metadata import returns the entityID, SSO URL and **all** signing certificates, and saves nothing.
+/// Users without permission cannot use it (it is an admin operation even before registration).
 #[tokio::test]
 async fn importing_idp_metadata_extracts_the_registration_values_without_saving() {
     let Some(env) = support::setup("external saml metadata import").await else {
@@ -403,7 +403,7 @@ async fn importing_idp_metadata_extracts_the_registration_values_without_saving(
   </md:Organization>
 </md:EntityDescriptor>"#;
 
-    // 権限の無い利用者 → 403。
+    // User without permission → 403.
     let plain_user_id = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let plain_token = admin_token(&env.app, &env.pool, &env.root_tenant_id, &plain_user_id).await;
     let res = send(
@@ -423,14 +423,14 @@ async fn importing_idp_metadata_extracts_the_registration_values_without_saving(
     let parsed = body_json(res).await;
     assert_eq!(parsed["entity_id"], "https://idp.corp.example.com/metadata");
     assert_eq!(parsed["sso_url"], "https://idp.corp.example.com/sso");
-    // 証明書更新期間の 2 枚目を落とすと、切り替わった瞬間にログインが止まる。
+    // Dropping the second certificate of a rollover period would stop logins the moment it switches.
     assert_eq!(
         parsed["certificates"],
         json!(["MIIBCURRENT==", "MIIBNEXT=="])
     );
     assert_eq!(parsed["display_name"], "Corp IdP");
 
-    // 取り込みは登録ではない。プロバイダは 1 件も増えていない。
+    // Import is not registration. Not a single provider was added.
     let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM external_identity_providers WHERE tenant_id = ? AND issuer = ?",
     )
@@ -441,7 +441,7 @@ async fn importing_idp_metadata_extracts_the_registration_values_without_saving(
     .expect("count providers");
     assert_eq!(count, 0, "importing metadata must not register a provider");
 
-    // SP のメタデータを貼った取り違えは 400 で弾く（IDPSSODescriptor が無い）。
+    // Pasting SP metadata by mistake is rejected with 400 (no IDPSSODescriptor).
     let sp_metadata = r#"<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="urn:sp">
   <SPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
     <AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="https://sp.example.test/acs"/>
@@ -455,10 +455,10 @@ async fn importing_idp_metadata_extracts_the_registration_values_without_saving(
     assert_eq!(res.status(), StatusCode::BAD_REQUEST, "SP metadata -> 400");
 }
 
-/// 開始したブラウザでないところから戻り口を踏ませても、ログインにならない（task #581。ログイン CSRF）。
+/// Making someone open the return endpoint from a browser other than the starting one does not sign in (task #581; login CSRF).
 ///
-/// 攻撃者は自分のアカウントで途中まで進め、正しく署名された応答と `RelayState` を手に入れられる。
-/// それを他人のブラウザに送らせても、そのブラウザは開始時の値（Cookie）を持っていない。
+/// An attacker can go partway with their own account and obtain a correctly signed response and `RelayState`.
+/// Even if someone else's browser is made to send it, that browser does not hold the start value (cookie).
 #[tokio::test]
 async fn a_response_carried_by_another_browser_does_not_sign_anyone_in() {
     let Some(env) = support::setup("external saml browser binding").await else {
@@ -470,13 +470,13 @@ async fn a_response_carried_by_another_browser_does_not_sign_anyone_in() {
     let name_id = format!("external-{}", unique());
     link_identity(&env.pool, &user_id, &provider_id, &issuer, &name_id).await;
 
-    // 開始時の値を持たないブラウザ（攻撃者に踏まされた人）。
+    // A browser without the start value (someone made to open it by the attacker).
     let started = start_login(&env, &provider_code).await;
     let response = signed_response(&env, &issuer, &provider_code, &started.request_id, &name_id);
     let body = post_acs_from(&env, &response, &started.relay_state, None).await;
     assert_eq!(body["result"], "state_expired", "{body}");
 
-    // 自分で別の外部ログインを始めていたブラウザ（値はあるが、別の進行状態のもの）。
+    // A browser that had started another external login itself (has a value, but for another progress state).
     let attacker = start_login(&env, &provider_code).await;
     let victim = start_login(&env, &provider_code).await;
     let response = signed_response(
@@ -495,11 +495,11 @@ async fn a_response_carried_by_another_browser_does_not_sign_anyone_in() {
     .await;
     assert_eq!(body["result"], "state_expired", "{body}");
 
-    // 照合に失敗した進行状態は使い回せない（正しい値を後から添えても通らない）。
+    // A progress state that failed the check cannot be reused (adding the correct value later does not pass).
     let body = post_acs(&env, &response, &attacker).await;
     assert_eq!(body["result"], "state_expired", "{body}");
 
-    // DB には開始時の値そのものを残さない（ハッシュだけ）。
+    // The DB does not keep the start value itself (only the hash).
     let stored: Option<String> = sqlx::query_scalar(
         "SELECT browser_binding_hash FROM external_login_requests WHERE state_hash = ?",
     )

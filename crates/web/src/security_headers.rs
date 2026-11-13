@@ -1,35 +1,35 @@
-//! セキュリティヘッダミドルウェア（SEC3。api の `security_headers` と同方針）。
+//! Security header middleware (SEC3. Same policy as the api's `security_headers`).
 //!
-//! web は HTML（ログイン画面・管理コンソール）を配信するため、全レスポンスに以下を付与する:
+//! web serves HTML (login screen, admin console), so the following are added to every response:
 //! - `X-Content-Type-Options: nosniff`
 //! - `Referrer-Policy: strict-origin-when-cross-origin`
-//! - `X-Frame-Options: DENY`（クリックジャッキング対策。画面を出さずに試す往復の 302 だけは設定した親の枠を許す。
-//!   `allow_silent_auth_framing`・task #888）
-//! - `Content-Security-Policy`（`frame-ancestors 'none'`・外部オリジン読み込み禁止）
+//! - `X-Frame-Options: DENY` (clickjacking protection. Only the 302 of the round trip tried without showing a screen allows the configured parent frame.
+//!   `allow_silent_auth_framing`, task #888)
+//! - `Content-Security-Policy` (`frame-ancestors 'none'`, no loading from external origins)
 //!
-//! さらに `hsts_max_age > 0` のときは `Strict-Transport-Security` を付与する。
+//! Additionally, when `hsts_max_age > 0`, `Strict-Transport-Security` is added.
 //!
-//! HTML には `Cache-Control` に `no-transform` を足す。⚠ **前段（Cloudflare）に HTML を書き換えさせない**
-//! ためで、Cloudflare の「メールアドレスの難読化」は本文中のメールを `[email protected]` へ置き換え、
-//! 読み込み時に自前のスクリプトで戻す。ページを読み直さずに一覧を差し替える画面
-//! （`assets/live-search.js`）ではその戻しが走らず、置き換えたままの文字が出ていた（2026-09-25）。
-//! 管理画面・ログイン画面は途中で書き換えられて困ることはあっても、書き換えてほしいことは無い。
+//! For HTML, `no-transform` is added to `Cache-Control`. ⚠ This is **to keep the front (Cloudflare) from rewriting HTML**:
+//! Cloudflare's "email address obfuscation" replaces emails in the body with `[email protected]` and
+//! restores them with its own script on load. On screens that replace a list without reloading the page
+//! (`assets/live-search.js`) the restore did not run, and the replaced text showed (2026-09-25).
+//! Admin and login screens may suffer from being rewritten in transit, but never want to be rewritten.
 //!
-//! `script-src` から `'unsafe-inline'` を外してある（SEC12）。インラインを許したままでは、
-//! 反射型 XSS が 1 か所でもあれば CSP が防御にならない。画面固有スクリプトはすべて自オリジンの
-//! アセット（`handlers::page_scripts`）へ切り出し、テンプレートが渡していた値は `data-*` 属性で
-//! 受け渡している。
+//! `'unsafe-inline'` is removed from `script-src` (SEC12). While inline is allowed, a single
+//! reflected XSS would make the CSP useless as a defense. All screen-specific scripts were split out into same-origin
+//! assets (`handlers::page_scripts`), and values the templates used to pass are handed over via `data-*`
+//! attributes.
 //!
-//! `style-src` の `'unsafe-inline'` は残している。現行テンプレートが `style="display:none"` の
-//! ような属性を多数使っており、これらは**スクリプト実行につながらない**（`style-src` は
-//! `javascript:` を持ち込めない）ため、優先度が違う。外すならクラス化とセットで行う。
+//! `'unsafe-inline'` in `style-src` is kept. Current templates use many attributes like `style="display:none"`,
+//! and these **do not lead to script execution** (`style-src` cannot bring in
+//! `javascript:`), so the priority differs. If removed, it goes together with converting them to classes.
 
 use axum::extract::Request;
 use axum::http::header::{HeaderName, HeaderValue, CACHE_CONTROL, CONTENT_TYPE};
 use axum::middleware::Next;
 use axum::response::Response;
 
-/// 自オリジン限定の CSP。スクリプトはインラインを許さない（SEC12）。
+/// Same-origin-only CSP. Inline scripts are not allowed (SEC12).
 const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; \
      script-src 'self'; \
      style-src 'self' 'unsafe-inline'; \
@@ -39,16 +39,16 @@ const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; \
      form-action 'self'; \
      frame-ancestors 'none'";
 
-/// フォーム送信の遷移先が外部オリジンになるページ向けの CSP（既定に `form-action` の許可を 1 つ足す）。
+/// CSP for pages whose form submission navigates to an external origin (adds one `form-action` allowance to the default).
 ///
-/// **Chrome は `form-action` をフォーム送信後のリダイレクト先にも適用する**（CSP3 の仕様とは
-/// 異なるが、長年そうなっている）。ログイン画面と同意画面は、送信のあと RP の `redirect_uri` へ
-/// 302 して終わるため、既定の `form-action 'self'` のままだと **サーバは同意を記録しコードも
-/// 発行したのに、ブラウザが RP へ戻れない**。原因が画面にもログにも出ない止まり方になる。
+/// **Chrome applies `form-action` to redirect targets after form submission too** (differs from the CSP3
+/// spec, but has been this way for years). The login and consent screens end with a 302 to the RP's `redirect_uri`
+/// after submission, so with the default `form-action 'self'`, **the server records consent and issues the code,
+/// yet the browser cannot return to the RP**. It fails with the cause showing neither on screen nor in logs.
 ///
-/// 許可するのは**その認可要求の `redirect_uri` のオリジン 1 つだけ**である（登録済みの値と完全
-/// 一致したものが渡ってくる）。SAML の ACS へ POST するページも同じ事情で同じ形を採っている
-/// （`handlers::saml_sso`）。`origin` が空なら既定の CSP をそのまま返す。
+/// Only **the single origin of that authorization request's `redirect_uri`** is allowed (a value exactly matching
+/// the registered one is passed in). Pages POSTing to a SAML ACS take the same form for the same reason
+/// (`handlers::saml_sso`). If `origin` is empty, the default CSP is returned as is.
 pub fn csp_allowing_form_action(origin: &str) -> String {
     if origin.is_empty() {
         return CONTENT_SECURITY_POLICY.to_string();
@@ -59,8 +59,8 @@ pub fn csp_allowing_form_action(origin: &str) -> String {
     )
 }
 
-/// URL からスキーム + ホスト（+ ポート）を取り出す。CSP の source は path を持てないため。
-/// 解釈できない URL は空文字（＝許可を足さない。fail-closed）。
+/// Extracts scheme + host (+ port) from a URL, since CSP sources cannot have a path.
+/// Unparseable URLs give an empty string (= no allowance added. fail-closed).
 pub fn origin_of(url: &str) -> String {
     url::Url::parse(url)
         .ok()
@@ -74,18 +74,18 @@ pub fn origin_of(url: &str) -> String {
         .unwrap_or_default()
 }
 
-/// フォーム送信の遷移先 URL から、そのオリジンだけを `form-action` に許可した CSP を組み立てる。
+/// Builds a CSP allowing only the origin of the form submission's target URL in `form-action`.
 ///
-/// 送信先を URL で持っている呼び出し側（RP の `redirect_uri`・SAML の ACS URL）はこれを使う。
-/// 解釈できない URL は既定の CSP のまま（許可を足さない。fail-closed）。
+/// Callers holding the target as a URL (the RP's `redirect_uri`, the SAML ACS URL) use this.
+/// Unparseable URLs keep the default CSP (no allowance added. fail-closed).
 pub fn form_action_csp_for(url: &str) -> String {
     csp_allowing_form_action(&origin_of(url))
 }
 
-/// フォーム送信の遷移先が外部オリジンになる HTML 応答を、その許可を足した CSP で返す。
+/// Returns an HTML response whose form submission navigates to an external origin, with a CSP adding that allowance.
 ///
-/// middleware はハンドラが設定済みの CSP を尊重するので、ここで差し替えたものがそのまま出る。
-/// `redirect_uri` が解釈できないときは既定の CSP のまま返す（許可を足さない。fail-closed）。
+/// The middleware respects a CSP already set by the handler, so what is set here is output as is.
+/// If `redirect_uri` cannot be parsed, the default CSP is returned (no allowance added. fail-closed).
 pub fn html_with_form_action_csp(redirect_uri: &str, body: String) -> Response {
     use axum::response::{Html, IntoResponse};
     let csp = form_action_csp_for(redirect_uri);
@@ -95,15 +95,15 @@ pub fn html_with_form_action_csp(redirect_uri: &str, body: String) -> Response {
             Html(body),
         )
             .into_response(),
-        // 組み立てに失敗したら既定の CSP のまま返す。壊れたヘッダを送るより安全側。
+        // If building fails, return the default CSP. Safer than sending a broken header.
         Err(_) => Html(body).into_response(),
     }
 }
 
-/// 画面を出さずに試す往復（`prompt=none`）の 302 を、設定した親の枠に入れてよくする（task #888・ADR-0076）。
+/// Lets the 302 of the round trip tried without showing a screen (`prompt=none`) go into the configured parent frame (task #888, ADR-0076).
 ///
-/// ⚠ **描く画面には使わない。** 302 は描かれないので枠に入れても押させるものが無いが、画面を許すと
-/// クリックジャッキングの的になる。親が空なら何もしない（既定の `frame-ancestors 'none'` のまま）。
+/// ⚠ **Do not use for rendered screens.** A 302 is not rendered, so framing it offers nothing to click, but allowing screens
+/// makes them a clickjacking target. If the parent is empty, nothing is done (the default `frame-ancestors 'none'` stays).
 pub fn allow_silent_auth_framing(
     response: &mut Response,
     ancestors: &assay_contracts::frame_ancestors::FrameAncestors,
@@ -118,8 +118,8 @@ pub fn allow_silent_auth_framing(
     }
 }
 
-/// 応答の CSP が枠を許しているか（`frame-ancestors` を持ち、`'none'` でない）。許しているなら
-/// `X-Frame-Options: DENY` を足さない（両方あると、古いブラウザは DENY を採る）。
+/// Whether the response's CSP allows framing (has `frame-ancestors` and it is not `'none'`). If so,
+/// `X-Frame-Options: DENY` is not added (with both present, old browsers take DENY).
 fn csp_allows_framing(headers: &axum::http::HeaderMap) -> bool {
     headers
         .get(axum::http::header::CONTENT_SECURITY_POLICY)
@@ -129,7 +129,7 @@ fn csp_allows_framing(headers: &axum::http::HeaderMap) -> bool {
         })
 }
 
-/// セキュリティヘッダを付与するミドルウェアファクトリ。`hsts_max_age` が `0` のときは HSTS を付与しない。
+/// Factory for the middleware adding security headers. HSTS is not added when `hsts_max_age` is `0`.
 pub async fn add_security_headers(request: Request, next: Next, hsts_max_age: u64) -> Response {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
@@ -142,15 +142,15 @@ pub async fn add_security_headers(request: Request, next: Next, hsts_max_age: u6
         HeaderName::from_static("referrer-policy"),
         HeaderValue::from_static("strict-origin-when-cross-origin"),
     );
-    // 画面を出さずに試す往復の 302 だけは枠を許す（`allow_silent_auth_framing`。task #888）
+    // Only the 302 of the round trip tried without showing a screen allows framing (`allow_silent_auth_framing`. task #888)
     if !csp_allows_framing(headers) {
         headers.insert(
             HeaderName::from_static("x-frame-options"),
             HeaderValue::from_static("DENY"),
         );
     }
-    // ハンドラが応答に CSP を設定済みの場合は尊重する（RP-initiated logout の front-channel ページが
-    // 通知先オリジンだけ `frame-src` を許可した CSP を使う。`handlers::rp_logout`）。
+    // If the handler has already set a CSP on the response, respect it (the RP-initiated logout front-channel page
+    // uses a CSP allowing only the notification target origins in `frame-src`. `handlers::rp_logout`).
     let csp = HeaderName::from_static("content-security-policy");
     if !headers.contains_key(&csp) {
         headers.insert(csp, HeaderValue::from_static(CONTENT_SECURITY_POLICY));
@@ -176,13 +176,13 @@ fn is_html(headers: &axum::http::HeaderMap) -> bool {
         .is_some_and(|v| v.trim_start().to_ascii_lowercase().starts_with("text/html"))
 }
 
-/// HTML の `Cache-Control` に `no-store` と `no-transform` を足す。ハンドラが付けた指示はそのまま
-/// 残し、足すだけにする。
+/// Adds `no-store` and `no-transform` to HTML `Cache-Control`. Directives set by the handler are
+/// kept; only additions are made.
 ///
-/// - `no-store`（task #589）: web が返す HTML はどれも利用者ごとに描いた画面で、クライアントシークレット・
-///   回復コード・設定リンク・TOTP の秘密・SAML の応答を載せるものもある。共有の端末で「戻る」や
-///   ディスクのキャッシュから読ませない。静的な資産（CSS・JS・フォント）は HTML ではないので対象外
-/// - `no-transform`: 前段に本文を書き換えさせない
+/// - `no-store` (task #589): every HTML web returns is a screen rendered per user, and some carry client secrets,
+///   recovery codes, setup links, TOTP secrets or SAML responses. Do not let "back" on a shared device
+///   or the disk cache read them. Static assets (CSS, JS, fonts) are not HTML and are excluded
+/// - `no-transform`: keep the front from rewriting the body
 fn forbid_store_and_transform(headers: &mut axum::http::HeaderMap) {
     let current = headers
         .get(CACHE_CONTROL)
@@ -208,7 +208,7 @@ fn forbid_store_and_transform(headers: &mut axum::http::HeaderMap) {
     if let Ok(value) = HeaderValue::from_str(&directives.join(", ")) {
         headers.insert(CACHE_CONTROL, value);
     }
-    // HTTP/1.0 の中継向け（`Cache-Control` を解さないもの）。
+    // For HTTP/1.0 intermediaries (that do not understand `Cache-Control`).
     headers.insert(
         HeaderName::from_static("pragma"),
         HeaderValue::from_static("no-cache"),
@@ -219,10 +219,10 @@ fn forbid_store_and_transform(headers: &mut axum::http::HeaderMap) {
 mod tests {
     use super::*;
 
-    /// **Chrome は `form-action` をフォーム送信後のリダイレクト先にも適用する。** ログイン画面と
-    /// 同意画面の送信は RP の `redirect_uri` への 302 で終わるので、そのオリジンを許可しないと
-    /// 「同意も code 発行も成功したのにブラウザが RP へ戻らない」という、画面にもログにも
-    /// 出ない止まり方をする（2026-08-27 に blobshare の本番ログインで踏んだ）。
+    /// **Chrome applies `form-action` to redirect targets after form submission too.** The login and
+    /// consent screen submissions end with a 302 to the RP's `redirect_uri`, so without allowing that origin
+    /// it fails as "consent and code issuance succeeded but the browser does not return to the RP", showing neither
+    /// on screen nor in logs (hit on blobshare's production login on 2026-08-27).
     #[test]
     fn the_relying_party_origin_is_allowed_for_form_action() {
         let csp = csp_allowing_form_action("https://share.example.com");
@@ -230,12 +230,12 @@ mod tests {
             csp.contains("form-action 'self' https://share.example.com;"),
             "{csp}"
         );
-        // 他のディレクティブは既定のまま（緩めない）。
+        // Other directives stay at the defaults (not loosened).
         assert!(csp.contains("script-src 'self';"), "{csp}");
         assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
     }
 
-    /// オリジンが取れないときは既定のまま返す（許可を足さない。fail-closed）。
+    /// When the origin cannot be extracted, the default is returned (no allowance added. fail-closed).
     #[test]
     fn an_unusable_redirect_uri_leaves_the_policy_untouched() {
         assert_eq!(csp_allowing_form_action(""), CONTENT_SECURITY_POLICY);
@@ -243,7 +243,7 @@ mod tests {
         assert_eq!(origin_of(""), "");
     }
 
-    /// CSP の source は path を持てないので、スキーム + ホスト（+ ポート）まで切り詰める。
+    /// CSP sources cannot have a path, so it is cut down to scheme + host (+ port).
     #[test]
     fn only_the_origin_of_the_redirect_uri_is_used() {
         assert_eq!(
@@ -317,7 +317,7 @@ mod tests {
             }))
     }
 
-    /// 画面を出さずに試す往復の 302 だけは、設定した親の枠を許す（task #888・ADR-0076）。
+    /// Only the 302 of the round trip tried without showing a screen allows the configured parent frame (task #888, ADR-0076).
     #[tokio::test]
     async fn a_silent_redirect_may_be_framed_by_the_configured_parents_only() {
         let res = respond(app(0), "/silent").await;
@@ -328,7 +328,7 @@ mod tests {
         assert!(res.headers().get("x-frame-options").is_none());
     }
 
-    /// 親を設定していなければ、今までどおり枠に入れない。
+    /// If no parent is configured, framing is not allowed, as before.
     #[tokio::test]
     async fn without_parents_a_silent_redirect_is_not_framed() {
         let res = respond(app(0), "/silent-unset").await;
@@ -337,17 +337,17 @@ mod tests {
         assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
     }
 
-    /// HTML は前段に書き換えさせない（Cloudflare のメール難読化で `[email protected]` が出ていた）。
-    /// ハンドラの指示は残して足すだけ。HTML でない応答（アセット・JSON）は触らない。
+    /// HTML is not rewritten by the front (Cloudflare's email obfuscation was showing `[email protected]`).
+    /// Handler directives are kept and only added to. Non-HTML responses (assets, JSON) are untouched.
     #[tokio::test]
     async fn html_is_marked_no_transform_without_dropping_the_handler_directives() {
-        // HTML は保存させない（秘密を載せる画面がある。task #589）。
+        // HTML is not stored (some screens carry secrets. task #589).
         let res = respond(app(0), "/page").await;
         assert_eq!(res.headers()[CACHE_CONTROL], "no-store, no-transform");
         assert_eq!(res.headers()["pragma"], "no-cache");
         let res = respond(app(0), "/no-store").await;
         assert_eq!(res.headers()[CACHE_CONTROL], "no-store, no-transform");
-        // HTML でない応答（静的な資産など）には付けない。
+        // Not added to non-HTML responses (static assets etc.).
         let res = respond(app(0), "/").await;
         assert!(res.headers().get(CACHE_CONTROL).is_none());
         assert!(res.headers().get("pragma").is_none());
@@ -366,12 +366,12 @@ mod tests {
         let csp = headers["content-security-policy"].to_str().unwrap();
         assert!(csp.contains("frame-ancestors 'none'"));
         assert!(csp.contains("default-src 'self'"));
-        // インラインスクリプトを許さない（SEC12）。許すと XSS 1 か所で CSP が無力になる。
+        // Inline scripts are not allowed (SEC12). Allowing them makes the CSP powerless against a single XSS.
         assert!(
             !csp.contains("script-src 'self' 'unsafe-inline'"),
             "script-src must not allow inline: {csp}"
         );
-        // HSTS は hsts_max_age = 0 では付与しない。
+        // HSTS is not added when hsts_max_age = 0.
         assert!(!headers.contains_key("strict-transport-security"));
     }
 

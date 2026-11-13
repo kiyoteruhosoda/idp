@@ -1,10 +1,10 @@
-//! ゲスト招待作成エンドポイント（`/{tenant_id}/admin/invitations`。ADR-0009 §3・§6）。
+//! Guest invitation creation endpoint (`/{tenant_id}/admin/invitations`, ADR-0009 §3, §6).
 //!
-//! `idp.members:write` が必要（`RequirePerms<MembersWrite>`。`idp.tenant.admin` は含意する）。参加先テナントの管理者が既存利用者
-//! （所属元は他テナント）を招待すると、一度限りの**招待トークン**を返す。相手の指し方は
-//! **メールアドレス、または内部 ID（UUID）**（ADR-0061。読み分けは application 層）。トークンはハッシュのみ保存し、
-//! ログ・監査ログには出さない（`generated_password` と同じパターン。§3）。管理者がトークンを被招待者へ
-//! 別途通知し、被招待者は所属元テナントでログイン済みのセッションで `/invitations/accept` に提示する。
+//! Requires `idp.members:write` (`RequirePerms<MembersWrite>`; implied by `idp.tenant.admin`). When an admin of the
+//! joining tenant invites an existing user (home tenant elsewhere), a one-time **invitation token** is returned. The invitee
+//! is identified by **email address or internal ID (UUID)** (ADR-0061; disambiguated in the application layer). Only the token hash is stored,
+//! and it never appears in logs / audit logs (same pattern as `generated_password`, §3). The admin passes the token
+//! to the invitee separately, who presents it to `/invitations/accept` with a session signed in to their home tenant.
 
 use crate::application::invitation::InvitationError;
 use crate::presentation::admin::{MembersWrite, RequirePerms};
@@ -19,7 +19,7 @@ use axum::extract::{Extension, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 
-/// ゲスト招待を作成し、招待トークンを**この応答でのみ**返す。
+/// Creates a guest invitation and returns the invitation token **only in this response**.
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/invitations",

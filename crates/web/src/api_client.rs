@@ -1,11 +1,11 @@
-//! api への HTTP クライアント（ADR-0007）。
+//! HTTP client to the api (ADR-0007).
 //!
-//! web は DB を持たず、データ取得/操作はすべて api の HTTP エンドポイント越しに行う。本モジュールは
-//! その唯一の出入口。内部認証（`/internal/authenticate*`）はサービス認証トークン（`X-Internal-Auth-Token`）
-//! を付与して呼ぶ。DTO は `assay-contracts` で api と共有し、コンパイル時に契約整合を保証する。
+//! web has no DB; all data retrieval and manipulation goes through the api's HTTP endpoints. This module is
+//! the only gateway for that. Internal authentication (`/internal/authenticate*`) is called with the service auth token
+//! (`X-Internal-Auth-Token`). DTOs are shared with the api in `assay-contracts`, guaranteeing contract consistency at compile time.
 //!
-//! `/admin/*`（JSON 管理 API）はテナント経路（`/{tenant_id}/admin/*`。ADR-0009 §6）で呼ぶ。
-//! テナント id は web の経路（`crate::tenant::WebTenant`）から呼び出し側が明示的に渡す（MT13）。
+//! `/admin/*` (JSON admin API) is called via the tenant route (`/{tenant_id}/admin/*`; ADR-0009 §6).
+//! The tenant id is passed explicitly by callers from web's route (`crate::tenant::WebTenant`) (MT13).
 
 use crate::admin_dto::{
     AccountListView, ApiErrorBody, AuditLogView, ClientCreatedView, ClientListView,
@@ -61,30 +61,30 @@ use assay_contracts::version::SchemaVersionInfo;
 use reqwest::Method;
 use std::collections::HashMap;
 
-/// サービス認証トークンのヘッダ名（api 側 `require_service_token` と一致させる）。
+/// Header name of the service auth token (must match the api's `require_service_token`).
 use assay_contracts::internal_auth::SERVICE_TOKEN_HEADER;
-/// correlation_id（requestId）の伝播ヘッダ名（api 側 correlation ミドルウェアと一致させる）。
+/// Header name for propagating correlation_id (requestId) (must match the api's correlation middleware).
 const REQUEST_ID_HEADER: &str = "x-request-id";
 
-/// メール検証リンク消費（SEC6b）の結果。
+/// Result of consuming an email verification link (SEC6b).
 pub enum VerifyEmailResult {
-    /// `email_verified` を立てた。
+    /// `email_verified` was set.
     Verified,
-    /// トークンが無効・期限切れ・使用済み・別テナント。
+    /// The token is invalid, expired, used, or for another tenant.
     InvalidOrExpired,
 }
 
-/// `/internal/*` 呼び出しの失敗（MT28）。
+/// Failure of an `/internal/*` call (MT28).
 ///
-/// `/internal/*` はテナントプレフィクスを持たないため api の `TenantResolver` middleware を
-/// 通らず、テナントの実在・状態は本文の `tenant_id` を見て api が判定する（ADR-0009 §8）。
-/// **その拒否だけを他の失敗と区別する。** 区別しないと、URL のテナント ID が誤っているだけの
-/// 要求まで「web の実装/構成エラー」として 502 になり、テナント経路の他の応答（404）と揃わない。
+/// `/internal/*` has no tenant prefix, so it doesn't pass through the api's `TenantResolver` middleware;
+/// the api judges the tenant's existence and status from the body's `tenant_id` (ADR-0009 §8).
+/// **Only that rejection is distinguished from other failures.** Otherwise, requests whose URL merely has a wrong tenant ID
+/// would become 502 as "a web implementation/configuration error", inconsistent with other tenant-route responses (404).
 pub enum InternalCallError {
-    /// api がテナントを解決できなかった（不存在・`DISABLED`）。呼び出し側は 404 の画面へ倒す。
+    /// The api could not resolve the tenant (nonexistent or `DISABLED`). Callers fall back to the 404 screen.
     UnknownTenant,
-    /// それ以外 —— api へ到達できない、応答を復号できない、想定外のステータス。
-    /// 利用者の入力では起こらない（web の実装/構成エラーか api の障害）ため 502 に倒す。
+    /// Anything else -- the api is unreachable, the response can't be decoded, an unexpected status.
+    /// It can't be caused by user input (a web implementation/configuration error or an api failure), so it becomes 502.
     Failed(String),
 }
 
@@ -94,7 +94,7 @@ impl InternalCallError {
     }
 }
 
-/// 運用ログ向けの表現（運用言語＝英語。`CLAUDE.md`「多言語化の対象範囲」）。
+/// Representation for operational logs (operational language = English; `CLAUDE.md` "Scope of internationalization").
 impl std::fmt::Display for InternalCallError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -112,11 +112,11 @@ impl std::fmt::Debug for InternalCallError {
 
 impl std::error::Error for InternalCallError {}
 
-/// api のエラー本文が「テナントを解決できなかった」を表すか（MT28）。
+/// Whether the api's error body means "could not resolve the tenant" (MT28).
 ///
-/// 判別は `contracts` が単一定義する [`UNKNOWN_TENANT_ERROR_CODE`] との一致で行う。人間向けの
-/// 説明文を見ないのは、文言を直した瞬間に静かに壊れるためである。本文が JSON として読めない
-/// ときは「その他の失敗」に倒す（fail-safe。誤って 404 の画面を出さない）。
+/// Decided by matching [`UNKNOWN_TENANT_ERROR_CODE`], defined once in `contracts`. The human-readable
+/// description is not used because it would silently break the moment the wording is edited. When the body can't be read
+/// as JSON, it falls back to "other failure" (fail-safe; doesn't show the 404 screen by mistake).
 fn is_unknown_tenant_error(body: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(body)
         .ok()
@@ -124,26 +124,26 @@ fn is_unknown_tenant_error(body: &str) -> bool {
         .is_some_and(|code| code == UNKNOWN_TENANT_ERROR_CODE)
 }
 
-/// `/admin/*` 呼び出しの失敗を web の画面挙動へ写すためのエラー（ADR-0007 §4）。
+/// Error for mapping failures of `/admin/*` calls to web screen behavior (ADR-0007 §4).
 pub enum AdminApiError {
-    /// 未認証・SSO 期限切れ（401）→ ログイン画面へ誘導。
+    /// Unauthenticated or SSO expired (401) -> redirect to the login screen.
     Unauthorized,
-    /// 権限不足（403）→ 403 画面。
+    /// Insufficient permission (403) -> 403 screen.
     Forbidden,
-    /// 不存在（404）。
+    /// Not found (404).
     NotFound,
-    /// バリデーションエラー（400）。メッセージを表示する。
+    /// Validation error (400). The message is shown.
     Validation(String),
-    /// 競合（409）。メッセージを表示する。
+    /// Conflict (409). The message is shown.
     Conflict(String),
-    /// ネットワーク/デコード/想定外ステータス。
+    /// Network/decode error or unexpected status.
     Transport(String),
 }
 
-/// 運用ログ向けの表現（運用言語＝英語。`CLAUDE.md`「多言語化の対象範囲」）。
+/// Representation for operational logs (operational language = English; `CLAUDE.md` "Scope of internationalization").
 ///
-/// 画面へ出す文言は各ハンドラが翻訳キーから解決する。ここが返すのは**ログに出す理由**で、
-/// 各ハンドラで同じ `match` を書き直さないために型側へ置く。
+/// Wording shown on screen is resolved by each handler from translation keys. What this returns is **the reason for logs**,
+/// placed on the type so each handler doesn't rewrite the same `match`.
 impl std::fmt::Display for AdminApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -157,27 +157,27 @@ impl std::fmt::Display for AdminApiError {
     }
 }
 
-/// 管理者の SSO Cookie を api の `/admin/*`（`RequirePerms<IdpAdmin>`）へ転送した結果（ADR-0007 §4）。
+/// Result of forwarding an admin's SSO cookie to the api's `/admin/*` (`RequirePerms<IdpAdmin>`) (ADR-0007 §4).
 pub enum AdminSession {
-    /// 有効な SSO ＋ テナント admin 権限（`idp.tenant.admin`／`idp.system.admin`）保有。
-    /// 管理コンソールのヘッダに出す文脈（管理者の表示ラベルと操作中テナントの表示名）を返す。
+    /// Valid SSO + holds tenant admin permission (`idp.tenant.admin` / `idp.system.admin`).
+    /// Returns the context shown in the admin console header (the admin's display label and the current tenant's display name).
     Authenticated(AdminIdentity),
-    /// 未認証・SSO 期限切れ（ログイン画面へ誘導する）。
+    /// Unauthenticated or SSO expired (redirect to the login screen).
     Unauthenticated,
-    /// 認証済みだがテナント admin 権限なし（403 画面）。
+    /// Authenticated but without tenant admin permission (403 screen).
     Forbidden,
-    /// api がテナントを解決できなかった（404）。経路の `{tenant_id}` が未知・`DISABLED`・UUID 不正の
-    /// いずれか（api の `resolve_tenant` はどれも 404 に倒す）。web は UUID 形式しか検証しないため、
-    /// 実在しないテナントの管理コンソール URL はここに落ちる。
+    /// The api could not resolve the tenant (404). The route's `{tenant_id}` is unknown, `DISABLED`, or an invalid UUID
+    /// (the api's `resolve_tenant` maps all of these to 404). web only validates the UUID format, so
+    /// admin console URLs of nonexistent tenants land here.
     NotFound,
-    /// api 呼び出し失敗（構成/障害）。
+    /// api call failure (configuration/outage).
     Error,
 }
 
-/// whoami の非 200 応答をセッション状態へ写す。200（本文のデコードを伴う）は呼び出し側で扱う。
+/// Maps non-200 whoami responses to the session state. 200 (which involves decoding the body) is handled by the caller.
 ///
-/// 404 を `Error` に含めない（＝ 502 に倒さない）のが要点。存在しないテナントの URL はゲートウェイ
-/// 障害ではなく「そのページは無い」であり、画面も 404 を出す必要がある。
+/// The point is not including 404 in `Error` (= not falling back to 502). A URL of a nonexistent tenant is not a gateway
+/// failure but "that page doesn't exist", and the screen must show 404 too.
 fn admin_session_for_status(status: reqwest::StatusCode) -> AdminSession {
     match status {
         reqwest::StatusCode::UNAUTHORIZED => AdminSession::Unauthenticated,
@@ -187,21 +187,21 @@ fn admin_session_for_status(status: reqwest::StatusCode) -> AdminSession {
     }
 }
 
-/// 認証済み管理者の身元（管理コンソール共通ヘッダの表示に使う）。
+/// Identity of the authenticated admin (used for display in the admin console's common header).
 #[derive(Debug, Clone)]
 pub struct AdminIdentity {
-    /// 管理者の表示ラベル（表示名 → ログイン識別子 → 内部 ID）。
+    /// The admin's display label (display name -> login identifier -> internal ID).
     pub label: String,
-    /// 操作中テナントの表示名。api が返さなかった場合のみ `None`。
+    /// Display name of the current tenant. `None` only if the api didn't return it.
     pub tenant_name: Option<String>,
-    /// この管理者がこのテナントで行使できる権限コード（api が含意を展開済み）。
-    /// メニューの出し分けに使う。**認可ではない**（実際の可否は api が毎回判定する）。
+    /// Permission codes this admin can exercise in this tenant (implications already expanded by the api).
+    /// Used to show/hide menu items. **Not authorization** (the api decides what is actually allowed every time).
     permissions: Vec<String>,
 }
 
 impl AdminIdentity {
-    /// 共通レイアウトへ渡すための借用。判定そのものは
-    /// [`crate::templates::ConsoleAdmin::can`] が single source として持つ。
+    /// Borrow for passing to the common layout. The decision itself is held by
+    /// [`crate::templates::ConsoleAdmin::can`] as the single source.
     pub fn permissions(&self) -> &[String] {
         &self.permissions
     }
@@ -216,7 +216,7 @@ impl AdminIdentity {
     }
 }
 
-/// whoami の応答をヘッダ表示の文脈へ写す。
+/// Maps the whoami response to the header display context.
 fn admin_identity(mut w: WhoamiResponse) -> AdminIdentity {
     let tenant_name = non_empty(w.tenant_name.take());
     let permissions = std::mem::take(&mut w.permissions);
@@ -227,32 +227,32 @@ fn admin_identity(mut w: WhoamiResponse) -> AdminIdentity {
     }
 }
 
-/// 管理コンソールのヘッダに出す表示ラベルを決める。表示名（`name`）→ ログイン識別子
-/// （`preferred_username`）→ 内部 ID（`user_id`）の順で、空でない最初の値を採用する。
+/// Decides the display label shown in the admin console header. Takes the first non-empty value in the order display name (`name`)
+/// -> login identifier (`preferred_username`) -> internal ID (`user_id`).
 fn admin_display_label(w: WhoamiResponse) -> String {
     non_empty(w.name)
         .or_else(|| non_empty(w.preferred_username))
         .unwrap_or(w.user_id)
 }
 
-/// 空白のみの値を「未設定」として扱う。
+/// Treats whitespace-only values as "unset".
 fn non_empty(value: Option<String>) -> Option<String> {
     value
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
 }
 
-/// api への HTTP クライアント。`reqwest::Client` は接続プールを内包するため clone は安価。
+/// HTTP client to the api. `reqwest::Client` contains a connection pool, so cloning is cheap.
 #[derive(Clone)]
 pub struct ApiClient {
     http: reqwest::Client,
     base_url: String,
     service_token: String,
-    /// api へ引き継ぐ表示言語（`Accept-Language`）。`None` なら送らず、api は既定 `ja` を使う。
+    /// Display language passed to the api (`Accept-Language`). If `None`, nothing is sent and the api uses the default `ja`.
     ///
-    /// 表示言語を決めるのは web で、api は `Accept-Language` しか見ない（`CLAUDE.md`「国際化」）。
-    /// web が決めた言語を載せることで、画面と api のエラーメッセージが同じ言語になる。
-    /// **Cookie・`lang` クエリは api へ送らない**（api がそれらを見ないための境界）。
+    /// web decides the display language, and the api only looks at `Accept-Language` (`CLAUDE.md` "Internationalization").
+    /// Sending the language web decided makes the screen and the api's error messages the same language.
+    /// **Cookies and the `lang` query are not sent to the api** (the boundary ensuring the api doesn't look at them).
     accept_language: Option<&'static str>,
 }
 
@@ -266,9 +266,9 @@ impl ApiClient {
         }
     }
 
-    /// 表示言語を引き継いだクライアントを返す（MT20）。以降の api 呼び出しへ `Accept-Language` を
-    /// 付与し、api のエラーメッセージを画面と同じ言語で受け取る。`reqwest::Client` は Arc 内包の
-    /// ため clone は安価で、リクエストごとに作ってよい。
+    /// Returns a client carrying the display language (MT20). Subsequent api calls get `Accept-Language`,
+    /// and the api's error messages arrive in the same language as the screen. `reqwest::Client` wraps an Arc,
+    /// so cloning is cheap and it may be created per request.
     pub fn for_locale(&self, locale: crate::i18n::Locale) -> Self {
         Self {
             accept_language: Some(locale.as_tag()),
@@ -276,8 +276,8 @@ impl ApiClient {
         }
     }
 
-    /// `Accept-Language` を（決まっていれば）付与し、今の要求の信じてよい国（task #895）と端末の印
-    /// （task #916）も添える。
+    /// Attaches `Accept-Language` (if decided), plus the current request's trusted country (task #895) and the device mark
+    /// (task #916).
     fn with_language(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         let request = match self.accept_language {
             Some(tag) => request.header(reqwest::header::ACCEPT_LANGUAGE, tag),
@@ -287,18 +287,18 @@ impl ApiClient {
             Some(country) => request.header(assay_contracts::auth::CLIENT_COUNTRY_HEADER, country),
             None => request,
         };
-        // 今のブラウザの端末の印（task #916）。api はログインのその場で「登録した端末か」を決める。
+        // The current browser's device mark (task #916). The api decides "is it a registered device" right at login.
         match crate::device_observation::current_device_token() {
             Some(token) => request.header(assay_contracts::auth::CLIENT_DEVICE_HEADER, token),
             None => request,
         }
     }
 
-    /// SAML IdP メタデータを api から取得する。
+    /// Fetches SAML IdP metadata from the api.
     ///
-    /// ブラウザを api オリジンへ直接遷移させず、web が提供するダウンロード用ユースケースから
-    /// 利用する。api との通信経路は本クライアントへ集約し、presentation 層へ HTTP の詳細を
-    /// 漏らさない。
+    /// Rather than sending the browser directly to the api origin, it is used from the download use case web provides.
+    /// Communication with the api is concentrated in this client, so HTTP details don't leak
+    /// into the presentation layer.
     pub async fn fetch_saml_idp_metadata(
         &self,
         correlation_id: &str,
@@ -315,9 +315,9 @@ impl ApiClient {
             .map_err(Into::into)
     }
 
-    /// 認可フローの再開（`POST /internal/authorize/resume`、ADR-0018 決定 2）。`/authorize` からの
-    /// ハンドオフで受け取った単回ハンドルと自ドメインの SSO Cookie 値を渡し、SSO 判定・code 発行
-    /// までを api に委ねる。
+    /// Resumes the authorization flow (`POST /internal/authorize/resume`, ADR-0018 decision 2). Passes the single-use handle received
+    /// in the handoff from `/authorize` and our domain's SSO cookie value, delegating the SSO decision and code issuance
+    /// to the api.
     pub async fn authorize_resume(
         &self,
         correlation_id: &str,
@@ -327,8 +327,8 @@ impl ApiClient {
             .await
     }
 
-    /// 認可フローの継続（`POST /internal/authorize/continue`）。ログイン画面の開き直しで、
-    /// 手元の `auth_session_id` と SSO Cookie 値を渡し、別タブで確立された SSO から続ける。
+    /// Continues the authorization flow (`POST /internal/authorize/continue`). When the login screen is reopened,
+    /// passes the local `auth_session_id` and SSO cookie value to continue from an SSO established in another tab.
     pub async fn authorize_continue(
         &self,
         correlation_id: &str,
@@ -338,8 +338,8 @@ impl ApiClient {
             .await
     }
 
-    /// ログイン画面の文脈（`POST /internal/authorize/login-context`。G12）。進行中の認可要求が
-    /// 持ち込んだ `login_hint` / `ui_locales` を `auth_session_id` から引き直す。
+    /// Login screen context (`POST /internal/authorize/login-context`; G12). Looks up the `login_hint` / `ui_locales`
+    /// brought in by the in-progress authorization request from `auth_session_id`.
     pub async fn authorize_login_context(
         &self,
         correlation_id: &str,
@@ -349,9 +349,9 @@ impl ApiClient {
             .await
     }
 
-    /// SAML SSO フローの再開（`POST /internal/saml/resume`）。`/saml/sso` からのハンドオフで
-    /// 受け取った単回ハンドル（またはログイン後の `saml_request_id`）と自ドメインの SSO Cookie 値を
-    /// 渡し、SSO 判定・署名付き SAML Response の発行までを api に委ねる。
+    /// Resumes the SAML SSO flow (`POST /internal/saml/resume`). Passes the single-use handle received in the handoff from `/saml/sso`
+    /// (or `saml_request_id` after login) and our domain's SSO cookie value,
+    /// delegating the SSO decision and issuance of the signed SAML Response to the api.
     pub async fn saml_resume(
         &self,
         correlation_id: &str,
@@ -361,8 +361,8 @@ impl ApiClient {
             .await
     }
 
-    /// RP-initiated logout（`POST /internal/logout/rp`、ADR-0018 決定 2）。SSO 失効・back-channel
-    /// 通知・post-logout リダイレクト URL の組み立てを api に委ねる（Cookie 破棄は web が行う）。
+    /// RP-initiated logout (`POST /internal/logout/rp`, ADR-0018 decision 2). Delegates SSO revocation, back-channel
+    /// notification and building the post-logout redirect URL to the api (web discards the cookies).
     pub async fn rp_logout(
         &self,
         correlation_id: &str,
@@ -372,7 +372,7 @@ impl ApiClient {
             .await
     }
 
-    /// OIDC ログイン認証（`POST /internal/authenticate`）。
+    /// OIDC login authentication (`POST /internal/authenticate`).
     pub async fn authenticate(
         &self,
         correlation_id: &str,
@@ -382,7 +382,7 @@ impl ApiClient {
             .await
     }
 
-    /// 強制パスワード変更（`POST /internal/change-password`、ADR-0009 §5）。
+    /// Forced password change (`POST /internal/change-password`, ADR-0009 §5).
     pub async fn change_password(
         &self,
         correlation_id: &str,
@@ -392,7 +392,7 @@ impl ApiClient {
             .await
     }
 
-    /// 管理コンソール認証（`POST /internal/authenticate/admin`）。
+    /// Admin console authentication (`POST /internal/authenticate/admin`).
     pub async fn authenticate_admin(
         &self,
         correlation_id: &str,
@@ -402,7 +402,7 @@ impl ApiClient {
             .await
     }
 
-    /// エンドユーザー・ポータル認証（`POST /internal/authenticate/portal`）。
+    /// End-user portal authentication (`POST /internal/authenticate/portal`).
     pub async fn authenticate_portal(
         &self,
         correlation_id: &str,
@@ -412,7 +412,7 @@ impl ApiClient {
             .await
     }
 
-    /// ポータルの TOTP 検証（`POST /internal/authenticate/portal/mfa`）。
+    /// Portal TOTP verification (`POST /internal/authenticate/portal/mfa`).
     pub async fn authenticate_portal_mfa(
         &self,
         correlation_id: &str,
@@ -422,7 +422,7 @@ impl ApiClient {
             .await
     }
 
-    /// ポータルの強制パスワード変更（`POST /internal/authenticate/portal/change-password`、ADR-0009 §5）。
+    /// Portal forced password change (`POST /internal/authenticate/portal/change-password`, ADR-0009 §5).
     pub async fn authenticate_portal_change_password(
         &self,
         correlation_id: &str,
@@ -436,7 +436,7 @@ impl ApiClient {
         .await
     }
 
-    /// 管理コンソールの強制パスワード変更（`POST /internal/authenticate/admin/change-password`）。
+    /// Admin console forced password change (`POST /internal/authenticate/admin/change-password`).
     pub async fn admin_change_password(
         &self,
         correlation_id: &str,
@@ -450,7 +450,7 @@ impl ApiClient {
         .await
     }
 
-    /// パスワードリセット要求（`POST /internal/password-reset/request`。MT18）。
+    /// Password reset request (`POST /internal/password-reset/request`; MT18).
     pub async fn password_reset_request(
         &self,
         correlation_id: &str,
@@ -460,7 +460,7 @@ impl ApiClient {
             .await
     }
 
-    /// パスワードリセット実行（`POST /internal/password-reset/complete`。MT18）。
+    /// Password reset execution (`POST /internal/password-reset/complete`; MT18).
     pub async fn password_reset_complete(
         &self,
         correlation_id: &str,
@@ -470,8 +470,8 @@ impl ApiClient {
             .await
     }
 
-    /// アカウント設定リンクの中身を読む（`POST /internal/account-setup/describe`。ADR-0062）。
-    /// ⚠ **読むだけで消費しない。**
+    /// Reads the contents of an account setup link (`POST /internal/account-setup/describe`; ADR-0062).
+    /// ⚠ **Only reads; does not consume.**
     pub async fn account_setup_describe(
         &self,
         correlation_id: &str,
@@ -481,7 +481,7 @@ impl ApiClient {
             .await
     }
 
-    /// 設定リンクからのパスキー登録開始（`POST /internal/account-setup/passkey/begin`）。
+    /// Begins passkey registration from a setup link (`POST /internal/account-setup/passkey/begin`).
     pub async fn account_setup_passkey_begin(
         &self,
         correlation_id: &str,
@@ -491,7 +491,7 @@ impl ApiClient {
             .await
     }
 
-    /// 設定リンクからのパスキー登録完了（`POST /internal/account-setup/passkey/complete`）。
+    /// Completes passkey registration from a setup link (`POST /internal/account-setup/passkey/complete`).
     pub async fn account_setup_passkey_complete(
         &self,
         correlation_id: &str,
@@ -505,8 +505,8 @@ impl ApiClient {
         .await
     }
 
-    /// メール検証リンクの消費（`POST /{tenant_id}/auth/verify-email`。SEC6b）。公開エンドポイントの
-    /// ため service token・SSO は不要（平文トークン自体が capability）。
+    /// Consumes an email verification link (`POST /{tenant_id}/auth/verify-email`; SEC6b). A public endpoint,
+    /// so no service token or SSO is needed (the plaintext token itself is the capability).
     pub async fn verify_email(
         &self,
         correlation_id: &str,
@@ -528,7 +528,7 @@ impl ApiClient {
         }
     }
 
-    /// ログアウト（`POST /internal/logout`）。api 側で SSO セッションを失効させる（Cookie 失効は web）。
+    /// Logout (`POST /internal/logout`). The api revokes the SSO session (web expires the cookies).
     pub async fn logout(
         &self,
         correlation_id: &str,
@@ -549,8 +549,8 @@ impl ApiClient {
         Ok(())
     }
 
-    /// 同意画面情報取得（`GET /internal/consent-info`）。`tenant_id` はフローのテナント（必須。
-    /// api は未指定・不正を 400 で拒否する）。
+    /// Fetches consent screen info (`GET /internal/consent-info`). `tenant_id` is the flow's tenant (required;
+    /// the api rejects missing or invalid values with 400).
     pub async fn consent_info(
         &self,
         correlation_id: &str,
@@ -573,8 +573,8 @@ impl ApiClient {
                     "request to api /internal/consent-info failed: {e}"
                 ))
             })?;
-        // `/internal/*` で唯一の GET。POST 側（`post_internal`）と同じくテナント解決の失敗を
-        // 区別する（区別しないと、この画面だけ不存在テナントで 502 のまま残る）。
+        // The only GET under `/internal/*`. Like the POST side (`post_internal`), tenant resolution failures are
+        // distinguished (otherwise only this screen would stay at 502 for nonexistent tenants).
         let status = response.status();
         if !status.is_success() {
             if status == reqwest::StatusCode::BAD_REQUEST
@@ -594,7 +594,7 @@ impl ApiClient {
             })
     }
 
-    /// 同意承認（`POST /internal/consent/approve`）。
+    /// Consent approval (`POST /internal/consent/approve`).
     pub async fn consent_approve(
         &self,
         correlation_id: &str,
@@ -604,7 +604,7 @@ impl ApiClient {
             .await
     }
 
-    /// 同意拒否（`POST /internal/consent/deny`）。
+    /// Consent denial (`POST /internal/consent/deny`).
     pub async fn consent_deny(
         &self,
         correlation_id: &str,
@@ -614,7 +614,7 @@ impl ApiClient {
             .await
     }
 
-    /// TOTP セットアップ開始（`POST /internal/mfa/totp/setup`）。QR URI と生シークレットを返す。
+    /// Begins TOTP setup (`POST /internal/mfa/totp/setup`). Returns the QR URI and the raw secret.
     pub async fn totp_setup(
         &self,
         correlation_id: &str,
@@ -624,7 +624,7 @@ impl ApiClient {
             .await
     }
 
-    /// TOTP 確認（`POST /internal/mfa/totp/confirm`）。6 桁コードで有効化する。
+    /// TOTP confirmation (`POST /internal/mfa/totp/confirm`). Activates with a 6-digit code.
     pub async fn totp_confirm(
         &self,
         correlation_id: &str,
@@ -634,7 +634,7 @@ impl ApiClient {
             .await
     }
 
-    /// TOTP 削除（`POST /internal/mfa/totp/delete`）。MFA を無効化する。
+    /// TOTP deletion (`POST /internal/mfa/totp/delete`). Disables MFA.
     pub async fn totp_delete(
         &self,
         correlation_id: &str,
@@ -644,7 +644,7 @@ impl ApiClient {
             .await
     }
 
-    /// ログインフロー TOTP 検証（`POST /internal/mfa/totp/verify`）。
+    /// TOTP verification in the login flow (`POST /internal/mfa/totp/verify`).
     pub async fn verify_totp(
         &self,
         correlation_id: &str,
@@ -654,9 +654,9 @@ impl ApiClient {
             .await
     }
 
-    // ─── Passkey（WebAuthn）API ───────────────────────────────────────────
+    // ─── Passkey (WebAuthn) API ───────────────────────────────────────────
 
-    /// Passkey 登録開始（`POST /internal/passkey/register/begin`）。
+    /// Begins passkey registration (`POST /internal/passkey/register/begin`).
     pub async fn passkey_register_begin(
         &self,
         correlation_id: &str,
@@ -666,7 +666,7 @@ impl ApiClient {
             .await
     }
 
-    /// Passkey 登録完了（`POST /internal/passkey/register/complete`）。
+    /// Completes passkey registration (`POST /internal/passkey/register/complete`).
     pub async fn passkey_register_complete(
         &self,
         correlation_id: &str,
@@ -676,7 +676,7 @@ impl ApiClient {
             .await
     }
 
-    /// Passkey 削除（`POST /internal/passkey/delete`）。
+    /// Deletes a passkey (`POST /internal/passkey/delete`).
     pub async fn passkey_delete(
         &self,
         correlation_id: &str,
@@ -686,7 +686,7 @@ impl ApiClient {
             .await
     }
 
-    /// 登録済み Passkey 一覧（`POST /internal/passkey/list`）。
+    /// List of registered passkeys (`POST /internal/passkey/list`).
     pub async fn passkey_list(
         &self,
         correlation_id: &str,
@@ -696,7 +696,7 @@ impl ApiClient {
             .await
     }
 
-    /// Passkey 認証開始（`POST /internal/passkey/login/begin`）。
+    /// Begins passkey authentication (`POST /internal/passkey/login/begin`).
     pub async fn passkey_login_begin(
         &self,
         correlation_id: &str,
@@ -706,7 +706,7 @@ impl ApiClient {
             .await
     }
 
-    /// Passkey 認証完了（`POST /internal/passkey/login/complete`）。
+    /// Completes passkey authentication (`POST /internal/passkey/login/complete`).
     pub async fn passkey_login_complete(
         &self,
         correlation_id: &str,
@@ -716,8 +716,8 @@ impl ApiClient {
             .await
     }
 
-    /// 管理コンソールの Passkey ログイン完了（`POST /internal/passkey/login/admin/complete`）。
-    /// 開始は共通の `passkey_login_begin` を `auth_session_id` なしで呼ぶ。
+    /// Completes passkey login for the admin console (`POST /internal/passkey/login/admin/complete`).
+    /// Begin calls the shared `passkey_login_begin` without `auth_session_id`.
     pub async fn passkey_login_admin_complete(
         &self,
         correlation_id: &str,
@@ -731,8 +731,8 @@ impl ApiClient {
         .await
     }
 
-    /// ポータルの Passkey ログイン完了（`POST /internal/passkey/login/portal/complete`）。
-    /// 開始は共通の `passkey_login_begin` を `auth_session_id` なしで呼ぶ。
+    /// Completes passkey login for the portal (`POST /internal/passkey/login/portal/complete`).
+    /// Begin calls the shared `passkey_login_begin` without `auth_session_id`.
     pub async fn passkey_login_portal_complete(
         &self,
         correlation_id: &str,
@@ -746,12 +746,12 @@ impl ApiClient {
         .await
     }
 
-    /// 管理者の SSO セッションを管理トークンへ交換し、api の `GET /{tenant_id}/admin/whoami` で
-    /// 認証状態と身元を得る（ADR-0007 §4・ADR-0009 §6・ADR-0037）。
+    /// Exchanges the admin's SSO session for an admin token and gets the authentication state and identity via the api's
+    /// `GET /{tenant_id}/admin/whoami` (ADR-0007 §4, ADR-0009 §6, ADR-0037).
     ///
-    /// 交換で 401 なら未ログイン（`Unauthenticated`）。交換は通るが whoami が 403 なら
-    /// 「ログイン済みだが管理者ではない」で、この 2 つを分けられることがトークン交換を
-    /// リクエスト毎に行う理由でもある。
+    /// A 401 on exchange means not logged in (`Unauthenticated`). If the exchange passes but whoami returns 403, it is
+    /// "logged in but not an admin"; being able to separate these two is also why the token exchange
+    /// is done per request.
     pub async fn admin_whoami(
         &self,
         correlation_id: &str,
@@ -801,12 +801,12 @@ impl ApiClient {
         }
     }
 
-    // ── 管理コンソール → JSON 管理 API（`/{tenant_id}/admin/*`、管理トークン。ADR-0037）─────────
+    // ── Admin console -> JSON admin API (`/{tenant_id}/admin/*`, admin token; ADR-0037) ─────────
     //
-    // 各メソッドが受け取る `sso` は SSO セッション Cookie の値だが、api へ転送するのはトークンで
-    // あって Cookie ではない。`admin_send` 系が `management_token` で交換してから Bearer で送る。
+    // The `sso` each method receives is the SSO session cookie value, but what is forwarded to the api is a token,
+    // not the cookie. The `admin_send` family exchanges it with `management_token` and then sends it as Bearer.
 
-    /// クライアント一覧の 1 ページ分（`GET /admin/clients`。G7）。ページングは api（DB）側で行う。
+    /// One page of the client list (`GET /admin/clients`; G7). Paging is done by the api (DB).
     pub async fn list_clients(
         &self,
         correlation_id: &str,
@@ -818,7 +818,7 @@ impl ApiClient {
             .await
     }
 
-    /// 単一クライアント（`GET /admin/clients/{id}`）。
+    /// A single client (`GET /admin/clients/{id}`).
     pub async fn get_client(
         &self,
         correlation_id: &str,
@@ -837,7 +837,7 @@ impl ApiClient {
         .await
     }
 
-    /// クライアント作成（`POST /admin/clients`）。
+    /// Creates a client (`POST /admin/clients`).
     pub async fn create_client(
         &self,
         correlation_id: &str,
@@ -856,7 +856,7 @@ impl ApiClient {
         .await
     }
 
-    /// クライアント部分更新（`PATCH /admin/clients/{id}`）。
+    /// Partially updates a client (`PATCH /admin/clients/{id}`).
     pub async fn update_client(
         &self,
         correlation_id: &str,
@@ -876,7 +876,7 @@ impl ApiClient {
         .await
     }
 
-    /// secret 再発行（`POST /admin/clients/{id}/secret`）。
+    /// Reissues the secret (`POST /admin/clients/{id}/secret`).
     pub async fn rotate_client_secret(
         &self,
         correlation_id: &str,
@@ -895,10 +895,10 @@ impl ApiClient {
         .await
     }
 
-    /// クライアントへ**付与できる**権限コードの一覧（`GET /admin/permissions?grantable_to=client`）。
+    /// List of permission codes **grantable** to clients (`GET /admin/permissions?grantable_to=client`).
     ///
-    /// 絞り込みは api が `domain::permission::is_grantable_to_client` で行う。web が同じ判定を
-    /// 持たないのは、マスタが増えたときに片方だけ古くなるのを避けるためである（ADR-0037）。
+    /// Filtering is done by the api with `domain::permission::is_grantable_to_client`. web doesn't hold the same check
+    /// to avoid only one side going stale when the master grows (ADR-0037).
     pub async fn client_grantable_permissions(
         &self,
         correlation_id: &str,
@@ -915,7 +915,7 @@ impl ApiClient {
         .await
     }
 
-    /// クライアントの保有管理権限の一覧（`GET /admin/clients/{id}/permissions`。ADR-0037）。
+    /// List of a client's held admin permissions (`GET /admin/clients/{id}/permissions`; ADR-0037).
     pub async fn list_client_permissions(
         &self,
         correlation_id: &str,
@@ -934,7 +934,7 @@ impl ApiClient {
         .await
     }
 
-    /// クライアントへの管理権限付与（`POST /admin/clients/{id}/permissions`）。
+    /// Grants an admin permission to a client (`POST /admin/clients/{id}/permissions`).
     pub async fn grant_client_permission(
         &self,
         correlation_id: &str,
@@ -954,7 +954,7 @@ impl ApiClient {
         .await
     }
 
-    /// クライアントからの管理権限剥奪（`DELETE /admin/clients/{id}/permissions/{code}`）。
+    /// Revokes an admin permission from a client (`DELETE /admin/clients/{id}/permissions/{code}`).
     pub async fn revoke_client_permission(
         &self,
         correlation_id: &str,
@@ -963,7 +963,7 @@ impl ApiClient {
         client_id: &str,
         code: &str,
     ) -> Result<ClientPermissionsResponse, AdminApiError> {
-        // 権限コードの `:` はパスセグメントにそのまま置ける（RFC 3986 の pchar）。
+        // The `:` in permission codes can go into a path segment as is (pchar of RFC 3986).
         self.admin_send(
             Method::DELETE,
             tenant_id,
@@ -975,9 +975,9 @@ impl ApiClient {
         .await
     }
 
-    // ── 利用者・権限（管理コンソールの権限画面）─────────────────────────────────
+    // ── Users and permissions (admin console permission screens) ─────────────────────────────────
 
-    /// 利用者取得（`GET /admin/users/{id}`）。
+    /// Gets a user (`GET /admin/users/{id}`).
     pub async fn get_user(
         &self,
         correlation_id: &str,
@@ -996,7 +996,7 @@ impl ApiClient {
         .await
     }
 
-    /// 利用者作成（`POST /admin/users`）。本人へ渡す設定リンクを一度だけ返す（ADR-0062）。
+    /// Creates a user (`POST /admin/users`). Returns the setup link to hand to the user only once (ADR-0062).
     pub async fn create_user(
         &self,
         correlation_id: &str,
@@ -1015,7 +1015,7 @@ impl ApiClient {
         .await
     }
 
-    /// 付与可能な権限コード（`GET /admin/permissions`）。
+    /// Grantable permission codes (`GET /admin/permissions`).
     pub async fn available_permissions(
         &self,
         correlation_id: &str,
@@ -1033,7 +1033,7 @@ impl ApiClient {
         .await
     }
 
-    /// 保有権限一覧（`GET /admin/users/{id}/permissions`）。
+    /// List of held permissions (`GET /admin/users/{id}/permissions`).
     pub async fn list_user_permissions(
         &self,
         correlation_id: &str,
@@ -1052,7 +1052,7 @@ impl ApiClient {
         .await
     }
 
-    /// 権限付与（`POST /admin/users/{id}/permissions`）。
+    /// Grants a permission (`POST /admin/users/{id}/permissions`).
     pub async fn grant_permission(
         &self,
         correlation_id: &str,
@@ -1072,7 +1072,7 @@ impl ApiClient {
         .await
     }
 
-    /// 権限剥奪（`DELETE /admin/users/{id}/permissions/{code}`）。
+    /// Revokes a permission (`DELETE /admin/users/{id}/permissions/{code}`).
     pub async fn revoke_permission(
         &self,
         correlation_id: &str,
@@ -1092,7 +1092,7 @@ impl ApiClient {
         .await
     }
 
-    /// 利用者の状態変更（`PATCH /admin/users/{user_id}`。ACTIVE / DISABLED）。
+    /// Changes a user's status (`PATCH /admin/users/{user_id}`; ACTIVE / DISABLED).
     pub async fn update_user_status(
         &self,
         correlation_id: &str,
@@ -1112,9 +1112,9 @@ impl ApiClient {
         .await
     }
 
-    /// 利用者プロフィール（メール・ログイン識別子・表示名）の更新
-    /// （`PATCH /admin/users/{user_id}/profile`。MT25）。`profile` は
-    /// `{ email, preferred_username, name }`（`name` は空文字で解除を意味する）。
+    /// Updates a user's profile (email, login identifier, display name)
+    /// (`PATCH /admin/users/{user_id}/profile`; MT25). `profile` is
+    /// `{ email, preferred_username, name }` (an empty `name` means unset).
     pub async fn update_user_profile(
         &self,
         correlation_id: &str,
@@ -1134,7 +1134,7 @@ impl ApiClient {
         .await
     }
 
-    /// 利用者の削除（`DELETE /admin/users/{user_id}`。所属元が当該テナントの利用者のみ）。
+    /// Deletes a user (`DELETE /admin/users/{user_id}`; only users whose owning tenant is this tenant).
     pub async fn delete_user(
         &self,
         correlation_id: &str,
@@ -1153,8 +1153,8 @@ impl ApiClient {
         .await
     }
 
-    /// 利用者のパスワード再発行（`POST /admin/users/{user_id}/password-reset`）。
-    /// 本人へ渡す設定リンクを一度だけ返す（ADR-0062）。
+    /// Reissues a user's password (`POST /admin/users/{user_id}/password-reset`).
+    /// Returns the setup link to hand to the user only once (ADR-0062).
     pub async fn reset_user_password(
         &self,
         correlation_id: &str,
@@ -1173,8 +1173,8 @@ impl ApiClient {
         .await
     }
 
-    /// 利用者の MFA 解除（`POST /admin/users/{user_id}/mfa-reset`。MT21）。
-    /// TOTP と Passkey をまとめて外し、外した内訳を返す。
+    /// Resets a user's MFA (`POST /admin/users/{user_id}/mfa-reset`; MT21).
+    /// Removes TOTP and passkeys together and returns a breakdown of what was removed.
     pub async fn reset_user_mfa(
         &self,
         correlation_id: &str,
@@ -1193,8 +1193,8 @@ impl ApiClient {
         .await
     }
 
-    /// 利用者へ発行済み refresh token の一括失効（`POST /admin/users/{user_id}/token-reissue`。
-    /// ADR-0047）。落とした本数が返る（0 も成功）。
+    /// Bulk-revokes refresh tokens issued to a user (`POST /admin/users/{user_id}/token-reissue`;
+    /// ADR-0047). Returns the number dropped (0 is also success).
     pub async fn reissue_user_tokens(
         &self,
         correlation_id: &str,
@@ -1213,8 +1213,8 @@ impl ApiClient {
         .await
     }
 
-    /// 利用者のいま有効な refresh token の本数（`GET /admin/users/{user_id}/active-tokens`。
-    /// task #83）。再発行を押す前に対象の有無を見せるために読む。
+    /// Number of a user's currently valid refresh tokens (`GET /admin/users/{user_id}/active-tokens`;
+    /// task #83). Read to show whether there is anything to target before reissue is pressed.
     pub async fn count_user_active_tokens(
         &self,
         correlation_id: &str,
@@ -1233,8 +1233,8 @@ impl ApiClient {
         .await
     }
 
-    /// アカウントロックの即時解除（`POST /admin/users/{user_id}/unlock`。AP6）。
-    /// ロック期限のクリアと失敗回数のリセットを api 側が同時に行う。
+    /// Immediately unlocks an account (`POST /admin/users/{user_id}/unlock`; AP6).
+    /// The api clears the lock expiry and resets the failure count at the same time.
     pub async fn unlock_user(
         &self,
         correlation_id: &str,
@@ -1253,9 +1253,9 @@ impl ApiClient {
         .await
     }
 
-    // ── 外部 IdP 設定・ログイン識別子（AP16。API は AP10 / AP8）────────────────
+    // ── External IdP settings and login identifiers (AP16; APIs are AP10 / AP8) ────────────────
 
-    /// 外部 IdP 設定の一覧（`GET /admin/external-idps`）。
+    /// List of external IdP settings (`GET /admin/external-idps`).
     pub async fn list_external_idps(
         &self,
         correlation_id: &str,
@@ -1273,7 +1273,7 @@ impl ApiClient {
         .await
     }
 
-    /// 外部 IdP 設定の作成（`POST /admin/external-idps`）。
+    /// Creates an external IdP setting (`POST /admin/external-idps`).
     pub async fn create_external_idp(
         &self,
         correlation_id: &str,
@@ -1292,7 +1292,7 @@ impl ApiClient {
         .await
     }
 
-    /// 外部 IdP 設定の部分更新（`PATCH /admin/external-idps/{id}`）。
+    /// Partially updates an external IdP setting (`PATCH /admin/external-idps/{id}`).
     pub async fn update_external_idp(
         &self,
         correlation_id: &str,
@@ -1312,8 +1312,8 @@ impl ApiClient {
         .await
     }
 
-    /// 外部 IdP メタデータ取り込み（`POST /admin/external-idps/import-metadata`）。AP12。
-    /// 解析だけを行い、登録候補値を返す（永続化はしない）。
+    /// Imports external IdP metadata (`POST /admin/external-idps/import-metadata`). AP12.
+    /// Only parses and returns candidate values for registration (nothing is persisted).
     pub async fn import_external_idp_metadata(
         &self,
         correlation_id: &str,
@@ -1332,8 +1332,8 @@ impl ApiClient {
         .await
     }
 
-    /// 外部 OIDC IdP の discovery 取り込み（`POST /admin/external-idps/import-discovery`。task #77）。
-    /// api が issuer の discovery ドキュメントを読んで検証し、登録候補値を返す（永続化はしない）。
+    /// Imports an external OIDC IdP's discovery (`POST /admin/external-idps/import-discovery`; task #77).
+    /// The api reads and validates the issuer's discovery document and returns candidate values for registration (nothing is persisted).
     pub async fn import_external_idp_discovery(
         &self,
         correlation_id: &str,
@@ -1355,7 +1355,7 @@ impl ApiClient {
         .await
     }
 
-    /// 外部 IdP 設定の削除（`DELETE /admin/external-idps/{id}`）。
+    /// Deletes an external IdP setting (`DELETE /admin/external-idps/{id}`).
     pub async fn delete_external_idp(
         &self,
         correlation_id: &str,
@@ -1374,7 +1374,7 @@ impl ApiClient {
         .await
     }
 
-    /// 利用者のログイン識別子一覧（`GET /admin/users/{user_id}/login-identifiers`）。
+    /// List of a user's login identifiers (`GET /admin/users/{user_id}/login-identifiers`).
     pub async fn list_login_identifiers(
         &self,
         correlation_id: &str,
@@ -1393,7 +1393,7 @@ impl ApiClient {
         .await
     }
 
-    /// ログイン識別子の追加（`POST /admin/users/{user_id}/login-identifiers`）。
+    /// Adds a login identifier (`POST /admin/users/{user_id}/login-identifiers`).
     pub async fn add_login_identifier(
         &self,
         correlation_id: &str,
@@ -1413,7 +1413,7 @@ impl ApiClient {
         .await
     }
 
-    /// ログイン識別子の有効/無効切り替え（`PATCH .../login-identifiers/{id}`）。
+    /// Enables/disables a login identifier (`PATCH .../login-identifiers/{id}`).
     pub async fn set_login_identifier_active(
         &self,
         correlation_id: &str,
@@ -1434,7 +1434,7 @@ impl ApiClient {
         .await
     }
 
-    /// 別名のメールを主メールへ昇格（`POST .../login-identifiers/{id}/primary-email`。ADR-0052）。
+    /// Promotes an alias email to the primary email (`POST .../login-identifiers/{id}/primary-email`; ADR-0052).
     pub async fn promote_primary_email(
         &self,
         correlation_id: &str,
@@ -1454,7 +1454,7 @@ impl ApiClient {
         .await
     }
 
-    /// ログイン識別子の削除（`DELETE .../login-identifiers/{id}`）。
+    /// Deletes a login identifier (`DELETE .../login-identifiers/{id}`).
     pub async fn delete_login_identifier(
         &self,
         correlation_id: &str,
@@ -1474,10 +1474,10 @@ impl ApiClient {
         .await
     }
 
-    // ── メンバー・招待（ADR-0009 §3）─────────────────────────────────────────
+    // ── Members and invitations (ADR-0009 §3) ─────────────────────────────────────────
 
-    /// アカウント一覧（`GET /admin/accounts`。人とサービスアカウント。ADR-0065）。種別・絞り込み・
-    /// ページングの条件は `(key, value)` の並びで渡す（絞り込みは api 側＝DB で行う）。
+    /// Account list (`GET /admin/accounts`; people and service accounts; ADR-0065). Kind, filter and
+    /// paging conditions are passed as `(key, value)` pairs (filtering is done on the api side = DB).
     pub async fn list_accounts(
         &self,
         correlation_id: &str,
@@ -1489,7 +1489,7 @@ impl ApiClient {
             .await
     }
 
-    /// サービスアカウント 1 件（`GET /admin/service-accounts/{client_id}`。ADR-0065）。
+    /// One service account (`GET /admin/service-accounts/{client_id}`; ADR-0065).
     pub async fn get_service_account(
         &self,
         correlation_id: &str,
@@ -1507,8 +1507,8 @@ impl ApiClient {
         .await
     }
 
-    /// サービスアカウントの管理者メモを書く（`PUT /admin/service-accounts/{client_id}/note`）。
-    /// 空なら消える。
+    /// Writes the admin note of a service account (`PUT /admin/service-accounts/{client_id}/note`).
+    /// Empty deletes it.
     pub async fn update_service_account_note(
         &self,
         correlation_id: &str,
@@ -1528,7 +1528,7 @@ impl ApiClient {
         .await
     }
 
-    /// サービスアカウントが使えるアプリ（`GET /admin/service-accounts/{client_id}/applications`）。
+    /// Apps a service account can use (`GET /admin/service-accounts/{client_id}/applications`).
     pub async fn list_service_account_applications(
         &self,
         correlation_id: &str,
@@ -1546,10 +1546,10 @@ impl ApiClient {
         .await
     }
 
-    /// メンバー 1 人（`GET /admin/members/{user_id}`）。詳細画面のために引く。
+    /// One member (`GET /admin/members/{user_id}`). Looked up for the detail screen.
     ///
-    /// ⚠ **一覧から探さない。** 一覧はページングされているので、目的の 1 人が何ページ目に
-    /// 居るかはこちらには分からない。
+    /// ⚠ **Don't search the list.** The list is paged, so we can't know which page
+    /// the person we want is on.
     pub async fn get_member(
         &self,
         correlation_id: &str,
@@ -1577,8 +1577,8 @@ impl ApiClient {
         Self::handle_admin_response(response, "/admin/members/{user_id}").await
     }
 
-    /// ゲストメンバーシップの一時停止・再開（`PATCH /admin/members/{user_id}`。MT24）。
-    /// `status` は `SUSPENDED`（停止）または `ACTIVE`（再開）。
+    /// Suspends/resumes a guest membership (`PATCH /admin/members/{user_id}`; MT24).
+    /// `status` is `SUSPENDED` (suspend) or `ACTIVE` (resume).
     pub async fn update_member_status(
         &self,
         correlation_id: &str,
@@ -1598,7 +1598,7 @@ impl ApiClient {
         .await
     }
 
-    /// 管理者メモを書く（`PUT /admin/members/{user_id}/note`。ADR-0063）。空なら消える。
+    /// Writes an admin note (`PUT /admin/members/{user_id}/note`; ADR-0063). Empty deletes it.
     pub async fn update_member_note(
         &self,
         correlation_id: &str,
@@ -1618,7 +1618,7 @@ impl ApiClient {
         .await
     }
 
-    /// メンバー 1 人が使えるアプリ（`GET /admin/members/{user_id}/applications`。ADR-0063）。
+    /// Apps one member can use (`GET /admin/members/{user_id}/applications`; ADR-0063).
     pub async fn list_member_applications(
         &self,
         correlation_id: &str,
@@ -1636,7 +1636,7 @@ impl ApiClient {
         .await
     }
 
-    /// ゲストメンバーシップの解除（`DELETE /admin/members/{user_id}`。HOME は不可）。
+    /// Removes a guest membership (`DELETE /admin/members/{user_id}`; HOME is not allowed).
     pub async fn revoke_member(
         &self,
         correlation_id: &str,
@@ -1655,7 +1655,7 @@ impl ApiClient {
         .await
     }
 
-    /// ゲスト招待の作成（`POST /admin/invitations`）。招待トークンを一度だけ返す。
+    /// Creates a guest invitation (`POST /admin/invitations`). Returns the invitation token only once.
     pub async fn create_invitation(
         &self,
         correlation_id: &str,
@@ -1669,22 +1669,22 @@ impl ApiClient {
             "/admin/invitations",
             correlation_id,
             sso,
-            // 相手はメールアドレスでも内部 ID でもよい（読み分けは api。ADR-0061）。
+            // The invitee may be an email address or an internal ID (the api tells them apart; ADR-0061).
             Some(serde_json::json!({ "invitee": invitee })),
         )
         .await
     }
 
-    /// 招待の承諾（`POST /{tenant_id}/invitations/accept`）。被招待者本人の SSO Cookie を**そのまま
-    /// 転送する**。
+    /// Accepts an invitation (`POST /{tenant_id}/invitations/accept`). **Forwards the invitee's own SSO cookie
+    /// as is**.
     ///
-    /// ⚠ **管理 API の共通処理（`admin_send_*`）を使ってはいけない。** あちらは SSO セッションを
-    /// `POST /internal/admin/token` で**その テナントの管理トークンへ交換してから**呼ぶ。
-    /// ⚠ **被招待者はまだそのテナントのメンバーではないので、交換は必ず失敗する**（401）。
-    /// 承諾はメンバーになるための操作なので、メンバーであることを前提にできない。
+    /// ⚠ **Don't use the admin API's common path (`admin_send_*`).** It calls after **exchanging the SSO session for an admin token
+    /// of that tenant** via `POST /internal/admin/token`.
+    /// ⚠ **The invitee is not yet a member of that tenant, so the exchange always fails** (401).
+    /// Accepting is the operation of becoming a member, so it can't presuppose membership.
     ///
-    /// api 側の口は Cookie を資格情報として受ける（`AuthenticatedUser`。権限は要求しない。
-    /// ADR-0009 §3）。成功は 204。
+    /// The api endpoint accepts the cookie as the credential (`AuthenticatedUser`; no permission required;
+    /// ADR-0009 §3). Success is 204.
     pub async fn accept_invitation(
         &self,
         correlation_id: &str,
@@ -1728,9 +1728,9 @@ impl ApiClient {
         })
     }
 
-    // ── 状況確認（監査ログ・クライアント状況）─────────────────────────────────
+    // ── Status checks (audit log, client status) ─────────────────────────────────
 
-    /// 監査ログ検索（`GET /admin/audit-logs`）。フィルタは `(key, value)` の並びで渡す。
+    /// Audit log search (`GET /admin/audit-logs`). Filters are passed as `(key, value)` pairs.
     pub async fn search_audit_logs(
         &self,
         correlation_id: &str,
@@ -1756,8 +1756,8 @@ impl ApiClient {
         Self::handle_admin_response(response, "/admin/audit-logs").await
     }
 
-    /// エラー・警告ログ検索（`GET /admin/logs`）。フィルタは `(key, value)` の並びで渡す。
-    /// 参照権限は api 側が `idp.system.admin` で強制する（テナント横断の運用情報のため）。
+    /// Error/warning log search (`GET /admin/logs`). Filters are passed as `(key, value)` pairs.
+    /// Read permission is enforced by the api as `idp.system.admin` (cross-tenant operational information).
     pub async fn search_application_logs(
         &self,
         correlation_id: &str,
@@ -1783,11 +1783,11 @@ impl ApiClient {
         Self::handle_admin_response(response, "/admin/logs").await
     }
 
-    /// 自身の WARN / ERROR を api へ送って `log` テーブルへ書いてもらう（`POST /internal/logs`）。
-    /// web は DB を持たないため、これがアプリケーションログを残す唯一の経路（CLAUDE.md「ログ」）。
+    /// Sends our own WARN / ERROR to the api to have them written to the `log` table (`POST /internal/logs`).
+    /// web has no DB, so this is the only path for keeping application logs (CLAUDE.md "Logging").
     ///
-    /// **失敗しても呼び出し側はログを出さないこと**（送信失敗のログがまた送信を誘発するため）。
-    /// 受理件数を返す。
+    /// **Callers must not log on failure** (a log about a send failure would trigger another send).
+    /// Returns the number accepted.
     pub async fn push_application_logs(
         &self,
         records: Vec<ApplicationLogPayload>,
@@ -1808,7 +1808,7 @@ impl ApiClient {
             .accepted)
     }
 
-    /// クライアント状況一覧（`GET /admin/clients/status`）。
+    /// Client status list (`GET /admin/clients/status`).
     pub async fn list_client_status(
         &self,
         correlation_id: &str,
@@ -1826,7 +1826,7 @@ impl ApiClient {
         .await
     }
 
-    /// SAML SP（クライアント）一覧（`GET /admin/saml-service-providers`）。
+    /// SAML SP (client) list (`GET /admin/saml-service-providers`).
     pub async fn list_saml_service_providers(
         &self,
         correlation_id: &str,
@@ -1844,9 +1844,9 @@ impl ApiClient {
         .await
     }
 
-    // ── 認証ポリシー（AP1。`/admin/authentication-policies`）────────────────────────
+    // ── Authentication policies (AP1; `/admin/authentication-policies`) ────────────────────────
 
-    /// 認証ポリシー一覧（`GET /admin/authentication-policies`。priority 昇順・無効も含む）。
+    /// Authentication policy list (`GET /admin/authentication-policies`; ascending priority, including disabled ones).
     pub async fn list_authentication_policies(
         &self,
         correlation_id: &str,
@@ -1864,7 +1864,7 @@ impl ApiClient {
         .await
     }
 
-    /// 認証ポリシーの作成（`POST /admin/authentication-policies`）。
+    /// Creates an authentication policy (`POST /admin/authentication-policies`).
     pub async fn create_authentication_policy(
         &self,
         correlation_id: &str,
@@ -1883,7 +1883,7 @@ impl ApiClient {
         .await
     }
 
-    /// 認証ポリシーの更新（`PUT /admin/authentication-policies/{id}`。全項目置換）。
+    /// Updates an authentication policy (`PUT /admin/authentication-policies/{id}`; full replacement).
     pub async fn update_authentication_policy(
         &self,
         correlation_id: &str,
@@ -1903,7 +1903,7 @@ impl ApiClient {
         .await
     }
 
-    /// 認証ポリシーの削除（`DELETE /admin/authentication-policies/{id}`）。
+    /// Deletes an authentication policy (`DELETE /admin/authentication-policies/{id}`).
     pub async fn delete_authentication_policy(
         &self,
         correlation_id: &str,
@@ -1922,7 +1922,7 @@ impl ApiClient {
         .await
     }
 
-    /// SAML SP（クライアント）登録（`POST /admin/saml-service-providers`）。
+    /// Registers a SAML SP (client) (`POST /admin/saml-service-providers`).
     pub async fn register_saml_service_provider(
         &self,
         correlation_id: &str,
@@ -1941,7 +1941,7 @@ impl ApiClient {
         .await
     }
 
-    /// SAML SP（クライアント）更新（`PUT /admin/saml-service-providers/{id}`）。
+    /// Updates a SAML SP (client) (`PUT /admin/saml-service-providers/{id}`).
     pub async fn update_saml_service_provider(
         &self,
         correlation_id: &str,
@@ -1961,7 +1961,7 @@ impl ApiClient {
         .await
     }
 
-    /// クライアントを論理削除する（ADR-0035）。実体は残り、状態が DELETED になる。
+    /// Logically deletes a client (ADR-0035). The entity remains and its status becomes DELETED.
     pub async fn delete_client(
         &self,
         correlation_id: &str,
@@ -1980,7 +1980,7 @@ impl ApiClient {
         .await
     }
 
-    /// SAML SP（クライアント）削除（`DELETE /admin/saml-service-providers/{id}`）。
+    /// Deletes a SAML SP (client) (`DELETE /admin/saml-service-providers/{id}`).
     pub async fn delete_saml_service_provider(
         &self,
         correlation_id: &str,
@@ -1999,7 +1999,7 @@ impl ApiClient {
         .await
     }
 
-    /// SP メタデータ取り込み（`POST /admin/saml-service-providers/import-metadata`）。
+    /// Imports SP metadata (`POST /admin/saml-service-providers/import-metadata`).
     pub async fn import_saml_sp_metadata(
         &self,
         correlation_id: &str,
@@ -2018,9 +2018,9 @@ impl ApiClient {
         .await
     }
 
-    // ── 署名鍵管理（K1）─────────────────────────────────────────────────────
+    // ── Signing key management (K1) ─────────────────────────────────────────────────────
 
-    /// 署名鍵一覧（`GET /admin/signing-keys`）。
+    /// Signing key list (`GET /admin/signing-keys`).
     pub async fn list_signing_keys(
         &self,
         correlation_id: &str,
@@ -2038,7 +2038,7 @@ impl ApiClient {
         .await
     }
 
-    /// 新規署名鍵を生成する（`POST /admin/signing-keys`）。`algorithm` は `RS256` または `ES256`。
+    /// Generates a new signing key (`POST /admin/signing-keys`). `algorithm` is `RS256` or `ES256`.
     pub async fn generate_signing_key(
         &self,
         correlation_id: &str,
@@ -2061,7 +2061,7 @@ impl ApiClient {
         .await
     }
 
-    /// 署名鍵を退役させる（`POST /admin/signing-keys/{kid}/retire`）。
+    /// Retires a signing key (`POST /admin/signing-keys/{kid}/retire`).
     pub async fn retire_signing_key(
         &self,
         correlation_id: &str,
@@ -2080,7 +2080,7 @@ impl ApiClient {
         .await
     }
 
-    /// 署名鍵を削除する（`DELETE /admin/signing-keys/{kid}`）。RETIRED のみ可。
+    /// Deletes a signing key (`DELETE /admin/signing-keys/{kid}`). Only RETIRED keys.
     pub async fn delete_signing_key(
         &self,
         correlation_id: &str,
@@ -2099,7 +2099,7 @@ impl ApiClient {
         .await
     }
 
-    /// 登録済みの宛名を一覧する（`GET /admin/resources`。ADR-0042）。
+    /// Lists registered audiences (`GET /admin/resources`; ADR-0042).
     pub async fn list_resources(
         &self,
         correlation_id: &str,
@@ -2117,7 +2117,7 @@ impl ApiClient {
         .await
     }
 
-    /// アプリを一覧する（`GET /admin/applications`。ADR-0054）。
+    /// Lists apps (`GET /admin/applications`; ADR-0054).
     pub async fn list_applications(
         &self,
         correlation_id: &str,
@@ -2135,7 +2135,7 @@ impl ApiClient {
         .await
     }
 
-    /// アプリ 1 件の詳細を引く（`GET /admin/applications/{id}`）。
+    /// Gets the details of one app (`GET /admin/applications/{id}`).
     pub async fn get_application(
         &self,
         correlation_id: &str,
@@ -2154,10 +2154,10 @@ impl ApiClient {
         .await
     }
 
-    /// アプリを登録する（`POST /admin/applications`）。
+    /// Registers an app (`POST /admin/applications`).
     ///
-    /// `assign_creator` は「自分を割り当てる」。⚠ **「個別」で作った直後は誰も入れない**ので、
-    /// 画面は初めからチェックしておく。
+    /// `assign_creator` means "assign myself". ⚠ **Right after creating it as "individual" nobody can get in**, so
+    /// the screen has it checked from the start.
     pub async fn create_application(
         &self,
         correlation_id: &str,
@@ -2182,7 +2182,7 @@ impl ApiClient {
         .await
     }
 
-    /// アプリを更新する（`PUT /admin/applications/{id}`）。3 つの値は必ず揃えて送る。
+    /// Updates an app (`PUT /admin/applications/{id}`). The 3 values are always sent together.
     #[allow(clippy::too_many_arguments)]
     pub async fn update_application(
         &self,
@@ -2209,7 +2209,7 @@ impl ApiClient {
         .await
     }
 
-    /// アプリを削除する（`DELETE /admin/applications/{id}`）。RP の登録は消えない。
+    /// Deletes an app (`DELETE /admin/applications/{id}`). The RP registrations are not deleted.
     pub async fn delete_application(
         &self,
         correlation_id: &str,
@@ -2228,13 +2228,13 @@ impl ApiClient {
         .await
     }
 
-    /// 名乗りを足す（`POST /admin/applications/{id}/bindings`。ADR-0059）。
+    /// Adds a binding (`POST /admin/applications/{id}/bindings`; ADR-0059).
     ///
-    /// 相手は種類ごとに決まった欄で送る（`oidc` / `service_account` は `client_id`、`saml` は
-    /// `service_provider_id`、`resource` は `resource_uri`）。知らない種類は api が 400 で断る。
+    /// The counterpart is sent in the field fixed per kind (`client_id` for `oidc` / `service_account`, `service_provider_id`
+    /// for `saml`, `resource_uri` for `resource`). Unknown kinds are refused by the api with 400.
     ///
-    /// `move_from` は「相手が別のアプリの名乗りなら、そのアプリから移す」ときの、今の持ち主の
-    /// アプリ ID（ADR-0067）。今の持ち主と違えば api は 409 で断る。
+    /// `move_from` is the app ID of the current owner when "the counterpart is another app's binding, so move it from that app"
+    /// (ADR-0067). If it differs from the current owner, the api refuses with 409.
     #[allow(clippy::too_many_arguments)]
     pub async fn add_application_binding(
         &self,
@@ -2267,7 +2267,7 @@ impl ApiClient {
         .await
     }
 
-    /// 名乗りの候補を引く（`GET /admin/applications/{id}/binding-candidates`。ADR-0067）。
+    /// Looks up binding candidates (`GET /admin/applications/{id}/binding-candidates`; ADR-0067).
     pub async fn application_binding_candidates(
         &self,
         correlation_id: &str,
@@ -2286,7 +2286,7 @@ impl ApiClient {
         .await
     }
 
-    /// 名乗りを外す（`DELETE /admin/applications/{id}/bindings/{binding_id}`）。
+    /// Removes a binding (`DELETE /admin/applications/{id}/bindings/{binding_id}`).
     pub async fn remove_application_binding(
         &self,
         correlation_id: &str,
@@ -2306,10 +2306,10 @@ impl ApiClient {
         .await
     }
 
-    /// 主体を割り当てる（`POST /admin/applications/{id}/assignments`。冪等。ADR-0059）。
+    /// Assigns a principal (`POST /admin/applications/{id}/assignments`; idempotent; ADR-0059).
     ///
-    /// `kind` は `user`（相手は `user_id`）か `service_account`（相手は `client_id`）。知らない種類は
-    /// api が 400 で断る。
+    /// `kind` is `user` (counterpart `user_id`) or `service_account` (counterpart `client_id`). Unknown kinds are
+    /// refused by the api with 400.
     pub async fn assign_application_principal(
         &self,
         correlation_id: &str,
@@ -2337,7 +2337,7 @@ impl ApiClient {
         .await
     }
 
-    /// 人の割り当てを外す（`DELETE /admin/applications/{id}/assignments/users/{user_id}`）。
+    /// Removes a person's assignment (`DELETE /admin/applications/{id}/assignments/users/{user_id}`).
     pub async fn unassign_application_user(
         &self,
         correlation_id: &str,
@@ -2357,8 +2357,8 @@ impl ApiClient {
         .await
     }
 
-    /// サービスアカウントの割り当てを外す
-    /// （`DELETE /admin/applications/{id}/assignments/service-accounts/{client_id}`）。
+    /// Removes a service account's assignment
+    /// (`DELETE /admin/applications/{id}/assignments/service-accounts/{client_id}`).
     pub async fn unassign_application_service_account(
         &self,
         correlation_id: &str,
@@ -2380,9 +2380,9 @@ impl ApiClient {
         .await
     }
 
-    /// 「いま入れている人」を引く（`GET /admin/applications/{id}/current-users`）。
+    /// Looks up "people who can get in now" (`GET /admin/applications/{id}/current-users`).
     ///
-    /// 「全員」から「個別」へ倒す前の写し元。⚠ **これを出さずに切り替えさせない。**
+    /// The copy source before switching from "everyone" to "individual". ⚠ **Never let it switch without showing this.**
     pub async fn application_current_users(
         &self,
         correlation_id: &str,
@@ -2401,7 +2401,7 @@ impl ApiClient {
         .await
     }
 
-    /// 宛名を登録する（`POST /admin/resources`）。
+    /// Registers an audience (`POST /admin/resources`).
     pub async fn register_resource(
         &self,
         correlation_id: &str,
@@ -2424,7 +2424,7 @@ impl ApiClient {
         .await
     }
 
-    /// 宛名の状態を変える（`PATCH /admin/resources/{id}`）。`status` は `ACTIVE` / `DISABLED`。
+    /// Changes an audience's status (`PATCH /admin/resources/{id}`). `status` is `ACTIVE` / `DISABLED`.
     pub async fn update_resource_status(
         &self,
         correlation_id: &str,
@@ -2444,7 +2444,7 @@ impl ApiClient {
         .await
     }
 
-    /// 宛名を削除する（`DELETE /admin/resources/{id}`）。アプリの名乗りも一緒に消える。
+    /// Deletes an audience (`DELETE /admin/resources/{id}`). The app bindings are deleted with it.
     pub async fn delete_resource(
         &self,
         correlation_id: &str,
@@ -2463,11 +2463,11 @@ impl ApiClient {
         .await
     }
 
-    /// SSO セッションを api の管理トークンへ交換する（`POST /internal/admin/token`。ADR-0037）。
+    /// Exchanges the SSO session for an api admin token (`POST /internal/admin/token`; ADR-0037).
     ///
-    /// **管理 API を呼ぶ前に毎回交換する。** キャッシュしないのは、セッション失効・権限剥奪・
-    /// ゲストの一時停止をトークンの寿命だけ遅らせないためである。管理コンソールの流量は少なく、
-    /// 1 往復増える代わりに「無効化したのにまだ操作できる」窓が無くなる。
+    /// **Exchanged every time before calling the admin API.** It is not cached so that session revocation, permission revocation
+    /// and guest suspension are not delayed by the token's lifetime. Admin console traffic is low, and
+    /// at the cost of one extra round trip the window of "disabled but still able to operate" disappears.
     async fn management_token(
         &self,
         correlation_id: &str,
@@ -2493,7 +2493,7 @@ impl ApiClient {
                 .json::<ManagementTokenResponse>()
                 .await
                 .map_err(|e| AdminApiError::Transport(e.to_string())),
-            // セッションが無効 = 未ログイン。呼び出し側はログイン画面へ倒す。
+            // Invalid session = not logged in. The caller falls back to the login screen.
             reqwest::StatusCode::UNAUTHORIZED => Err(AdminApiError::Unauthorized),
             other => Err(AdminApiError::Transport(format!(
                 "management token exchange returned {other}"
@@ -2501,10 +2501,10 @@ impl ApiClient {
         }
     }
 
-    /// `/{tenant_id}/admin/*`（`RequirePerms`）への共通呼び出し。受け取った SSO セッションを
-    /// [`Self::management_token`] で管理トークンへ交換し、Bearer と correlation_id を添えて呼ぶ
-    /// （Cookie は転送しない。ADR-0037）。api のステータスは web の [`AdminApiError`] へ写し、
-    /// 成功時は本文を `T` へデコードする。
+    /// Common call to `/{tenant_id}/admin/*` (`RequirePerms`). Exchanges the received SSO session
+    /// for an admin token via [`Self::management_token`] and calls with Bearer and correlation_id
+    /// (cookies are not forwarded; ADR-0037). The api's status is mapped to web's [`AdminApiError`],
+    /// and on success the body is decoded into `T`.
     async fn admin_send<T>(
         &self,
         method: Method,
@@ -2537,9 +2537,9 @@ impl ApiClient {
         Self::handle_admin_response(response, path).await
     }
 
-    /// クエリ文字列を添えて GET する `admin_send` の亜種（一覧のページング。G7）。
-    /// パスへ文字列連結せず reqwest に組み立てさせるのは、値のパーセントエンコードを
-    /// 呼び出し側ごとに書かないため。
+    /// Variant of `admin_send` that GETs with a query string (list paging; G7).
+    /// reqwest builds it instead of string-concatenating onto the path so percent-encoding of values
+    /// isn't written per caller.
     async fn admin_get_with_query<T>(
         &self,
         tenant_id: &str,
@@ -2569,7 +2569,7 @@ impl ApiClient {
         Self::handle_admin_response(response, path).await
     }
 
-    /// 本文の無い成功応答（204 等）を期待する `admin_send` の亜種。
+    /// Variant of `admin_send` expecting a success response without a body (204 etc.).
     async fn admin_send_no_content(
         &self,
         method: Method,
@@ -2615,7 +2615,7 @@ impl ApiClient {
         })
     }
 
-    /// api の `/admin/*` 応答を `T` かエラーへ写す共通処理。
+    /// Common handling mapping the api's `/admin/*` responses to `T` or an error.
     async fn handle_admin_response<T>(
         response: reqwest::Response,
         path: &str,
@@ -2630,7 +2630,7 @@ impl ApiClient {
                 .await
                 .map_err(|e| AdminApiError::Transport(format!("decode {path}: {e}")));
         }
-        // 失敗時はエラー本文から message を取り出す（400/409 の表示用）。
+        // On failure, extract the message from the error body (for displaying 400/409).
         let message = response
             .json::<ApiErrorBody>()
             .await
@@ -2646,9 +2646,9 @@ impl ApiClient {
         })
     }
 
-    // ── 設定画面（MT14）─────────────────────────────────────────────────────
+    // ── Settings screens (MT14) ─────────────────────────────────────────────────────
 
-    /// 子テナント一覧の 1 ページ分（`GET /admin/tenants`。idp.system.admin 必須。G7）。
+    /// One page of the child tenant list (`GET /admin/tenants`; idp.system.admin required; G7).
     pub async fn list_tenants(
         &self,
         correlation_id: &str,
@@ -2666,8 +2666,8 @@ impl ApiClient {
         .await
     }
 
-    /// 子テナント作成（`POST /admin/tenants`。idp.system.admin 必須）。作成者自身が新テナントの
-    /// ブートストラップ管理者になる（ADR-0009 §4）。応答は作成したテナント。
+    /// Creates a child tenant (`POST /admin/tenants`; idp.system.admin required). The creator becomes the new tenant's
+    /// bootstrap admin (ADR-0009 §4). The response is the created tenant.
     pub async fn create_tenant(
         &self,
         correlation_id: &str,
@@ -2686,8 +2686,8 @@ impl ApiClient {
         .await
     }
 
-    /// 子テナントの表示名・状態を部分更新する（`PATCH /admin/tenants/{child_id}`。
-    /// idp.system.admin 必須。MT23）。`status` は `ACTIVE` / `DISABLED`。
+    /// Partially updates a child tenant's display name and status (`PATCH /admin/tenants/{child_id}`;
+    /// idp.system.admin required; MT23). `status` is `ACTIVE` / `DISABLED`.
     pub async fn update_tenant(
         &self,
         correlation_id: &str,
@@ -2708,8 +2708,8 @@ impl ApiClient {
         .await
     }
 
-    /// 子テナント削除（`DELETE /admin/tenants/{child_id}`。idp.system.admin 必須。
-    /// 配下に子テナント・ユーザー・クライアントが残っていると 409）。
+    /// Deletes a child tenant (`DELETE /admin/tenants/{child_id}`; idp.system.admin required;
+    /// 409 if child tenants, users or clients remain under it).
     pub async fn delete_tenant(
         &self,
         correlation_id: &str,
@@ -2728,9 +2728,9 @@ impl ApiClient {
         .await
     }
 
-    /// 子テナント管理者のパスワード再発行
-    /// （`POST /admin/tenants/{child_id}/admin-password-reset`。idp.system.admin 必須）。
-    /// 本人へ渡す設定リンクを一度だけ返す（ADR-0062）。
+    /// Reissues a child tenant admin's password
+    /// (`POST /admin/tenants/{child_id}/admin-password-reset`; idp.system.admin required).
+    /// Returns the setup link to hand to the user only once (ADR-0062).
     pub async fn reset_tenant_admin_password(
         &self,
         correlation_id: &str,
@@ -2750,7 +2750,7 @@ impl ApiClient {
         .await
     }
 
-    /// 自テナント取得（`GET /admin/settings/tenant`。idp.tenant-settings:read）。
+    /// Gets our own tenant (`GET /admin/settings/tenant`; idp.tenant-settings:read).
     pub async fn get_current_tenant(
         &self,
         correlation_id: &str,
@@ -2768,7 +2768,7 @@ impl ApiClient {
         .await
     }
 
-    /// 自テナント表示名の更新（`PATCH /admin/settings/tenant`。idp.tenant-settings:write）。
+    /// Updates our own tenant's display name (`PATCH /admin/settings/tenant`; idp.tenant-settings:write).
     pub async fn update_current_tenant(
         &self,
         correlation_id: &str,
@@ -2793,7 +2793,7 @@ impl ApiClient {
         .await
     }
 
-    /// テナントの設定値の一覧（`GET /admin/settings/tenant/keys`。idp.tenant-settings:read。ADR-0058）。
+    /// List of the tenant's setting values (`GET /admin/settings/tenant/keys`; idp.tenant-settings:read; ADR-0058).
     pub async fn list_tenant_settings(
         &self,
         correlation_id: &str,
@@ -2811,9 +2811,9 @@ impl ApiClient {
         .await
     }
 
-    /// テナントの値を決める（`PUT /admin/settings/tenant/keys/{key}`。idp.tenant-settings:write）。
+    /// Decides a tenant value (`PUT /admin/settings/tenant/keys/{key}`; idp.tenant-settings:write).
     ///
-    /// 締め出し得る値で `confirmed` が無いと `Conflict`（409）が返る。
+    /// For values that could lock people out, `Conflict` (409) is returned without `confirmed`.
     pub async fn set_tenant_setting(
         &self,
         correlation_id: &str,
@@ -2834,7 +2834,7 @@ impl ApiClient {
         .await
     }
 
-    /// テナントの上書きを消す（`DELETE /admin/settings/tenant/keys/{key}`。idp.tenant-settings:write）。
+    /// Removes the tenant's override (`DELETE /admin/settings/tenant/keys/{key}`; idp.tenant-settings:write).
     pub async fn clear_tenant_setting(
         &self,
         correlation_id: &str,
@@ -2853,8 +2853,8 @@ impl ApiClient {
         .await
     }
 
-    /// テナント自身のメールの経路（`GET /admin/settings/smtp`。idp.smtp:read。ADR-0058 §8）。
-    /// 権限が無いと `Forbidden`（web はその区画を非表示にする）。
+    /// The tenant's own mail route (`GET /admin/settings/smtp`; idp.smtp:read; ADR-0058 §8).
+    /// Without permission, `Forbidden` (web hides that section).
     pub async fn get_tenant_smtp(
         &self,
         correlation_id: &str,
@@ -2872,7 +2872,7 @@ impl ApiClient {
         .await
     }
 
-    /// テナント自身のメールの経路を保存する（`PUT /admin/settings/smtp`。idp.smtp:write）。
+    /// Saves the tenant's own mail route (`PUT /admin/settings/smtp`; idp.smtp:write).
     pub async fn update_tenant_smtp(
         &self,
         correlation_id: &str,
@@ -2891,7 +2891,7 @@ impl ApiClient {
         .await
     }
 
-    /// テナントのメールの経路を消して全体の経路へ戻す（`DELETE /admin/settings/smtp`。idp.smtp:write）。
+    /// Removes the tenant's mail route, reverting to the global route (`DELETE /admin/settings/smtp`; idp.smtp:write).
     pub async fn clear_tenant_smtp(
         &self,
         correlation_id: &str,
@@ -2909,8 +2909,8 @@ impl ApiClient {
         .await
     }
 
-    /// システム設定取得（`GET /admin/system-settings`。idp.system.admin 必須 = 実質 root のみ）。
-    /// root でないと `Forbidden` が返る（web はその区画を非表示にする）。
+    /// Gets system settings (`GET /admin/system-settings`; idp.system.admin required = effectively root only).
+    /// Returns `Forbidden` unless root (web hides that section).
     pub async fn get_system_settings(
         &self,
         correlation_id: &str,
@@ -2928,7 +2928,7 @@ impl ApiClient {
         .await
     }
 
-    /// システム設定更新（`PUT /admin/system-settings`。idp.system.admin 必須）。
+    /// Updates system settings (`PUT /admin/system-settings`; idp.system.admin required).
     pub async fn update_system_settings(
         &self,
         correlation_id: &str,
@@ -2947,8 +2947,8 @@ impl ApiClient {
         .await
     }
 
-    /// ランタイム設定の DB 上書き更新（`PUT /admin/system-settings/runtime`。idp.system.admin 必須）。
-    /// `value` が `None` または空のときは上書きを解除する。
+    /// Updates a runtime setting's DB override (`PUT /admin/system-settings/runtime`; idp.system.admin required).
+    /// When `value` is `None` or empty, the override is removed.
     pub async fn update_runtime_setting(
         &self,
         correlation_id: &str,
@@ -2968,11 +2968,11 @@ impl ApiClient {
         .await
     }
 
-    /// api の再起動要求（`POST /{tenant_id}/admin/restart`。ADR-0017）。
+    /// Requests an api restart (`POST /{tenant_id}/admin/restart`; ADR-0017).
     ///
-    /// api は受理（202）を返してから停止するので、**この呼び出しの成功は「停止した」ではなく
-    /// 「受理された」**を意味する。web 自身の停止はこの成功を確認してから行う（web が先に落ちると
-    /// api への要求が届かないうえ、web が先に起動して古い共有設定を掴む）。
+    /// The api returns accepted (202) and then stops, so **success of this call means "accepted",
+    /// not "stopped"**. web stops itself only after confirming this success (if web went down first,
+    /// the request wouldn't reach the api, and web would start first and grab the old shared settings).
     pub async fn request_restart(
         &self,
         correlation_id: &str,
@@ -2990,7 +2990,7 @@ impl ApiClient {
         .await
     }
 
-    /// セルフサービスのパスワード変更（`POST /internal/account/change-password`。MT15）。
+    /// Self-service password change (`POST /internal/account/change-password`; MT15).
     pub async fn account_change_password(
         &self,
         correlation_id: &str,
@@ -3001,28 +3001,28 @@ impl ApiClient {
             .await
     }
 
-    /// ログイン済みユーザーの表示言語を DB へ永続化する（MT20）。
+    /// Persists a logged-in user's display language to the DB (MT20).
     pub async fn account_update_language(
         &self,
         req: &assay_contracts::auth::InternalAccountUpdateLanguageRequest,
     ) -> Result<assay_contracts::auth::InternalAccountUpdateLanguageResponse, InternalCallError>
     {
-        // correlation_id は不要（監査対象外）のため空文字を渡す。
+        // correlation_id isn't needed (not audited), so an empty string is passed.
         self.post_internal("/internal/account/update-language", "", req)
             .await
     }
 
-    /// ログイン済みユーザーの配色設定（`users.theme`）を更新する。
+    /// Updates a logged-in user's color scheme setting (`users.theme`).
     pub async fn account_update_theme(
         &self,
         req: &assay_contracts::auth::InternalAccountUpdateThemeRequest,
     ) -> Result<assay_contracts::auth::InternalAccountUpdateThemeResponse, InternalCallError> {
-        // correlation_id は不要（監査対象外）のため空文字を渡す。
+        // correlation_id isn't needed (not audited), so an empty string is passed.
         self.post_internal("/internal/account/update-theme", "", req)
             .await
     }
 
-    /// セルフサービスのプロフィール（表示名等）を取得する（設定画面のプリフィル用）。
+    /// Gets the self-service profile (display name etc.) (for prefilling the settings screen).
     pub async fn account_profile(
         &self,
         req: &assay_contracts::auth::InternalAccountProfileRequest,
@@ -3031,7 +3031,7 @@ impl ApiClient {
             .await
     }
 
-    /// ログイン済みユーザーの表示名（`users.name`）を更新する。
+    /// Updates a logged-in user's display name (`users.name`).
     pub async fn account_update_name(
         &self,
         req: &assay_contracts::auth::InternalAccountUpdateNameRequest,
@@ -3040,7 +3040,7 @@ impl ApiClient {
             .await
     }
 
-    /// 有効な外部 IdP を一覧する（ログイン画面のボタン用。AP10）。
+    /// Lists active external IdPs (for login screen buttons; AP10).
     pub async fn external_providers(
         &self,
         correlation_id: &str,
@@ -3050,7 +3050,7 @@ impl ApiClient {
             .await
     }
 
-    /// 外部 IdP ログインを開始し、認可エンドポイントの URL を得る（AP10）。
+    /// Starts an external IdP login and gets the authorization endpoint URL (AP10).
     pub async fn external_start(
         &self,
         correlation_id: &str,
@@ -3060,7 +3060,7 @@ impl ApiClient {
             .await
     }
 
-    /// 外部 IdP からのコールバックを検証させる（AP10）。
+    /// Has the callback from the external IdP verified (AP10).
     pub async fn external_callback(
         &self,
         correlation_id: &str,
@@ -3070,7 +3070,7 @@ impl ApiClient {
             .await
     }
 
-    /// 外部 SAML IdP のアサーションを api へ渡して検証させる（AP12）。
+    /// Passes an external SAML IdP's assertion to the api for verification (AP12).
     pub async fn external_saml_acs(
         &self,
         correlation_id: &str,
@@ -3080,7 +3080,7 @@ impl ApiClient {
             .await
     }
 
-    /// 登録済み認証器の一覧とリカバリーコードの残数を取得する（AP9）。
+    /// Gets the list of registered authenticators and the number of remaining recovery codes (AP9).
     pub async fn account_authenticators(
         &self,
         correlation_id: &str,
@@ -3090,7 +3090,7 @@ impl ApiClient {
             .await
     }
 
-    /// 認証器の状態を変える（一時停止・再開・失効。AP9）。
+    /// Changes an authenticator's state (suspend, resume, revoke; AP9).
     pub async fn account_authenticator_status(
         &self,
         correlation_id: &str,
@@ -3104,7 +3104,7 @@ impl ApiClient {
         .await
     }
 
-    /// リカバリーコードを（再）発行する（AP9）。平文はこの応答でのみ得られる。
+    /// (Re)issues recovery codes (AP9). The plaintext is available only in this response.
     pub async fn account_recovery_codes(
         &self,
         correlation_id: &str,
@@ -3114,7 +3114,7 @@ impl ApiClient {
             .await
     }
 
-    /// MFA 待ちの利用者へ email OTP を送る（AP9）。
+    /// Sends an email OTP to a user awaiting MFA (AP9).
     pub async fn account_email_otp(
         &self,
         correlation_id: &str,
@@ -3124,7 +3124,7 @@ impl ApiClient {
             .await
     }
 
-    /// MFA 待ちの利用者へ SMS OTP を送る（AP13）。
+    /// Sends an SMS OTP to a user awaiting MFA (AP13).
     pub async fn account_sms_otp(
         &self,
         correlation_id: &str,
@@ -3134,7 +3134,7 @@ impl ApiClient {
             .await
     }
 
-    /// 電話番号の登録開始（確認コードの送信。AP13）。
+    /// Starts phone number registration (sends the confirmation code; AP13).
     pub async fn account_phone_register(
         &self,
         correlation_id: &str,
@@ -3144,7 +3144,7 @@ impl ApiClient {
             .await
     }
 
-    /// 電話番号の登録確認（AP13）。
+    /// Confirms phone number registration (AP13).
     pub async fn account_phone_confirm(
         &self,
         correlation_id: &str,
@@ -3154,7 +3154,7 @@ impl ApiClient {
             .await
     }
 
-    /// 重要操作の直前に step-up が要るかを判定する（AP5）。
+    /// Determines whether step-up is needed right before a sensitive operation (AP5).
     pub async fn step_up_check(
         &self,
         correlation_id: &str,
@@ -3164,7 +3164,7 @@ impl ApiClient {
             .await
     }
 
-    /// step-up の本人確認を検証する（AP5）。
+    /// Verifies step-up identity verification (AP5).
     pub async fn step_up_verify(
         &self,
         correlation_id: &str,
@@ -3174,7 +3174,7 @@ impl ApiClient {
             .await
     }
 
-    /// パスキーでの本人確認を開始する（AP5・T38）。ログインの開始とは用途の違うチャレンジになる。
+    /// Starts identity verification with a passkey (AP5, T38). The challenge has a different purpose from login's.
     pub async fn step_up_passkey_begin(
         &self,
         correlation_id: &str,
@@ -3184,7 +3184,7 @@ impl ApiClient {
             .await
     }
 
-    /// パスキーでの本人確認を検証する（AP5・T38）。
+    /// Verifies identity verification with a passkey (AP5, T38).
     pub async fn step_up_passkey_verify(
         &self,
         correlation_id: &str,
@@ -3194,7 +3194,7 @@ impl ApiClient {
             .await
     }
 
-    /// セルフサービスのセキュリティ画面の表示内容（セッション一覧・連携済みアプリ）を取得する（G10）。
+    /// Gets the contents of the self-service security screen (session list, linked apps) (G10).
     pub async fn account_security(
         &self,
         correlation_id: &str,
@@ -3204,7 +3204,7 @@ impl ApiClient {
             .await
     }
 
-    /// ログイン中セッションを失効させる（G10）。
+    /// Revokes a logged-in session (G10).
     pub async fn account_revoke_session(
         &self,
         correlation_id: &str,
@@ -3219,7 +3219,7 @@ impl ApiClient {
         .await
     }
 
-    /// 連携済みアプリの同意を取り消す（G10）。
+    /// Revokes consent for a linked app (G10).
     pub async fn account_revoke_consent(
         &self,
         correlation_id: &str,
@@ -3234,7 +3234,7 @@ impl ApiClient {
         .await
     }
 
-    /// 発行済みトークンを再発行させる（本人。ADR-0047）。
+    /// Has issued tokens reissued (by the user; ADR-0047).
     pub async fn account_reissue_tokens(
         &self,
         correlation_id: &str,
@@ -3249,7 +3249,7 @@ impl ApiClient {
         .await
     }
 
-    /// 「アプリで続ける」の依頼を始める（task #892）。
+    /// Starts a "Continue with the app" request (task #892).
     pub async fn app_approval_start(
         &self,
         correlation_id: &str,
@@ -3259,7 +3259,7 @@ impl ApiClient {
             .await
     }
 
-    /// 認証アプリが開いたブラウザで「アプリで続ける」を完了する（task #892）。
+    /// Completes "Continue with the app" in the browser opened by the authenticator app (task #892).
     pub async fn app_approval_complete(
         &self,
         correlation_id: &str,
@@ -3269,7 +3269,7 @@ impl ApiClient {
             .await
     }
 
-    /// 認証アプリの登録の確認の画面の中身（task #892）。
+    /// Contents of the authenticator app registration confirmation screen (task #892).
     pub async fn account_approver_enrollment(
         &self,
         correlation_id: &str,
@@ -3284,7 +3284,7 @@ impl ApiClient {
         .await
     }
 
-    /// 認証アプリの登録を確かめる（task #892）。
+    /// Confirms the authenticator app registration (task #892).
     pub async fn account_approver_confirm(
         &self,
         correlation_id: &str,
@@ -3299,7 +3299,7 @@ impl ApiClient {
         .await
     }
 
-    /// 「認証アプリ」の一覧（task #892）。
+    /// List of "authenticator apps" (task #892).
     pub async fn account_approver_keys(
         &self,
         correlation_id: &str,
@@ -3309,7 +3309,7 @@ impl ApiClient {
             .await
     }
 
-    /// 認証アプリの鍵を取り消す（task #892）。
+    /// Revokes an authenticator app's key (task #892).
     pub async fn account_revoke_approver_key(
         &self,
         correlation_id: &str,
@@ -3324,7 +3324,7 @@ impl ApiClient {
         .await
     }
 
-    /// ログインしたばかりの SSO セッションへ端末を結び付ける（task #872）。
+    /// Binds the device to a freshly logged-in SSO session (task #872).
     pub async fn device_observe(
         &self,
         correlation_id: &str,
@@ -3334,7 +3334,7 @@ impl ApiClient {
             .await
     }
 
-    /// 端末の登録の札の中身（task #916）。
+    /// Contents of the device registration card (task #916).
     pub async fn device_enrollment_describe(
         &self,
         correlation_id: &str,
@@ -3345,7 +3345,7 @@ impl ApiClient {
             .await
     }
 
-    /// 端末の登録のパスキーの確かめを始める（task #916）。
+    /// Starts the passkey verification for device registration (task #916).
     pub async fn device_enrollment_begin(
         &self,
         correlation_id: &str,
@@ -3360,7 +3360,7 @@ impl ApiClient {
         .await
     }
 
-    /// パスキーで確かめて端末を登録し、ログインする（task #916）。
+    /// Verifies with a passkey, registers the device and logs in (task #916).
     pub async fn device_enrollment_complete(
         &self,
         correlation_id: &str,
@@ -3375,7 +3375,7 @@ impl ApiClient {
         .await
     }
 
-    /// SSO セッションを端末の鍵へ結び付ける（DBSC の登録。task #887）。
+    /// Binds the SSO session to a device key (DBSC registration; task #887).
     pub async fn session_key_register(
         &self,
         correlation_id: &str,
@@ -3385,7 +3385,7 @@ impl ApiClient {
             .await
     }
 
-    /// 結び付けの更新（DBSC。task #887）。
+    /// Refreshes the binding (DBSC; task #887).
     pub async fn session_key_refresh(
         &self,
         correlation_id: &str,
@@ -3395,7 +3395,7 @@ impl ApiClient {
             .await
     }
 
-    /// SSO セッションが端末の鍵へ結び付いているか（task #887）。
+    /// Whether the SSO session is bound to a device key (task #887).
     pub async fn session_key_binding(
         &self,
         correlation_id: &str,
@@ -3405,7 +3405,7 @@ impl ApiClient {
             .await
     }
 
-    /// 「端末」の欄（task #872）。
+    /// The "Devices" section (task #872).
     pub async fn account_devices(
         &self,
         correlation_id: &str,
@@ -3415,7 +3415,7 @@ impl ApiClient {
             .await
     }
 
-    /// 「状況」の欄（task #896）。
+    /// The "Status" section (task #896).
     pub async fn account_security_status(
         &self,
         correlation_id: &str,
@@ -3426,7 +3426,7 @@ impl ApiClient {
             .await
     }
 
-    /// 本人のログイン履歴（task #879）。
+    /// The user's own login history (task #879).
     pub async fn account_sign_in_history(
         &self,
         correlation_id: &str,
@@ -3437,7 +3437,7 @@ impl ApiClient {
             .await
     }
 
-    /// 今のブラウザを端末として登録する（task #872）。
+    /// Registers the current browser as a device (task #872).
     pub async fn account_register_device(
         &self,
         correlation_id: &str,
@@ -3448,7 +3448,7 @@ impl ApiClient {
             .await
     }
 
-    /// 端末の登録を取り消す（task #872）。
+    /// Revokes a device registration (task #872).
     pub async fn account_revoke_device(
         &self,
         correlation_id: &str,
@@ -3458,7 +3458,7 @@ impl ApiClient {
             .await
     }
 
-    /// 「SSH の鍵」の欄（task #885）。
+    /// The "SSH keys" section (task #885).
     pub async fn account_ssh_keys(
         &self,
         correlation_id: &str,
@@ -3468,7 +3468,7 @@ impl ApiClient {
             .await
     }
 
-    /// SSH の公開鍵を登録する（task #885）。
+    /// Registers an SSH public key (task #885).
     pub async fn account_register_ssh_key(
         &self,
         correlation_id: &str,
@@ -3479,7 +3479,7 @@ impl ApiClient {
             .await
     }
 
-    /// SSH の公開鍵を取り消す（task #885）。
+    /// Revokes an SSH public key (task #885).
     pub async fn account_revoke_ssh_key(
         &self,
         correlation_id: &str,
@@ -3489,7 +3489,7 @@ impl ApiClient {
             .await
     }
 
-    /// ログイン中ユーザーの所属テナント（`ACTIVE`）を列挙する（テナント切り替え UI 用）。
+    /// Enumerates the logged-in user's tenants (`ACTIVE`) (for the tenant switcher UI).
     pub async fn account_tenants(
         &self,
         req: &assay_contracts::auth::InternalAccountTenantsRequest,
@@ -3498,14 +3498,14 @@ impl ApiClient {
             .await
     }
 
-    /// api と共有するランタイム設定の DB 上書き値を取得する（MT26 / ADR-0013）。
+    /// Gets the DB overrides of the runtime settings shared with the api (MT26 / ADR-0013).
     ///
-    /// web は DB を持たないため、`COOKIE_SECURE`・`HSTS_MAX_AGE`・`AUTH_SESSION_TTL_SECS` のような
-    /// 「api と値がずれると壊れる」設定の DB 上書き値を api から受け取る。起動時に 1 度だけ呼ぶ
-    /// （反映には web の再起動が必要。MT27）。
+    /// web has no DB, so it receives from the api the DB overrides of settings like `COOKIE_SECURE`, `HSTS_MAX_AGE` and
+    /// `AUTH_SESSION_TTL_SECS` that "break if they diverge from the api". Called only once at startup
+    /// (applying changes requires restarting web; MT27).
     ///
-    /// 返るのは DB 上書き値だけで、api の有効値ではない。ここに無いキーは web 自身の
-    /// ENV → 既定値で解決する。
+    /// Only DB overrides are returned, not the api's effective values. Keys not here are resolved by web's own
+    /// ENV -> default.
     pub async fn fetch_shared_runtime_settings(&self) -> anyhow::Result<HashMap<String, String>> {
         let path = SHARED_RUNTIME_SETTINGS_PATH;
         let response = self
@@ -3517,7 +3517,7 @@ impl ApiClient {
             .map_err(|e| anyhow::anyhow!("request to api {path} failed: {e}"))?;
         let status = response.status();
         if !status.is_success() {
-            // 401 はサービストークンの不一致（api と web で `INTERNAL_SERVICE_TOKEN` がずれている）。
+            // 401 is a service token mismatch (`INTERNAL_SERVICE_TOKEN` differs between api and web).
             anyhow::bail!("api {path} returned unexpected status {status}");
         }
         let body = response
@@ -3527,7 +3527,7 @@ impl ApiClient {
         Ok(body.settings.into_iter().collect())
     }
 
-    /// api への到達性を確認する（`GET /healthz`）。web の readiness で使う。
+    /// Checks reachability of the api (`GET /healthz`). Used by web's readiness.
     pub async fn is_api_reachable(&self) -> bool {
         match self
             .http
@@ -3540,10 +3540,10 @@ impl ApiClient {
         }
     }
 
-    /// api の `GET /internal/version/schema` から DB スキーマ（マイグレーション）の適用状態を取得する。
-    /// バージョン情報画面の表示用。api 未到達・デコード失敗はいずれも `None`（fail-soft。画面は
-    /// 「取得できません」を表示する）。**内部面のためサービストークンを付ける**（ADR-0034 で
-    /// 公開面から移した）。
+    /// Gets the applied state of the DB schema (migrations) from the api's `GET /internal/version/schema`.
+    /// For display on the version info screen. Unreachable api and decode failures both give `None` (fail-soft; the screen
+    /// shows "unavailable"). **It is an internal endpoint, so the service token is attached** (moved from the public
+    /// endpoints in ADR-0034).
     pub async fn fetch_schema_version(&self) -> Option<SchemaVersionInfo> {
         self.http
             .get(format!("{}/internal/version/schema", self.base_url))
@@ -3556,7 +3556,7 @@ impl ApiClient {
             .ok()
     }
 
-    /// `/internal/*` への POST 共通処理（サービストークン＋correlation_id を付与して JSON をやり取り）。
+    /// Common POST handling to `/internal/*` (attaches the service token + correlation_id and exchanges JSON).
     async fn post_internal<B, R>(
         &self,
         path: &str,
@@ -3581,15 +3581,15 @@ impl ApiClient {
 
         let status = response.status();
         if !status.is_success() {
-            // テナントを解決できなかった 400 だけは呼び出し側で 404 の画面へ倒せるよう区別する
-            // （MT28）。本文を読むのはこの分岐のためだけなので、失敗しても素の失敗へ倒す。
+            // Distinguish only the 400 for an unresolvable tenant so callers can fall back to the 404 screen
+            // (MT28). The body is read only for this branch, so if reading fails it falls back to a plain failure.
             if status == reqwest::StatusCode::BAD_REQUEST
                 && is_unknown_tenant_error(&response.text().await.unwrap_or_default())
             {
                 return Err(InternalCallError::UnknownTenant);
             }
-            // 内部認証の業務結果（invalid/locked 等）は 200＋result で返る。ここに来るのは
-            // トークン不一致（401）やサーバ障害など、web の実装/構成エラー。
+            // Business results of internal authentication (invalid/locked etc.) come back as 200 + result. Reaching here means
+            // a web implementation/configuration error such as a token mismatch (401) or a server failure.
             return Err(InternalCallError::failed(format!(
                 "api {path} returned unexpected status {status}"
             )));
@@ -3600,15 +3600,15 @@ impl ApiClient {
     }
 }
 
-/// 経路の 1 区切りとして符号化する文字（英数字と `-` `.` `_` `~` 以外）。設定キーの `_` は
-/// そのまま残す（`%5F` にすると、ログや記録された要求の経路でキーが読めなくなる）。
+/// Characters encoded as one path segment (other than alphanumerics and `-` `.` `_` `~`). `_` in setting keys
+/// is left as is (as `%5F` the key would be unreadable in logs and recorded request paths).
 const PATH_SEGMENT: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
     .remove(b'-')
     .remove(b'.')
     .remove(b'_')
     .remove(b'~');
 
-/// テナントの設定 1 項目の経路。キーはフォームから来るので、経路の区切りを混ぜないよう符号化する。
+/// Path of one tenant setting item. The key comes from a form, so it is encoded so it can't inject path separators.
 fn tenant_setting_path(key: &str) -> String {
     format!(
         "/admin/settings/tenant/keys/{}",
@@ -3621,28 +3621,28 @@ mod tests {
     use super::{admin_display_label, admin_identity, admin_session_for_status, AdminSession};
     use assay_contracts::admin::WhoamiResponse;
 
-    /// api の「テナントを解決できない」400 だけを見分ける（MT28）。判別はコードで行い、人間向けの
-    /// 説明文には依存しない。
+    /// Distinguishes only the api's "can't resolve the tenant" 400 (MT28). Decided by the code, not dependent on the
+    /// human-readable description.
     #[test]
     fn only_the_unknown_tenant_code_is_recognized() {
         assert!(super::is_unknown_tenant_error(
             r#"{"error":"unknown_tenant","error_description":"unknown or disabled tenant"}"#
         ));
-        // 他の 400（本文の不正など）は「その他の失敗」＝ 502 のまま。
+        // Other 400s (invalid body etc.) remain "other failure" = 502.
         assert!(!super::is_unknown_tenant_error(
             r#"{"error":"invalid_request","error_description":"missing or invalid tenant_id"}"#
         ));
-        // 説明文だけが一致しても引っかからない（文言を直しても壊れない／壊さない）。
+        // A match on the description alone doesn't trigger it (editing the wording doesn't break it / isn't broken by it).
         assert!(!super::is_unknown_tenant_error(
             r#"{"error":"invalid_request","error_description":"unknown or disabled tenant"}"#
         ));
-        // 本文が読めないときは fail-safe（誤って 404 の画面を出さない）。
+        // When the body can't be read, fail-safe (doesn't show the 404 screen by mistake).
         for body in ["", "not json", "[]", "{}", r#"{"error":123}"#] {
             assert!(!super::is_unknown_tenant_error(body), "{body:?}");
         }
     }
 
-    /// 失敗の種類が画面のステータスへ写ること（MT28）。
+    /// Failure kinds map to the screen's status (MT28).
     #[test]
     fn internal_call_failures_map_to_the_intended_status() {
         use crate::handlers::internal_call_status;
@@ -3656,8 +3656,8 @@ mod tests {
         );
     }
 
-    /// whoami の非 200 応答の写像。404（api がテナントを解決できない）を `Error` に含めない
-    /// ＝ 画面を 502 に倒さないことの回帰テスト。
+    /// Mapping of non-200 whoami responses. Regression test that 404 (api can't resolve the tenant) is not included in `Error`
+    /// = the screen doesn't fall back to 502.
     #[test]
     fn whoami_statuses_map_to_sessions() {
         assert!(matches!(
@@ -3672,7 +3672,7 @@ mod tests {
             admin_session_for_status(reqwest::StatusCode::NOT_FOUND),
             AdminSession::NotFound
         ));
-        // テナント解決の一時障害（503）等、想定外はゲートウェイ障害として扱う。
+        // Unexpected cases such as a transient tenant resolution failure (503) are treated as gateway failures.
         assert!(matches!(
             admin_session_for_status(reqwest::StatusCode::SERVICE_UNAVAILABLE),
             AdminSession::Error
@@ -3695,22 +3695,22 @@ mod tests {
 
     #[test]
     fn display_label_prefers_name_then_username_then_id() {
-        // 表示名があれば表示名。
+        // The display name if present.
         assert_eq!(
             admin_display_label(whoami(Some("Alice"), Some("alice"))),
             "Alice"
         );
-        // 表示名が無ければログイン識別子。
+        // Without a display name, the login identifier.
         assert_eq!(admin_display_label(whoami(None, Some("alice"))), "alice");
-        // どちらも無ければ内部 ID。
+        // Without either, the internal ID.
         assert_eq!(
             admin_display_label(whoami(None, None)),
             "019f8ea9-0879-7f75-85ab-68b0571b6e7d"
         );
     }
 
-    /// ヘッダのテナント名は api の whoami 由来。返らない・空白のみのときは表示を省く
-    /// （旧 api との混在デプロイでもヘッダ以外は壊れない）。
+    /// The tenant name in the header comes from the api's whoami. When it isn't returned or is whitespace-only, it is omitted
+    /// (even in mixed deployments with an old api, nothing but the header breaks).
     #[test]
     fn identity_carries_tenant_name_when_present() {
         let mut w = whoami(Some("Alice"), Some("alice"));
@@ -3728,7 +3728,7 @@ mod tests {
 
     #[test]
     fn display_label_treats_blank_values_as_absent() {
-        // 空白のみは未設定として扱い、次の候補へフォールバックする。
+        // Whitespace-only is treated as unset and falls back to the next candidate.
         assert_eq!(
             admin_display_label(whoami(Some("   "), Some("alice"))),
             "alice"

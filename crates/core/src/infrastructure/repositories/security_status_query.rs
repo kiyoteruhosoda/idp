@@ -1,4 +1,4 @@
-//! `SecurityStatusQuery` の sqlx 実装（task #896。ADR-0078）。読むだけ。
+//! sqlx implementation of `SecurityStatusQuery` (task #896, ADR-0078). Read-only.
 
 use crate::domain::audit::AuditEventType;
 use crate::domain::error::{DomainError, Result};
@@ -44,7 +44,7 @@ fn count(row: &MySqlRow, name: &str) -> Result<u32> {
     Ok(u32::try_from(v.unwrap_or(0).max(0)).unwrap_or(u32::MAX))
 }
 
-/// アプリを (組織, client_id) で見分ける。
+/// Identifies an app by (organization, client_id).
 type AppKey = (String, String);
 
 #[async_trait]
@@ -138,7 +138,7 @@ impl SecurityStatusQuery for SqlxSecurityStatusQuery {
             refresh_reuse_detected_at: None,
         };
 
-        // 1. 同意したアプリ（範囲）。
+        // 1. Apps consented to (scopes).
         let consents = sqlx::query(
             "SELECT tenant_id, client_id, scopes FROM client_consents WHERE user_id = ?",
         )
@@ -156,7 +156,7 @@ impl SecurityStatusQuery for SqlxSecurityStatusQuery {
                 .scopes = scopes;
         }
 
-        // 2. いま有効なリフレッシュトークン（DPoP の結び付きの数も）。
+        // 2. Currently valid refresh tokens (and the number of DPoP bindings).
         let tallies = sqlx::query(
             "SELECT tenant_id, client_id, COUNT(*) AS active_count, \
                     CAST(SUM(dpop_jkt IS NOT NULL) AS SIGNED) AS bound_count \
@@ -179,7 +179,7 @@ impl SecurityStatusQuery for SqlxSecurityStatusQuery {
             app.dpop_bound_refresh_tokens = count(row, "bound_count")?;
         }
 
-        // 3. 最近トークンを出した・更新した記録（ログイン × アプリの行）。
+        // 3. Recent records of issuing/refreshing tokens (login x app rows).
         let usage = sqlx::query(
             "SELECT tenant_id, client_id, last_issued_at, refresh_use_count, refresh_last_used_at, \
                     refresh_last_ip, refresh_last_user_agent, refresh_reuse_detected_at \
@@ -223,7 +223,7 @@ impl SecurityStatusQuery for SqlxSecurityStatusQuery {
         if apps.is_empty() {
             return Ok(Vec::new());
         }
-        // 4. 表示名（消えたアプリは client_id のまま）。
+        // 4. Display names (deleted apps stay as client_id).
         let mut q: QueryBuilder<MySql> =
             QueryBuilder::new("SELECT tenant_id, client_id, app_name FROM clients WHERE ");
         let mut first = true;
@@ -280,7 +280,7 @@ impl SecurityStatusQuery for SqlxSecurityStatusQuery {
         .await
         .map_err(repo_err)?;
 
-        // 別の鍵の署名は監査ログにだけ残る（ログイン状態・トークンは消える）。
+        // Signatures with another key remain only in the audit log (the login state and tokens are removed).
         let mismatch = |event: &'static str, reason: Option<&'static str>| {
             let mut q: QueryBuilder<MySql> = QueryBuilder::new(
                 "SELECT COUNT(*) AS n, MAX(occurred_at) AS last_at FROM audit_log WHERE event_type = ",

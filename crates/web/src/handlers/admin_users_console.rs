@@ -1,11 +1,11 @@
-//! 利用者の作成・権限付与/剥奪のサーバレンダリング画面（web。A2・ADR-0006・ADR-0009 §5・
-//! ADR-0007 §4）。一覧・検索の起点はメンバー画面（`/admin/members`）で、本モジュールは個別利用者の
-//! 作成と権限管理を担う。
+//! Server-rendered screens for creating users and granting/revoking permissions (web. A2, ADR-0006, ADR-0009 §5,
+//! ADR-0007 §4). Listing and search start from the members screen (`/admin/members`); this module handles
+//! creating individual users and managing their permissions.
 //!
-//! api の JSON 管理 API（利用者作成・取得・権限一覧/付与/剥奪・付与可能コード）を管理者の SSO
-//! Cookie 転送で呼び、結果を HTML に描画する。作成・付与・剥奪の POST は Post/Redirect/Get で処理し、
-//! エラーは各画面へ `error` クエリで伝える。CSRF は `console_csrf_token`、HTML は Askama テンプレートが
-//! 自動エスケープする。
+//! Calls the api's JSON admin APIs (user create/get, permission list/grant/revoke, grantable codes) by forwarding the
+//! admin's SSO cookie and renders the results as HTML. Create/grant/revoke POSTs use Post/Redirect/Get, and
+//! errors are conveyed to each screen via the `error` query. CSRF uses `console_csrf_token`; HTML is auto-escaped
+//! by Askama templates.
 
 use super::locale;
 use crate::api_client::AdminApiError;
@@ -38,7 +38,7 @@ macro_rules! admin_or_return {
     };
 }
 
-// ── 利用者作成 ────────────────────────────────────────────────────────────────
+// ── User creation ────────────────────────────────────────────────────────────────
 
 pub async fn new_form(
     State(state): State<WebState>,
@@ -60,13 +60,13 @@ pub async fn new_form(
     .into_response()
 }
 
-/// 作成フォームへ戻すときの入力（エラーで戻しても、打った内容を消さない）。
+/// Input when returning to the create form (the typed content is kept even when returning with an error).
 #[derive(Default)]
 struct NewUserDraft<'a> {
     email: &'a str,
     preferred_username: &'a str,
     name: &'a str,
-    /// 管理者メモ（ADR-0063）。作成と同時に HOME メンバーシップへ付く。
+    /// Admin note (ADR-0063). Attached to the HOME membership at creation.
     note: &'a str,
 }
 
@@ -109,7 +109,7 @@ pub struct NewUserForm {
     pub preferred_username: String,
     #[serde(default)]
     pub name: String,
-    /// 管理者メモ（任意。ADR-0063）。
+    /// Admin note (optional. ADR-0063).
     #[serde(default)]
     pub note: String,
     pub csrf_token: String,
@@ -141,10 +141,10 @@ pub async fn create(
         "email": form.email,
         "preferred_username": normalize(&form.preferred_username),
         "name": normalize(&form.name),
-        // 空なら送らない（api 側でも空はメモ無しとして扱う）。
+        // Not sent if empty (the api also treats empty as no note).
         "note": normalize(&form.note),
     });
-    // api のバリデーション/競合メッセージをこの画面へ出すため、決定言語を引き継ぐ（MT20）。
+    // Carry over the resolved language so the api's validation/conflict messages show on this screen (MT20).
     let result = state
         .api
         .for_locale(locale(&headers))
@@ -181,13 +181,13 @@ fn normalize(s: &str) -> Option<&str> {
     (!s.is_empty()).then_some(s)
 }
 
-// ── 権限画面 ──────────────────────────────────────────────────────────────────
+// ── Permissions screen ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 pub struct ViewQuery {
     #[serde(default)]
     pub error: Option<String>,
-    /// 完了通知（Post/Redirect/Get。`profile` = プロフィール保存。MT25）。
+    /// Completion notice (Post/Redirect/Get. `profile` = profile saved. MT25).
     #[serde(default)]
     pub saved: Option<String>,
 }
@@ -229,8 +229,8 @@ pub async fn view(
             return map_data_error(&messages, &tenant, &admin, &headers, e);
         }
     };
-    // 付与可能コード（`permissions` マスタ）は選択肢の出所。取得に失敗しても画面自体は描画し
-    //（保有権限の確認・剥奪は続けられる）、付与欄だけ取得失敗として伝える。
+    // Grantable codes (the `permissions` master) are the source of the options. Even if fetching fails, the screen
+    // is still rendered (checking/revoking held permissions can continue), and only the grant field reports the failure.
     let (available, available_load_failed) = match state
         .api
         .available_permissions(&correlation.0, &tenant.0, &sso)
@@ -242,7 +242,7 @@ pub async fn view(
             (Vec::new(), true)
         }
     };
-    // 保有済みは選択肢から除く（付与しても変化しない操作を見せない）。
+    // Exclude already-held codes from the options (do not show operations that change nothing).
     let grantable: Vec<String> = available
         .into_iter()
         .filter(|code| !codes.contains(code))
@@ -266,7 +266,7 @@ pub async fn view(
     .into_response()
 }
 
-// ── プロフィール編集（MT25）──────────────────────────────────────────────────
+// ── Profile editing (MT25) ──────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 pub struct ProfileForm {
@@ -278,9 +278,9 @@ pub struct ProfileForm {
     pub csrf_token: String,
 }
 
-/// 利用者プロフィールの更新（`POST /{tenant_id}/admin/users/{user_id}/profile`。MT25）。
-/// api の `PATCH /admin/users/{user_id}/profile` に委ね、Post/Redirect/Get で詳細画面へ戻す。
-/// 検証（メール書式・長さ・一意性）は api 側が唯一の出所で、web は結果をエラークエリへ写すだけ。
+/// Updates a user's profile (`POST /{tenant_id}/admin/users/{user_id}/profile`. MT25).
+/// Delegates to the api's `PATCH /admin/users/{user_id}/profile` and returns to the details screen via Post/Redirect/Get.
+/// Validation (email format, length, uniqueness) has the api as its single source; web only maps the result to an error query.
 pub async fn update_profile(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -322,7 +322,7 @@ pub async fn update_profile(
     }
 }
 
-// ── 付与・剥奪の実行（Post/Redirect/Get） ─────────────────────────────────────
+// ── Executing grant/revoke (Post/Redirect/Get) ─────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 pub struct PermissionForm {
@@ -379,7 +379,7 @@ async fn apply_change(
     form: &PermissionForm,
     grant: bool,
 ) -> Response {
-    // 認可（whoami）。未認証/権限不足はここで誘導/403。
+    // Authorization (whoami). Unauthenticated/insufficient permissions are redirected/403 here.
     match resolve_admin(state, correlation, tenant, headers).await {
         AdminResolution::Ok(_) => {}
         AdminResolution::Reject(resp) => return resp,
@@ -415,9 +415,9 @@ async fn apply_change(
     match result {
         Ok(_) => found(&base),
         Err(AdminApiError::Unauthorized) => redirect_to_login(tenant),
-        // 403 は「この画面を見る権限が無い」ではなく「**この付与・剥奪は許されない**」である
-        // （画面自体は `resolve_admin` を通っている）。403 ページへ倒すと原因が
-        // 「ページを表示する権限がありません」に化けるので、権限画面のエラー欄へ戻す。
+        // 403 here means not "no permission to view this screen" but "**this grant/revoke is not allowed**"
+        // (the screen itself passed `resolve_admin`). Falling back to the 403 page would disguise the cause as
+        // "you do not have permission to view this page", so return to the permissions screen's error field.
         Err(AdminApiError::Forbidden) => found(&format!("{base}?error=forbidden")),
         Err(AdminApiError::Validation(_)) => found(&format!("{base}?error=code")),
         Err(AdminApiError::NotFound) => found(&format!("{base}?error=notfound")),
@@ -444,7 +444,7 @@ fn sso(headers: &HeaderMap) -> String {
     cookies::get(headers, cookies::SSO_SESSION_COOKIE).unwrap_or_default()
 }
 
-// ── レンダリング ──────────────────────────────────────────────────────────────
+// ── Rendering ──────────────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
 fn render_permissions(
@@ -496,7 +496,7 @@ fn render_new_form(
     })
 }
 
-// ── 共通ヘルパー ──────────────────────────────────────────────────────────────
+// ── Shared helpers ──────────────────────────────────────────────────────────────
 
 fn not_found(messages: &Messages, tenant: &WebTenant, admin: &AdminContext) -> Response {
     let body = render(&ConsoleNotice {
@@ -589,8 +589,8 @@ mod tests {
         assert!(html.contains("name=\"csrf_token\" value=\"csrf123\""));
     }
 
-    /// 付与は自由入力ではなく選択式（打ち間違いで未知コードを送らせない）。保有済みのコードは
-    /// 選択肢に出さず、候補が尽きたらフォーム自体を出さない。
+    /// Granting is a selection, not free input (so typos cannot send unknown codes). Already-held codes are
+    /// not offered, and when candidates run out the form itself is not shown.
     #[test]
     fn grant_offers_a_select_of_grantable_codes_only() {
         let html = permissions_html(&["idp.viewer".into()], false);
@@ -599,9 +599,9 @@ mod tests {
             html.contains(r#"<option value="idp.viewer">idp.viewer</option>"#),
             "{html}"
         );
-        // 保有済み（`idp.admin`）は選択肢に出さない。
+        // Already held (`idp.admin`) is not offered.
         assert!(!html.contains(r#"<option value="idp.admin">"#), "{html}");
-        // 自由入力欄・datalist は残っていない。
+        // No free input field or datalist remains.
         assert!(!html.contains(r#"list="admin-permission-codes""#), "{html}");
 
         let html = permissions_html(&[], false);
@@ -612,7 +612,7 @@ mod tests {
         assert!(!html.contains("permissions/grant"), "{html}");
     }
 
-    /// 候補が取得できなかったときは「候補なし」と取り違えないよう取得失敗として伝える。
+    /// When candidates could not be fetched, report it as a fetch failure so it is not mistaken for "no candidates".
     #[test]
     fn grant_reports_a_failed_lookup_instead_of_showing_no_candidates() {
         let messages = Messages::new(Locale::Ja);
@@ -643,12 +643,12 @@ mod tests {
         assert!(html.contains("name=\"csrf_token\" value=\"csrf1\""));
         assert!(
             html.contains("name=\"note\""),
-            "作成と同時にメモを書ける: {html}"
+            "a note can be written at creation: {html}"
         );
         assert!(html.contains("maxlength=\"2000\""), "{html}");
     }
 
-    /// ADR-0063: 入力エラーで戻したとき、書いたメモを消さない（経緯を書き直させない）。
+    /// ADR-0063: when returning with an input error, the written note is kept (no need to rewrite the background).
     #[test]
     fn the_note_survives_a_rejected_submission() {
         let messages = Messages::new(Locale::Ja);
@@ -668,7 +668,7 @@ mod tests {
         assert!(html.contains("家族として作成"), "{html}");
         assert!(
             !html.contains("家族として作成 <b>"),
-            "メモは必ずエスケープする: {html}"
+            "the note must always be escaped: {html}"
         );
     }
 }

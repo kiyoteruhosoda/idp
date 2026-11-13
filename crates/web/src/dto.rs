@@ -1,8 +1,8 @@
-//! web が受け取るフォーム DTO。
+//! Form DTOs received by web.
 
 use serde::Deserialize;
 
-/// ログインフォーム（`POST /login`）。ログイン識別子はユーザー名（`preferred_username`。ADR-0009 §8）。
+/// Login form (`POST /login`). The login identifier is the username (`preferred_username`. ADR-0009 §8).
 #[derive(Debug, Deserialize)]
 pub struct LoginForm {
     pub username: String,
@@ -10,109 +10,109 @@ pub struct LoginForm {
     pub csrf_token: String,
 }
 
-/// SAML SSO 継続画面のクエリ（`GET /saml/continue`）。
+/// Query of the SAML SSO continuation screen (`GET /saml/continue`).
 #[derive(Debug, Deserialize)]
 pub struct SamlContinueQuery {
-    /// api の `/saml/sso` がハンドオフ URL に載せた単回・短命のハンドル。web は即座に
-    /// `/internal/saml/resume` で交換する（ADR-0018 決定 2 と同方式）。
+    /// Single-use, short-lived handle the api's `/saml/sso` put in the hand-off URL. web immediately
+    /// exchanges it via `/internal/saml/resume` (same scheme as ADR-0018 decision 2).
     #[serde(default)]
     pub handle: Option<String>,
 }
 
-/// ログイン画面のクエリ（`GET /login`）。
+/// Query of the login screen (`GET /login`).
 #[derive(Debug, Deserialize)]
 pub struct LoginPageQuery {
-    /// api の `/authorize` がハンドオフ URL に載せた単回・短命のハンドル（ADR-0018 決定 2）。
-    /// web は即座に `/internal/authorize/resume` で交換し、303 で URL から除去する。
+    /// Single-use, short-lived handle the api's `/authorize` put in the hand-off URL (ADR-0018 decision 2).
+    /// web immediately exchanges it via `/internal/authorize/resume` and removes it from the URL with a 303.
     #[serde(default)]
     pub auth_session: Option<String>,
-    /// POST の失敗（CSRF 不一致等）から PRG で戻ったときのエラー種別（`csrf` のみ）。
-    /// 新しいトークンで再描画したフォームにエラーバナーを出す。
+    /// Error kind when returning via PRG from a failed POST (CSRF mismatch etc.) (`csrf` only).
+    /// Shows an error banner on the form re-rendered with a new token.
     #[serde(default)]
     pub error: Option<String>,
 }
 
-/// フォーム系ページ共通の PRG 戻りクエリ（`?error=csrf`）。CSRF 不一致の POST から 303 で GET へ
-/// 戻したときに、新しいトークンで再描画したフォームへエラーバナーを出すために使う。
+/// PRG return query shared by form pages (`?error=csrf`). Used to show an error banner on the form re-rendered with a new
+/// token when a POST with a CSRF mismatch is sent back to GET with 303.
 #[derive(Debug, Default, Deserialize)]
 pub struct FormPageQuery {
     #[serde(default)]
     pub error: Option<String>,
 }
 
-/// RP-initiated Logout のクエリ（`GET /logout`、OIDC RP-initiated Logout 1.0。ADR-0018 決定 2）。
+/// Query of RP-initiated Logout (`GET /logout`, OIDC RP-Initiated Logout 1.0. ADR-0018 decision 2).
 #[derive(Debug, Deserialize)]
 pub struct RpLogoutQuery {
-    /// 確認画面（`id_token_hint` の無い要求。task #588）からの POST に載る CSRF 同期トークン。
+    /// CSRF synchronizer token carried by the POST from the confirmation screen (requests without `id_token_hint`. task #588).
     #[serde(default)]
     pub csrf_token: Option<String>,
-    /// ログアウト対象を示す ID Token（任意。G12）。api が署名・issuer を検証し、
-    /// `post_logout_redirect_uri` の照合先と「誰のログアウトか」の確認に使う。
+    /// ID Token indicating whom to log out (optional. G12). The api verifies signature/issuer and uses it
+    /// to match `post_logout_redirect_uri` and to confirm "whose logout it is".
     #[serde(default)]
     pub id_token_hint: Option<String>,
-    /// ログアウト後のリダイレクト先（登録済みのもののみ api が許可する）。
+    /// Redirect destination after logout (the api allows only registered ones).
     #[serde(default)]
     pub post_logout_redirect_uri: Option<String>,
-    /// RP が受け取るランダム値（redirect_uri に透過的に付与）。
+    /// Random value received by the RP (passed through onto the redirect_uri).
     #[serde(default)]
     pub state: Option<String>,
-    /// post_logout_redirect_uri の検証に使う（任意）。
+    /// Used to validate post_logout_redirect_uri (optional).
     #[serde(default)]
     pub client_id: Option<String>,
 }
 
-/// TOTP 確認フォーム（`POST /account/mfa/totp/setup`）。
+/// TOTP confirmation form (`POST /account/mfa/totp/setup`).
 #[derive(Debug, Deserialize)]
 pub struct TotpConfirmForm {
-    /// 認証アプリから入力した 6 桁コード。
+    /// 6-digit code entered from the authenticator app.
     pub code: String,
-    /// CSRF 同期トークン（`console_csrf_token`。task #118）。欠けていても 422 にせず、空として
-    /// 照合に落とす（不一致と同じく保存しない）。
+    /// CSRF synchronizer token (`console_csrf_token`. task #118). If missing it is not a 422 but treated as empty
+    /// in verification (nothing saved, same as a mismatch).
     #[serde(default)]
     pub csrf_token: String,
 }
 
-/// TOTP 削除フォーム（`POST /account/mfa/totp/delete`）。
+/// TOTP deletion form (`POST /account/mfa/totp/delete`).
 #[derive(Debug, Deserialize)]
 pub struct TotpDeleteForm {
-    /// CSRF 同期トークン（`console_csrf_token`。task #118）。欠けていても 422 にせず、空として
-    /// 照合に落とす（不一致と同じく保存しない）。
+    /// CSRF synchronizer token (`console_csrf_token`. task #118). If missing it is not a 422 but treated as empty
+    /// in verification (nothing saved, same as a mismatch).
     #[serde(default)]
     pub csrf_token: String,
 }
 
-/// ログアウトのフォーム（アカウント設定の `POST /{tenant_id}/logout` と、管理コンソールの
-/// `POST /{tenant_id}/admin/logout`）。RP からのログアウト（`GET /logout`）はこれを使わない。
+/// Logout form (account settings' `POST /{tenant_id}/logout` and the admin console's
+/// `POST /{tenant_id}/admin/logout`). Logout from an RP (`GET /logout`) does not use this.
 #[derive(Debug, Default, Deserialize)]
 pub struct LogoutForm {
-    /// CSRF 同期トークン（`console_csrf_token`。task #143）。欠けていても 422 にせず、空として
-    /// 照合に落とす（不一致と同じくログアウトしない）。
+    /// CSRF synchronizer token (`console_csrf_token`. task #143). If missing it is not a 422 but treated as empty
+    /// in verification (no logout, same as a mismatch).
     #[serde(default)]
     pub csrf_token: String,
-    /// アカウント設定を管理コンソールから開いていたか（`admin`）。トークンが合わずに設定画面へ
-    /// 戻すとき、戻るリンクの文脈を保つ（他の設定フォームと同じ）。
+    /// Whether account settings were opened from the admin console (`admin`). When returning to the settings screen due to
+    /// a token mismatch, the back link context is kept (same as other settings forms).
     #[serde(default)]
     pub from: Option<String>,
 }
 
-/// ポータル TOTP 入力フォーム（`POST /{tenant_id}/login/mfa`）。
+/// Portal TOTP input form (`POST /{tenant_id}/login/mfa`).
 #[derive(Debug, Deserialize)]
 pub struct PortalTotpForm {
     pub totp_code: String,
     pub csrf_token: String,
 }
 
-/// 同意フォーム（`POST /consent`、F3）。
+/// Consent form (`POST /consent`, F3).
 #[derive(Debug, Deserialize)]
 pub struct ConsentForm {
     pub auth_session_id: String,
     pub csrf_token: String,
-    /// `approve` または `deny`。
+    /// `approve` or `deny`.
     pub action: String,
 }
 
-/// 強制パスワード変更フォーム（`POST /password-change`、ADR-0009 §5）。ログインフロー中
-/// （パスワード検証済み・SSO 未発行）の `auth_session_id` を前提とする。
+/// Forced password change form (`POST /password-change`, ADR-0009 §5). Assumes the login flow's
+/// `auth_session_id` (password verified, SSO not yet issued).
 #[derive(Debug, Deserialize)]
 pub struct PasswordChangeForm {
     pub current_password: String,
@@ -121,10 +121,10 @@ pub struct PasswordChangeForm {
     pub csrf_token: String,
 }
 
-/// 強制パスワード変更フォーム（初回ログイン時。ADR-0009 §5）。管理コンソールログイン
-/// （`POST /admin/password-change`）とポータル（一般）ログイン（`POST /login/password-change`）で
-/// 共有する。どちらも `auth_session_id` のような一時状態を持たないため、`username`（ログイン識別子）を
-/// 含めフルに再送し、api 側で現行パスワードを含め再検証する。
+/// Forced password change form (at first login. ADR-0009 §5). Shared by the admin console login
+/// (`POST /admin/password-change`) and the portal (general) login (`POST /login/password-change`).
+/// Neither has temporary state like `auth_session_id`, so everything including `username` (login identifier)
+/// is resent in full and the api re-verifies including the current password.
 #[derive(Debug, Deserialize)]
 pub struct ForcedPasswordChangeForm {
     pub username: String,
@@ -134,22 +134,22 @@ pub struct ForcedPasswordChangeForm {
     pub csrf_token: String,
 }
 
-/// 設定画面のテナント表示名フォーム（`POST /{tenant_id}/admin/settings/tenant`。MT14）。
+/// Tenant display name form on the settings screen (`POST /{tenant_id}/admin/settings/tenant`. MT14).
 #[derive(Debug, Deserialize)]
 pub struct AdminTenantSettingsForm {
     pub name: String,
-    /// 自己登録トグル（SEC6）。チェックボックスはチェック時のみ送られる（`Some(_)` = 有効）。
+    /// Self-registration toggle (SEC6). A checkbox is sent only when checked (`Some(_)` = enabled).
     #[serde(default)]
     pub self_registration_enabled: Option<String>,
-    /// メールでのログインのトグル（ADR-0050）。同じくチェック時のみ送られる。
+    /// Toggle for login by email (ADR-0050). Likewise sent only when checked.
     #[serde(default)]
     pub email_login_enabled: Option<String>,
     pub csrf_token: String,
 }
 
-/// 設定画面のシステム設定（SMTP）フォーム（`POST /{tenant_id}/admin/system-settings`。MT14）。
-/// `smtp_port` は文字列で受け、`smtp_use_tls` はチェックボックス（チェック時のみ送られる）。
-/// `smtp_password` が空文字なら現行のパスワードを維持する（変更しない）。
+/// System settings (SMTP) form on the settings screen (`POST /{tenant_id}/admin/system-settings`. MT14).
+/// `smtp_port` is received as a string; `smtp_use_tls` is a checkbox (sent only when checked).
+/// If `smtp_password` is an empty string the current password is kept (not changed).
 #[derive(Debug, Deserialize)]
 pub struct AdminSystemSettingsForm {
     #[serde(default)]
@@ -164,7 +164,7 @@ pub struct AdminSystemSettingsForm {
     pub smtp_from_address: String,
     #[serde(default)]
     pub smtp_use_tls: Option<String>,
-    /// SMS ゲートウェイ（AP13）。`sms_auth_token` が空文字なら現行のトークンを維持する。
+    /// SMS gateway (AP13). If `sms_auth_token` is an empty string the current token is kept.
     #[serde(default)]
     pub sms_gateway_url: String,
     #[serde(default)]
@@ -176,8 +176,8 @@ pub struct AdminSystemSettingsForm {
     pub csrf_token: String,
 }
 
-/// セルフサービスのパスワード変更フォーム（`POST /{tenant_id}/settings/password`。MT15）。
-/// `from` は管理コンソールから開いた文脈の引き継ぎ（`admin` のとき PRG 後も戻り導線を維持する）。
+/// Self-service password change form (`POST /{tenant_id}/settings/password`. MT15).
+/// `from` carries over the context of having opened it from the admin console (`admin` keeps the back path after PRG).
 #[derive(Debug, Deserialize)]
 pub struct AccountPasswordForm {
     pub current_password: String,
@@ -185,100 +185,100 @@ pub struct AccountPasswordForm {
     pub new_password_confirm: String,
     #[serde(default)]
     pub from: Option<String>,
-    /// CSRF 同期トークン（`console_csrf_token`。task #118）。欠けていても 422 にせず、空として
-    /// 照合に落とす（不一致と同じく保存せず、設定画面のバナーで伝える）。
+    /// CSRF synchronizer token (`console_csrf_token`. task #118). If missing it is not a 422 but treated as empty
+    /// in verification (nothing saved, same as a mismatch; reported with a banner on the settings screen).
     #[serde(default)]
     pub csrf_token: String,
 }
 
-/// セルフサービスの表示名変更フォーム（`POST /{tenant_id}/settings/name`）。
-/// `from` は管理コンソールから開いた文脈の引き継ぎ（PRG 後も戻り導線を維持する）。
+/// Self-service display name change form (`POST /{tenant_id}/settings/name`).
+/// `from` carries over the context of having opened it from the admin console (keeps the back path after PRG).
 #[derive(Debug, Deserialize)]
 pub struct AccountNameForm {
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
     pub from: Option<String>,
-    /// CSRF 同期トークン（`console_csrf_token`。task #118）。欠けていても 422 にせず、空として
-    /// 照合に落とす（不一致と同じく保存せず、設定画面のバナーで伝える）。
+    /// CSRF synchronizer token (`console_csrf_token`. task #118). If missing it is not a 422 but treated as empty
+    /// in verification (nothing saved, same as a mismatch; reported with a banner on the settings screen).
     #[serde(default)]
     pub csrf_token: String,
 }
 
-/// 表示設定（言語・配色）の保存フォーム（`POST /{tenant_id}/settings/display`。task #79）。
+/// Form saving display settings (language, color scheme) (`POST /{tenant_id}/settings/display`. task #79).
 ///
-/// 設定画面の言語・配色の選択と、管理コンソールのヘッダの言語ドロップダウンが送る。GET の
-/// `?lang=` / `?theme=` は一時切替で、ユーザー設定（DB）へ書くのはこの POST だけである。
-/// `lang` / `theme` は片方だけでよい（送られた方だけ保存する）。
+/// Sent by the settings screen's language/color scheme choices and the admin console header's language dropdown. GET
+/// `?lang=` / `?theme=` are temporary switches; only this POST writes to user settings (DB).
+/// Either `lang` or `theme` alone is fine (only what is sent is saved).
 #[derive(Debug, Deserialize)]
 pub struct DisplayPreferencesForm {
     #[serde(default)]
     pub lang: Option<String>,
     #[serde(default)]
     pub theme: Option<String>,
-    /// 保存したあとに戻る画面（このテナント配下のパスだけを受ける。外れたら設定画面）。
+    /// Screen to return to after saving (only paths under this tenant are accepted; otherwise the settings screen).
     #[serde(default)]
     pub return_to: Option<String>,
-    /// 管理コンソールから開いた設定画面の文脈（CSRF 不一致などで設定画面へ戻すときに維持する）。
+    /// Context of the settings screen opened from the admin console (kept when returning to the settings screen on a CSRF mismatch etc.).
     #[serde(default)]
     pub from: Option<String>,
-    /// CSRF 同期トークン（`console_csrf_token`。task #118）。欠けていても 422 にせず、空として
-    /// 照合に落とす（不一致と同じく保存せず、設定画面のバナーで伝える）。
+    /// CSRF synchronizer token (`console_csrf_token`. task #118). If missing it is not a 422 but treated as empty
+    /// in verification (nothing saved, same as a mismatch; reported with a banner on the settings screen).
     #[serde(default)]
     pub csrf_token: String,
 }
 
-/// 設定画面の GET クエリ（言語・配色の一時切替・保存/エラーバナー表示・遷移元の引き継ぎ）。
+/// GET query of the settings screen (temporary language/color scheme switches, saved/error banners, carrying over the origin).
 #[derive(Debug, Default, Deserialize)]
 pub struct SettingsQuery {
     #[serde(default)]
     pub lang: Option<String>,
-    /// 配色の一時切替（`?theme=`）。**この画面はセレクタの選択状態を描くために自分でも読む**
-    /// （Cookie の書き換えは応答の中で起きるため、このリクエストでは古い値しか手元に無い。
-    /// 読まないと、画面は暗いのにセレクタは保存済みの値を指す）。保存はしない（task #79）。
+    /// Temporary color scheme switch (`?theme=`). **This screen also reads it itself to render the selector's selection**
+    /// (the cookie is rewritten in the response, so only the old value is at hand in this request.
+    /// Without reading it, the screen is dark while the selector points to the saved value). Not saved (task #79).
     #[serde(default)]
     pub theme: Option<String>,
     #[serde(default)]
     pub saved: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
-    /// 遷移元（`admin` = 管理コンソール。左上に戻るリンクを表示する）。
+    /// Origin of navigation (`admin` = admin console; shows a back link in the top left).
     #[serde(default)]
     pub from: Option<String>,
-    /// 設定の絞り込み: 文字（キー・表示名・説明）。
+    /// Settings filter: text (key, display name, description).
     #[serde(default)]
     pub q: Option<String>,
-    /// 設定の絞り込み: このテナントで決めたものだけ（値があれば有効）。
+    /// Settings filter: only what this tenant decided (enabled if any value is present).
     #[serde(default)]
     pub mine: Option<String>,
-    /// 設定の絞り込み: 全体のランタイム設定の種類（`tenant` / `action` / `pending`）。
+    /// Settings filter: kind of global runtime setting (`tenant` / `action` / `pending`).
     #[serde(default)]
     pub runtime: Option<String>,
 }
 
-/// テナント登録フォーム（`POST /{tenant_id}/admin/tenants`。root / `idp.system.admin` 専用）。
-/// 作成者自身が新テナントのブートストラップ管理者になるため初期管理者メールは受け取らない（ADR-0009 §4）。
+/// Tenant registration form (`POST /{tenant_id}/admin/tenants`. root / `idp.system.admin` only).
+/// The creator becomes the new tenant's bootstrap admin, so no initial admin email is taken (ADR-0009 §4).
 #[derive(Debug, Deserialize)]
 pub struct AdminTenantCreateForm {
     pub name: String,
     pub csrf_token: String,
 }
 
-/// テナント管理画面の GET クエリ。
+/// GET query of the tenant management screen.
 #[derive(Debug, Default, Deserialize)]
 pub struct TenantsQuery {
     #[serde(default)]
     pub error: Option<String>,
-    /// 更新完了通知（Post/Redirect/Get で戻ったときに成功バナーを出す）。
+    /// Update completion notice (shows a success banner when returning via Post/Redirect/Get).
     #[serde(default)]
     pub saved: Option<String>,
-    /// ページャの読み飛ばし件数。未指定は 0（G7）。
+    /// Number of items the pager skips. Unspecified is 0 (G7).
     #[serde(default)]
     pub offset: Option<i64>,
 }
 
-/// 子テナントの編集フォーム（`POST /{tenant_id}/admin/tenants/{child_id}/update`。MT23）。
-/// 表示名と状態（`ACTIVE` / `DISABLED`）を変更する。api の `PATCH /admin/tenants/{child_id}` へ委ねる。
+/// Child tenant edit form (`POST /{tenant_id}/admin/tenants/{child_id}/update`. MT23).
+/// Changes the display name and status (`ACTIVE` / `DISABLED`). Delegated to the api's `PATCH /admin/tenants/{child_id}`.
 #[derive(Debug, Deserialize)]
 pub struct AdminTenantUpdateForm {
     pub name: String,
@@ -286,13 +286,13 @@ pub struct AdminTenantUpdateForm {
     pub csrf_token: String,
 }
 
-/// テナント管理画面の CSRF のみのアクション（削除等）のフォーム。
+/// Form for CSRF-only actions on the tenant management screen (deletion etc.).
 #[derive(Debug, Deserialize)]
 pub struct AdminTenantActionForm {
     pub csrf_token: String,
 }
 
-/// 管理者によるパスワード再発行フォーム（対象をメールアドレスで指定する）。
+/// Password reissue form by an admin (the target is specified by email address).
 #[derive(Debug, Deserialize)]
 pub struct AdminPasswordResetForm {
     #[serde(default)]
@@ -300,15 +300,15 @@ pub struct AdminPasswordResetForm {
     pub csrf_token: String,
 }
 
-/// メンバー一覧の利用者状態変更フォーム（`ACTIVE` / `DISABLED`）。
+/// Form changing a user's status in the member list (`ACTIVE` / `DISABLED`).
 #[derive(Debug, Deserialize)]
 pub struct MemberStatusForm {
     pub status: String,
     pub csrf_token: String,
 }
 
-/// メンバー一覧の CSRF のみのアクション（削除・パスワード再発行等）のフォーム。
-/// `email` は結果画面の表示用（省略可。認可・対象解決には使わない）。
+/// Form for CSRF-only actions in the member list (deletion, password reissue etc.).
+/// `email` is for display on the result screen (optional; not used for authorization or target resolution).
 #[derive(Debug, Deserialize)]
 pub struct MemberActionForm {
     #[serde(default)]
@@ -316,7 +316,7 @@ pub struct MemberActionForm {
     pub csrf_token: String,
 }
 
-/// 管理者メモのフォーム（ADR-0063）。空で送るとメモを消す。
+/// Admin note form (ADR-0063). Sending it empty deletes the note.
 #[derive(Debug, Deserialize)]
 pub struct MemberNoteForm {
     #[serde(default)]
@@ -324,8 +324,8 @@ pub struct MemberNoteForm {
     pub csrf_token: String,
 }
 
-/// 設定画面のランタイム設定（DB 上書き）フォーム
-/// （`POST /{tenant_id}/admin/system-settings/runtime`）。`value` が空 = 上書き解除。
+/// Runtime setting (DB override) form on the settings screen
+/// (`POST /{tenant_id}/admin/system-settings/runtime`). Empty `value` = remove the override.
 #[derive(Debug, Deserialize)]
 pub struct AdminRuntimeSettingForm {
     pub key: String,
@@ -334,9 +334,9 @@ pub struct AdminRuntimeSettingForm {
     pub csrf_token: String,
 }
 
-/// テナントの設定値を決めるフォーム（`POST /{tenant_id}/admin/settings/tenant/keys`。ADR-0058）。
+/// Form setting a tenant setting value (`POST /{tenant_id}/admin/settings/tenant/keys`. ADR-0058).
 ///
-/// `confirmed` は確認画面から送り直したときだけ付く（締め出し得る値へ変えるとき）。
+/// `confirmed` is attached only when resent from the confirmation screen (when changing to a value that could lock people out).
 #[derive(Debug, Deserialize)]
 pub struct AdminTenantSettingForm {
     pub key: String,
@@ -347,18 +347,18 @@ pub struct AdminTenantSettingForm {
     pub csrf_token: String,
 }
 
-/// テナントの上書きを消す（全体に戻す）フォーム（`POST /{tenant_id}/admin/settings/tenant/keys/clear`）。
+/// Form removing a tenant override (back to global) (`POST /{tenant_id}/admin/settings/tenant/keys/clear`).
 #[derive(Debug, Deserialize)]
 pub struct AdminTenantSettingClearForm {
     pub key: String,
     pub csrf_token: String,
 }
 
-/// テナント自身のメールの経路のフォーム（`POST /{tenant_id}/admin/settings/smtp`。ADR-0058 §8）。
+/// Form for the tenant's own mail route (`POST /{tenant_id}/admin/settings/smtp`. ADR-0058 §8).
 ///
-/// `smtp_password` が空なら現行のパスワードを維持する（全体の画面と同じ規則）。消すときは
-/// `smtp_password_clear` を付ける ——空欄を「消す」に読むと、パスワードを入れ直さずに他の項目を
-/// 直しただけで消えてしまう。
+/// If `smtp_password` is empty the current password is kept (same rule as the global screen). To delete it,
+/// attach `smtp_password_clear` — reading an empty field as "delete" would delete the password when only other fields
+/// were fixed without re-entering it.
 #[derive(Debug, Deserialize)]
 pub struct AdminTenantSmtpForm {
     #[serde(default)]
@@ -378,19 +378,19 @@ pub struct AdminTenantSmtpForm {
     pub csrf_token: String,
 }
 
-/// テナントのメールの経路を消して全体の経路へ戻すフォーム（`POST /{tenant_id}/admin/settings/smtp/clear`）。
+/// Form removing the tenant's mail route and falling back to the global route (`POST /{tenant_id}/admin/settings/smtp/clear`).
 #[derive(Debug, Deserialize)]
 pub struct AdminTenantSmtpClearForm {
     pub csrf_token: String,
 }
 
-/// api・web の再起動フォーム（`POST /{tenant_id}/admin/restart`。ADR-0017）。
+/// Form restarting the api and web (`POST /{tenant_id}/admin/restart`. ADR-0017).
 #[derive(Debug, Deserialize)]
 pub struct AdminRestartForm {
     pub csrf_token: String,
 }
 
-/// SAML SP（クライアント）登録フォーム（`POST /{tenant_id}/admin/saml-clients`）。
+/// SAML SP (client) registration form (`POST /{tenant_id}/admin/saml-clients`).
 #[derive(Debug, Deserialize)]
 pub struct AdminSamlServiceProviderForm {
     pub display_name: String,
@@ -405,32 +405,32 @@ pub struct AdminSamlServiceProviderForm {
     pub csrf_token: String,
 }
 
-/// SAML SP（クライアント）削除フォーム（`POST /{tenant_id}/admin/saml-clients/{id}/delete`）。
+/// SAML SP (client) deletion form (`POST /{tenant_id}/admin/saml-clients/{id}/delete`).
 #[derive(Debug, Deserialize)]
 pub struct AdminSamlServiceProviderDeleteForm {
     pub csrf_token: String,
 }
 
-/// 認証ポリシーの作成・編集フォーム（`POST /{tenant_id}/admin/authentication-policies`、AP1）。
+/// Authentication policy create/edit form (`POST /{tenant_id}/admin/authentication-policies`, AP1).
 ///
-/// 個数が可変の条件（対象クライアント・利用者・CIDR・`acr_values`・時間帯）は、HTML の入力欄へ
-/// 1 対 1 で置けないためテキスト領域で受ける。書式と往復は
-/// [`crate::authentication_policy_form`] に集約する。
+/// Conditions with a variable count (target clients, users, CIDRs, `acr_values`, time windows) cannot map one-to-one
+/// onto HTML input fields, so they are received as text areas. Formatting and round-tripping are collected in
+/// [`crate::authentication_policy_form`].
 #[derive(Debug, Deserialize)]
 pub struct AdminAuthenticationPolicyForm {
     pub policy_code: String,
     pub policy_name: String,
     pub priority: String,
-    /// チェックボックスは未チェックだと送信されないため `Option` で受ける。
+    /// Unchecked checkboxes are not submitted, so it is received as `Option`.
     #[serde(default)]
     pub enabled: Option<String>,
     pub effect: String,
-    /// `require_specific_method` で許可する認証方式（チェックボックス群）。
+    /// Authentication methods allowed by `require_specific_method` (a group of checkboxes).
     ///
-    /// 繰り返しキー（`methods=a&methods=b`）を `Vec` で受けないのは、フォームの復号に使う
-    /// `serde_urlencoded` が列（sequence）に対応しないためである。方式は閉じた語彙
-    /// （[`assay_contracts::admin::AUTHENTICATION_METHOD_CODES`]）なので、方式ごとに独立した
-    /// チェックボックスとして受ける。
+    /// Repeated keys (`methods=a&methods=b`) are not received as a `Vec` because `serde_urlencoded`, used to decode
+    /// forms, does not support sequences. The methods are a closed vocabulary
+    /// ([`assay_contracts::admin::AUTHENTICATION_METHOD_CODES`]), so each method is received as an independent
+    /// checkbox.
     #[serde(default)]
     pub method_password: Option<String>,
     #[serde(default)]
@@ -447,7 +447,7 @@ pub struct AdminAuthenticationPolicyForm {
     pub method_external_idp: Option<String>,
     #[serde(default)]
     pub user_verification: Option<String>,
-    /// 対象アプリの内部 ID（改行区切り。空 = 全アプリ。ADR-0054 の決定 5）。
+    /// Internal IDs of target apps (newline-separated. Empty = all apps. Decision 5 of ADR-0054).
     #[serde(default)]
     pub application_ids: String,
     #[serde(default)]
@@ -461,7 +461,7 @@ pub struct AdminAuthenticationPolicyForm {
     pub csrf_token: String,
 }
 
-/// 認証ポリシー削除フォーム（`POST /{tenant_id}/admin/authentication-policies/{id}/delete`）。
+/// Authentication policy deletion form (`POST /{tenant_id}/admin/authentication-policies/{id}/delete`).
 #[derive(Debug, Deserialize)]
 pub struct AdminAuthenticationPolicyDeleteForm {
     pub csrf_token: String,

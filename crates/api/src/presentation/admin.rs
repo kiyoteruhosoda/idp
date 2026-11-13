@@ -1,25 +1,25 @@
-//! 管理機能の認可 extractor（ADR-0006 §5 / ADR-0037、CLAUDE.md「権限管理」）。
+//! Authorization extractors for admin features (ADR-0006 §5 / ADR-0037, CLAUDE.md "権限管理").
 //!
-//! `RequirePerms<P>` はハンドラ引数に置くことで、**管理アクセストークン**（`Authorization: Bearer`）
-//! を検証し、型パラメータ `P` が表す**権限コード**を満たすかを判定する。判定そのものは Application 層
-//! （[`ManagementTokenService`]）が行い、本 extractor は結果を HTTP へ写すだけ（Presentation には
-//! 可否のみが渡る）。
+//! Placing `RequirePerms<P>` in handler arguments validates the **admin access token** (`Authorization: Bearer`)
+//! and checks that it satisfies the **permission code** represented by the type parameter `P`. The decision itself is made by
+//! the application layer ([`ManagementTokenService`]); this extractor only maps the result to HTTP (Presentation only
+//! receives allow/deny).
 //!
-//! 権限コードは文字列ではなく型（マーカ）で指定する。CLAUDE.md「動的呼び出しの制限」に従い、
-//! 文字列で権限を渡して実行時解決する方式を避け、コンパイル時に確定させる。マーカと文字列の
-//! 対応は本モジュールの [`permission_markers!`] が一度だけ書く。
+//! Permission codes are specified as types (markers), not strings. Following CLAUDE.md "動的呼び出しの制限",
+//! passing permissions as strings resolved at runtime is avoided and they are fixed at compile time. The mapping between
+//! markers and strings is written once by this module's [`permission_markers!`].
 //!
-//! ## 資格情報はトークンだけ（ADR-0037）
+//! ## Credentials are tokens only (ADR-0037)
 //!
-//! 以前は web が転送した SSO セッション Cookie を資格情報にしていた。Cookie は ambient（ブラウザが
-//! 自動で付ける）なので api 側にもオリジン検証（CSRF 対策）が必要だったが、Bearer は ambient では
-//! ないため、**管理面から CSRF の論点そのものが消える**。管理コンソール（web）は SSO セッションを
-//! `POST /internal/admin/token` で管理トークンへ交換してから api を呼ぶ。ブラウザ経路の CSRF は
-//! web が同期トークンで閉じて扱う（`assay_web::csrf`）。
+//! Previously the SSO session cookie forwarded by web was the credential. Cookies are ambient (the browser
+//! attaches them automatically), so the api also needed origin validation (CSRF protection), but Bearer is not ambient,
+//! so **the CSRF concern disappears from the admin surface altogether**. The admin console (web) exchanges the SSO session
+//! for an admin token via `POST /internal/admin/token` before calling the api. CSRF on the browser path is
+//! handled and closed by web with synchronizer tokens (`assay_web::csrf`).
 //!
-//! 権限を要求せず「ログイン済みであること」だけを要求するフロー（招待の承諾。ADR-0009 §3）には
-//! [`AuthenticatedUser`] extractor を用いる。こちらはブラウザの Cookie を直接読むため、
-//! オリジン検証を従来どおり残す。
+//! Flows that require no permission, only "being signed in" (accepting an invitation, ADR-0009 §3), use
+//! the [`AuthenticatedUser`] extractor. It reads the browser cookie directly, so
+//! origin validation is kept as before.
 //!
 //! ```ignore
 //! async fn admin_api(RequirePerms(admin, _): RequirePerms<UsersRead>) -> impl IntoResponse { ... }
@@ -40,20 +40,20 @@ use axum::Json;
 use serde_json::json;
 use std::marker::PhantomData;
 
-/// 保護対象が要求する権限コードを型として表すマーカ。
+/// Marker representing, as a type, the permission code required by a protected target.
 ///
-/// 新しい権限で保護する場合はマーカ型を追加する（許可値そのものの単一出所は `permissions`
-/// マスタテーブル、含意関係の単一出所は `domain::permission`。ここではそのうち「保護に使う」
-/// コードを型として束ねる）。
+/// To protect with a new permission, add a marker type (the single source of allowed values is the `permissions`
+/// master table, and of implications `domain::permission`. Here the codes "used for protection"
+/// among them are bundled as types).
 pub trait RequiredPermission {
     const CODE: &'static str;
 }
 
-/// 権限コードのマーカ型をまとめて定義する。
+/// Defines the permission code marker types together.
 ///
-/// マクロにするのは、マーカ型と権限コード文字列の対応を**1 行 1 対応**で並べるためである。
-/// 型ごとに `struct` と `impl` を手書きすると、対応表が 20 個以上の宣言に散らばって
-/// 「どの型がどのコードか」を一望できなくなる。
+/// It is a macro so that the mapping between marker types and permission code strings is listed **one per line**.
+/// Hand-writing a `struct` and `impl` per type would scatter the table over 20+ declarations,
+/// losing the overview of "which type is which code".
 macro_rules! permission_markers {
     ($($(#[$doc:meta])* $name:ident => $code:path;)*) => {
         $(
@@ -67,72 +67,72 @@ macro_rules! permission_markers {
 }
 
 permission_markers! {
-    /// 管理コンソール全体（テナント管理者。ADR-0009 §4）。テナント管理の細粒度コード
-    /// （`TENANT_MANAGEMENT_CODES`）をすべて含意する。⚠ `idp.smtp:*` は含意しない。
+    /// The whole admin console (tenant admin, ADR-0009 §4). Implies all fine-grained tenant management codes
+    /// (`TENANT_MANAGEMENT_CODES`). ⚠ Does not imply `idp.smtp:*`.
     IdpAdmin => permission::TENANT_ADMIN;
-    /// システム管理（scope = root のみ）。テナントの作成・削除、システム設定、再起動、
-    /// テナント横断のログ参照。**細粒度コードへは分割しない**（ADR-0037）。
+    /// System administration (scope = root only). Creating/deleting tenants, system settings, restart,
+    /// cross-tenant log viewing. **Not split into fine-grained codes** (ADR-0037).
     IdpSystemAdmin => permission::SYSTEM_ADMIN;
 
-    /// 利用者の参照・検索。
+    /// Viewing and searching users.
     UsersRead => permission::USERS_READ;
-    /// 利用者の作成・更新・削除・パスワード再発行・MFA 解除・ロック解除・ログイン識別子。
+    /// Creating/updating/deleting users, reissuing passwords, resetting MFA, unlocking, login identifiers.
     UsersWrite => permission::USERS_WRITE;
-    /// アプリ（ADR-0054）の参照。binding と割り当ての一覧を含む。
+    /// Viewing apps (ADR-0054), including binding and assignment lists.
     ApplicationsRead => permission::APPLICATIONS_READ;
-    /// アプリの登録・更新・削除、binding の追加と削除、利用者の割り当てと解除。
+    /// Registering/updating/deleting apps, adding and removing bindings, assigning and unassigning users.
     ApplicationsWrite => permission::APPLICATIONS_WRITE;
-    /// クライアント（RP）の参照。
+    /// Viewing clients (RPs).
     ClientsRead => permission::CLIENTS_READ;
-    /// クライアント（RP）の作成・更新・削除・secret 再発行・権限付与。
+    /// Creating/updating/deleting clients (RPs), reissuing secrets, granting permissions.
     ClientsWrite => permission::CLIENTS_WRITE;
-    /// テナントメンバーの参照。
+    /// Viewing tenant members.
     MembersRead => permission::MEMBERS_READ;
-    /// メンバーの招待・一時停止・解除。
+    /// Inviting, suspending and removing members.
     MembersWrite => permission::MEMBERS_WRITE;
-    /// 保護リソース（`aud` に入る宛名）と、その貸し出し先の参照（ADR-0042）。
+    /// Viewing protected resources (audience names put in `aud`) and who they are lent to (ADR-0042).
     ResourcesRead => permission::RESOURCES_READ;
-    /// 宛名の登録・停止・削除と、クライアントへの貸し出し・取り消し（ADR-0042）。
+    /// Registering, disabling and deleting audiences, and lending them to / revoking them from clients (ADR-0042).
     ResourcesWrite => permission::RESOURCES_WRITE;
-    /// 権限付与状況の参照。
+    /// Viewing permission grants.
     PermissionsRead => permission::PERMISSIONS_READ;
-    /// 権限の付与・剥奪。
+    /// Granting and revoking permissions.
     PermissionsWrite => permission::PERMISSIONS_WRITE;
-    /// 監査ログの参照。
+    /// Viewing audit logs.
     AuditRead => permission::AUDIT_READ;
-    /// 署名鍵の参照。
+    /// Viewing signing keys.
     KeysRead => permission::KEYS_READ;
-    /// 署名鍵の生成・retire・削除。
+    /// Generating, retiring and deleting signing keys.
     KeysWrite => permission::KEYS_WRITE;
-    /// 要求テナント自身の設定の参照。
+    /// Viewing the requesting tenant's own settings.
     TenantSettingsRead => permission::TENANT_SETTINGS_READ;
-    /// 要求テナント自身の設定の変更。
+    /// Changing the requesting tenant's own settings.
     TenantSettingsWrite => permission::TENANT_SETTINGS_WRITE;
-    /// 認証ポリシーの参照。
+    /// Viewing authentication policies.
     AuthenticationPoliciesRead => permission::AUTHENTICATION_POLICIES_READ;
-    /// 認証ポリシーの作成・更新・削除。
+    /// Creating/updating/deleting authentication policies.
     AuthenticationPoliciesWrite => permission::AUTHENTICATION_POLICIES_WRITE;
-    /// 外部 IdP 設定の参照。
+    /// Viewing external IdP settings.
     ExternalIdpsRead => permission::EXTERNAL_IDPS_READ;
-    /// 外部 IdP 設定の登録・更新・削除。
+    /// Registering/updating/deleting external IdP settings.
     ExternalIdpsWrite => permission::EXTERNAL_IDPS_WRITE;
-    /// SAML SP の参照。
+    /// Viewing SAML SPs.
     SamlServiceProvidersRead => permission::SAML_SERVICE_PROVIDERS_READ;
-    /// SAML SP の登録・更新・削除。
+    /// Registering/updating/deleting SAML SPs.
     SamlServiceProvidersWrite => permission::SAML_SERVICE_PROVIDERS_WRITE;
-    /// 組織の SSH の鍵の一覧（task #885）。⚠ 口は機械クライアントだけを通す（`admin_ssh_keys`）。
+    /// List of the organization's SSH keys (task #885). ⚠ The endpoint only lets machine clients through (`admin_ssh_keys`).
     SshKeysRead => permission::SSH_KEYS_READ;
-    /// メール送信（SMTP）設定の参照（ADR-0051・ADR-0058 §8）。どのテナントでも付与でき、届くのは
-    /// scope のテナントの経路だけ（全体の経路の口は使う側で root を課す）。⚠ `idp.tenant.admin` は含意しない。
+    /// Viewing mail sending (SMTP) settings (ADR-0051, ADR-0058 §8). Grantable in any tenant; reaches only
+    /// the route of the scope's tenant (the global route's endpoint imposes root on the using side). ⚠ Not implied by `idp.tenant.admin`.
     SmtpRead => permission::SMTP_READ;
-    /// メール送信（SMTP）設定の変更（ADR-0051・ADR-0058 §8）。範囲は `SmtpRead` と同じ。
+    /// Changing mail sending (SMTP) settings (ADR-0051, ADR-0058 §8). Same range as `SmtpRead`.
     SmtpWrite => permission::SMTP_WRITE;
 }
 
-/// 権限 `P` を満たす認可済み管理主体を表す extractor。
+/// Extractor representing an authorized admin principal satisfying permission `P`.
 ///
-/// 抽出に成功した時点で「有効な管理トークンを提示した・主体がまだ有効・`P::CODE` を満たす」が
-/// 保証される。拒否時は JSON の 401/403 を返す（画面向けのログイン誘導は web が担う。ADR-0007）。
+/// Once extraction succeeds, "presented a valid admin token, the principal is still active, satisfies `P::CODE`" is
+/// guaranteed. On rejection it returns JSON 401/403 (redirecting screens to login is web's job, ADR-0007).
 pub struct RequirePerms<P: RequiredPermission>(pub AuthorizedPrincipal, pub PhantomData<P>);
 
 impl<P> FromRequestParts<AppState> for RequirePerms<P>
@@ -145,9 +145,9 @@ where
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        // 要求テナントはパス由来の `ResolvedTenant`（`resolve_tenant` middleware が注入。ADR-0009 §7）。
-        // トークンの `iss`・`aud` はこのテナントの値と厳密一致すること（他テナントのトークンを弾く）。
-        // middleware 未通過は配線ミス。
+        // The requested tenant is the path-derived `ResolvedTenant` (injected by the `resolve_tenant` middleware, ADR-0009 §7).
+        // The token's `iss` and `aud` must exactly match this tenant's values (rejects other tenants' tokens).
+        // Not having passed the middleware is a wiring bug.
         let Some(resolved) = parts.extensions.get::<ResolvedTenant>() else {
             tracing::error!("RequirePerms used on a route without the tenant resolver middleware");
             return Err(error_response(
@@ -177,19 +177,19 @@ where
     }
 }
 
-/// `idp.system.admin` の口は root テナントでしか開かない。
+/// `idp.system.admin` endpoints open only in the root tenant.
 ///
-/// 持ち主が root にしか居ないことは DB の制約（`user_permissions_system_admin_scope_chk`）でも
-/// 決まっているが、そこだけに頼らない（task #762）。
+/// That holders exist only in root is also enforced by a DB constraint (`user_permissions_system_admin_scope_chk`),
+/// but we don't rely on that alone (task #762).
 fn opens_in_tenant(code: &str, tenant_is_root: bool) -> bool {
     code != permission::SYSTEM_ADMIN || tenant_is_root
 }
 
-/// 有効な管理トークンを提示した主体（**権限コードは問わない**）を表す extractor（ADR-0059）。
+/// Extractor representing a principal that presented a valid admin token (**regardless of permission codes**) (ADR-0059).
 ///
-/// 認可を権限コードではなく主体そのもので決める口（名簿の self：呼んできたサービスアカウントが
-/// どのアプリの名乗りか）に置く。⚠ **抽出できただけで何かを許さない** ——ハンドラ（の先の
-/// Application 層）が主体を見て 403 を決める。拒否はトークンが無効なときの 401 だけ。
+/// Placed on endpoints whose authorization depends on the principal itself rather than permission codes (the roster's self: which
+/// app the calling service account claims to be). ⚠ **Extraction alone permits nothing** -- the handler (and the
+/// application layer behind it) looks at the principal and decides 403. The only rejection is 401 for an invalid token.
 pub struct ManagementPrincipal(pub AuthorizedPrincipal);
 
 impl FromRequestParts<AppState> for ManagementPrincipal {
@@ -223,7 +223,7 @@ impl FromRequestParts<AppState> for ManagementPrincipal {
     }
 }
 
-/// `Authorization: Bearer <token>` を取り出す（スキーム名は大小無視。RFC 6750 §2.1）。
+/// Extracts `Authorization: Bearer <token>` (scheme name is case-insensitive, RFC 6750 §2.1).
 fn bearer_token(parts: &Parts) -> Option<String> {
     let raw = parts.headers.get(AUTHORIZATION)?.to_str().ok()?;
     let (scheme, value) = raw.split_once(' ')?;
@@ -233,12 +233,12 @@ fn bearer_token(parts: &Parts) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-/// ログイン済み利用者（権限は問わない）を表す extractor。
+/// Extractor representing a signed-in user (regardless of permissions).
 ///
-/// SSO セッション Cookie から利用者を解決できた時点で「有効な SSO セッションを持つ・アカウントが有効」が
-/// 保証される。テナント権限を要求しないフロー（招待の承諾。ADR-0009 §3）で使う。抽出できなければ 401。
+/// Once the user is resolved from the SSO session cookie, "has a valid SSO session, account is active" is
+/// guaranteed. Used in flows that require no tenant permission (accepting an invitation, ADR-0009 §3). 401 if extraction fails.
 ///
-/// 管理 API と違い Cookie を直接資格情報にするため、オリジン検証（SEC4）を残す。
+/// Unlike the admin API, the cookie is used directly as the credential, so origin validation (SEC4) is kept.
 pub struct AuthenticatedUser(pub uuid::Uuid);
 
 impl FromRequestParts<AppState> for AuthenticatedUser {
@@ -270,7 +270,7 @@ fn error_response(status: StatusCode, code: &str, message: &str) -> Response {
     (status, Json(json!({ "error": code, "message": message }))).into_response()
 }
 
-/// 401（RFC 6750 §3 に従い `WWW-Authenticate` を添える。管理 API の資格情報は Bearer だけ）。
+/// 401 (with `WWW-Authenticate` per RFC 6750 §3; the admin API's only credential is Bearer).
 fn unauthorized(parts: &Parts) -> Response {
     let mut response = error_response(
         StatusCode::UNAUTHORIZED,
@@ -284,7 +284,7 @@ fn unauthorized(parts: &Parts) -> Response {
     response
 }
 
-/// 許可外オリジンからの Cookie 認証変更操作（SEC4）。認可の可否は明かさず 403 で落とす。
+/// Cookie-authenticated state-changing request from a disallowed origin (SEC4). Rejected with 403 without revealing authorization.
 fn forbidden_origin(parts: &Parts) -> Response {
     tracing::warn!(
         method = %parts.method,
@@ -298,8 +298,8 @@ fn forbidden_origin(parts: &Parts) -> Response {
     )
 }
 
-/// リクエストの `Accept-Language` に従う翻訳辞書（MT19）。extractor の拒否応答（401 / 403）も
-/// 利用者に見えるメッセージであり、ハンドラ内のエラーと同じ言語で返す。
+/// Translation dictionary following the request's `Accept-Language` (MT19). The extractor's rejection responses (401 / 403)
+/// are also messages users see, so they are returned in the same language as errors inside handlers.
 fn messages(parts: &Parts) -> ApiMessages {
     let header = parts
         .headers
@@ -327,7 +327,7 @@ mod tests {
             bearer_token(&parts_with(Some("Bearer abc.def.ghi"))).as_deref(),
             Some("abc.def.ghi")
         );
-        // RFC 6750 §2.1 の scheme は大小を区別しない。
+        // The scheme in RFC 6750 §2.1 is case-insensitive.
         assert_eq!(
             bearer_token(&parts_with(Some("bearer abc"))).as_deref(),
             Some("abc")
@@ -340,16 +340,16 @@ mod tests {
 
     #[test]
     fn rejects_anything_that_is_not_a_bearer_token() {
-        // 他方式は読まない（Basic をここで受けると、クライアント認証と管理認可が混ざる）。
+        // Other schemes are not read (accepting Basic here would mix client authentication with admin authorization).
         assert_eq!(bearer_token(&parts_with(Some("Basic abc"))), None);
         assert_eq!(bearer_token(&parts_with(None)), None);
-        // スキームだけ・値が空は資格情報として扱わない（`Some("")` で 401 の分岐を通さない）。
+        // A scheme alone or an empty value is not treated as a credential (`Some("")` does not take the 401 branch).
         assert_eq!(bearer_token(&parts_with(Some("Bearer"))), None);
         assert_eq!(bearer_token(&parts_with(Some("Bearer "))), None);
         assert_eq!(bearer_token(&parts_with(Some("Bearer    "))), None);
     }
 
-    /// マーカ型と権限コードの対応が `domain::permission` の定数と一致していること。
+    /// The mapping between marker types and permission codes matches the constants in `domain::permission`.
     #[test]
     fn markers_map_to_the_permission_codes_they_are_named_after() {
         assert_eq!(IdpAdmin::CODE, "idp.tenant.admin");

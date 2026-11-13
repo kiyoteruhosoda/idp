@@ -1,6 +1,6 @@
-//! アプリケーション層（ユースケース・トランザクション境界）。
+//! Application layer (use cases and transaction boundaries).
 //!
-//! ドメイン層のトレイトを介して Infrastructure に依存する（具象に直接依存しない）。
+//! Depends on Infrastructure through domain-layer traits (no direct dependency on concrete types).
 
 pub mod access_token_verification;
 pub mod account_directory;

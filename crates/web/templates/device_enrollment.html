@@ -6,8 +6,8 @@
     <h1 class="h4 mb-0">{{ messages.get("device-enrollment-title") }}</h1>
   </div>
   <div class="card-body p-4">
-    {#- 登録した端末に限る組織（task #916）。パスワード等は通っているが、このブラウザはまだ登録されていない。
-        パスキーで確かめるとこのブラウザを登録し、元の画面へ戻る。 -#}
+    {#- Organization limited to registered devices (task #916). Password etc. passed, but this browser is not registered yet.
+        Verifying with a passkey registers this browser and returns to the original screen. -#}
     <p>{{ messages.get_arg("device-enrollment-lead", "username", username) }}</p>
     <p class="small text-body-secondary">{{ messages.get("device-enrollment-why") }}</p>
     <div class="mb-3">

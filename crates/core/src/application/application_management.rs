@@ -1,11 +1,11 @@
-//! アプリの管理（登録・停止・binding・利用者の割り当て）——ADR-0054。
+//! App management (registration, stopping, bindings, user assignment) (ADR-0054).
 //!
-//! クライアント管理（`client_management`）と別サービスにするのは、**扱っている段が違う**ため
-//! である。あちらは「OIDC でどう繋ぐか」を持ち、こちらは「利用者から見て何というアプリで、
-//! 誰が使ってよいか」を持つ。混ぜると、SAML を足した日にクライアント管理の中へ SAML の枝が
-//! 生えることになる。
+//! It is a separate service from client management (`client_management`) because **they deal with different layers**.
+//! That one holds "how to connect via OIDC"; this one holds "what app it is to users, and
+//! who may use it". Mixing them would make a SAML branch sprout inside client management the day
+//! SAML is added.
 //!
-//! 判定は本 Application 層で行い、Presentation には結果のみ渡す（CLAUDE.md「権限管理」）。
+//! Decisions are made in this Application layer and only results go to Presentation (CLAUDE.md "Permission management").
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::account::{AccountLocator, AccountRef};
@@ -31,123 +31,123 @@ use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// 「いま入れている人」を出すときに読む上限。
+/// Read limit when listing "people who can get in now".
 ///
-/// ⚠ **ここで打ち切ると名簿が欠ける。** 「全員」から「個別」へ倒すときの写し元なので、
-/// 超えた場合は黙って切らず [`CurrentUsers::truncated`] を立てて画面へ伝える。
+/// ⚠ **Cutting off here leaves the roster incomplete.** It is the copy source when switching from "everyone" to "individual",
+/// so when exceeded, it is not cut silently: [`CurrentUsers::truncated`] is set to tell the screen.
 pub const MAX_CURRENT_USERS: i64 = 500;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ApplicationManagementError {
-    /// アプリ・binding・利用者が要求テナントに存在しない。
+    /// The app, binding or user does not exist in the requested tenant.
     NotFound,
-    /// 入力が不正（表示名が空・長すぎる等）。
+    /// Invalid input (display name empty or too long etc.).
     Invalid(MessageKey),
-    /// その相手は既に別のアプリの名乗りになっている（差し込み値は相手のアプリの表示名）。
+    /// That counterparty is already another app's identity (the inserted value is that app's display name).
     Conflict(MessageKey),
     Internal(String),
 }
 
-/// 一覧の 1 行（アプリ ＋ 画面が要る集計）。
+/// One list row (app + aggregates the screen needs).
 ///
-/// 件数を数えるのをここでやるのは、**画面に人数を出すために名簿を全部読ませない**ためである。
+/// Counting happens here so that **the whole roster need not be read just to show a head count on screen**.
 pub struct ApplicationSummary {
     pub application: Application,
-    /// 繋がっている認証方法（表示名つき）。
+    /// Connected authentication methods (with display names).
     pub bindings: Vec<BindingSummary>,
-    /// 割り当て人数。`EVERYONE` のアプリでは行が無いので 0 になる（画面はモードで出し分ける）。
+    /// Number assigned. `EVERYONE` apps have no rows, so it is 0 (the screen varies by mode).
     pub assigned_count: i64,
 }
 
-/// 名乗り 1 本を画面に出す形。
+/// Shape for showing one identity on screen.
 pub struct BindingSummary {
     pub binding: ApplicationBinding,
-    /// 人が見分ける値。ログイン用・サービスアカウントなら `clients.client_id`、SAML なら
-    /// `entity_id`、宛名なら `resource_uri`。相手が消えていれば `None`。
+    /// The value people recognize. `clients.client_id` for login and service accounts, `entity_id` for SAML,
+    /// `resource_uri` for an audience. `None` if the counterparty is gone.
     pub identifier: Option<String>,
-    /// 相手の登録名（`clients.app_name` / SP・宛名の `display_name`）。
+    /// The counterparty's registered name (`clients.app_name` / `display_name` of the SP or audience).
     pub display_name: Option<String>,
 }
 
-/// 足したい名乗り（管理 API の要求を解釈したもの。ADR-0059）。
+/// An identity to add (interpretation of the admin API request; ADR-0059).
 ///
-/// 相手は**人が知っている値**で指す（`client_id`・宛名の URI）。SAML の SP だけは
-/// `entity_id` が URL 形でパスに載せにくいので内部 ID で指す（ADR-0054 のまま）。
+/// Counterparties are referenced by **values people know** (`client_id`, the audience URI). Only SAML SPs are
+/// referenced by internal ID, because `entity_id` is URL-shaped and awkward in a path (as in ADR-0054).
 pub enum NewBinding {
-    /// ログイン用の OIDC client（`authorization_code`）。
+    /// An OIDC client for login (`authorization_code`).
     Oidc { client_id: String },
-    /// SAML の SP。
+    /// A SAML SP.
     Saml { service_provider_id: Uuid },
-    /// サービスアカウント（`client_credentials` だけのクライアント）。
+    /// A service account (a client with only `client_credentials`).
     ServiceAccount { client_id: String },
-    /// アプリの API の宛名（`aud`）。
+    /// The audience (`aud`) of the app's API.
     Resource { resource_uri: String },
 }
 
-/// 名乗りの候補 1 件（ADR-0067）。画面が「相手を選ぶ」ための一覧の 1 行。
+/// One identity candidate (ADR-0067). One row of the list the screen uses to "pick a counterparty".
 ///
-/// 候補は**テナントに登録済みのもの全部**から、種類の性質に合うものを拾う（ログイン用 =
-/// `authorization_code` の client、サービスアカウント = `client_credentials` だけの client、SAML の SP、
-/// 宛名）。種類の突き合わせは [`ApplicationManagementService::bind`] と同じ述語を使う
-/// ——候補に出たのに結べない、を作らない。
+/// Candidates are picked from **everything registered in the tenant** that fits the kind (login =
+/// `authorization_code` clients, service account = clients with only `client_credentials`, SAML SPs,
+/// audiences). Kind matching uses the same predicate as [`ApplicationManagementService::bind`],
+/// so nothing appears as a candidate that cannot then be bound.
 pub struct BindingCandidate {
     pub target: BindingTarget,
-    /// 結び付けるときに送る値（[`NewBinding`] の相手）。ログイン用・サービスアカウントは
-    /// `client_id`、SAML は SP の内部 ID、宛名は URI。
+    /// Value sent when binding (the counterparty of [`NewBinding`]). `client_id` for login and service
+    /// accounts, the SP's internal ID for SAML, the URI for an audience.
     pub reference: String,
-    /// 人が見分ける値（`client_id`・`entity_id`・宛名の URI）。
+    /// The value people recognize (`client_id`, `entity_id`, the audience URI).
     pub identifier: String,
-    /// 相手の登録名（`clients.app_name` / SP・宛名の `display_name`）。
+    /// The counterparty's registered name (`clients.app_name` / `display_name` of the SP or audience).
     pub display_name: String,
-    /// いまこの相手を名乗りに持っているアプリ（どこにも属していなければ `None`）。
-    /// ⚠ 選んだら「このアプリから移す」と確かめる材料になる。
+    /// The app that currently holds this counterparty as an identity (`None` if it belongs nowhere).
+    /// ⚠ When picked, this is what the "move from this app" confirmation is based on.
     pub owner: Option<Application>,
 }
 
-/// アプリの詳細（名乗りと、使う主体）。
+/// App details (identities and the principals that use it).
 pub struct ApplicationDetail {
     pub application: Application,
     pub bindings: Vec<BindingSummary>,
-    /// 割り当てられた人。
+    /// Assigned people.
     pub assigned: Vec<AssignedUser>,
-    /// 割り当てられたサービスアカウント（ADR-0059 の決定 5）。
+    /// Assigned service accounts (decision 5 of ADR-0059).
     pub assigned_service_accounts: Vec<AssignedServiceAccount>,
 }
 
-/// 割り当てたい主体（管理 API の要求を解釈したもの。ADR-0059 の決定 5）。
+/// A principal to assign (interpretation of the admin API request; decision 5 of ADR-0059).
 ///
-/// 人は内部 ID、サービスアカウントは `client_id`（人が知っている値）で指す。
+/// People are referenced by internal ID, service accounts by `client_id` (a value people know).
 pub enum NewAssignment {
     User { user_id: Uuid },
     ServiceAccount { client_id: String },
 }
 
-/// 「いま入れている人」——`EVERYONE` を `INDIVIDUAL` へ倒す前に写す元。
+/// "People who can get in now": the copy source before switching `EVERYONE` to `INDIVIDUAL`.
 pub struct CurrentUsers {
     pub members: Vec<TenantMember>,
-    /// 全体の人数（[`MAX_CURRENT_USERS`] で切る前の値）。
+    /// Total head count (before cutting at [`MAX_CURRENT_USERS`]).
     pub total: i64,
-    /// 上限で打ち切ったか。⚠ **立っていたら画面は「全員は出せていない」と言うこと。**
+    /// Whether it was cut at the limit. ⚠ **If set, the screen must say "not everyone could be shown".**
     pub truncated: bool,
 }
 
-/// アカウント 1 つから見たアプリ 1 件（ADR-0063 / ADR-0065）。
+/// One app seen from one account (ADR-0063 / ADR-0065).
 pub struct AccountApplication {
     pub application: Application,
-    /// このアカウントがいま使えるか。判定（人は code の発行地点、サービスアカウントはトークン
-    /// 発行）と同じ規則で決める ——⚠ 画面が別の規則で答えると「使えると出ているのに入れない」が起きる。
+    /// Whether this account can use it now. Decided by the same rule as the decision (code issuance for people,
+    /// token issuance for service accounts): ⚠ if the screen answered by a different rule, "shown as usable but cannot get in" would happen.
     pub access: ApplicationAccess,
-    /// 個別の割り当てがあればその日時。`EVERYONE` のアプリでも行が残っていれば載る。
+    /// The date and time of an individual assignment, if any. Shown even for `EVERYONE` apps if the row remains.
     pub assigned_at: Option<DateTime<Utc>>,
 }
 
-/// 新しいアプリの入力。
+/// Input for a new app.
 pub struct NewApplication {
     pub display_name: String,
-    /// ⚠ 既定は [`AssignmentMode::Individual`]（ADR-0054 の決定 3）。呼び出し側が明示する。
+    /// ⚠ The default is [`AssignmentMode::Individual`] (decision 3 of ADR-0054). The caller states it explicitly.
     pub assignment_mode: AssignmentMode,
-    /// 作った本人を同時に割り当てるか。⚠ **画面では初めからチェックしておく**
-    /// ——「個別」で作った直後は誰も入れないので、作った本人が締め出される形にしない。
+    /// Whether to assign the creator at the same time. ⚠ **The screen has it checked from the start**:
+    /// right after creating an "individual" app nobody can get in, so the creator must not end up locked out.
     pub assign_creator: bool,
 }
 
@@ -186,7 +186,7 @@ impl ApplicationManagementService {
         }
     }
 
-    /// アプリを一覧する（表示名の昇順）。
+    /// Lists apps (ascending display name).
     pub async fn list(
         &self,
         tenant: TenantContext,
@@ -196,8 +196,8 @@ impl ApplicationManagementService {
             .list(tenant.tenant_id())
             .await
             .map_err(map_repo_error)?;
-        // クライアントは**1 回だけ**読む。binding ごとに引き直すと、アプリ数 × クライアント数の
-        // 走査になる（アプリが増えるほど二乗で効いてくる）。
+        // Clients are read **only once**. Re-fetching per binding would scan apps x clients
+        // (growing quadratically as apps increase).
         let clients = self
             .clients
             .list(tenant.tenant_id())
@@ -222,16 +222,16 @@ impl ApplicationManagementService {
         Ok(summaries)
     }
 
-    /// アカウント 1 つが使えるアプリの一覧（表示名の昇順。ADR-0063 / ADR-0065）。
+    /// List of apps one account can use (ascending display name; ADR-0063 / ADR-0065).
     ///
-    /// 種別で「使う」の意味が違うので、載せるアプリと可否の規則も種別で決まる:
+    /// What "use" means differs by kind, so which apps are listed and the eligibility rule are decided by kind too:
     ///
-    /// | 種別 | 載せるアプリ | 可否 |
+    /// | Kind | Apps listed | Eligibility |
     /// |---|---|---|
-    /// | 人 | ログインの名乗り（OIDC / SAML）を持つもの | [`Application::admits`]（code の発行と同じ） |
-    /// | サービスアカウント | 宛名（`resource`）の名乗りを持つもの | [`Application::admits_service_account`]（トークン発行と同じ） |
+    /// | Person | those with a login identity (OIDC / SAML) | [`Application::admits`] (same as code issuance) |
+    /// | Service account | those with an audience (`resource`) identity | [`Application::admits_service_account`] (same as token issuance) |
     ///
-    /// 名乗りの無いアプリは、その種別が入る先ではない ——「使えない」と並べると誤解を招く。
+    /// Apps without an identity are not destinations for that kind: listing them as "unusable" would mislead.
     pub async fn account_applications(
         &self,
         tenant: TenantContext,
@@ -243,8 +243,8 @@ impl ApplicationManagementService {
                 AccountRef::User { user_id }
             }
             AccountLocator::ServiceAccount { client_id } => {
-                // 連携先（ログイン用の client）は「このテナントのサービスアカウント」ではない（削除済みは
-                // `load_client` が落とす）。
+                // Integrations (login clients) are not "this tenant's service accounts" (deleted ones are
+                // dropped by `load_client`).
                 let client = self.load_client(tenant, client_id).await?;
                 if !client.is_service_account() {
                     return Err(ApplicationManagementError::NotFound);
@@ -302,7 +302,7 @@ impl ApplicationManagementService {
         Ok(rows)
     }
 
-    /// アプリ 1 件の詳細。
+    /// Details of one app.
     pub async fn detail(
         &self,
         tenant: TenantContext,
@@ -333,7 +333,7 @@ impl ApplicationManagementService {
         })
     }
 
-    /// アプリを登録する。
+    /// Registers an app.
     pub async fn create(
         &self,
         tenant: TenantContext,
@@ -368,8 +368,8 @@ impl ApplicationManagementService {
         )
         .await;
 
-        // 作った本人を割り当てる。⚠ ここを落とすと、「個別」で作った直後は**誰も入れない**アプリが
-        // できる。人ではない実行主体（機械）には割り当てる相手が居ないので何もしない。
+        // Assign the creator. ⚠ Dropping this would make an app that **nobody can get in** right after being
+        // created as "individual". A non-human actor (machine) has nobody to assign, so nothing is done.
         if input.assign_creator {
             if let Some(user_id) = actor.user_id() {
                 self.assign(
@@ -385,11 +385,11 @@ impl ApplicationManagementService {
         Ok(application)
     }
 
-    /// 表示名・状態・割り当てモードを変える。
+    /// Changes display name, status and assignment mode.
     ///
-    /// ⚠ **「個別」へ倒すときに名簿が空でないことは、ここでは見ない。** 空のまま保存してよいか
-    /// （＝誰も入れなくしてよいか）は人が決めることなので、確認は画面が出す。ここで拒むと、
-    /// 「まず全員を止めて、それから 1 人ずつ足す」という正当な手順が踏めなくなる。
+    /// ⚠ **Whether the roster is non-empty when switching to "individual" is not checked here.** Whether saving it empty
+    /// (= letting nobody in) is acceptable is a human decision, so the screen asks for confirmation. Refusing here would
+    /// block the legitimate procedure "first stop everyone, then add people one by one".
     #[allow(clippy::too_many_arguments)]
     pub async fn update(
         &self,
@@ -404,8 +404,8 @@ impl ApplicationManagementService {
         let display_name =
             validate_display_name(display_name).map_err(ApplicationManagementError::Invalid)?;
         let before = self.load(tenant, id).await?;
-        // 戻り値の bool は「不存在」の判定に使わない。MySQL の `rows_affected` は**値が変わった行**
-        // を数えるため、何も変えない更新が 0 を返して存在する行を 404 にしてしまう。
+        // The returned bool is not used to decide "nonexistent". MySQL's `rows_affected` counts **rows whose values changed**,
+        // so an update changing nothing returns 0 and would turn an existing row into a 404.
         self.applications
             .update(
                 tenant.tenant_id(),
@@ -437,11 +437,11 @@ impl ApplicationManagementService {
         Ok(after)
     }
 
-    /// アプリを削除する（binding と割り当ては一緒に消える）。
+    /// Deletes an app (bindings and assignments go with it).
     ///
-    /// ⚠ **ぶら下がっている `clients` / `saml_service_providers` は消えない。** アプリは
-    /// 「利用者から見た括り」であって、繋ぎ方の設定そのものではない。消えるのは括りと名簿だけで、
-    /// RP はそのまま繋がったまま（＝判定の対象から外れる）になる。
+    /// ⚠ **The attached `clients` / `saml_service_providers` are not deleted.** An app is
+    /// "a grouping as seen by users", not the connection settings themselves. Only the grouping and roster go,
+    /// and the RP stays connected (= falls outside the decision).
     pub async fn delete(
         &self,
         tenant: TenantContext,
@@ -470,16 +470,16 @@ impl ApplicationManagementService {
         Ok(())
     }
 
-    /// 名乗りを足す（ADR-0059）。
+    /// Adds an identity (ADR-0059).
     ///
-    /// ⚠ **種類と相手の性質を突き合わせる。** ログイン用に `client_credentials` の client を
-    /// 結び付けると、ログインの判定がそのアプリを見ないまま素通しになる。逆にサービスアカウントとして
-    /// ログイン用の client を結び付けると、利用者のアクセストークンで self の名簿が読める。
+    /// ⚠ **Match the kind against the counterparty's nature.** Binding a `client_credentials` client for login
+    /// would let login decisions pass straight through without looking at the app. Conversely, binding a login client
+    /// as a service account would let a user's access token read the self roster.
     ///
-    /// `move_from` は「この相手が別のアプリの名乗りなら、そのアプリから移してよい」という許し
-    /// （ADR-0067）。⚠ **移す元のアプリを名指しする** ——「移してよい」だけを受けると、確認した
-    /// 時点と送った時点の間に持ち主が替わったとき、確認していないアプリから黙って奪う。名指しした
-    /// アプリが今の持ち主でなければ、今の持ち主の名前で断る（409）。
+    /// `move_from` is permission that "if this counterparty is another app's identity, it may be moved from that app"
+    /// (ADR-0067). ⚠ **The source app is named explicitly**: accepting only "may move" would, if the owner changed between
+    /// confirmation and submission, silently take it from an app that was never confirmed. If the named
+    /// app is not the current owner, it refuses with the current owner's name (409).
     pub async fn bind(
         &self,
         tenant: TenantContext,
@@ -568,10 +568,10 @@ impl ApplicationManagementService {
         .await
     }
 
-    /// 名乗りの候補（ADR-0067）。このアプリの名乗りになっているものは除く（もう結んである）。
+    /// Identity candidates (ADR-0067). Those already identities of this app are excluded (already bound).
     ///
-    /// 並びは種類（ログイン OIDC・SAML・サービスアカウント・宛名）ごとに、表示名の昇順。
-    /// 論理削除済みの client は出さない（[`Self::bind`] も「無い」として扱う）。
+    /// Ordered by kind (login OIDC, SAML, service account, audience), then ascending display name.
+    /// Logically deleted clients are not shown ([`Self::bind`] also treats them as "absent").
     pub async fn binding_candidates(
         &self,
         tenant: TenantContext,
@@ -584,7 +584,7 @@ impl ApplicationManagementService {
             .list(tenant_id)
             .await
             .map_err(map_repo_error)?;
-        // 相手 → いまの持ち主。アプリごとに binding を引き直さず、テナント分を 1 回で読む。
+        // Counterparty -> current owner. Read the tenant's bindings once instead of per app.
         let bindings = self
             .applications
             .list_tenant_bindings(tenant_id)
@@ -604,7 +604,7 @@ impl ApplicationManagementService {
             if client.is_deleted() {
                 continue;
             }
-            // 種類の突き合わせは `bind` と同じ述語。⚠ 片方を書き換えたらもう片方も。
+            // Kind matching uses the same predicate as `bind`. ⚠ If one is rewritten, change the other too.
             let target = if client.is_service_account() {
                 BindingTarget::ServiceAccount {
                     client_row_id: client.id,
@@ -680,7 +680,7 @@ impl ApplicationManagementService {
         Ok(candidates)
     }
 
-    /// binding を外す。
+    /// Removes a binding.
     pub async fn unbind(
         &self,
         tenant: TenantContext,
@@ -710,12 +710,12 @@ impl ApplicationManagementService {
         Ok(())
     }
 
-    /// 主体を割り当てる（冪等。ADR-0059 の決定 5）。
+    /// Assigns a principal (idempotent; decision 5 of ADR-0059).
     ///
-    /// - 人: ⚠ **要求テナントのメンバーであること。** 他テナントの利用者 id を持ち込ませない
-    /// - サービスアカウント: ⚠ **`client_credentials` だけの client であること。** ログイン用の client を
-    ///   割り当てても何も起きない（宛名のトークンは `client_credentials` でしか取れない）うえ、画面に
-    ///   「使える」ように見える
+    /// - Person: ⚠ **must be a member of the requested tenant.** Do not let other tenants' user ids be brought in
+    /// - Service account: ⚠ **must be a client with only `client_credentials`.** Assigning a login client
+    ///   does nothing (audience tokens can only be obtained via `client_credentials`), yet on screen
+    ///   it would look "usable"
     pub async fn assign(
         &self,
         tenant: TenantContext,
@@ -762,7 +762,7 @@ impl ApplicationManagementService {
                 AuditEventType::ApplicationAssigned,
                 AuditResult::Success,
                 Some(tenant.tenant_id()),
-                // `user_id` / `client_id` 列は**操作対象**の主体。実行主体は理由欄へ回す。
+                // The `user_id` / `client_id` columns are the **target** principal. The acting principal goes to the reason field.
                 principal.user_id(),
                 audit_client_id.as_deref(),
                 Some(&audit_reason(&application, actor)),
@@ -772,7 +772,7 @@ impl ApplicationManagementService {
         Ok(())
     }
 
-    /// 人の割り当てを外す（未割り当てでもエラーにしない）。
+    /// Removes a person's assignment (no error even if unassigned).
     pub async fn unassign_user(
         &self,
         tenant: TenantContext,
@@ -800,9 +800,9 @@ impl ApplicationManagementService {
         Ok(())
     }
 
-    /// サービスアカウントの割り当てを外す（未割り当てでもエラーにしない）。
+    /// Removes a service account's assignment (no error even if unassigned).
     ///
-    /// ⚠ 論理削除済みの client も外せる（消した client の割り当てが画面に残り続けないように）。
+    /// ⚠ Logically deleted clients can also be removed (so assignments of deleted clients do not linger on screen).
     pub async fn unassign_service_account(
         &self,
         tenant: TenantContext,
@@ -844,10 +844,10 @@ impl ApplicationManagementService {
         Ok(())
     }
 
-    /// 「いま入れている人」を返す。
+    /// Returns "people who can get in now".
     ///
-    /// 「全員」から「個別」へ倒すときの**写し元**である。これを出さずに切り替えさせると、
-    /// 空の名簿で保存した瞬間に全員が入れなくなる。
+    /// The **copy source** when switching from "everyone" to "individual". Switching without showing it
+    /// would lock everyone out the moment it is saved with an empty roster.
     pub async fn current_users(
         &self,
         tenant: TenantContext,
@@ -855,7 +855,7 @@ impl ApplicationManagementService {
     ) -> Result<CurrentUsers, ApplicationManagementError> {
         let application = self.load(tenant, id).await?;
         match application.assignment_mode {
-            // 「全員」＝テナントのメンバー全員。⚠ 他テナントの利用者は含まない。
+            // "Everyone" = all members of the tenant. ⚠ Users of other tenants are not included.
             AssignmentMode::Everyone => {
                 let page = self
                     .members
@@ -875,7 +875,7 @@ impl ApplicationManagementService {
                     truncated,
                 })
             }
-            // 既に「個別」なら、写す相手は名簿そのもの。画面は割り当て一覧を出せばよい。
+            // If already "individual", the copy target is the roster itself. The screen just shows the assignment list.
             AssignmentMode::Individual => Ok(CurrentUsers {
                 members: Vec::new(),
                 total: 0,
@@ -895,8 +895,8 @@ impl ApplicationManagementService {
         actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<ApplicationBinding, ApplicationManagementError> {
-        // ⚠ 既に**別の**アプリの名乗りなら、そのアプリの名前で断る。「繋がっています」だけでは、
-        // 人はどのアプリから外せばよいのか探しに行くことになる。同じアプリなら何もしない（冪等）。
+        // ⚠ If it is already **another** app's identity, refuse with that app's name. With just "it is connected",
+        // people would have to go searching for which app to remove it from. If it is the same app, do nothing (idempotent).
         if let Some(owner) = self
             .applications
             .find_by_binding_target(tenant.tenant_id(), target)
@@ -915,7 +915,7 @@ impl ApplicationManagementService {
                     return Ok(existing);
                 }
             }
-            // 移す元として名指しされたアプリが、今の持ち主のときだけ移す（ADR-0067）。
+            // Move only when the app named as the source is the current owner (ADR-0067).
             if move_from == Some(owner.id) {
                 return self
                     .move_binding(tenant, &owner, application, target, identifier, actor, ctx)
@@ -930,7 +930,7 @@ impl ApplicationManagementService {
             created_at: self.clock.now(),
         };
         if let Err(e) = self.applications.add_binding(&binding).await {
-            // 読んでから書くまでの間に、別の要求が同じ相手を結び付けた。
+            // Between our read and write, another request bound the same counterparty.
             if matches!(e, DomainError::Conflict(_)) {
                 if let Ok(Some(owner)) = self
                     .applications
@@ -957,11 +957,11 @@ impl ApplicationManagementService {
         Ok(binding)
     }
 
-    /// 別のアプリ（`from`）の名乗りを、このアプリ（`to`）へ移す（ADR-0067）。
+    /// Moves another app's (`from`) identity to this app (`to`) (ADR-0067).
     ///
-    /// ⚠ **外す＋足すを 2 回に分けない。** 間で落ちると相手がどのアプリにも属さなくなり、ログイン用の
-    /// 相手なら判定の外（素通し）に出る（ADR-0054 の帰結）。リポジトリの 1 文で付け替える。
-    /// 監査も 1 行（`application_binding.moved`）で、移した元と先の両方を残す。
+    /// ⚠ **Do not split remove + add into two steps.** Failing in between would leave the counterparty in no app, and
+    /// for a login counterparty, outside the decision (passing straight through; a consequence of ADR-0054). Reattach in one repository statement.
+    /// The audit is also one row (`application_binding.moved`), keeping both the source and the destination.
     #[allow(clippy::too_many_arguments)]
     async fn move_binding(
         &self,
@@ -991,8 +991,8 @@ impl ApplicationManagementService {
             None => None,
         };
         let Some(binding) = moved else {
-            // 読んでから移すまでの間に、別の要求が外した・移した。今の持ち主で答え直す
-            // （持ち主が居なくなっていれば、移す元を名指しした要求としては古い）。
+            // Between reading and moving, another request removed or moved it. Answer again with the current owner
+            // (if there is no owner anymore, the request naming a source is stale).
             return match self
                 .applications
                 .find_by_binding_target(tenant.tenant_id(), target)
@@ -1025,8 +1025,8 @@ impl ApplicationManagementService {
         })
     }
 
-    /// 名乗りを画面に出す形へ広げる。`clients` は呼び出し側が 1 回だけ読んだ一覧
-    /// （`clients.id` から名前を引くだけなので、binding ごとに読み直さない）。
+    /// Expands identities into the on-screen shape. `clients` is a list the caller read only once
+    /// (it only looks up names from `clients.id`, so it is not re-read per binding).
     async fn summarize_bindings(
         &self,
         tenant: TenantContext,
@@ -1077,7 +1077,7 @@ impl ApplicationManagementService {
         Ok(summaries)
     }
 
-    /// 要求テナント内のクライアントを `client_id` で解決する。
+    /// Resolves a client in the requested tenant by `client_id`.
     async fn load_client(
         &self,
         tenant: TenantContext,
@@ -1088,8 +1088,8 @@ impl ApplicationManagementService {
             .find_by_client_id(tenant.tenant_id(), client_id.trim())
             .await
         {
-            // 論理削除済み（ADR-0035）は「無い」として扱う。消したはずの client を新しいアプリへ
-            // 繋げると、復活したときに知らないアプリの名乗りが付いてくる。
+            // Logically deleted (ADR-0035) is treated as "absent". Connecting a supposedly deleted client to a new app
+            // would bring along an unknown app's identity if it were revived.
             Ok(Some(client)) if !client.is_deleted() => Ok(client),
             Ok(_) => Err(ApplicationManagementError::NotFound),
             Err(e) => Err(ApplicationManagementError::Internal(e.to_string())),
@@ -1157,9 +1157,9 @@ impl ApplicationManagementService {
     }
 }
 
-/// 監査ログの `reason`（PII を含めない）。
+/// `reason` of the audit log (no PII).
 ///
-/// 表示名ではなく **id** を載せる。名前は後から変わるので、変わった瞬間に過去の行と繋がらなくなる。
+/// Carries the **id**, not the display name. Names change later, and the moment they change past rows would no longer link up.
 fn audit_reason(application: &Application, actor: &AdminActor) -> String {
     match actor.audit_note() {
         Some(note) => format!("application={} {note}", application.id),
@@ -1167,7 +1167,7 @@ fn audit_reason(application: &Application, actor: &AdminActor) -> String {
     }
 }
 
-/// 「既に ○○ の名乗りです」。
+/// "Already the identity of ○○".
 fn already_bound(owner: &Application) -> ApplicationManagementError {
     ApplicationManagementError::Conflict(MessageKey::with_value(
         "api-application-binding-conflict",
@@ -1177,7 +1177,7 @@ fn already_bound(owner: &Application) -> ApplicationManagementError {
 
 fn map_repo_error(e: DomainError) -> ApplicationManagementError {
     match e {
-        // 相手のアプリ名を引けなかった衝突（名前付きの案内は `already_bound` が出す）。
+        // A conflict where the counterparty's app name could not be looked up (the named guidance comes from `already_bound`).
         DomainError::Conflict(_) => {
             ApplicationManagementError::Conflict(MessageKey::new("api-application-conflict"))
         }

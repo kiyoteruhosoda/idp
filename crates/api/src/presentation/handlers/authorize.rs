@@ -1,4 +1,4 @@
-//! 認可エンドポイント（`GET /authorize`、設計仕様 §4.2、ADR-0018 決定 2）。
+//! Authorization endpoint (`GET /authorize`, design spec §4.2, ADR-0018 decision 2).
 
 use crate::application::audit::RequestContext;
 use crate::application::authorize::{
@@ -20,9 +20,9 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 
-/// OIDC 認可エンドポイント。ブラウザ Cookie は読み書きしない（ADR-0018 決定 2）。
-/// 検証成功時は AuthSession を作成し、単回・短命のハンドルを URL に載せて web の `/login` へ 302 する。
-/// SSO 復元・`prompt` / `max_age` の評価は web が呼ぶ `/internal/authorize/resume` で行う。
+/// OIDC authorization endpoint. Does not read or write browser cookies (ADR-0018 decision 2).
+/// On successful validation it creates an AuthSession and 302s to web's `/login` with a single-use, short-lived handle in the URL.
+/// SSO restoration and evaluation of `prompt` / `max_age` happen in `/internal/authorize/resume`, called by web.
 #[utoipa::path(
     get,
     path = "/{tenant_id}/authorize",
@@ -38,7 +38,7 @@ pub async fn authorize(
     Extension(tenant): Extension<ResolvedTenant>,
     Query(params): Query<AuthorizeParams>,
 ) -> Response {
-    // 画面を出さずに試す往復は、各アプリが見えない枠で開く（task #888・ADR-0076）
+    // Silent round trips (no screen shown) are opened by each app in a hidden frame (task #888, ADR-0076)
     let silent = params.prompt.as_deref() == Some("none");
     let request = AuthorizationParameters {
         response_type: params.response_type,
@@ -59,8 +59,8 @@ pub async fn authorize(
 
     let mut response = match state.authorize.authorize(tenant.context(), request).await {
         AuthorizeOutcome::ErrorRedirect { location } => found(&location),
-        // ログイン・同意画面は web が描画する。ハンドルは web が受領後ただちに自ドメインの
-        // host-only Cookie へ移して URL から除去する（単回・短命。ADR-0018 決定 2・3）。
+        // web renders the login and consent screens. On receipt web immediately moves the handle into a
+        // host-only cookie on its own domain and strips it from the URL (single-use, short-lived; ADR-0018 decisions 2, 3).
         AuthorizeOutcome::HandoffToWeb { handle } => found(&format!(
             "{}/{}/login?auth_session={}",
             state.config.public_web_base_url(),
@@ -76,7 +76,7 @@ pub async fn authorize(
         )
             .into_response(),
     };
-    // 枠を許すのは 302 だけ（400 の本文は描かれる）
+    // Framing is allowed only for 302 (a 400 body gets rendered)
     if silent && response.status() == StatusCode::FOUND {
         crate::presentation::security_headers::allow_silent_auth_framing(
             &mut response,
@@ -86,17 +86,17 @@ pub async fn authorize(
     response
 }
 
-/// 認可フローの再開（`POST /internal/authorize/resume`、ADR-0018 決定 2）。
+/// Resumes the authorization flow (`POST /internal/authorize/resume`, ADR-0018 decision 2).
 ///
-/// web がハンドオフ URL の単回ハンドルと、自ドメインの host-only `sso_session_id` Cookie の値を
-/// 転送する。api はハンドルを単回消費して SSO 復元 → `max_age` → 同意チェック → code 発行を行い、
-/// `/internal/authenticate` と同じ応答パターンで返す。
+/// web forwards the single-use handle from the handoff URL and the value of its own domain's host-only `sso_session_id` cookie.
+/// The api consumes the handle once and performs SSO restoration -> `max_age` -> consent check -> code issuance,
+/// returning the same response pattern as `/internal/authenticate`.
 pub async fn authorize_resume(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Json(req): Json<InternalAuthorizeResumeRequest>,
 ) -> Result<Json<InternalAuthorizeResumeResponse>, Response> {
-    // 接続元情報は web が転送する（api はプロキシ直下ではないため自前で X-Forwarded-For を見ない）。
+    // Client connection info is forwarded by web (the api is not directly behind the proxy, so it doesn't read X-Forwarded-For itself).
     let ctx = RequestContext {
         correlation_id: correlation.0,
         ip_address: req.ip_address,
@@ -118,10 +118,10 @@ pub async fn authorize_resume(
     Ok(Json(resume_response(outcome)))
 }
 
-/// 認可フローの継続（`POST /internal/authorize/continue`）。
+/// Continues the authorization flow (`POST /internal/authorize/continue`).
 ///
-/// ログイン画面の開き直しで、web が手元の `auth_session_id` と `sso_session_id` を転送する。
-/// 別のタブで確立された SSO セッションで復元できれば、resume と同じ応答で code を返す。
+/// When the login screen is reopened, web forwards its `auth_session_id` and `sso_session_id`.
+/// If an SSO session established in another tab can restore it, a code is returned in the same response as resume.
 pub async fn authorize_continue(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -148,7 +148,7 @@ pub async fn authorize_continue(
     Ok(Json(resume_response(outcome)))
 }
 
-/// resume / continue の結果を内部 API の応答へ写す。
+/// Maps the resume / continue result to the internal API response.
 fn resume_response(outcome: ResumeOutcome) -> InternalAuthorizeResumeResponse {
     match outcome {
         ResumeOutcome::Redirect {
@@ -188,11 +188,11 @@ fn resume_response(outcome: ResumeOutcome) -> InternalAuthorizeResumeResponse {
     }
 }
 
-/// ログイン画面の文脈（`POST /internal/authorize/login-context`。G12）。
+/// Login screen context (`POST /internal/authorize/login-context`, G12).
 ///
-/// 認可要求が持ち込んだ `login_hint` / `ui_locales` を、web が持つ `auth_session_id` から引き直す。
-/// web は resume の 303 でこれらを手元に残せないため、ログイン画面の描画のたびにここで取り直す。
-/// あわせて、画面が「どこへログインするのか」を示すための表示名（クライアント名・テナント名）を返す。
+/// Looks up the `login_hint` / `ui_locales` brought by the authorization request again from web's `auth_session_id`.
+/// web cannot keep these across resume's 303, so it re-fetches them here on every login screen render.
+/// It also returns display names (client name, tenant name) so the screen can show "where you are signing in to".
 pub async fn authorize_login_context(
     State(state): State<AppState>,
     Json(req): Json<InternalAuthorizeLoginContextRequest>,

@@ -1,14 +1,15 @@
-//! 本人が見る「ログイン履歴」（task #879。ADR-0073）。
+//! The "sign-in history" the user sees (task #879; ADR-0073).
 //!
-//! 1 回のログインの試み（成功・失敗・締め出し・決まりで断った）を 1 行として残し、成功したログインには
-//! 「どのアプリで使われ、リフレッシュトークンがどう使われたか」を添える。
+//! Each sign-in attempt (success, failure, lockout, refused by policy) is kept as one row, and
+//! successful sign-ins carry "which apps used it and how its refresh tokens were used".
 //!
-//! # 2 つの接続元を混ぜない
+//! # Do not mix the two sources
 //!
-//! ログインの行の接続元・ブラウザは**ログインした本人のブラウザ**。リフレッシュの接続元・名乗りは
-//! **トークンを送ってきた相手**で、アプリのサーバーが裏で更新するならそのサーバーになる。
-//! 同じ列に入れると「家の外のサーバーの IP」を「家の外からログインされた」と読み違えるので、
-//! 型も分けて持つ（[`SignInRecord`] と [`RefreshUsage`]）。
+//! The source and browser of a sign-in row are **the signing-in user's browser**. The source and
+//! self-identification of a refresh are **whoever sent the token**, which is the app's server if it
+//! refreshes in the background. Putting them in the same column would misread "an outside server's
+//! IP" as "signed in from outside the home", so they are held in separate types too
+//! ([`SignInRecord`] and [`RefreshUsage`]).
 
 use crate::domain::audit::{AuditEvent, AuditEventType};
 use crate::domain::tenant::TenantId;
@@ -17,47 +18,48 @@ use crate::domain::values::{string_enum, AuthenticationMethod};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-/// 1 ページに出す件数の上限（画面は新しい順にこの件数ずつ見る）。
+/// Upper bound on items per page (the screen views this many at a time, newest first).
 pub const SIGN_IN_HISTORY_PAGE_MAX: u32 = 50;
 
 string_enum!(
-    /// ログインの試みの結末（`sign_in_history.outcome` の許可値）。
+    /// Outcome of a sign-in attempt (allowed values of `sign_in_history.outcome`).
     SignInOutcome {
-        /// ログインした。
+        /// Signed in.
         Succeeded => "succeeded",
-        /// 資格情報が合わない等で断った。
+        /// Refused, e.g. credentials did not match.
         Failed => "failed",
-        /// 失敗が続いた・締め出し中で断った。
+        /// Refused due to repeated failures / during lockout.
         Locked => "locked",
-        /// 認証ポリシー（決まり）で断った。
+        /// Refused by an authentication policy.
         Denied => "denied",
     }
 );
 
 string_enum!(
-    /// 断った理由の種類（画面の言葉に写す分類。監査ログの `reason` を丸めたもの）。
+    /// Kind of refusal reason (a classification mapped to on-screen wording; a coarsened audit log
+    /// `reason`).
     SignInFailureKind {
         WrongPassword => "wrong_password",
         WrongPasskey => "wrong_passkey",
-        /// 確認コード（TOTP・リカバリーコード・メール/SMS のコード）が合わない。
+        /// A verification code (TOTP, recovery code, email/SMS code) did not match.
         WrongCode => "wrong_code",
-        /// 失敗が続いたので締め出した。
+        /// Locked out after repeated failures.
         TooManyFailures => "too_many_failures",
-        /// 締め出し中に来た。
+        /// Arrived during lockout.
         AccountLocked => "account_locked",
-        /// 利用者が止められている・メールが未確認。
+        /// The user is suspended / the email is unverified.
         AccountNotActive => "account_not_active",
-        /// 同じ接続元からの試みが多すぎる。
+        /// Too many attempts from the same source.
         RateLimited => "rate_limited",
-        /// 認証ポリシー・管理者の権限が無い等の決まりで断った。
+        /// Refused by policy, e.g. auth policy or lacking admin permission.
         PolicyDenied => "policy_denied",
-        /// 外部の IdP でのログインが通らなかった。
+        /// Sign-in at the external IdP did not go through.
         ExternalFailed => "external_failed",
         Other => "other",
     }
 );
 
-/// 断ったログインの試み（監査ログへ書く所で写す）。
+/// A refused sign-in attempt (copied where the audit log is written).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignInFailure {
     pub user_id: Uuid,
@@ -67,20 +69,24 @@ pub struct SignInFailure {
     pub kind: SignInFailureKind,
     pub ip_address: Option<String>,
     pub user_agent: Option<String>,
-    /// 国（web が信じると決めた値だけ。task #895）。監査イベントには無いので、写す所が添える。
+    /// Country (only values web decided to trust; task #895). Not in audit events, so the copying
+    /// site adds it.
     pub country: Option<CountryCode>,
     pub client_id: Option<String>,
 }
 
-/// 今の要求の国（web が信じると決めて内部の呼び出しに添えた値。task #895）。
+/// Country of the current request (a value web decided to trust and attached to the internal call;
+/// task #895).
 ///
-/// 監査ログへ書く所（[`crate::application::sign_in_history::SignInFailureRecordingSink`]）が、断ったログインの
-/// 写しに国を添えるために引く。要求の外（見回りなど）や、外から直接 api に来た要求では `None`。
+/// Read by the audit log writer
+/// ([`crate::application::sign_in_history::SignInFailureRecordingSink`]) to add the country to
+/// copies of refused sign-ins. `None` outside a request (patrols etc.) or for requests that hit api
+/// directly from outside.
 pub trait RequestCountry: Send + Sync {
     fn current(&self) -> Option<CountryCode>;
 }
 
-/// 国を持たない（試験・要求の外）。
+/// Holds no country (tests, outside a request).
 pub struct NoRequestCountry;
 
 impl RequestCountry for NoRequestCountry {
@@ -89,9 +95,9 @@ impl RequestCountry for NoRequestCountry {
     }
 }
 
-/// 監査イベントが「本人の履歴に出すべき、断ったログイン」なら写しを返す。
+/// Returns a copy if the audit event is "a refused sign-in that belongs in the user's history".
 ///
-/// 利用者が定まらない失敗（知らないユーザー名）は誰の履歴にも出さない。
+/// Failures with no determined user (unknown username) appear in no one's history.
 pub fn sign_in_failure_from_audit(event: &AuditEvent) -> Option<SignInFailure> {
     let user_id = event.user_id?;
     let reason = event.reason.as_deref().unwrap_or("");
@@ -126,7 +132,7 @@ pub fn sign_in_failure_from_audit(event: &AuditEvent) -> Option<SignInFailure> {
     })
 }
 
-/// `login.failed` の `reason` を分類に写す。
+/// Maps the `reason` of `login.failed` to the classification.
 fn failure_kind(reason: &str) -> (SignInOutcome, SignInFailureKind) {
     let kind = match reason {
         "invalid_password" | "invalid_current_password" => SignInFailureKind::WrongPassword,
@@ -146,7 +152,7 @@ fn failure_kind(reason: &str) -> (SignInOutcome, SignInFailureKind) {
     (SignInOutcome::Failed, kind)
 }
 
-/// 成功したログイン（web がログイン状態の Cookie を置いた応答で写す）。
+/// A successful sign-in (copied in the response where web set the sign-in cookie).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignInSuccess {
     pub user_id: Uuid,
@@ -156,13 +162,13 @@ pub struct SignInSuccess {
     pub user_agent: Option<String>,
     pub country: Option<CountryCode>,
     pub methods: Vec<AuthenticationMethod>,
-    /// SSO セッションの `sid`（リフレッシュトークンが持つ値と同じ）。
+    /// `sid` of the SSO session (the same value refresh tokens hold).
     pub sid: String,
-    /// 登録した端末だったか（端末の印が届かなければ `None`）。
+    /// Whether it was a registered device (`None` if the device mark did not arrive).
     pub device_registered: Option<bool>,
 }
 
-/// 履歴の 1 行（読み出し）。
+/// One row of history (read side).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignInRecord {
     pub id: i64,
@@ -173,14 +179,14 @@ pub struct SignInRecord {
     pub user_agent: Option<String>,
     pub country: Option<CountryCode>,
     pub methods: Vec<AuthenticationMethod>,
-    /// 断ったログインを始めたアプリ（分かれば）。
+    /// The app that started the refused sign-in (if known).
     pub client_id: Option<String>,
     pub app_name: Option<String>,
     pub sid: Option<String>,
     pub device_registered: Option<bool>,
 }
 
-/// 成功したログインが、あるアプリでどう使われたか。
+/// How a successful sign-in was used by an app.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignInAppUse {
     pub sid: String,
@@ -188,11 +194,12 @@ pub struct SignInAppUse {
     pub app_name: Option<String>,
     pub first_issued_at: DateTime<Utc>,
     pub last_issued_at: DateTime<Utc>,
-    /// リフレッシュトークンを出していなければ `None`。
+    /// `None` if no refresh token was issued.
     pub refresh: Option<RefreshUsage>,
 }
 
-/// リフレッシュトークンの使われ方。接続元・名乗りは**更新を送ってきた相手**のもの。
+/// How refresh tokens were used. Source and self-identification are those of **whoever sent the
+/// refresh**.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefreshUsage {
     pub use_count: u32,
@@ -203,34 +210,34 @@ pub struct RefreshUsage {
     pub state: RefreshState,
 }
 
-/// リフレッシュトークンの今の状態。
+/// Current state of the refresh token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefreshState {
-    /// まだ使える。
+    /// Still usable.
     Active,
-    /// 期限より前に取り消された（ログアウト・端末の取り消し・使い回しの検知など）。
+    /// Revoked before expiry (logout, device revocation, reuse detection, etc.).
     Revoked { at: Option<DateTime<Utc>> },
-    /// 期限が過ぎた（掃除で行が消えたものも含む）。
+    /// Expired (including ones whose rows were removed by cleanup).
     Expired,
 }
 
-/// `refresh_tokens` の (sid, client) ごとの集計。
+/// Aggregation per (sid, client) of `refresh_tokens`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RefreshTokenTally {
-    /// 残っている行の数（掃除で消えていれば 0）。
+    /// Number of remaining rows (0 if removed by cleanup).
     pub rows: u32,
-    /// 取り消されておらず期限内の行の数。
+    /// Number of rows not revoked and unexpired.
     pub active: u32,
-    /// 期限内の行の数（取り消し済みを含む）。
+    /// Number of unexpired rows (including revoked).
     pub unexpired: u32,
     pub last_revoked_at: Option<DateTime<Utc>>,
 }
 
 impl RefreshTokenTally {
-    /// 集計から今の状態を決める。
+    /// Decides the current state from the aggregation.
     ///
-    /// 更新（rotation）のたびに古い行は取り消されるので、「取り消された行がある」だけでは取り消しと
-    /// 言えない。使える行が 1 本も無く、期限内の行が残っているときだけ取り消しとみなす。
+    /// Each refresh (rotation) revokes the old row, so "some row is revoked" alone does not mean
+    /// revoked. It counts as revoked only when no row is usable and unexpired rows remain.
     pub fn state(&self) -> RefreshState {
         if self.active > 0 {
             RefreshState::Active
@@ -347,14 +354,14 @@ mod tests {
             unexpired,
             last_revoked_at: None,
         };
-        // 3 回更新した: 古い 3 本は取り消し済み、最新の 1 本が使える。
+        // Refreshed 3 times: the 3 old ones are revoked, the latest one is usable.
         assert_eq!(t(4, 1, 4).state(), RefreshState::Active);
         assert_eq!(
             t(4, 0, 4).state(),
             RefreshState::Revoked { at: None },
-            "期限内なのに使える行が無い＝取り消された"
+            "no usable row although some are unexpired = revoked"
         );
         assert_eq!(t(4, 0, 0).state(), RefreshState::Expired);
-        assert_eq!(t(0, 0, 0).state(), RefreshState::Expired, "掃除で消えた");
+        assert_eq!(t(0, 0, 0).state(), RefreshState::Expired, "purged");
     }
 }

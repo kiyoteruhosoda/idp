@@ -1,8 +1,9 @@
-//! SAML SP（サービスプロバイダ＝クライアント）登録のドメインモデル。
+//! Domain model for SAML SP (service provider = client) registration.
 //!
-//! 本プロダクトは IdP であり、SP を登録して SAML アサーションの送信先（ACS URL）を管理する。
-//! SP 登録はテナント境界に属し、Entity ID はテナント内で一意に扱う。ACS URL は HTTPS を原則とし、
-//! ローカル開発用途のみ `http://localhost` / loopback を許可する。
+//! This product is an IdP; it registers SPs and manages where SAML assertions are sent (ACS URL).
+//! SP registrations belong to a tenant boundary, and the Entity ID is unique within a tenant. ACS
+//! URLs must be HTTPS in principle; only `http://localhost` / loopback is allowed for local
+//! development.
 
 use crate::domain::message::MessageKey;
 use crate::domain::tenant::TenantId;
@@ -10,7 +11,7 @@ use chrono::{DateTime, Utc};
 use url::Url;
 use uuid::Uuid;
 
-/// NameID フォーマットの既定値（未指定時）。
+/// Default NameID format (when unspecified).
 pub const DEFAULT_NAME_ID_FORMAT: &str = "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent";
 
 #[derive(Debug, Clone)]
@@ -21,7 +22,8 @@ pub struct SamlServiceProvider {
     pub entity_id: String,
     pub acs_url: String,
     pub name_id_format: String,
-    /// 署名/暗号用証明書（任意）。SP が AuthnRequest 署名等を要求する場合のみ。
+    /// Signing/encryption certificate (optional). Only when the SP requires e.g. AuthnRequest
+    /// signing.
     pub x509_certificate: Option<String>,
     pub enabled: bool,
     pub created_at: DateTime<Utc>,
@@ -38,7 +40,7 @@ pub struct NewSamlServiceProvider {
     pub enabled: bool,
 }
 
-/// 既存 SP の変更内容。テナントは変更しない（別テナントへの付け替えは不可）。
+/// Changes to an existing SP. The tenant is not changed (moving to another tenant is not allowed).
 pub struct SamlServiceProviderChanges {
     pub display_name: String,
     pub entity_id: String,
@@ -75,7 +77,8 @@ impl SamlServiceProvider {
         })
     }
 
-    /// 変更内容を検証して適用する（テナント・id・created_at は不変。updated_at を更新する）。
+    /// Validates and applies the changes (tenant, id, created_at are immutable; updated_at is
+    /// updated).
     pub fn apply(
         &mut self,
         changes: SamlServiceProviderChanges,
@@ -99,7 +102,7 @@ impl SamlServiceProvider {
     }
 }
 
-/// 登録・変更で共通の入力検証・正規化結果。
+/// Input validation / normalization result shared by registration and update.
 struct ValidatedFields {
     display_name: String,
     entity_id: String,
@@ -131,7 +134,8 @@ impl ValidatedFields {
     }
 }
 
-/// ACS URL の検証。HTTPS を原則とし、ローカル開発のみ `http://localhost` / loopback を許可する。
+/// ACS URL validation. HTTPS in principle; only `http://localhost` / loopback is allowed for local
+/// development.
 pub fn validate_acs_url(raw: &str) -> std::result::Result<String, MessageKey> {
     let trimmed = required(raw.to_string(), "acs_url")?;
     let parsed =
@@ -143,7 +147,8 @@ pub fn validate_acs_url(raw: &str) -> std::result::Result<String, MessageKey> {
     }
 }
 
-/// 必須項目の空チェック。訳文ではなく翻訳キーを返し、どの項目かは差し込み値で伝える（MT19）。
+/// Emptiness check of required fields. Returns a translation key, not text, and names the field via
+/// the value (MT19).
 fn required(value: String, field: &'static str) -> std::result::Result<String, MessageKey> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -189,7 +194,7 @@ mod tests {
         )
         .expect("register");
         assert_eq!(sp.name_id_format, DEFAULT_NAME_ID_FORMAT);
-        // 空白のみの証明書は None に正規化する。
+        // A whitespace-only certificate is normalized to None.
         assert_eq!(sp.x509_certificate, None);
     }
 
@@ -231,12 +236,12 @@ mod tests {
         assert_eq!(sp.name_id_format, DEFAULT_NAME_ID_FORMAT);
         assert_eq!(sp.x509_certificate.as_deref(), Some("cert"));
         assert!(!sp.enabled);
-        // id・created_at は不変、updated_at のみ進む。
+        // id and created_at are immutable; only updated_at advances.
         assert_eq!(sp.id, Uuid::nil());
         assert_eq!(sp.created_at, created);
         assert_eq!(sp.updated_at, later);
 
-        // 非 HTTPS ACS は拒否し、状態は変更しない。
+        // A non-HTTPS ACS is rejected and the state is unchanged.
         assert!(sp
             .apply(
                 SamlServiceProviderChanges {

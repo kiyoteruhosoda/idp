@@ -1,8 +1,8 @@
-//! 「SSH の鍵」の欄（`/internal/account/ssh-keys*`。task #885。ADR-0072）。
+//! The "SSH keys" section (`/internal/account/ssh-keys*`, task #885, ADR-0072).
 //!
-//! どれも web だけが呼ぶ内部の口（サービストークンの内側）。判定は Application 層
-//! （`SshKeyRegistryService`）にあり、ここは DTO の詰め替えだけを行う。配る機械が読む口は
-//! `admin_ssh_keys`（管理 API）にある。
+//! All are internal endpoints called only by web (behind the service token). Decisions are in the application layer
+//! (`SshKeyRegistryService`); this only repacks DTOs. The endpoint read by the distributing machine is
+//! in `admin_ssh_keys` (admin API).
 
 use crate::application::audit::RequestContext;
 use crate::application::ssh_key_registry::{
@@ -23,7 +23,7 @@ use axum::response::Response;
 use axum::Json;
 use uuid::Uuid;
 
-/// 「SSH の鍵」の欄（`POST /internal/account/ssh-keys`）。
+/// The "SSH keys" section (`POST /internal/account/ssh-keys`).
 pub async fn account_ssh_keys(
     State(state): State<AppState>,
     Json(req): Json<InternalAccountSshKeysRequest>,
@@ -55,7 +55,7 @@ pub async fn account_ssh_keys(
     }))
 }
 
-/// SSH の公開鍵を登録する（`POST /internal/account/ssh-keys/register`）。
+/// Registers an SSH public key (`POST /internal/account/ssh-keys/register`).
 pub async fn account_register_ssh_key(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -88,7 +88,7 @@ pub async fn account_register_ssh_key(
         }
         RegisterSshKeyOutcome::InvalidName => InternalAccountRegisterSshKeyResponse::InvalidName,
         RegisterSshKeyOutcome::Rejected(SshKeyRejection::LooksLikePrivateKey) => {
-            // ⚠ 貼られた値はログにも出さない。
+            // ⚠ The pasted value is never logged either.
             tracing::warn!(
                 correlation_id = %ctx.correlation_id,
                 "ssh key registration refused: a private key was pasted"
@@ -115,7 +115,7 @@ pub async fn account_register_ssh_key(
     }))
 }
 
-/// SSH の公開鍵を取り消す（`POST /internal/account/ssh-keys/revoke`）。
+/// Revokes an SSH public key (`POST /internal/account/ssh-keys/revoke`).
 pub async fn account_revoke_ssh_key(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,

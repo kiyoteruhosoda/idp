@@ -1,7 +1,7 @@
-//! 監査ログ参照エンドポイント（`GET /admin/audit-logs`、状況確認画面 A3、設計仕様 §7）。
+//! Audit log query endpoint (`GET /admin/audit-logs`, status screen A3, design spec §7).
 //!
-//! `idp.audit:read` が必要（`RequirePerms<AuditRead>`。`idp.tenant.admin` は含意する）。`result=failure` などで**エラー絞り込み**でき、
-//! `correlation_id` でリクエスト〜監査イベントを追跡できる。
+//! Requires `idp.audit:read` (`RequirePerms<AuditRead>`; implied by `idp.tenant.admin`). Supports **error filtering** via `result=failure` etc.,
+//! and tracing from request to audit event via `correlation_id`.
 
 use crate::application::audit_query::AuditQueryParams;
 use crate::domain::audit::AuditLogEntry;
@@ -16,7 +16,7 @@ use axum::extract::{Extension, Query, State};
 use axum::Json;
 use chrono::{DateTime, Utc};
 
-/// 監査ログを条件で絞り込み、新しい順に返す。
+/// Filters audit logs by conditions and returns them newest first.
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/audit-logs",
@@ -56,8 +56,8 @@ pub async fn list_audit_logs(
     Ok(Json(entries.iter().map(entry_response).collect()))
 }
 
-/// RFC3339 の日時をパースする。未指定は `None`、形式不正は 400。
-/// どの項目（`from` / `to`）が不正かは翻訳文の差し込み値で伝える（MT19）。
+/// Parses an RFC3339 timestamp. `None` if absent, 400 if malformed.
+/// Which field (`from` / `to`) is invalid is conveyed via the translated message's placeholder (MT19).
 fn parse_datetime(
     value: Option<&str>,
     field: &str,

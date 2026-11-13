@@ -1,12 +1,12 @@
-//! スマホのアプリのトークンを DPoP で端末の鍵に結び付ける（ADR-0075。task #893）。
+//! Binds mobile app tokens to the device key with DPoP (ADR-0075; task #893).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test dpop_binding
 //!
-//! - 証明を付けて更新すると、アクセストークンに `cnf.jkt`、リフレッシュトークンにも同じ鍵が付く
-//! - 結び付けたリフレッシュトークンは、鍵が無い・別の鍵では使えない（何も失効させない）
-//! - 結び付けたアクセストークンは、`/userinfo` でも鍵の証明が無いと使えない
-//! - 証明を付けないアプリは今までどおり（AC3）
+//! - Refreshing with a proof puts `cnf.jkt` on the access token and the same key on the refresh token
+//! - A bound refresh token cannot be used without the key or with another key (nothing is revoked)
+//! - A bound access token cannot be used at `/userinfo` either without a key proof
+//! - Apps that attach no proof work as before (AC3)
 
 mod support;
 
@@ -24,7 +24,7 @@ use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde_json::{json, Value};
 use support::{body_json, create_plain_user, send, TestEnv};
 
-/// アプリの代わり（Keystore の鍵の役）。
+/// Stand-in for the app (plays the Keystore key).
 struct DeviceKey(SigningKey);
 
 impl DeviceKey {
@@ -162,7 +162,7 @@ async fn is_revoked(env: &TestEnv, refresh_token: &str) -> bool {
     revoked.is_some()
 }
 
-/// アクセストークンの本文（署名は見ない）。
+/// The access token body (the signature is not checked).
 fn claims_of(access_token: &str) -> Value {
     let payload = access_token.split('.').nth(1).expect("payload");
     serde_json::from_slice(
@@ -196,7 +196,7 @@ async fn a_proof_binds_the_tokens_and_only_that_key_can_use_them() {
     let device = DeviceKey::generate();
     let thief = DeviceKey::generate();
 
-    // DPoP を入れた版へ更新したアプリ: 結び付けていないトークンに証明を付けると、そこから結び付く。
+    // An app updated to the DPoP version: attaching a proof to an unbound token binds it from there.
     let unbound = insert_refresh_token(&env, &app.client_id, &user_id).await;
     let (status, first) = app
         .refresh(&unbound, Some(device.proof("POST", &app.token_uri(), None)))
@@ -208,11 +208,11 @@ async fn a_proof_binds_the_tokens_and_only_that_key_can_use_them() {
     let bound = first["refresh_token"].as_str().unwrap().to_string();
     assert_eq!(bound_key_of(&env, &bound).await, Some(device.thumbprint()));
 
-    // トークンだけを写した者（鍵が無い）は使えず、持ち主のトークンも止まらない。
+    // Someone who copied only the token (no key) cannot use it, and the owner's token does not stop.
     let (status, body) = app.refresh(&bound, None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"], "invalid_dpop_proof");
-    // 別の鍵で証明を作っても使えない。
+    // A proof made with another key does not work either.
     let (status, body) = app
         .refresh(&bound, Some(thief.proof("POST", &app.token_uri(), None)))
         .await;
@@ -223,10 +223,10 @@ async fn a_proof_binds_the_tokens_and_only_that_key_can_use_them() {
         "a stranger without the key must not end the owner's sign-in"
     );
 
-    // /userinfo: 結び付けたアクセストークンは Bearer では使えない。
+    // /userinfo: a bound access token cannot be used as Bearer.
     let (status, _) = app.userinfo(format!("Bearer {access_token}"), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    // DPoP で出しても、証明が無い・別の鍵なら使えない。
+    // Even sent as DPoP, it cannot be used without a proof or with another key.
     let (status, body) = app.userinfo(format!("DPoP {access_token}"), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body["error"], "invalid_dpop_proof");
@@ -237,7 +237,7 @@ async fn a_proof_binds_the_tokens_and_only_that_key_can_use_them() {
         )
         .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    // 持ち主の鍵の証明なら使える。
+    // A proof with the owner's key works.
     let (status, body) = app
         .userinfo(
             format!("DPoP {access_token}"),
@@ -247,7 +247,7 @@ async fn a_proof_binds_the_tokens_and_only_that_key_can_use_them() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["sub"], claims_of(&access_token)["sub"]);
 
-    // 持ち主のアプリは使い続けられる（同じ鍵の証明で更新し、結び付けは引き継がれる）。
+    // The owner's app can keep using it (refreshing with a proof of the same key; the binding carries over).
     let (status, second) = app
         .refresh(&bound, Some(device.proof("POST", &app.token_uri(), None)))
         .await;
@@ -256,7 +256,7 @@ async fn a_proof_binds_the_tokens_and_only_that_key_can_use_them() {
     let next = second["refresh_token"].as_str().unwrap();
     assert_eq!(bound_key_of(&env, next).await, Some(device.thumbprint()));
 
-    // 使い回しの検出は残っている（鍵を持つ者が使い終えたトークンをもう一度出すと家族ごと止まる）。
+    // Reuse detection still works (if the key holder presents a used token again, the whole family stops).
     let (status, body) = app
         .refresh(&bound, Some(device.proof("POST", &app.token_uri(), None)))
         .await;
@@ -280,18 +280,18 @@ async fn a_proof_is_used_only_once_and_only_at_its_endpoint() {
     let proof = device.proof("POST", &app.token_uri(), None);
     let (status, first) = app.refresh(&token, Some(proof.clone())).await;
     assert_eq!(status, StatusCode::OK, "{first}");
-    // 同じ証明をもう一度使うと断る（`jti` は鍵ごとに 1 回）。
+    // Using the same proof again is refused (`jti` once per key).
     let next = first["refresh_token"].as_str().unwrap();
     let (status, body) = app.refresh(next, Some(proof)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"], "invalid_dpop_proof");
-    // 別の口（/userinfo）宛ての証明はトークンの口では使えない。
+    // A proof for another endpoint (/userinfo) cannot be used at the token endpoint.
     let (status, body) = app
         .refresh(next, Some(device.proof("POST", &app.userinfo_uri(), None)))
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"], "invalid_dpop_proof");
-    // 壊れた証明で断っても、トークンは失効しない（作り直して送り直せる）。
+    // Refusing a broken proof does not revoke the token (it can be rebuilt and resent).
     assert!(!is_revoked(&env, next).await);
 }
 
@@ -313,7 +313,7 @@ async fn apps_without_dpop_keep_working_as_before() {
 
     let (status, _) = app.userinfo(format!("Bearer {access_token}"), None).await;
     assert_eq!(status, StatusCode::OK);
-    // 結び付けていないトークンを DPoP で出すのは食い違い。
+    // Sending an unbound token as DPoP is a mismatch.
     let (status, _) = app.userinfo(format!("DPoP {access_token}"), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }

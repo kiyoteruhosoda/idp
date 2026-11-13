@@ -1,18 +1,18 @@
-//! テナント解決ユースケース（ADR-0009 §7）。
+//! Tenant resolution use case (ADR-0009 §7).
 //!
-//! `TenantResolver` middleware（presentation）が、リクエストパスの `:tenant_id`（UUID）から処理対象の
-//! テナントを解決するために使う。id → tenant はホットパスのため、汎用 TTL キャッシュ
-//! （[`crate::domain::cache::Cache`]）でテナント実体をキャッシュし、更新時（MT11 の名称・状態変更）に
-//! invalidate する。
+//! Used by the `TenantResolver` middleware (presentation) to resolve the target tenant from the request path's
+//! `:tenant_id` (UUID). id -> tenant is a hot path, so the tenant entity is cached in a generic TTL cache
+//! ([`crate::domain::cache::Cache`]) and invalidated on update (the name/status changes of
+//! MT11).
 //!
-//! 解決可否の規則（§7）:
-//! - `tenants` に存在しない → 解決不可（middleware は 404 を返す）。
-//! - `DISABLED` → 解決不可（status は各テナント独立。親の DISABLED は子へ伝播しない。§1）。
-//! - `ACTIVE` → 解決成功。
+//! Resolution rules (§7):
+//! - Not in `tenants` -> unresolvable (the middleware returns 404).
+//! - `DISABLED` -> unresolvable (status is per tenant. A parent's DISABLED does not propagate to children. §1).
+//! - `ACTIVE` -> resolved.
 //!
-//! root も同一経路で UUID として解決し、特別分岐は設けない（§1）。キャッシュにはテナント実体
-//! （status を含む）を格納し、有効性判定は取り出し後に行う。これにより DISABLED→ACTIVE の復帰も
-//! invalidate だけで反映できる。
+//! Root is resolved as a UUID through the same path, with no special branch (§1). The cache stores the tenant entity
+//! (including status), and validity is checked after retrieval. This way a DISABLED->ACTIVE recovery is
+//! also reflected by invalidation alone.
 
 use crate::domain::cache::Cache;
 use crate::domain::error::Result;
@@ -33,8 +33,8 @@ impl TenantResolutionService {
         Self { tenants, cache }
     }
 
-    /// `tenant_id` を解決する。存在し `ACTIVE` なら `Some(tenant)`、不存在・`DISABLED` なら `None`。
-    /// リポジトリ障害はそのまま伝播する（middleware 側で 5xx に倒す）。
+    /// Resolves `tenant_id`. Returns `Some(tenant)` if it exists and is `ACTIVE`, `None` if missing or `DISABLED`.
+    /// Repository failures propagate as is (the middleware turns them into 5xx).
     pub async fn resolve(&self, tenant_id: TenantId) -> Result<Option<Tenant>> {
         let tenant = match self.cache.get(&tenant_id) {
             Some(cached) => cached,
@@ -46,11 +46,11 @@ impl TenantResolutionService {
                 None => return Ok(None),
             },
         };
-        // 有効性判定は取り出し後（status を含む実体をキャッシュしているため）。
+        // Validity is checked after retrieval (because the cached entity includes status).
         Ok(tenant.is_active().then_some(tenant))
     }
 
-    /// キャッシュエントリを無効化する（テナントの名称・状態更新時に呼ぶ。MT11）。
+    /// Invalidates the cache entry (called when a tenant's name or status is updated. MT11).
     pub fn invalidate(&self, tenant_id: TenantId) {
         self.cache.invalidate(&tenant_id);
     }
@@ -137,7 +137,7 @@ mod tests {
 
         assert_eq!(svc.resolve(id).await.unwrap().map(|t| t.id), Some(id));
         assert_eq!(svc.resolve(id).await.unwrap().map(|t| t.id), Some(id));
-        // 2 回目はキャッシュヒットで DB を叩かない。
+        // The second call is a cache hit and does not hit the DB.
         assert_eq!(repo.find_calls.load(Ordering::SeqCst), 1);
     }
 
@@ -157,7 +157,7 @@ mod tests {
         let svc = service(repo.clone());
         assert!(svc.resolve(id).await.unwrap().is_none());
         assert!(svc.resolve(id).await.unwrap().is_none());
-        // 不存在はキャッシュしないため毎回 DB を引く。
+        // Missing tenants are not cached, so the DB is queried every time.
         assert_eq!(repo.find_calls.load(Ordering::SeqCst), 2);
     }
 
@@ -169,10 +169,10 @@ mod tests {
         let svc = service(repo.clone());
 
         assert!(svc.resolve(id).await.unwrap().is_some());
-        // DB 上で DISABLED に変わったが、invalidate 前はキャッシュが有効。
+        // Changed to DISABLED in the DB, but the cache remains valid until invalidated.
         *repo.row.lock().unwrap() = Some(tenant(id, TenantStatus::Disabled));
         assert!(svc.resolve(id).await.unwrap().is_some());
-        // invalidate 後は再読み込みされ DISABLED が反映される。
+        // After invalidation it is reloaded and DISABLED is reflected.
         svc.invalidate(id);
         assert!(svc.resolve(id).await.unwrap().is_none());
     }

@@ -1,17 +1,17 @@
-//! 細粒度コードから管理者へ昇格できないことの統合テスト（task #579。脆弱性確認 2026-10-20 の高-1）。
+//! Integration tests that fine-grained codes cannot escalate to admin (task #579; high-1 of the 2026-10-20 vulnerability review).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test admin_escalation
 //!
-//! 細粒度コードは「テナントの中の分担」のためのもので、集めても `idp.tenant.admin` /
-//! `idp.system.admin` には届かない（ADR-0037）。以前は次の 3 つで届いてしまっていた。
+//! Fine-grained codes are for "dividing work inside a tenant", and collecting them never reaches
+//! `idp.tenant.admin` / `idp.system.admin` (ADR-0037). Previously these three reached it:
 //!
-//! - (a) `idp.users:write` だけで、管理者のパスワード再発行・MFA 解除・プロフィール変更ができた
-//! - (b) `idp.permissions:write` だけで、自分の持たないコード（`idp.tenant.admin` など）を付けられた
-//! - (c) `idp.clients:write` だけで、クライアントへ自分の持たないコードを付けられた
+//! - (a) `idp.users:write` alone could reissue admins' passwords, reset their MFA and change their profiles
+//! - (b) `idp.permissions:write` alone could grant codes the caller did not hold (`idp.tenant.admin` etc.)
+//! - (c) `idp.clients:write` alone could grant clients codes the caller did not hold
 //!
-//! 加えて、管理者の口座を扱うこと自体を仕事にする機械（break-glass）は `idp.admins:write` で
-//! 今までどおり続けられることを確かめる。
+//! In addition, checks that machines whose job is handling admin accounts (break-glass) can continue
+//! as before with `idp.admins:write`.
 
 mod support;
 
@@ -22,7 +22,7 @@ use base64::Engine as _;
 use serde_json::json;
 use support::{admin_token, body_json, delete, get, patch, post, post_empty, send, TestEnv};
 
-/// root の管理者（`idp.system.admin`）として、利用者へ権限を付ける。
+/// As the root admin (`idp.system.admin`), grants permissions to a user.
 async fn grant_user(env: &TestEnv, root_tok: &str, user_id: &str, code: &str) {
     let res = send(
         &env.app,
@@ -36,7 +36,7 @@ async fn grant_user(env: &TestEnv, root_tok: &str, user_id: &str, code: &str) {
     assert_eq!(res.status(), StatusCode::OK, "grant {code} to {user_id}");
 }
 
-/// 指定の権限だけを持つ利用者を作り、その管理トークンを返す。
+/// Creates a user holding only the given permissions and returns its admin token.
 async fn delegate(env: &TestEnv, root_tok: &str, codes: &[&str]) -> (String, String) {
     let user_id = support::create_plain_user(&env.pool, &env.root_tenant_id).await;
     for code in codes {
@@ -46,7 +46,7 @@ async fn delegate(env: &TestEnv, root_tok: &str, codes: &[&str]) -> (String, Str
     (user_id, tok)
 }
 
-/// 指定の権限だけを持つシステム用クライアントを作り、その管理トークンを返す。
+/// Creates a system client holding only the given permissions and returns its admin token.
 async fn machine(env: &TestEnv, root_tok: &str, codes: &[&str]) -> (String, String) {
     let (client_id, secret) =
         support::insert_m2m_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
@@ -94,7 +94,7 @@ fn users_uri(env: &TestEnv, user_id: &str, rest: &str) -> String {
     format!("/{}/admin/users/{user_id}{rest}", env.root_tenant_id)
 }
 
-/// (a) `idp.users:write` だけでは、管理者の口座を扱えない。普通の利用者は今までどおり扱える。
+/// (a) `idp.users:write` alone cannot handle admin accounts. Ordinary users can be handled as before.
 #[tokio::test]
 async fn users_writer_cannot_take_over_an_administrator() {
     let Some(env) = support::setup("admin escalation users").await else {
@@ -132,7 +132,7 @@ async fn users_writer_cannot_take_over_an_administrator() {
         }
     }
 
-    // 普通の利用者は今までどおり扱える（設定リンクが返る）。
+    // Ordinary users can be handled as before (a setup link is returned).
     let res = send(
         &env.app,
         post_empty(&writer, &users_uri(&env, &plain, "/password-reset")),
@@ -141,7 +141,7 @@ async fn users_writer_cannot_take_over_an_administrator() {
     assert_eq!(res.status(), StatusCode::OK, "reset a plain user");
     assert!(body_json(res).await["setup_url"].is_string());
 
-    // 管理者自身（idp.tenant.admin）は、今までどおり他の管理者の口座を扱える。
+    // Admins themselves (idp.tenant.admin) can handle other admins' accounts as before.
     let (_, tenant_admin) = delegate(&env, &root_tok, &["idp.tenant.admin"]).await;
     let res = send(
         &env.app,
@@ -153,7 +153,7 @@ async fn users_writer_cannot_take_over_an_administrator() {
         StatusCode::OK,
         "tenant admin resets an admin's MFA"
     );
-    // ⚠ ただし idp.system.admin の持ち主には届かない。
+    // ⚠ But it does not reach holders of idp.system.admin.
     let res = send(
         &env.app,
         post_empty(
@@ -169,7 +169,7 @@ async fn users_writer_cannot_take_over_an_administrator() {
     );
 }
 
-/// (b) `idp.permissions:write` だけでは、自分の持たないコードを付けも外しもできない。
+/// (b) `idp.permissions:write` alone can neither grant nor revoke codes the caller does not hold.
 #[tokio::test]
 async fn permissions_writer_cannot_grant_what_it_does_not_hold() {
     let Some(env) = support::setup("admin escalation permissions").await else {
@@ -206,7 +206,7 @@ async fn permissions_writer_cannot_grant_what_it_does_not_hold() {
     .await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "revoke tenant admin");
 
-    // 自分が持つ範囲（:write は :read を含む）は今までどおり配れる。
+    // Within what the caller holds (:write includes :read), granting works as before.
     let res = send(
         &env.app,
         post(
@@ -218,7 +218,7 @@ async fn permissions_writer_cannot_grant_what_it_does_not_hold() {
     .await;
     assert_eq!(res.status(), StatusCode::OK, "grant a code it implies");
 
-    // 付与フォームの候補にも、配れないコードは出ない。
+    // Codes that cannot be granted do not appear among the grant form candidates either.
     let res = send(
         &env.app,
         get(
@@ -238,7 +238,7 @@ async fn permissions_writer_cannot_grant_what_it_does_not_hold() {
     assert!(!codes.iter().any(|c| c == "idp.users:write"), "{codes:?}");
 }
 
-/// (c) `idp.clients:write` だけでは、クライアントへ自分の持たないコードを付けられない。
+/// (c) `idp.clients:write` alone cannot grant clients codes the caller does not hold.
 #[tokio::test]
 async fn clients_writer_cannot_grant_a_client_what_it_does_not_hold() {
     let Some(env) = support::setup("admin escalation clients").await else {
@@ -281,10 +281,10 @@ async fn clients_writer_cannot_grant_a_client_what_it_does_not_hold() {
     assert_eq!(res.status(), StatusCode::OK, "grant a code it implies");
 }
 
-/// `idp.clients:write` だけでは、自分の持たない権限を持つクライアントを乗っ取れない（task #756）。
+/// `idp.clients:write` alone cannot take over clients holding permissions the caller lacks (task #756).
 ///
-/// 秘密を作り直す・公開鍵を差し替える・認証方式を変えれば、そのクライアントの権限を行使できる。
-/// 消すのも同じ判定（口座の削除と揃える）。⚠ 権限の無いクライアントは今までどおり扱える。
+/// Regenerating the secret, replacing the public key or changing the auth method would let one exercise that client's permissions.
+/// Deletion uses the same check (aligned with account deletion). ⚠ Clients without permissions are handled as before.
 #[tokio::test]
 async fn clients_writer_cannot_take_over_a_stronger_client() {
     let Some(env) = support::setup("admin escalation client takeover").await else {
@@ -293,7 +293,7 @@ async fn clients_writer_cannot_take_over_a_stronger_client() {
     let root_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let (_, writer) = machine(&env, &root_tok, &["idp.clients:write"]).await;
 
-    // 自分の持たない権限を持つクライアント
+    // A client holding permissions the caller lacks
     let (strong, _) = support::insert_m2m_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
     let granted = send(
         &env.app,
@@ -329,7 +329,7 @@ async fn clients_writer_cannot_take_over_a_stronger_client() {
     let removed = send(&env.app, delete(&writer, &strong_uri)).await;
     assert_eq!(removed.status(), StatusCode::FORBIDDEN, "delete");
 
-    // 権限の無いクライアントは今までどおり
+    // Clients without permissions: as before
     let (plain, _) = support::insert_m2m_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
     let plain_uri = format!("/{}/admin/clients/{plain}", env.root_tenant_id);
     let rotate = send(
@@ -339,7 +339,7 @@ async fn clients_writer_cannot_take_over_a_stronger_client() {
     .await;
     assert_eq!(rotate.status(), StatusCode::OK, "rotate a plain client");
 
-    // 同じ権限を持つ者（ここでは管理者）は扱える
+    // Someone holding the same permissions (here the admin) can handle it
     let rotate = send(
         &env.app,
         post_empty(&root_tok, &format!("{strong_uri}/secret")),
@@ -351,7 +351,7 @@ async fn clients_writer_cannot_take_over_a_stronger_client() {
         "the administrator can still rotate"
     );
 
-    // 他のテナントや無いクライアントは 404 のまま（居るかどうかを 403 で教えない）
+    // Other tenants' or nonexistent clients stay 404 (403 would reveal existence)
     let missing = send(
         &env.app,
         post_empty(
@@ -366,8 +366,8 @@ async fn clients_writer_cannot_take_over_a_stronger_client() {
     assert_eq!(missing.status(), StatusCode::NOT_FOUND, "missing client");
 }
 
-/// break-glass の機械（`idp.users:write` ＋ `idp.permissions:write` ＋ `idp.admins:write`）は、
-/// 非常用口座へ `idp.tenant.admin` を付け、そのパスワードを作り直せる。⚠ system 管理者には届かない。
+/// A break-glass machine (`idp.users:write` + `idp.permissions:write` + `idp.admins:write`) can grant
+/// `idp.tenant.admin` to an emergency account and reset its password. ⚠ It does not reach system admins.
 #[tokio::test]
 async fn admins_write_lets_the_break_glass_machine_keep_working() {
     let Some(env) = support::setup("admin escalation break-glass").await else {
@@ -386,7 +386,7 @@ async fn admins_write_lets_the_break_glass_machine_keep_working() {
     .await;
     let account = support::create_plain_user(&env.pool, &env.root_tenant_id).await;
 
-    // create: 非常用口座へ idp.tenant.admin を付ける。
+    // create: grant idp.tenant.admin to the emergency account.
     let res = send(
         &env.app,
         post(
@@ -397,7 +397,7 @@ async fn admins_write_lets_the_break_glass_machine_keep_working() {
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK, "grant tenant admin");
-    // rotate: 管理者になった非常用口座のパスワードを設定リンクで作り直す。
+    // rotate: reset the password of the emergency account (now an admin) via a setup link.
     let res = send(
         &env.app,
         post_empty(&breakglass, &users_uri(&env, &account, "/password-reset")),
@@ -405,7 +405,7 @@ async fn admins_write_lets_the_break_glass_machine_keep_working() {
     .await;
     assert_eq!(res.status(), StatusCode::OK, "reset an admin account");
 
-    // ⚠ system 管理者の口座と、その権限には届かない。
+    // ⚠ It does not reach system admin accounts or their permissions.
     let res = send(
         &env.app,
         post_empty(
@@ -431,7 +431,7 @@ async fn admins_write_lets_the_break_glass_machine_keep_working() {
     );
 }
 
-/// 指定のテナントの ACTIVE なゲストにし、そのテナントの権限を付ける（本番の口座と同じ形を DB で作る）。
+/// Makes the user an ACTIVE guest of the given tenant with that tenant's permissions (builds the production account shape in the DB).
 async fn make_guest_with(env: &TestEnv, user_id: &str, tenant_id: &str, code: &str) {
     sqlx::query(
         "INSERT INTO tenant_memberships (tenant_id, user_id, membership_type, status) \
@@ -453,7 +453,7 @@ async fn make_guest_with(env: &TestEnv, user_id: &str, tenant_id: &str, code: &s
     .expect("insert guest permission");
 }
 
-/// root の管理者がテナントを作り、その ID を返す（作成者はそのテナントの管理者になる）。
+/// The root admin creates a tenant and returns its ID (the creator becomes that tenant's admin).
 async fn create_child_tenant(env: &TestEnv, root_tok: &str) -> String {
     let res = send(
         &env.app,
@@ -471,11 +471,11 @@ async fn create_child_tenant(env: &TestEnv, root_tok: &str) -> String {
         .to_string()
 }
 
-/// 子テナントの管理者は、root のゲスト管理者の口座を扱えない（task #757・ADR-0070）。
+/// A child tenant's admin cannot handle root's guest admin accounts (task #757, ADR-0070).
 ///
-/// 口座を作り直せば root の管理に届くので、所属元の管理者でも断る。⚠ 他の子テナントのゲスト管理者は
-/// 今までどおり所属元の管理者が扱える（ADR-0009 §3）。root を所属元にすれば root の機械が扱える
-/// （break-glass の形）。
+/// Recreating the account would reach root administration, so even the home tenant's admin is refused. ⚠ Guest admins of other
+/// child tenants can be handled by their home tenant's admin as before (ADR-0009 §3). With root as the home tenant, root's machine
+/// can handle it (the break-glass shape).
 #[tokio::test]
 async fn a_child_tenant_cannot_take_over_a_guest_administrator_of_the_root() {
     let Some(env) = support::setup("admin escalation root guest").await else {
@@ -509,7 +509,7 @@ async fn a_child_tenant_cannot_take_over_a_guest_administrator_of_the_root() {
         assert_eq!(res.status(), StatusCode::FORBIDDEN, "{uri}");
     }
 
-    // 他の子テナントのゲスト管理者は、今までどおり所属元の管理者が扱える。
+    // Guest admins of other child tenants can be handled by their home tenant's admin as before.
     let child_guest = support::create_plain_user(&env.pool, &child).await;
     make_guest_with(&env, &child_guest, &other_child, "idp.tenant.admin").await;
     let res = send(
@@ -519,7 +519,7 @@ async fn a_child_tenant_cannot_take_over_a_guest_administrator_of_the_root() {
     .await;
     assert_eq!(res.status(), StatusCode::OK, "guest of another child");
 
-    // root を所属元にした非常用口座は、子テナントのゲスト管理者を兼ねても root の機械が扱える。
+    // An emergency account homed in root can be handled by root's machine even if it is also a child tenant's guest admin.
     let (_, breakglass) = machine(
         &env,
         &root_tok,
@@ -541,9 +541,9 @@ async fn a_child_tenant_cannot_take_over_a_guest_administrator_of_the_root() {
     assert_eq!(res.status(), StatusCode::OK, "break-glass homed in root");
 }
 
-/// アプリに割り当てられたサービスアカウントは、`idp.clients:write` だけでは扱えない（task #787）。
+/// A service account assigned to an app cannot be handled with `idp.clients:write` alone (task #787).
 ///
-/// 鍵を差し替えれば、そのアプリへ届く。割り当てを決められる `idp.applications:write` があれば扱える。
+/// Replacing its key would reach that app. With `idp.applications:write`, which can decide assignments, it can be handled.
 #[tokio::test]
 async fn clients_writer_cannot_take_over_a_machine_assigned_to_an_application() {
     let Some(env) = support::setup("admin escalation assigned machine").await else {
@@ -596,7 +596,7 @@ async fn clients_writer_cannot_take_over_a_machine_assigned_to_an_application() 
         assert_eq!(res.status(), StatusCode::FORBIDDEN, "{target}");
     }
 
-    // 割り当ての無い機械は今までどおり。
+    // Machines without assignments: as before.
     let (plain, _) = support::insert_service_account(&env.pool, &tenant).await;
     let res = send(
         &env.app,
@@ -609,7 +609,7 @@ async fn clients_writer_cannot_take_over_a_machine_assigned_to_an_application() 
     .await;
     assert_eq!(res.status(), StatusCode::OK, "a machine with no assignment");
 
-    // 割り当てを決められる者は扱える。
+    // Someone who can decide assignments can handle it.
     let res = send(
         &env.app,
         patch(&with_applications, &uri, json!({ "app_name": "renamed" })),

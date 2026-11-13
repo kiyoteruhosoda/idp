@@ -1,16 +1,16 @@
-# OIDC IdP（Rust）マルチステージビルド。CLAUDE.md「環境要件」準拠（rust:slim ベース）。
+# OIDC IdP (Rust) multi-stage build. Follows CLAUDE.md "環境要件" (rust:slim base).
 #
-# ADR-0007（API/Web サービス分割）: 1 つのワークスペースから 2 つのバイナリを作る。
-#   - assay   … api サービス（OIDC protocol・JSON 管理 API・内部 API。DB 直結）→ runtime-api
-#   - assay-web … web サービス（HTML 画面・API クライアント。DB 非依存）        → runtime-web
-# ビルド依存: ring（rustls）が C/アセンブラを要するため C ツールチェイン＋perl。TLS は rustls。
-#   webauthn-rs が openssl-sys（ネイティブ OpenSSL）へ依存するため libssl-dev も要する。
-# 翻訳リソース（i18n/*.ftl）は include_str! で assay-web へ埋め込むため実行イメージには同梱不要。
+# ADR-0007 (API/Web service split): builds 2 binaries from one workspace.
+#   - assay   … api service (OIDC protocol, JSON admin API, internal API; direct DB) -> runtime-api
+#   - assay-web … web service (HTML screens, API client; no DB)                     -> runtime-web
+# Build deps: ring (rustls) needs C/assembler, so a C toolchain + perl. TLS is rustls.
+#   webauthn-rs depends on openssl-sys (native OpenSSL), so libssl-dev is needed too.
+# Translation resources (i18n/*.ftl) are embedded into assay-web via include_str!, so the runtime image needs no copy.
 
 # ---- builder ----
-# 実行ステージ（debian:bookworm-slim）と glibc ABI を揃えるため、Rust ビルダーも
-# bookworm に固定する。rust:slim はタグ更新で trixie 等へ進み得るため、NAS 等の
-# デプロイ先で `GLIBC_2.39 not found` が発生しないようにする。
+# To match the glibc ABI with the runtime stage (debian:bookworm-slim), the Rust builder is also
+# pinned to bookworm. rust:slim may move to trixie etc. on tag updates, so this prevents
+# `GLIBC_2.39 not found` on deploy targets such as the NAS.
 FROM rust:slim-bookworm@sha256:f2c004e3d2d8b547e8cf7ffbc29205385f4e71d23e53e4e383065db5e9f822cd AS builder
 WORKDIR /build
 
@@ -18,7 +18,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential perl pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# 依存解決を層キャッシュに乗せるため、マニフェスト類を先にコピーしてダミービルドする。
+# To put dependency resolution in the layer cache, copy the manifests first and do a dummy build.
 COPY Cargo.toml Cargo.lock ./
 COPY crates/core/Cargo.toml crates/core/Cargo.toml
 COPY crates/contracts/Cargo.toml crates/contracts/Cargo.toml
@@ -35,35 +35,35 @@ RUN mkdir -p crates/core/src crates/contracts/src crates/api/src/bin crates/web/
     && cargo build --release --locked --bin assay --bin assay-rewrap-secrets --bin assay-web \
     ; rm -rf crates/core/src crates/contracts/src crates/api/src crates/web/src
 
-# 本体をビルド。i18n（include_str! で assay-web に埋め込み）と migrations（sqlx::migrate! で assay に埋め込み）は
-# crate マニフェスト基準の相対パス（../../i18n・../../migrations）で参照するためルートへ配置する。
+# Build the real thing. i18n (embedded in assay-web via include_str!) and migrations (embedded in assay via sqlx::migrate!)
+# are referenced by paths relative to the crate manifest (../../i18n, ../../migrations), so place them at the root.
 COPY crates ./crates
 COPY i18n ./i18n
 COPY migrations ./migrations
-# 版数の埋め込みはここまで下げる。ビルドごとに変わる値（IDP_BUILD_NUMBER はコミットが同じでも
-# 上がる）を上に置くと、apt のインストール層と依存クレートのダミービルド層まで毎回作り直しになる。
-# ⚠ **`COMMIT_HASH` も受ける。** 本番をビルドする側（deck と deploy-repo の `build-image.yml`）は、
-# どのアプリにも同じ名前で短い SHA を `COMMIT_HASH` として渡す。`IDP_GIT_VERSION` しか受けていなかった
-# 頃は、本番の管理コンソールのフッターが `v0.1.0 (unknown)` のままだった。`IDP_GIT_VERSION` を
-# 明示したとき（`scripts/build.sh`・docker compose）はそちらが勝つ。
+# Version embedding is pushed down to here. Putting per-build values (IDP_BUILD_NUMBER goes up even for the same
+# commit) higher up would rebuild the apt install layer and the dependency dummy-build layer every time.
+# ⚠ **`COMMIT_HASH` is accepted too.** The production builders (deck and deploy-repo's `build-image.yml`) pass
+# the short SHA as `COMMIT_HASH` under the same name to every app. Back when only `IDP_GIT_VERSION` was accepted,
+# the production admin console footer stayed at `v0.1.0 (unknown)`. When `IDP_GIT_VERSION` is
+# set explicitly (`scripts/build.sh`, docker compose), it wins.
 ARG COMMIT_HASH=
 ARG IDP_GIT_VERSION=
 ENV IDP_GIT_VERSION=${IDP_GIT_VERSION:-${COMMIT_HASH:-unknown}}
-# ビルド番号（CI の通し番号）。コミットが同じでもビルドし直せば上がるので、「新しい成果物が
-# 配置されたか」を版数だけで判断できる。手元ビルドでは空のまま（版数に付かない）。
+# Build number (CI sequence number). It goes up on a rebuild even for the same commit, so "has a new artifact
+# been deployed" can be judged from the version alone. Stays empty for local builds (not appended to the version).
 ARG IDP_BUILD_NUMBER=
 ENV IDP_BUILD_NUMBER=${IDP_BUILD_NUMBER}
-# COPY は元ファイルの mtime を保持するため、上のダミービルドで生成した成果物より本体ソースが
-# 古い mtime になり得る。その場合 cargo の鮮度判定（mtime ベース）が「未変更」とみなして再ビルドを
-# スキップし、ダミーの `fn main() {}`（即 exit 0・無出力）バイナリがそのまま出荷される。それを防ぐため、
-# ワークスペース各 crate のソース mtime を更新してから再ビルドする（依存クレートのキャッシュには触れない）。
+# COPY preserves the source files' mtime, so the real sources may have an older mtime than the artifacts
+# produced by the dummy build above. Then cargo's freshness check (mtime-based) considers them "unchanged" and skips
+# the rebuild, shipping the dummy `fn main() {}` binary (exits 0 immediately, no output) as is. To prevent that,
+# touch the source mtime of each workspace crate before rebuilding (dependency crate caches are untouched).
 RUN find crates -name '*.rs' -exec touch {} + \
     && cargo build --release --locked --bin assay --bin assay-rewrap-secrets --bin assay-web
 
 # ---- migrate tool builder ----
-# sqlx-cli のビルドには Rust ツールチェインと C ビルド依存が必要だが、それらを migrate 実行イメージへ
-# 持ち込むと assay-migrate.tar が肥大化する。ビルド専用ステージへ閉じ込め、実行ステージには sqlx binary と
-# migrations だけを渡す。
+# Building sqlx-cli needs the Rust toolchain and C build deps, but bringing those into the migrate runtime image
+# would bloat assay-migrate.tar. Confine them to a build-only stage, and pass only the sqlx binary and
+# migrations to the runtime stage.
 FROM rust:slim-bookworm@sha256:f2c004e3d2d8b547e8cf7ffbc29205385f4e71d23e53e4e383065db5e9f822cd AS migrate-tool-builder
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential perl pkg-config \
@@ -71,8 +71,8 @@ RUN apt-get update \
     && cargo install sqlx-cli --version ^0.9 --no-default-features --features mysql,rustls --locked --root /opt/sqlx
 
 # ---- migrate ----
-# DDL / マスタデータ適用の専用ジョブ（sqlx migrate run）。CLAUDE.md schema-version 方針に従い、
-# アプリ起動時には適用せず、この単独ジョブで適用する。Compose の migrate サービスから使う。
+# Dedicated job for applying DDL / master data (sqlx migrate run). Per CLAUDE.md's schema-version policy,
+# migrations are not applied at app startup but in this standalone job. Used by Compose's migrate service.
 FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS migrate
 WORKDIR /migrate
 RUN apt-get update \
@@ -82,31 +82,31 @@ RUN apt-get update \
 COPY --from=migrate-tool-builder /opt/sqlx/bin/sqlx /usr/local/bin/sqlx
 COPY migrations ./migrations
 USER assay
-# DATABASE_URL は実行時に注入する。
+# DATABASE_URL is injected at runtime.
 ENTRYPOINT ["sqlx", "migrate", "run", "--source", "/migrate/migrations"]
 
-# ---- 実行イメージ共通ベース ----
+# ---- Common base for runtime images ----
 FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS runtime-base
-# TLS 検証用のルート証明書（web→api の https 呼び出し等）と、ヘルスチェック用の curl。非 root 実行。
+# Root certificates for TLS verification (web->api https calls etc.) and curl for health checks. Runs as non-root.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --no-create-home assay
 USER assay
 
-# ---- runtime: api（OIDC protocol・JSON 管理 API・内部 API。DB 直結）----
+# ---- runtime: api (OIDC protocol, JSON admin API, internal API; direct DB) ----
 FROM runtime-base AS runtime-api
 WORKDIR /app
 COPY --from=builder /build/target/release/assay /usr/local/bin/assay
-# 鍵を作り直すときに一度だけ流す道具（docs/OPERATIONS.md）。ENTRYPOINT は api のまま。
+# Tool run once when rotating the key (docs/OPERATIONS.md). ENTRYPOINT stays the api.
 COPY --from=builder /build/target/release/assay-rewrap-secrets /usr/local/bin/assay-rewrap-secrets
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=5 \
     CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1
-# 設定はすべて環境変数から注入する（config モジュール経由。docs/OPERATIONS.md 参照）。
+# All settings are injected from environment variables (via the config module; see docs/OPERATIONS.md).
 ENTRYPOINT ["/usr/local/bin/assay"]
 
-# ---- runtime: web（HTML 画面・API クライアント。DB 非依存）----
+# ---- runtime: web (HTML screens, API client; no DB) ----
 FROM runtime-base AS runtime-web
 WORKDIR /app
 COPY --from=builder /build/target/release/assay-web /usr/local/bin/assay-web

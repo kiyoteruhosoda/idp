@@ -1,16 +1,16 @@
-//! RP-initiated Logout の `id_token_hint` の統合テスト（G12。OIDC RP-Initiated Logout 1.0 §2）。
+//! Integration tests for `id_token_hint` in RP-initiated Logout (G12; OIDC RP-Initiated Logout 1.0 §2).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test rp_logout_id_token_hint
 //!
-//! 検証の要:
-//! - 検証済み hint の `aud` が `post_logout_redirect_uri` の照合先になること（`client_id`
-//!   パラメータが無くても、その RP に登録された URI だけが通る）。
-//! - 署名・issuer が確かめられない hint では**リダイレクトを返さない**こと（確かめられない相手へ
-//!   ブラウザを送り返さない）。セッションの終了自体は続けること（ログアウトは冪等）。
-//! - hint の `sub` が現在ログイン中の利用者と違うなら、そのセッションを**終了しない**こと。
-//! - ログアウトしても back-channel logout の通知を**積まない**こと（ADR-0055。RP へ知らせるのは
-//!   管理者が利用者を止めたときだけ）。
+//! Key points checked:
+//! - The `aud` of a verified hint is what `post_logout_redirect_uri` is matched against (even without a `client_id`
+//!   parameter, only URIs registered to that RP pass).
+//! - With a hint whose signature / issuer cannot be verified, **no redirect is returned** (the browser is not sent back
+//!   to a counterpart that cannot be verified). Ending the session itself continues (logout is idempotent).
+//! - If the hint's `sub` differs from the currently signed-in user, that session is **not ended**.
+//! - Logging out does **not enqueue** back-channel logout notifications (ADR-0055; RPs are notified only
+//!   when an admin stops a user).
 
 mod support;
 
@@ -28,13 +28,13 @@ use support::{
 
 const POST_LOGOUT_URI: &str = "https://app.example.com/after-logout";
 
-/// ログイン 1 回ぶんの成果物（ID Token と、そのログインで発行された SSO Cookie）。
+/// What one login produces (the ID Token and the SSO cookie issued by that login).
 struct LoggedIn {
     id_token: String,
     sso_cookie: String,
 }
 
-/// クライアントへ `post_logout_redirect_uris` を設定する（support の挿入ヘルパーは持たない）。
+/// Sets `post_logout_redirect_uris` on a client (the support insert helpers do not have it).
 async fn set_post_logout_uri(pool: &MySqlPool, client_id: &str, uri: &str) {
     sqlx::query("UPDATE clients SET post_logout_redirect_uris = ? WHERE client_id = ?")
         .bind(json!([uri]).to_string())
@@ -66,7 +66,7 @@ async fn register_user(app: &axum::Router, tenant: &str, username: &str, passwor
     assert_eq!(response.status(), StatusCode::CREATED, "user registration");
 }
 
-/// `/authorize` → ログイン → 同意 → `/token` を通し、ID Token と SSO Cookie を得る。
+/// Goes through `/authorize` → login → consent → `/token` and gets the ID Token and SSO cookie.
 async fn log_in(env: &TestEnv, client_id: &str, secret: &str, username: &str) -> LoggedIn {
     let password = "correct-horse-battery";
     register_user(&env.app, &env.root_tenant_id, username, password).await;
@@ -111,7 +111,7 @@ async fn log_in(env: &TestEnv, client_id: &str, secret: &str, username: &str) ->
     let body = body_json(response).await;
     let sso_cookie = body["sso_session_id"].as_str().unwrap().to_string();
 
-    // 初回ログインは同意ステップを挟む場合がある（scope 構成による）。挟むなら承諾する。
+    // The first login may include a consent step (depending on scope configuration). Accept it if so.
     let callback = match body["result"].as_str() {
         Some("consent_required") => {
             let consent_session = body["auth_session_id"].as_str().unwrap().to_string();
@@ -168,7 +168,7 @@ async fn log_in(env: &TestEnv, client_id: &str, secret: &str, username: &str) ->
     }
 }
 
-/// `POST /internal/logout/rp` を叩く。
+/// Calls `POST /internal/logout/rp`.
 async fn rp_logout(env: &TestEnv, payload: Value) -> Value {
     let response = send(
         &env.app,
@@ -193,7 +193,7 @@ fn unique_username() -> String {
     format!("lo{}", &uuid::Uuid::new_v4().simple().to_string()[..10])
 }
 
-/// 検証済み hint の `aud` が `post_logout_redirect_uri` の照合先になる（`client_id` 不要）。
+/// The `aud` of a verified hint is what `post_logout_redirect_uri` is matched against (no `client_id` needed).
 #[tokio::test]
 async fn a_verified_id_token_hint_authorizes_the_post_logout_redirect() {
     let Some(env) = support::setup("rp logout id_token_hint").await else {
@@ -227,7 +227,7 @@ async fn a_verified_id_token_hint_authorizes_the_post_logout_redirect() {
     );
 }
 
-/// 検証を通らない hint ではリダイレクトを返さない。セッションの終了自体は続ける。
+/// A hint that fails verification returns no redirect. Ending the session itself continues.
 #[tokio::test]
 async fn an_unverifiable_id_token_hint_suppresses_the_redirect_but_still_logs_out() {
     let Some(env) = support::setup("rp logout id_token_hint").await else {
@@ -239,7 +239,7 @@ async fn an_unverifiable_id_token_hint_suppresses_the_redirect_but_still_logs_ou
 
     let session = log_in(&env, &client_id, &secret, &unique_username()).await;
 
-    // 署名部分を差し替えた ID Token（ヘッダ・ペイロードは本物）。
+    // An ID Token with the signature part replaced (header and payload are genuine).
     let mut parts: Vec<&str> = session.id_token.split('.').collect();
     parts[2] = "AAAA";
     let tampered = parts.join(".");
@@ -266,7 +266,7 @@ async fn an_unverifiable_id_token_hint_suppresses_the_redirect_but_still_logs_ou
     );
 }
 
-/// Access Token（`typ=at+jwt`）は hint として受け付けない。
+/// Access Tokens (`typ=at+jwt`) are not accepted as hints.
 #[tokio::test]
 async fn an_access_token_is_not_accepted_as_an_id_token_hint() {
     let Some(env) = support::setup("rp logout id_token_hint").await else {
@@ -315,7 +315,7 @@ async fn an_access_token_is_not_accepted_as_an_id_token_hint() {
     );
 }
 
-/// hint の `sub` が現在ログイン中の利用者と違うなら、そのセッションは終了しない。
+/// If the hint's `sub` differs from the currently signed-in user, the session is not ended.
 #[tokio::test]
 async fn a_hint_for_another_user_does_not_terminate_the_current_session() {
     let Some(env) = support::setup("rp logout id_token_hint").await else {
@@ -325,7 +325,7 @@ async fn a_hint_for_another_user_does_not_terminate_the_current_session() {
         support::insert_confidential_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
     set_post_logout_uri(&env.pool, &client_id, POST_LOGOUT_URI).await;
 
-    // 利用者 A の ID Token を取り、そのあと同じブラウザで利用者 B がログインした状況を作る。
+    // Get user A's ID Token, then create the situation where user B signs in in the same browser.
     let first = log_in(&env, &client_id, &secret, &unique_username()).await;
     let second = log_in(&env, &client_id, &secret, &unique_username()).await;
 
@@ -340,8 +340,8 @@ async fn a_hint_for_another_user_does_not_terminate_the_current_session() {
     )
     .await;
 
-    // `ok` ではなく `subject_mismatch` を返す。web はこれを見て **Cookie を消さない**
-    // （消すと DB にだけセッションが生きた宙ぶらりんの状態になる）。
+    // Returns `subject_mismatch` rather than `ok`. Seeing this, web **does not delete the cookie**
+    // (deleting it would leave a dangling state where the session lives only in the DB).
     assert_eq!(result["result"], "subject_mismatch", "{result}");
     assert!(
         result["redirect_to"].is_null(),
@@ -353,7 +353,7 @@ async fn a_hint_for_another_user_does_not_terminate_the_current_session() {
     );
 }
 
-/// `client_id` パラメータと hint の `aud` が食い違う場合はどちらも信用しない。
+/// If the `client_id` parameter and the hint's `aud` disagree, neither is trusted.
 #[tokio::test]
 async fn a_client_id_that_contradicts_the_hint_suppresses_the_redirect() {
     let Some(env) = support::setup("rp logout id_token_hint").await else {
@@ -386,7 +386,7 @@ async fn a_client_id_that_contradicts_the_hint_suppresses_the_redirect() {
     );
 }
 
-/// hint の `aud` に登録されていない URI は通らない（別 RP に登録された URI でも同じ）。
+/// URIs not registered to the hint's `aud` do not pass (even if registered to another RP).
 #[tokio::test]
 async fn the_redirect_must_be_registered_for_the_client_named_by_the_hint() {
     let Some(env) = support::setup("rp logout id_token_hint").await else {
@@ -394,7 +394,7 @@ async fn the_redirect_must_be_registered_for_the_client_named_by_the_hint() {
     };
     let (client_id, secret) =
         support::insert_confidential_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
-    // hint を出す RP には別の URI を登録し、要求する URI は**他の RP**にだけ登録する。
+    // Register a different URI for the RP issuing the hint, and register the requested URI only to **another RP**.
     set_post_logout_uri(&env.pool, &client_id, "https://app.example.com/own").await;
     let (other_client_id, _) =
         support::insert_confidential_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
@@ -419,7 +419,7 @@ async fn the_redirect_must_be_registered_for_the_client_named_by_the_hint() {
     );
 }
 
-/// hint も `client_id` も無い従来の要求は、これまでどおりテナント内の登録 URI で通る。
+/// Old-style requests with neither hint nor `client_id` pass with URIs registered in the tenant as before.
 #[tokio::test]
 async fn a_request_without_any_hint_keeps_the_previous_behaviour() {
     let Some(env) = support::setup("rp logout id_token_hint").await else {
@@ -445,7 +445,7 @@ async fn a_request_without_any_hint_keeps_the_previous_behaviour() {
     assert!(redirect.starts_with(POST_LOGOUT_URI), "{redirect}");
 }
 
-/// クライアントへ `backchannel_logout_uri` を設定する（support の挿入ヘルパーは持たない）。
+/// Sets `backchannel_logout_uri` on a client (the support insert helpers do not have it).
 async fn set_backchannel_logout_uri(pool: &MySqlPool, client_id: &str, uri: &str) {
     sqlx::query("UPDATE clients SET backchannel_logout_uri = ? WHERE client_id = ?")
         .bind(uri)
@@ -463,10 +463,10 @@ async fn deliveries_for(pool: &MySqlPool, client_id: &str) -> i64 {
         .expect("count back-channel logout deliveries")
 }
 
-/// ⚠ **ログアウトしても RP へは知らせない**（ADR-0055）。
+/// ⚠ **Logging out does not notify RPs** (ADR-0055).
 ///
-/// SSO セッションは複数の RP で共有されている。1 つの RP からのサインアウトで、受け口を登録した
-/// 他の RP のセッションまで閉じてはならない。RP へ知らせるのは管理者が止めたときだけ（ADR-0053）。
+/// An SSO session is shared by several RPs. Signing out from one RP must not close the sessions of other RPs
+/// that registered an endpoint. RPs are notified only when an admin stops a user (ADR-0053).
 #[tokio::test]
 async fn logging_out_does_not_notify_the_relying_parties() {
     let Some(env) = support::setup("rp logout id_token_hint").await else {

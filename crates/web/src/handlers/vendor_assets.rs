@@ -1,13 +1,13 @@
-//! ベンダリングした UI アセット（Bootstrap・Font Awesome）の配信。
+//! Serving of vendored UI assets (Bootstrap, Font Awesome).
 //!
-//! photonest と同じ画面フォーマット（Bootstrap 5 + Font Awesome）を、CSP の
-//! `default-src 'self'` を維持したまま提供するため、`assets/vendor/` 配下のファイルを
-//! `include_str!` / `include_bytes!` で web バイナリへ同梱し `/assets/vendor/...` として
-//! 自オリジン配信する（`stylesheet.rs` / `react_assets.rs` と同方針）。
+//! To provide the same screen format as photonest (Bootstrap 5 + Font Awesome) while keeping CSP
+//! `default-src 'self'`, files under `assets/vendor/` are embedded into the web binary with
+//! `include_str!` / `include_bytes!` and served from our own origin as `/assets/vendor/...`
+//! (same policy as `stylesheet.rs` / `react_assets.rs`).
 //!
-//! Font Awesome の CSS はフォントを相対パス `../webfonts/` で参照するため、
-//! CSS を `/assets/vendor/fontawesome/css/all.min.css`、フォントを
-//! `/assets/vendor/fontawesome/webfonts/{name}` で配信して相対参照を成立させる。
+//! Font Awesome's CSS references fonts via the relative path `../webfonts/`, so
+//! the CSS is served at `/assets/vendor/fontawesome/css/all.min.css` and the fonts at
+//! `/assets/vendor/fontawesome/webfonts/{name}` so that the relative references resolve.
 
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::response::IntoResponse;
@@ -25,12 +25,12 @@ const FA_BRANDS_WOFF2: &[u8] =
 const FA_V4COMPAT_WOFF2: &[u8] =
     include_bytes!("../../assets/vendor/fontawesome/webfonts/fa-v4compatibility.woff2");
 
-/// テンプレートから `?v={asset_version}` 付き URL で参照される CSS/JS。デプロイごとに URL が
-/// 変わる（キャッシュバスティング）ため長期キャッシュしてよい。
+/// CSS/JS referenced from templates by URLs carrying `?v={asset_version}`. The URL changes on every deploy
+/// (cache busting), so long-term caching is fine.
 const VERSIONED_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
 
-/// Font Awesome の CSS 内から相対パスで参照される webfont はバージョンクエリを付けられない
-/// （安定 URL）ため、更新遅延を 1 日で抑える。
+/// Webfonts referenced by relative path from Font Awesome's CSS cannot carry a version query
+/// (stable URLs), so the update delay is capped at one day.
 const WEBFONT_CACHE_CONTROL: &str = "public, max-age=86400";
 
 pub async fn bootstrap_css() -> impl IntoResponse {

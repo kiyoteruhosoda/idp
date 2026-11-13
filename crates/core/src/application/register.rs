@@ -1,13 +1,13 @@
-//! ユーザー登録ユースケース（設計仕様 §4.1）。
+//! User registration use case (design spec §4.1).
 //!
-//! MVP ではメール検証フロー対象外のため、登録時 `status = ACTIVE` / `email_verified = false`。
-//! ユーザーは処理対象テナントを所属元（ホーム）として作成し、HOME メンバーシップを同時に
-//! 生成する（ADR-0009 §2・§3）。
+//! The MVP has no email verification flow, so registration sets `status = ACTIVE` / `email_verified = false`.
+//! The user is created with the target tenant as their home tenant, and a HOME membership is
+//! created at the same time (ADR-0009 §2, §3).
 //!
-//! 自己登録は**テナント設定 `self_registration_enabled` が有効なテナントでのみ**受け付ける
-//! （既定は無効 = fail-closed。SEC6）。あわせて IP 単位のレート制限を掛け、409（メール重複）に
-//! よるテナント内メールアドレスの列挙を試行回数の面から抑える（完全な秘匿はメール検証フローの
-//! 導入まで行わない。無効テナントでは存在確認自体ができない）。
+//! Self-registration is accepted **only in tenants where the tenant setting `self_registration_enabled` is on**
+//! (disabled by default = fail-closed. SEC6). In addition, a per-IP rate limit is applied to curb, by number of attempts,
+//! enumeration of email addresses in the tenant via 409 (duplicate email) (full concealment waits for the
+//! introduction of the email verification flow. In disabled tenants existence cannot be probed at all).
 
 use crate::application::password_policy::PasswordPolicyService;
 use crate::domain::clock::Clock;
@@ -35,8 +35,8 @@ pub struct RegisterCommand {
     pub name: Option<String>,
 }
 
-/// ⚠ 秘密（`password`）を `Debug` に出さない（task #593）。`{:?}` でログへ
-/// 落としても値が漏れないよう、手書きで載せる項目を選ぶ。
+/// ⚠ Do not show the secret (`password`) in `Debug` (task #593). Fields are chosen by hand so the value
+/// does not leak even if dropped into a log with `{:?}`.
 impl std::fmt::Debug for RegisterCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RegisterCommand")
@@ -48,12 +48,12 @@ impl std::fmt::Debug for RegisterCommand {
 }
 
 pub struct RegisteredUser {
-    /// 外部公開識別子。
+    /// Externally exposed identifier.
     pub sub: Uuid,
-    /// 内部 ID（検証メール送信で使う。外部へは返さない）。
+    /// Internal ID (used for sending the verification email. Not returned externally).
     pub user_id: Uuid,
     pub status: UserStatus,
-    /// メール（検証メール送信で使う。呼び出し側が既に保持しているが利便のため返す）。
+    /// Email (used for sending the verification email. The caller already has it, but it is returned for convenience).
     pub email: String,
 }
 
@@ -61,10 +61,10 @@ pub struct RegisteredUser {
 pub enum RegisterError {
     #[error("validation error: {0}")]
     Validation(MessageKey),
-    /// 当該テナントで自己登録が無効（SEC6。既定）。
+    /// Self-registration is disabled in this tenant (SEC6. Default).
     #[error("forbidden: {0}")]
     Forbidden(MessageKey),
-    /// IP 単位のレート制限超過（SEC6）。
+    /// Per-IP rate limit exceeded (SEC6).
     #[error("too many registration attempts")]
     RateLimited,
     #[error("conflict: {0}")]
@@ -108,14 +108,14 @@ impl RegisterService {
         }
     }
 
-    /// `ip_address` はレート制限のキー（取得できない場合も共通バケツで制限する）。
+    /// `ip_address` is the rate-limit key (when unavailable, a shared bucket is used for limiting).
     pub async fn register(
         &self,
         tenant: TenantContext,
         cmd: RegisterCommand,
         ip_address: Option<&str>,
     ) -> Result<RegisteredUser, RegisterError> {
-        // IP 単位のレート制限（SEC6）。検証より先に判定し、列挙・大量作成の試行回数を抑える。
+        // Per-IP rate limit (SEC6). Checked before validation to curb enumeration and mass-creation attempts.
         if !self
             .rate_limiter
             .check_and_record(ip_address.unwrap_or("unknown"), self.clock.now())
@@ -123,8 +123,8 @@ impl RegisterService {
             return Err(RegisterError::RateLimited);
         }
 
-        // テナント設定で自己登録が有効であること（既定は無効 = fail-closed。SEC6）。
-        // ResolvedTenant のキャッシュではなくリポジトリから読む（設定変更を即時反映する）。
+        // Self-registration must be enabled in the tenant settings (disabled by default = fail-closed. SEC6).
+        // Read from the repository rather than the ResolvedTenant cache (so setting changes take effect immediately).
         let self_registration_enabled = self
             .tenants
             .find_by_id(tenant.tenant_id())
@@ -140,9 +140,9 @@ impl RegisterService {
 
         let email = cmd.email.trim().to_string();
         validate_email(&email)?;
-        // パスワードポリシー（AP7）。自己登録には現行パスワードも履歴も無いため、見るのは
-        // 長さと漏えい済みかどうかだけになる。登録先のテナントがそのまま所属元になるので、
-        // そのテナントのポリシーで見る（ADR-0058）。
+        // Password policy (AP7). Self-registration has no current password or history, so only
+        // length and whether it has been breached are checked. The registering tenant becomes the home tenant as is,
+        // so that tenant's policy is used (ADR-0058).
         match self
             .password_policy
             .validate(tenant.tenant_id(), None, None, &cmd.password)
@@ -152,20 +152,20 @@ impl RegisterService {
             Ok(()) => {}
             Err(rejection) => return Err(RegisterError::Validation(rejection.message_key())),
         }
-        // ログイン識別子は preferred_username。未指定なら email を既定値として採用する（ADR-0009 §8）。
+        // The sign-in identifier is preferred_username. If omitted, email is used as the default (ADR-0009 §8).
         let preferred_username =
             normalize_optional(cmd.preferred_username).unwrap_or_else(|| email.clone());
-        // カラム長（VARCHAR(255)）超過を永続化前に弾く（email は VARCHAR(320) のため既定値化で超え得る）。
+        // Reject column-length (VARCHAR(255)) overflow before persisting (email is VARCHAR(320), so defaulting can exceed it).
         domain_validate_preferred_username(&preferred_username)
             .map_err(RegisterError::Validation)?;
         let name = normalize_optional(cmd.name);
         let tenant_id = tenant.tenant_id();
 
-        // 一意性の事前チェック（利用者向けの分かりやすいエラーのため）。一意キーは
-        // `(tenant_id, email)` 等のテナント内一意（ADR-0009 §2）。最終的な一意性は
-        // DB の UNIQUE 制約が保証し、競合時は create() が Conflict を返す。
-        // ログイン識別子は**解決経路と同じ引き方**で見る（AP8。`users` だけを見ると、別名として
-        // 登録済みの値を素通しにしてしまう）。
+        // Pre-check uniqueness (for an error users can understand). Unique keys are
+        // unique within the tenant, e.g. `(tenant_id, email)` (ADR-0009 §2). Final uniqueness is
+        // guaranteed by the DB UNIQUE constraint; on conflict create() returns Conflict.
+        // The sign-in identifier is looked up **the same way as the resolution path** (AP8. Looking only at `users`
+        // would let values already registered as aliases slip through).
         if self
             .users
             .find_by_email(tenant_id, &email)
@@ -205,7 +205,7 @@ impl RegisterService {
             must_change_password: false,
             password_changed_at: Some(now),
             status: UserStatus::Active,
-            // 本人がその場でパスワードを決めているので仮登録ではない（ADR-0064）。
+            // The user chooses the password on the spot, so this is not a provisional registration (ADR-0064).
             pending_setup: false,
             failed_login_count: 0,
             locked_until: None,
@@ -214,15 +214,15 @@ impl RegisterService {
         };
 
         self.users.create(&user).await.map_err(|e| match e {
-            // 事前チェックとの競合（同時登録）のみ。どちらの一意キーかは DB からは特定できない。
+            // Only a race with the pre-check (concurrent registration). The DB does not tell which unique key it was.
             DomainError::Conflict(_) => {
                 RegisterError::Conflict(MessageKey::new("api-user-identity-conflict"))
             }
             other => RegisterError::Internal(other.to_string()),
         })?;
 
-        // HOME メンバーシップ（所属元の単一の出所は users.tenant_id。この行はフロー判定用の
-        // 投影として自動生成する。ADR-0009 §3）。
+        // HOME membership (the single source of the home tenant is users.tenant_id. This row is auto-generated as a
+        // projection for flow decisions. ADR-0009 §3).
         self.memberships
             .create(&TenantMembership::new_home(tenant_id, user.id, now))
             .await
@@ -299,8 +299,8 @@ mod tests {
     }
     #[async_trait]
     impl UserRepository for FakeUsers {
-        /// 本番の sqlx 実装は 1 文の UPDATE で加算する（SEC13）。フェイクは単一スレッドの
-        /// テストでしか動かないので、同じ結果になる素朴な加算で足りる。
+        /// The production sqlx implementation increments in a single UPDATE (SEC13). The fake only runs in
+        /// single-threaded tests, so a naive increment with the same result suffices.
         async fn record_login_failure(
             &self,
             id: Uuid,
@@ -421,7 +421,7 @@ mod tests {
         }
     }
 
-    /// 単一テナントのフェイク（`self_registration_enabled` を切り替えて使う）。
+    /// Single-tenant fake (used by toggling `self_registration_enabled`).
     struct FakeTenants {
         tenant: Tenant,
     }
@@ -447,7 +447,7 @@ mod tests {
         }
     }
 
-    /// 最初の `limit` 回だけ許可するレート制限フェイク。
+    /// Rate-limit fake that allows only the first `limit` times.
     struct CountingLimiter {
         limit: usize,
         calls: AtomicUsize,
@@ -510,7 +510,7 @@ mod tests {
     #[tokio::test]
     async fn register_is_forbidden_when_self_registration_disabled() {
         let t: TenantId = Uuid::now_v7().into();
-        // 既定（無効）テナントでは登録できず、ユーザーも作られない（fail-closed。SEC6）。
+        // In a default (disabled) tenant registration fails and no user is created (fail-closed. SEC6).
         let (svc, users) = service(tenant(t, false), 100);
         assert!(matches!(
             svc.register(TenantContext::new(t), cmd(), Some("203.0.113.1"))
@@ -535,7 +535,7 @@ mod tests {
     #[tokio::test]
     async fn register_is_rate_limited_per_ip() {
         let t: TenantId = Uuid::now_v7().into();
-        // 1 回だけ許可 → 2 回目は RateLimited（テナント判定より先に落とす）。
+        // Allow only once -> the second is RateLimited (rejected before the tenant check).
         let (svc, _) = service(tenant(t, true), 1);
         svc.register(TenantContext::new(t), cmd(), Some("203.0.113.1"))
             .await

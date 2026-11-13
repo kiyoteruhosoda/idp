@@ -1,10 +1,10 @@
-//! ログイン画面の開き直しで、別のタブで確立された SSO から認可を続ける
-//! （`POST /internal/authorize/continue`。task #643）。
+//! On reopening the login screen, continue authorization from an SSO set up in another tab
+//! (`POST /internal/authorize/continue`; task #643).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test authorize_continue
 //!
-//! ハンドルは最初の受領で消費済みなので、web は手元の `auth_session_id` と SSO Cookie 値を渡す。
+//! The handle was consumed on first receipt, so web passes its `auth_session_id` and the SSO cookie value.
 
 mod support;
 
@@ -38,8 +38,8 @@ async fn continue_authorize(
     body_json(response).await
 }
 
-/// ログイン画面を出したあとで SSO セッションができたら、同じ認可要求で code が返る。
-/// 使い終えた `auth_session_id` は二度と使えない。
+/// If an SSO session appears after the login screen was shown, the same authorization request returns a code.
+/// A used `auth_session_id` can never be used again.
 #[tokio::test]
 async fn a_later_sso_session_completes_the_pending_login() {
     let Some(env) = setup("authorize continue with sso").await else {
@@ -53,7 +53,7 @@ async fn a_later_sso_session_completes_the_pending_login() {
     )
     .await;
 
-    // 別のタブでログインした（SSO セッションができた）。
+    // Signed in in another tab (an SSO session was created).
     let user_id = support::create_plain_user(&env.pool, &env.root_tenant_id).await;
     let sso_cookie = support::create_sso_session(&env.pool, &user_id).await;
 
@@ -80,7 +80,7 @@ async fn a_later_sso_session_completes_the_pending_login() {
     assert_eq!(body["result"], "expired_handle", "{body}");
 }
 
-/// SSO セッションが無ければ、同じ `auth_session_id` のままログインフォームへ戻す。
+/// Without an SSO session, go back to the login form with the same `auth_session_id`.
 #[tokio::test]
 async fn without_sso_the_login_form_stays() {
     let Some(env) = setup("authorize continue without sso").await else {
@@ -101,7 +101,7 @@ async fn without_sso_the_login_form_stays() {
     }
 }
 
-/// `prompt=login` は再認証の要求なので、別のタブの SSO では続けない。
+/// `prompt=login` requests re-authentication, so do not continue from another tab's SSO.
 #[tokio::test]
 async fn prompt_login_is_not_completed_by_another_tab() {
     let Some(env) = setup("authorize continue prompt=login").await else {

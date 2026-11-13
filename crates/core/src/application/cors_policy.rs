@@ -1,27 +1,27 @@
-//! ブラウザからの越境アクセス（CORS）で許可するオリジンの決定（G1）。
+//! Deciding which origins to allow for cross-origin browser access (CORS) (G1).
 //!
-//! 既定トポロジは `domain-split`（api と web が別ホスト名）なので、SPA が
-//! `identity.example.com/{tenant}/token` を呼ぶのは**常にクロスオリジン**である。
-//! `clients.client_type = 'public'` と `token_endpoint_auth_method = 'none'` を DDL で受け入れ
-//! PKCE を必須にしている以上、想定利用者は SPA だが、`Access-Control-Allow-Origin` が無いために
-//! ブラウザがレスポンスを読めず実質到達できなかった。
+//! The default topology is `domain-split` (api and web on separate host names), so an SPA calling
+//! `identity.example.com/{tenant}/token` is **always cross-origin**.
+//! Since the DDL accepts `clients.client_type = 'public'` and `token_endpoint_auth_method = 'none'` and
+//! PKCE is mandatory, SPAs are the intended users, but without `Access-Control-Allow-Origin`
+//! the browser could not read responses, so they were effectively unreachable.
 //!
-//! # なぜ「テナント内の public クライアントのオリジン集合」なのか
+//! # Why "the set of origins of public clients in the tenant"
 //!
-//! 経路によってクライアントを特定できるかが違う:
+//! Whether the client can be identified depends on the endpoint:
 //!
-//! - `/.well-known/*`・`/saml/metadata` は `client_id` もトークンも載らない（誰でも取得できる公開
-//!   メタデータなので `*` でよい。これは [`ApiCorsPolicy`] ではなく presentation 側で扱う）。
-//! - `/userinfo` は `Authorization: Bearer` が非 safelisted ヘッダのため**必ずプリフライトされる**が、
-//!   OPTIONS にトークンは載らない。つまりリクエストからクライアントを特定できない。
-//! - `/token`・`/revoke`・`/introspect` は body の `client_id` から特定**できる**。
+//! - `/.well-known/*` and `/saml/metadata` carry neither `client_id` nor a token (public metadata anyone
+//!   can fetch, so `*` is fine. This is handled on the presentation side, not by [`ApiCorsPolicy`]).
+//! - `/userinfo` is **always preflighted** because `Authorization: Bearer` is a non-safelisted header,
+//!   but OPTIONS carries no token. So the client cannot be identified from the request.
+//! - `/token`, `/revoke` and `/introspect` **can** be identified from the body's `client_id`.
 //!
-//! 特定できる経路だけ厳密にしても得るものが無いため、判定はテナント単位に揃える。
-//! オリジンを 1 つ広く許しても、`Access-Control-Allow-Credentials` を**付けない**以上
-//! ブラウザは Cookie を載せず、`/token` は code と PKCE の `code_verifier`、`/userinfo` は
-//! アクセストークンを別途要求する。つまり「同一テナントの別 public クライアントのオリジンから
-//! 応答を読めてしまう」ことに実質的な意味は無い（読むための資格情報を持たない）。
-//! 判定を揃えることで、プリフライトと実リクエストで許可集合が食い違う事故も避けられる。
+//! Being strict only on identifiable endpoints gains nothing, so the decision is made per tenant.
+//! Even if one origin is allowed broadly, as long as `Access-Control-Allow-Credentials` is **not** sent
+//! the browser sends no cookies; `/token` additionally requires the code and PKCE `code_verifier`, and
+//! `/userinfo` an access token. So "responses readable from the origin of another public client in the
+//! same tenant" has no real significance (it holds no credentials to read with).
+//! A uniform decision also avoids accidents where preflight and actual request allow different sets.
 
 use crate::domain::cache::Cache;
 use crate::domain::repositories::ClientRepository;
@@ -29,12 +29,12 @@ use crate::domain::tenant::TenantId;
 use crate::domain::values::ClientType;
 use std::sync::Arc;
 
-/// CORS で許可するオリジンの決定。
+/// Decides which origins CORS allows.
 pub struct ApiCorsPolicy {
     clients: Arc<dyn ClientRepository>,
-    /// 配置レベルで明示的に許可するオリジン（`CORS_ALLOWED_ORIGINS`）。全テナント共通。
+    /// Origins explicitly allowed at the deployment level (`CORS_ALLOWED_ORIGINS`). Shared by all tenants.
     configured_origins: Vec<String>,
-    /// テナント → 許可オリジン集合。`/token`・`/userinfo` はホットパスのため都度 SELECT しない。
+    /// Tenant -> allowed origin set. `/token` and `/userinfo` are hot paths, so no SELECT each time.
     cache: Arc<dyn Cache<TenantId, Arc<Vec<String>>>>,
 }
 
@@ -51,10 +51,10 @@ impl ApiCorsPolicy {
         }
     }
 
-    /// `origin` がこのテナントで許可されているか。
+    /// Whether `origin` is allowed in this tenant.
     ///
-    /// 一致は**完全一致**（スキーム・ホスト・ポート）で行う。`redirect_uri` の完全一致検証と
-    /// 同じ厳密さであり、サフィックス一致のような緩い判定は入れない。
+    /// Matching is **exact** (scheme, host, port). Same strictness as exact `redirect_uri` matching;
+    /// no loose checks such as suffix matching.
     pub async fn allows(&self, tenant_id: TenantId, origin: &str) -> bool {
         if origin.is_empty() {
             return false;
@@ -68,7 +68,7 @@ impl ApiCorsPolicy {
             .any(|o| o == origin)
     }
 
-    /// テナント内の public クライアントの `redirect_uris` から導いたオリジン集合。
+    /// Origin set derived from the `redirect_uris` of the tenant's public clients.
     async fn tenant_origins(&self, tenant_id: TenantId) -> Arc<Vec<String>> {
         if let Some(hit) = self.cache.get(&tenant_id) {
             return hit;
@@ -76,8 +76,8 @@ impl ApiCorsPolicy {
         let origins = match self.clients.list(tenant_id).await {
             Ok(clients) => Arc::new(collect_public_client_origins(&clients)),
             Err(e) => {
-                // 失敗しても許可集合を「空」として扱う（開いてしまうより閉じる）。キャッシュには
-                // 載せない（次のリクエストで引き直す）。
+                // On failure, treat the allowed set as "empty" (closing beats opening). Do not put it in
+                // the cache (look it up again on the next request).
                 tracing::error!(error = %e, "failed to load clients for the CORS allowlist");
                 return Arc::new(Vec::new());
             }
@@ -86,16 +86,16 @@ impl ApiCorsPolicy {
         origins
     }
 
-    /// クライアント更新時にテナントのオリジン集合を捨てる（管理画面での `redirect_uris` 変更を反映）。
+    /// Drops the tenant's origin set when a client is updated (reflects `redirect_uris` changes in the admin UI).
     pub fn invalidate(&self, tenant_id: TenantId) {
         self.cache.invalidate(&tenant_id);
     }
 }
 
-/// public クライアントの `redirect_uris` からオリジン（`scheme://host[:port]`）を集める。
+/// Collects origins (`scheme://host[:port]`) from the `redirect_uris` of public clients.
 ///
-/// confidential クライアントを含めないのは、そちらがブラウザから直接 `/token` を叩かない
-/// （client_secret をブラウザへ置けない）ためである。無効化されたクライアントも除く。
+/// Confidential clients are excluded because they do not call `/token` directly from the browser
+/// (client_secret cannot live in a browser). Disabled clients are excluded too.
 fn collect_public_client_origins(clients: &[crate::domain::client::Client]) -> Vec<String> {
     let mut origins: Vec<String> = clients
         .iter()
@@ -108,10 +108,10 @@ fn collect_public_client_origins(clients: &[crate::domain::client::Client]) -> V
     origins
 }
 
-/// URI からブラウザが `Origin` ヘッダに載せる形（`scheme://host[:port]`。既定ポートは省略）へ。
+/// From a URI to the form a browser puts in the `Origin` header (`scheme://host[:port]`; default port omitted).
 ///
 /// `http://localhost:3000/callback` → `http://localhost:3000`
-/// カスタムスキーム（`myapp://...`。ネイティブアプリの redirect）は `Origin` に現れないため除く。
+/// Custom schemes (`myapp://...`, native app redirects) never appear in `Origin`, so they are excluded.
 fn origin_of(uri: &str) -> Option<String> {
     let parsed = url::Url::parse(uri).ok()?;
     if !matches!(parsed.scheme(), "http" | "https") {
@@ -119,13 +119,13 @@ fn origin_of(uri: &str) -> Option<String> {
     }
     let host = parsed.host_str()?;
     match parsed.port() {
-        // `Url::port()` は既定ポート（80/443）を `None` として返すため、ここに来るのは非既定のみ。
+        // `Url::port()` returns `None` for the default ports (80/443), so only non-default ones get here.
         Some(port) => Some(format!("{}://{host}:{port}", parsed.scheme())),
         None => Some(format!("{}://{host}", parsed.scheme())),
     }
 }
 
-/// 設定値（カンマ区切り）を許可オリジンの一覧へ。空白と末尾スラッシュは落とす。
+/// Turns the setting value (comma-separated) into a list of allowed origins. Whitespace and trailing slashes are dropped.
 pub fn parse_configured_origins(raw: &str) -> Vec<String> {
     raw.split(',')
         .map(|s| s.trim().trim_end_matches('/'))
@@ -154,8 +154,8 @@ mod tests {
         );
     }
 
-    /// ネイティブアプリの redirect（カスタムスキーム・loopback 以外）は `Origin` に現れないので
-    /// 許可集合へ入れない。入れても効かないうえ、意図が読めない値が並ぶ。
+    /// Native app redirects (custom scheme, other than loopback) never appear in `Origin`, so they are
+    /// not added to the allowed set. They would have no effect and would just list values of unclear intent.
     #[test]
     fn custom_schemes_are_not_origins() {
         assert_eq!(origin_of("com.example.app://callback"), None);

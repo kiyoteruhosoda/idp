@@ -1,7 +1,7 @@
-//! メンバー一覧（読み取りモデル）の sqlx 実装（`TenantMemberQuery`。MT22）。
+//! sqlx implementation of the member list (a read model) (`TenantMemberQuery`, MT22).
 //!
-//! `tenant_memberships` と `users` を結合し、絞り込み・並び替え・ページングをすべて DB 側で行う。
-//! 総件数は同じ絞り込み条件で `COUNT(*)` を取り、画面が「全 N 件」と次ページの有無を確定できるようにする。
+//! Joins `tenant_memberships` and `users`, doing filtering, sorting and paging all in the DB.
+//! The total is a `COUNT(*)` with the same filters, so the screen can determine "N in total" and whether there is a next page.
 
 use crate::domain::account_note::AccountNote;
 use crate::domain::error::{DomainError, Result};
@@ -29,16 +29,16 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-/// `LIKE` のワイルドカードを無効化する。エスケープしないと、検索語の `%` が「全件一致」、
-/// `_` が「任意の 1 文字」として働き、利用者の入力が意図しない広い一致になる。
-/// エスケープ文字自体（`!`）も対象に含める（順序も重要で、`!` を最初に置き換える）。
+/// Neutralizes `LIKE` wildcards. Without escaping, a `%` in the search term acts as "match all" and
+/// `_` as "any single character", making the user's input match unintentionally broadly.
+/// The escape character itself (`!`) is included too (order matters: `!` is replaced first).
 pub(crate) fn escape_like(term: &str) -> String {
     term.replace('!', "!!")
         .replace('%', "!%")
         .replace('_', "!_")
 }
 
-/// メンバー 1 行の列（一覧・名指しが共有する。[`map_row`] が読む名前）。
+/// Columns of one member row (shared by the list and direct lookup; names read by [`map_row`]).
 const MEMBER_COLUMNS: &str = "m.user_id, m.membership_type, m.status, \
      u.email, u.name, u.status AS user_status, u.locked_until AS locked_until, \
      u.pending_setup AS pending_setup, \
@@ -48,25 +48,25 @@ const MEMBER_COLUMNS: &str = "m.user_id, m.membership_type, m.status, \
      (SELECT p.display_value FROM user_login_identifiers p \
         WHERE p.primary_of_user = u.id) AS preferred_username";
 
-/// 絞り込み条件（`FROM` 以降）を組み立てる。一覧本体と `COUNT(*)` の双方が同じ条件を使う。
+/// Builds the filter condition (`FROM` onwards). Both the list itself and `COUNT(*)` use the same condition.
 fn push_conditions(builder: &mut QueryBuilder<MySql>, filter: &TenantMemberFilter) {
     push_member_source(
         builder,
         filter.tenant_id.to_string(),
         filter.search.as_deref(),
     );
-    // 名指し（詳細画面）。完全一致なので `search` の部分一致とは併用しない。
+    // Direct lookup (detail screen). It is an exact match, so it is not combined with `search`'s partial match.
     if let Some(user_id) = filter.user_id {
         builder.push(" AND m.user_id = ");
         builder.push_bind(user_id.to_string());
     }
 }
 
-/// メンバーの `FROM … WHERE …`（テナントと絞り込み語）。アカウント一覧（ADR-0065）の人の側も
-/// これを使う ——⚠ 絞り込みの規則を 2 か所に書かない。
+/// The members' `FROM … WHERE …` (tenant and filter term). The people side of the account list (ADR-0065) also
+/// uses this -- ⚠ don't write the filtering rules in 2 places.
 ///
-/// `users` の照合順序（`utf8mb4_unicode_ci`）が大文字小文字を無視するため、`LOWER()` は使わない
-/// （関数を挟むと索引が使えなくなる）。
+/// The `users` collation (`utf8mb4_unicode_ci`) is case-insensitive, so `LOWER()` is not used
+/// (wrapping in a function would prevent index use).
 pub(crate) fn push_member_source(
     builder: &mut QueryBuilder<MySql>,
     tenant_id: String,
@@ -84,13 +84,13 @@ pub(crate) fn push_member_source(
         builder.push_bind(pattern.clone());
         builder.push(" ESCAPE '!' OR u.name LIKE ");
         builder.push_bind(pattern.clone());
-        // ユーザー名は `users` に無い（AP15b で撤去済み）。一覧に出す値と同じ経路で引く。
+        // The username is not in `users` (removed in AP15b). Looked up through the same path as the value shown in the list.
         builder.push(
             " ESCAPE '!' OR EXISTS (SELECT 1 FROM user_login_identifiers p \
                        WHERE p.primary_of_user = u.id AND p.display_value LIKE ",
         );
         builder.push_bind(pattern.clone());
-        // 管理者メモも探す（「〇〇経由で招いた人」を経緯から引けるように。ADR-0063）。
+        // Admin notes are searched too (so "people invited via X" can be found by history; ADR-0063).
         builder.push(" ESCAPE '!') OR n.note LIKE ");
         builder.push_bind(pattern);
         builder.push(" ESCAPE '!')");
@@ -112,7 +112,7 @@ pub(crate) fn map_row(row: &MySqlRow) -> Result<TenantMember> {
         name: row.try_get("name").map_err(repo_err)?,
         membership_type: MembershipType::parse(&membership_type)?,
         status: MembershipStatus::parse(&status)?,
-        // 結合は外部キー（`tenant_memberships.user_id` → `users.id`）越しのため利用者は必ず存在する。
+        // The join goes through a foreign key (`tenant_memberships.user_id` -> `users.id`), so the user always exists.
         user_status: Some(UserStatus::parse(&user_status)?),
         locked_until: locked_until.map(|naive| chrono::Utc.from_utc_datetime(&naive)),
         pending_setup: row.try_get("pending_setup").map_err(repo_err)?,
@@ -124,7 +124,7 @@ pub(crate) fn map_row(row: &MySqlRow) -> Result<TenantMember> {
     })
 }
 
-/// 管理者メモ（`LEFT JOIN` なので、書かれていなければ全列 NULL）。
+/// Admin note (`LEFT JOIN`, so all columns are NULL if none is written).
 pub(crate) fn map_note(row: &MySqlRow) -> Result<Option<AccountNote>> {
     let text: Option<String> = row.try_get("note").map_err(repo_err)?;
     let Some(text) = text else {
@@ -159,8 +159,8 @@ impl TenantMemberQuery for SqlxTenantMemberQuery {
 
         let mut page = QueryBuilder::<MySql>::new(format!("SELECT {MEMBER_COLUMNS}"));
         push_conditions(&mut page, filter);
-        // 並びはページ間で安定していなければならない（重複・欠落を防ぐ）。email は
-        // `(tenant_id, email)` が一意なので実質決定的だが、意図を明示して user_id を副キーに置く。
+        // The order must be stable across pages (prevents duplicates/gaps). email is effectively deterministic since
+        // `(tenant_id, email)` is unique, but user_id is made the secondary key to state the intent.
         page.push(" ORDER BY u.email ASC, m.user_id ASC LIMIT ");
         page.push_bind(filter.limit);
         page.push(" OFFSET ");
@@ -178,13 +178,13 @@ impl TenantMemberQuery for SqlxTenantMemberQuery {
 mod tests {
     use super::*;
 
-    /// エスケープしないと `%` が「全件一致」、`_` が「任意の 1 文字」になる。
+    /// Without escaping, `%` becomes "match all" and `_` "any single character".
     #[test]
     fn escapes_like_wildcards_and_the_escape_character_itself() {
         assert_eq!(escape_like("100%"), "100!%");
         assert_eq!(escape_like("a_b"), "a!_b");
         assert_eq!(escape_like("a!b"), "a!!b");
-        // `!` を先に置換するので、置換で生まれた `!` が二重にエスケープされない。
+        // `!` is replaced first, so `!`s produced by replacement are not escaped twice.
         assert_eq!(escape_like("!%"), "!!!%");
         assert_eq!(escape_like("plain"), "plain");
     }

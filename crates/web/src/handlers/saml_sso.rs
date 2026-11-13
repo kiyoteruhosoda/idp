@@ -1,13 +1,13 @@
-//! SAML SSO の継続画面（`GET /{tenant_id}/saml/continue`）。
+//! SAML SSO continuation screen (`GET /{tenant_id}/saml/continue`).
 //!
-//! api の `/{tenant_id}/saml/sso` からのハンドオフを受ける（OIDC の `/login?auth_session=` と
-//! 同方式。ADR-0018 決定 2）。ハンドル（初回）または `saml_request_id` Cookie（ログイン後の復帰）と
-//! 自ドメインの host-only `sso_session_id` Cookie を `/internal/saml/resume` へ転送し、
+//! Receives the hand-off from the api's `/{tenant_id}/saml/sso` (same scheme as OIDC's `/login?auth_session=`;
+//! ADR-0018 decision 2). Forwards the handle (first time) or the `saml_request_id` cookie (returning after login) and
+//! our domain's host-only `sso_session_id` cookie to `/internal/saml/resume`, then
 //!
-//! - SSO 有効なら署名済み `SAMLResponse` を SP の ACS へ自動 POST するフォームを描画する
-//!   （送信先が外部オリジンのため、ACS オリジンだけ `form-action` に許可した CSP を付ける）
-//! - 認証が必要なら `saml_request_id` を host-only Cookie 化してポータルログインへ 303 する
-//!   （ログイン成功時は [`super::portal`] が本画面へ戻す）
+//! - if SSO is valid, renders a form that auto-POSTs the signed `SAMLResponse` to the SP's ACS
+//!   (the target is an external origin, so a CSP allowing only the ACS origin in `form-action` is attached)
+//! - if authentication is needed, stores `saml_request_id` as a host-only cookie and 303s to the portal login
+//!   (on successful login, [`super::portal`] returns to this screen)
 
 use super::{api_internal_error, internal_call_status, locale};
 use crate::client_ip::ClientIp;
@@ -40,7 +40,7 @@ pub async fn continue_sso(
         &state.origin_bound_cookie(cookies::SAML_REQUEST_COOKIE),
     );
     if handle.is_none() && saml_request_id.is_none() {
-        // ハンドオフ経由でも復帰経由でもない直接アクセス。
+        // Direct access, neither via the hand-off nor a return.
         let messages = Messages::new(locale(&headers));
         return expired_page(&messages);
     }
@@ -61,7 +61,7 @@ pub async fn continue_sso(
         }
     };
 
-    // FluentBundle は Send でないため、api の await 後に生成する。
+    // FluentBundle is not Send, so create it after the api await.
     let messages = Messages::new(locale(&headers));
     match outcome {
         InternalSamlResumeResponse::Completed {
@@ -87,8 +87,8 @@ pub async fn continue_sso(
                 .into_response()
         }
         InternalSamlResumeResponse::LoginRequired { saml_request_id } => {
-            // 進行状態 id を Cookie 化してポータルログインへ。TTL は api 側の進行状態と同じ
-            // auth_session TTL に合わせる。303 でハンドルを URL・履歴から除去する。
+            // Store the progress state id in a cookie and go to the portal login. The TTL matches the api-side
+            // progress state's auth_session TTL. 303 removes the handle from the URL and history.
             let set_cookies = state.set_cookies().set_local(
                 &state.origin_bound_cookie(cookies::SAML_REQUEST_COOKIE),
                 &saml_request_id,
@@ -100,8 +100,8 @@ pub async fn continue_sso(
             )
                 .into_response()
         }
-        // SSO は復元できたが、このアプリの利用が許可されていない（ADR-0054）。ACS へは送らない。
-        // SSO Cookie には触らない ——assay には入れているので、他のアプリへはそのまま進める。
+        // SSO was restored, but use of this app is not permitted (ADR-0054). Do not send to the ACS.
+        // Leave the SSO cookie alone: the user is signed in to assay, so other apps can proceed as is.
         InternalSamlResumeResponse::ApplicationNotPermitted { application_name } => (
             state
                 .set_cookies()
@@ -120,13 +120,13 @@ pub async fn continue_sso(
     }
 }
 
-/// SP の ACS へフォーム送信するための CSP。既定 CSP（`form-action 'self'`）のままでは外部
-/// オリジンへの POST がブラウザに遮断されるため、ACS のオリジンだけを追加で許可する。
+/// CSP for the form submission to the SP's ACS. With the default CSP (`form-action 'self'`) the browser blocks
+/// POSTs to an external origin, so only the ACS origin is additionally allowed.
 ///
-/// 組み立ては [`crate::security_headers::form_action_csp_for`] に委ねる。ここで方針を書き写して
-/// いたときは既定 CSP と別々に育ってしまい、SEC12 で `script-src` から外したはずの
-/// `'unsafe-inline'` がこのページにだけ残っていた（`saml_post.html` のスクリプトは
-/// `/assets/auto-submit.js` の外部参照で、インラインは使っていない）。
+/// Building it is delegated to [`crate::security_headers::form_action_csp_for`]. When the policy was copied
+/// here, it grew separately from the default CSP, and the `'unsafe-inline'` that SEC12 should have removed
+/// from `script-src` remained only on this page (the script in `saml_post.html` is the
+/// external `/assets/auto-submit.js`; nothing inline is used).
 fn acs_form_action_csp(acs_url: &str) -> String {
     crate::security_headers::form_action_csp_for(acs_url)
 }

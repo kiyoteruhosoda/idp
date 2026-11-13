@@ -1,18 +1,18 @@
-//! アカウント（人とサービスアカウント）の統合テスト（ADR-0065）。
+//! Integration tests for accounts (people and service accounts) (ADR-0065).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test admin_accounts
 //!
-//! 検証するのは:
+//! What is checked:
 //!
-//! 1. 一覧（`GET /admin/accounts`）が人とサービスアカウントを 1 つに並べ、**呼んだ主体が読める種別
-//!    だけ**を並べること。読めない種別を指定すると 403（空にしない）、未知の種別は 400。
-//! 2. サービスアカウントのメモが人のメモと同じ規則で書け（上限・空で消す・監査に中身を残さない）、
-//!    一覧・1 件の口に載り、メモの言葉で絞り込めること。連携先には書けないこと。
-//! 3. 作成と同時にメモを書けること（連携先に送ると 400 で、何も作らない）。
-//! 4. サービスアカウントが使えるアプリが**トークン発行と同じ規則**で答えられること（宛名の名乗りの
-//!    無いアプリは載らない・「全員」でも含まれない・止めたアプリは使えない）。
-//! 5. 名乗り（binding）のアプリが 1 件の口に出ること。
+//! 1. The list (`GET /admin/accounts`) lines up people and service accounts together, **only the kinds
+//!    the caller can read**. Asking for an unreadable kind is 403 (not empty); an unknown kind is 400.
+//! 2. Service account notes are written under the same rules as people's notes (limit, empty clears, content not in audit),
+//!    appear in the list and single-item endpoint, and can be filtered by note words. Not writable on linked apps.
+//! 3. A note can be written at creation (sending it for a linked app is 400 and creates nothing).
+//! 4. The apps a service account can use are answered **with the same rules as token issuance** (apps without
+//!    an audience identity are not listed, not included even under "Everyone", suspended apps are unusable).
+//! 5. The app of the identity (binding) appears on the single-item endpoint.
 
 mod support;
 
@@ -75,7 +75,7 @@ async fn one_list_holds_both_kinds_and_only_what_the_caller_may_read() {
     let admin_tok = admin_token(&env.app, &env.pool, tenant, &env.root_admin_id).await;
     let marker = format!("acct{}", support::unique());
 
-    // 人 1 人（メモに目印）とサービスアカウント 1 つ（登録名に目印）。
+    // One person (marker in the note) and one service account (marker in the registered name).
     let member = create_plain_user(&env.pool, tenant).await;
     let res = send(
         &env.app,
@@ -96,7 +96,7 @@ async fn one_list_holds_both_kinds_and_only_what_the_caller_may_read() {
     )
     .await;
 
-    // ── 管理者: 2 種類とも並ぶ。
+    // ── Admin: both kinds are listed.
     let listed = body_json(
         send(
             &env.app,
@@ -127,7 +127,7 @@ async fn one_list_holds_both_kinds_and_only_what_the_caller_may_read() {
     assert_eq!(sa_row["service_account"]["status"], "ACTIVE");
     assert!(sa_row.get("user").is_none(), "{sa_row}");
 
-    // ── 種別で絞る。
+    // ── Filter by kind.
     let only_sa = body_json(
         send(
             &env.app,
@@ -147,7 +147,7 @@ async fn one_list_holds_both_kinds_and_only_what_the_caller_may_read() {
         "the other kinds stay selectable"
     );
 
-    // ── 綴り違いは 400（「すべて」に倒さない）。
+    // ── A misspelling is 400 (not treated as "all").
     let res = send(
         &env.app,
         get(&admin_tok, &format!("/{tenant}/admin/accounts?kind=users")),
@@ -155,7 +155,7 @@ async fn one_list_holds_both_kinds_and_only_what_the_caller_may_read() {
     .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 
-    // ── 人だけ読める管理者: 人だけが並び、サービスアカウントを求めると 403。
+    // ── Admin who can read only people: only people are listed; asking for service accounts is 403.
     let members_reader = create_plain_user(&env.pool, tenant).await;
     grant(&env.pool, &members_reader, "idp.members:read", tenant).await;
     let tok = admin_token(&env.app, &env.pool, tenant, &members_reader).await;
@@ -184,7 +184,7 @@ async fn one_list_holds_both_kinds_and_only_what_the_caller_may_read() {
         "an unreadable kind is refused, not emptied"
     );
 
-    // ── どちらも読めない主体は 403、トークンが無ければ 401。
+    // ── A principal that can read neither gets 403; without a token 401.
     let nobody = create_plain_user(&env.pool, tenant).await;
     let tok = admin_token(&env.app, &env.pool, tenant, &nobody).await;
     let res = send(&env.app, get(&tok, &format!("/{tenant}/admin/accounts"))).await;
@@ -209,7 +209,7 @@ async fn a_service_account_note_follows_the_member_note_rules() {
     let marker = format!("経緯-{}", support::unique());
     let text = format!("{marker}\nwiki の夜間同期");
 
-    // ── 認可（書くのは idp.clients:write）。
+    // ── Authorization (writing needs idp.clients:write).
     let members_writer = create_plain_user(&env.pool, tenant).await;
     grant(&env.pool, &members_writer, "idp.members:write", tenant).await;
     let tok = admin_token(&env.app, &env.pool, tenant, &members_writer).await;
@@ -220,7 +220,7 @@ async fn a_service_account_note_follows_the_member_note_rules() {
         "members:write is not enough"
     );
 
-    // ── 書くと 1 件の口にも一覧にも載り、メモの言葉で探せる。
+    // ── Once written, it appears on the single-item endpoint and in the list, and is searchable by note words.
     let res = send(&env.app, put(&admin_tok, &uri, json!({ "note": text }))).await;
     assert_eq!(res.status(), StatusCode::NO_CONTENT);
     let detail = body_json(
@@ -253,12 +253,12 @@ async fn a_service_account_note_follows_the_member_note_rules() {
         json!(text)
     );
 
-    // ── ⚠ 監査に中身を残さない。
+    // ── ⚠ The content is not left in the audit log.
     let reasons = note_audit_reasons(&env.pool, &service_account).await;
     assert_eq!(reasons.len(), 1, "{reasons:?}");
     assert!(!reasons[0].contains(&marker), "{reasons:?}");
 
-    // ── 長すぎれば 400。空で送ると消える。
+    // ── Too long is 400. Sending empty clears it.
     let res = send(
         &env.app,
         put(&admin_tok, &uri, json!({ "note": "あ".repeat(2001) })),
@@ -282,7 +282,7 @@ async fn a_service_account_note_follows_the_member_note_rules() {
     let reasons = note_audit_reasons(&env.pool, &service_account).await;
     assert!(reasons.last().unwrap().ends_with("cleared"), "{reasons:?}");
 
-    // ── 連携先（ログイン用の client）はサービスアカウントではない: 1 件の口もメモも 404。
+    // ── A linked app (login client) is not a service account: both the single-item endpoint and the note are 404.
     let relying_party = support::insert_public_client(&env.pool, tenant, &["openid"]).await;
     let res = send(
         &env.app,
@@ -348,7 +348,7 @@ async fn a_note_can_be_written_when_the_service_account_is_created() {
     assert_eq!(detail["note"]["text"], json!(format!("{marker} のメモ")));
     assert_eq!(note_audit_reasons(&env.pool, &client_id).await.len(), 1);
 
-    // ── 連携先にメモを付けて作ろうとすると 400 で、何も作らない。
+    // ── Trying to create a linked app with a note is 400 and creates nothing.
     let rp_name = format!("rp-{}", support::unique());
     let res = send(
         &env.app,
@@ -385,7 +385,7 @@ async fn service_account_applications_follow_the_same_rule_as_the_token_endpoint
     let (service_account, _) = support::insert_service_account(&env.pool, tenant).await;
     let uri = format!("/{tenant}/admin/service-accounts/{service_account}/applications");
 
-    // 宛名を名乗るアプリを 2 つ（「個別」と「全員」）、名乗りの無いアプリを 1 つ。
+    // Two apps with an audience identity ("Individual" and "Everyone") and one app without an identity.
     let create_app = |name: String, mode: &'static str| {
         let app = env.app.clone();
         let tok = admin_tok.clone();
@@ -449,7 +449,7 @@ async fn service_account_applications_follow_the_same_rule_as_the_token_endpoint
             .cloned()
     };
 
-    // ── 認可（idp.applications:read）。
+    // ── Authorization (idp.applications:read).
     let plain = create_plain_user(&env.pool, tenant).await;
     let plain_tok = admin_token(&env.app, &env.pool, tenant, &plain).await;
     let res = send(&env.app, get(&plain_tok, &uri)).await;
@@ -470,7 +470,7 @@ async fn service_account_applications_follow_the_same_rule_as_the_token_endpoint
         "an application without an API is not listed: {listed}"
     );
 
-    // ── 割り当てると使える。止めたアプリは割り当てがあっても使えない。
+    // ── Assigning makes it usable. A suspended app is unusable even with an assignment.
     let res = send(
         &env.app,
         post(
@@ -496,7 +496,7 @@ async fn service_account_applications_follow_the_same_rule_as_the_token_endpoint
         "application_disabled"
     );
 
-    // ── 名乗りのアプリは 1 件の口に出る（使えるアプリとは別の関係）。
+    // ── The identity's app appears on the single-item endpoint (a different relation from usable apps).
     let res = send(
         &env.app,
         post(
@@ -524,7 +524,7 @@ async fn service_account_applications_follow_the_same_rule_as_the_token_endpoint
         "{detail}"
     );
 
-    // ── サービスアカウントでない相手へは 404。
+    // ── 404 for a counterpart that is not a service account.
     let res = send(
         &env.app,
         get(
@@ -536,7 +536,7 @@ async fn service_account_applications_follow_the_same_rule_as_the_token_endpoint
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
 }
 
-/// クエリ文字列用の最小限のエンコード（非 ASCII と記号を %XX にする）。
+/// Minimal encoding for query strings (non-ASCII and symbols become %XX).
 fn urlencoding(value: &str) -> String {
     value
         .bytes()

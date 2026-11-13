@@ -1,10 +1,10 @@
-//! 登録した端末からだけログインを終わらせる（task #916。ADR-0079）。
+//! Let logins finish only from registered devices (task #916; ADR-0079).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test registered_device_required
 //!
-//! ⚠ 設定はこの試験で作った組織にだけ入れる（root で有効にすると、並んで走る他の試験のログインが
-//! 全部「登録が要る」になる）。
+//! ⚠ The setting is enabled only for the organization this test creates (enabling it on root would make every login
+//! of other tests running alongside "registration required").
 
 mod support;
 
@@ -112,7 +112,7 @@ async fn new_member(env: &TestEnv, tenant: &str) -> String {
     username
 }
 
-/// **登録していない端末では、正しいパスワードでもログイン状態が作られない。登録した端末なら作られる。**
+/// **On an unregistered device, no signed-in state is created even with the correct password. On a registered device it is.**
 #[tokio::test]
 async fn only_a_registered_device_finishes_the_sign_in() {
     let Some(env) = support::setup("registered device required").await else {
@@ -122,7 +122,7 @@ async fn only_a_registered_device_finishes_the_sign_in() {
     let username = new_member(&env, &tenant).await;
     let uid = user_id(&env, &tenant, &username).await;
 
-    // 印が無い・登録していない印 → 札だけ返り、SSO は無い。
+    // No mark / an unregistered mark → only a ticket comes back, no SSO.
     for device in [None, Some(device_token())] {
         let body = portal_login(&env, &tenant, &username, device.as_deref()).await;
         assert_eq!(body["result"], "device_enrollment_required", "{body}");
@@ -144,7 +144,7 @@ async fn only_a_registered_device_finishes_the_sign_in() {
     .unwrap();
     assert_eq!(refused, 2, "both refusals are audited");
 
-    // 登録した端末 → 今まで通りログインできる。
+    // Registered device → sign in as before.
     let token = device_token();
     register_device_row(&env, &uid, &token).await;
     let body = portal_login(&env, &tenant, &username, Some(&token)).await;
@@ -152,7 +152,7 @@ async fn only_a_registered_device_finishes_the_sign_in() {
     assert!(body["sso_session_id"].is_string());
 }
 
-/// **設定の無い組織は今まで通り（印が無くても入れる）。**
+/// **Organizations without the setting work as before (one can get in without a mark).**
 #[tokio::test]
 async fn an_organization_without_the_setting_signs_in_as_before() {
     let Some(env) = support::setup("registered device not required").await else {
@@ -164,7 +164,7 @@ async fn an_organization_without_the_setting_signs_in_as_before() {
     assert_eq!(body["result"], "success", "{body}");
 }
 
-/// **札は発行したブラウザ（端末の印）でしか開けず、パスキーが通らなければログインしない。**
+/// **The ticket opens only in the browser that issued it (device mark), and no login happens unless the passkey passes.**
 #[tokio::test]
 async fn the_ticket_opens_only_in_the_same_browser_and_needs_a_passkey() {
     let Some(env) = support::setup("device enrollment ticket").await else {
@@ -203,7 +203,7 @@ async fn the_ticket_opens_only_in_the_same_browser_and_needs_a_passkey() {
         "another browser: {other}"
     );
 
-    // 書き換えた札は開かない。
+    // A rewritten ticket does not open.
     let response = send(
         &env.app,
         internal(
@@ -215,7 +215,7 @@ async fn the_ticket_opens_only_in_the_same_browser_and_needs_a_passkey() {
     .await;
     assert_eq!(body_json(response).await["result"], "ticket_invalid");
 
-    // パスキーの無い完了は通らず、端末も SSO もできない。
+    // Completion without a passkey does not pass, and neither a device nor SSO is created.
     let response = send(
         &env.app,
         internal(
@@ -240,7 +240,7 @@ async fn the_ticket_opens_only_in_the_same_browser_and_needs_a_passkey() {
     assert_eq!(devices, 0);
 }
 
-/// **外から api へ直接来た要求の端末の見出しは読まない**（`/internal/*` のサービストークンの内側だけ）。
+/// **The device header of requests coming to api directly from outside is not read** (only inside the `/internal/*` service token).
 #[tokio::test]
 async fn the_device_header_is_ignored_without_the_service_token() {
     let Some(env) = support::setup("device header outside").await else {

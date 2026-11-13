@@ -1,6 +1,6 @@
-{# 完全公開ページ（ログイン画面等）のフッター。**版数を出さない**（ADR-0034）。
-   稼働中のコミットが分かると、どの既知の不具合が塞がっていないかを外から判断できる。
-   運用者向けの版数はコンソール（ログイン済み）のフッターと `/internal/health` にある。 #}
+{# Footer of fully public pages (login screen etc.). **Shows no version** (ADR-0034).
+   Knowing the running commit lets outsiders judge which known bugs are still open.
+   The version for operators is in the (logged-in) console footer and `/internal/health`. #}
 <footer class="border-top py-2 text-center bg-body" aria-label="Application footer">
   <span class="assay-wordmark">{% include "assay_mark.html" %}assay</span>
 </footer>

@@ -1,9 +1,9 @@
-//! ゲスト招待作成画面（web。ADR-0009 §3・§6・MT13）。
+//! Guest invitation creation screen (web. ADR-0009 §3, §6, MT13).
 //!
-//! api の JSON 管理 API（`POST /admin/invitations`）を管理者の SSO Cookie 転送で呼ぶ。招待対象は
-//! 所属元が他テナントの既存利用者で、**メールアドレス、または内部 ID（UUID）**で指す（ADR-0061。
-//! 読み分けと解決は api 側の application 層に閉じており、この画面は入力を 1 本渡すだけ）。
-//! 招待トークンはこの結果画面でのみ表示する。
+//! Calls the api's JSON admin API (`POST /admin/invitations`) by forwarding the admin's SSO cookie. Invitees
+//! are existing users whose home is another tenant, referred to by **email address or internal ID (UUID)** (ADR-0061.
+//! Telling them apart and resolving them is confined to the api's application layer; this screen just passes one input).
+//! The invitation token is shown only on this result screen.
 
 use super::locale;
 use crate::api_client::AdminApiError;
@@ -23,7 +23,7 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use serde::Deserialize;
 
-/// 招待フォーム（`GET /{tenant_id}/admin/invitations`）。
+/// Invitation form (`GET /{tenant_id}/admin/invitations`).
 pub async fn new_form(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -41,12 +41,12 @@ pub async fn new_form(
 
 #[derive(Debug, Deserialize)]
 pub struct InvitationRequestForm {
-    /// 招待する相手（メールアドレス、または内部 ID）。
+    /// The person to invite (email address or internal ID).
     pub invitee: String,
     pub csrf_token: String,
 }
 
-/// 招待の作成（`POST /{tenant_id}/admin/invitations`）。招待トークンを一度だけ表示する。
+/// Creates an invitation (`POST /{tenant_id}/admin/invitations`). Shows the invitation token only once.
 pub async fn create(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -72,7 +72,7 @@ pub async fn create(
         ));
     }
 
-    // api のバリデーション/競合メッセージをこの画面へ出すため、決定言語を引き継ぐ（MT20）。
+    // Carry over the resolved language so the api's validation/conflict messages show on this screen (MT20).
     let result = state
         .api
         .for_locale(locale(&headers))

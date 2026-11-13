@@ -1,31 +1,34 @@
-//! パスワードハッシュの抽象（DIP 境界）。実装は infrastructure 層（argon2）。
+//! Abstraction for password hashing (DIP boundary). Implemented in the infrastructure layer
+//! (argon2).
 //!
-//! 「そのパスワードを受け付けてよいか」の要件は
-//! [`crate::domain::password_policy`]（長さ・漏えい・再利用・有効期限）にある。
+//! The requirements for "may this password be accepted" live in
+//! [`crate::domain::password_policy`] (length, breaches, reuse, expiry).
 
 use crate::domain::error::DomainError;
 
 pub trait PasswordHasher: Send + Sync {
-    /// 平文パスワードをハッシュ化して PHC 文字列を返す。
+    /// Hashes a plaintext password and returns a PHC string.
     fn hash(&self, password: &str) -> Result<String, DomainError>;
-    /// 平文パスワードが保存済みハッシュに一致するか検証する。
+    /// Verifies whether a plaintext password matches a stored hash.
     fn verify(&self, password: &str, hash: &str) -> Result<bool, DomainError>;
 }
 
-/// 存在しない（または曖昧で解決しなかった）利用者に対しても、実在利用者と**同じ計算量の**
-/// パスワード検証を 1 回行い、応答時間で利用者の有無を推し量れないようにする（列挙対策。
-/// OWASP Authentication Cheat Sheet の「timing の均一化」）。
+/// For a nonexistent (or ambiguous, unresolved) user, runs one password verification with
+/// **the same cost** as for a real user, so response time does not reveal whether the user exists
+/// (anti-enumeration; "uniform timing" in the OWASP Authentication Cheat Sheet).
 ///
-/// 参照ハッシュは初回に 1 度だけ本物のハッシャで生成して使い回す（毎回ハッシュすると 2 倍の
-/// コストになる）。生成に使う平文は秘密ではなく、値は照合結果に一切影響しない —— 呼び出し側は
-/// 戻り値を捨て、常に資格情報エラーを返す。生成に失敗した場合は静かに諦める（best-effort。
-/// 均一化は防御の足し算であって、成否を分ける判定ではない）。
+/// The reference hash is generated once with the real hasher on first use and reused (hashing every
+/// time would double the cost). The plaintext used is not secret and the value never affects the
+/// result — callers discard the return value and always return a credentials error. If generation
+/// fails, it gives up silently (best-effort; uniform timing is an added defense, not the deciding
+/// check).
 pub fn verify_against_dummy(hasher: &dyn PasswordHasher, presented_password: &str) {
     use std::sync::OnceLock;
     static DUMMY_HASH: OnceLock<Option<String>> = OnceLock::new();
     let dummy = DUMMY_HASH.get_or_init(|| hasher.hash("timing-equalizer.not-a-credential").ok());
     if let Some(hash) = dummy {
-        // 結果は使わない。実在利用者の `verify` と同じ argon2 計算を消費することだけが目的。
+        // The result is unused. The only purpose is to spend the same argon2 work as `verify` for a
+        // real user.
         let _ = hasher.verify(presented_password, hash);
     }
 }

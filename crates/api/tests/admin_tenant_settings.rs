@@ -1,20 +1,20 @@
-//! テナントの設定値の口（`/{tenant_id}/admin/settings/tenant/keys`。ADR-0058）の統合テスト。
+//! Integration tests for the tenant setting values endpoint (`/{tenant_id}/admin/settings/tenant/keys`; ADR-0058).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test admin_tenant_settings
 //!
-//! 検証の要:
-//! - テナントの値は**そのテナントにだけ**効き、別のテナントからは全体に従って見える
-//!   （1 テナントだけの試験は、全体の値を読んでいても通ってしまう）
-//! - 「全体に戻す」で**行が消える**（同じ値を書くのとは違う）
-//! - ⚠ `idp.tenant-settings:*` だけを持つ人は、全体で決めるキーを**開けない**。付与の側
-//!   （全体の設定の口は 403）と使う側（テナントの口でも全体のキーは 400 で、どちらの表にも
-//!   書かれない）の二重で止まる
-//! - 全体の設定画面から、テナントが上書きできるキーについて「従っているテナントの件数」と
-//!   「既定から外れているテナント」が読める
+//! Key points checked:
+//! - A tenant value applies **only to that tenant**, and other tenants see the global value
+//!   (a test with only one tenant would pass even when reading the global value)
+//! - "Revert to global" **deletes the row** (different from writing the same value)
+//! - ⚠ Someone with only `idp.tenant-settings:*` **cannot open** globally decided keys. Stopped twice: on the
+//!   granting side (the global settings endpoint is 403) and on the using side (global keys are 400 even at the
+//!   tenant endpoint and written to neither table)
+//! - From the global settings screen, for keys tenants can override, "the number of tenants following it" and
+//!   "tenants deviating from the default" can be read
 //!
-//! ⚠ **root テナントの値は書かない。** 並行して走る他の試験が root で動いており、消費側
-//! （ADR-0058 の後続）が入ると root の上書きがそちらの挙動を変える。書くのは作ったテナントだけ。
+//! ⚠ **Do not write values for the root tenant.** Other tests running in parallel use root, and once consumers
+//! (follow-ups of ADR-0058) land, root overrides would change their behaviour. Only write to tenants created here.
 
 mod support;
 
@@ -26,7 +26,7 @@ use support::{
     TestEnv,
 };
 
-/// 作ったテナントと、その HOME 管理者（`idp.tenant.admin`）の SSO セッション。
+/// The created tenant and the SSO session of its HOME admin (`idp.tenant.admin`).
 struct CreatedTenant {
     id: String,
     admin_sso: String,
@@ -36,7 +36,7 @@ async fn tok(env: &TestEnv, sso: &str, tenant_id: &str) -> String {
     exchange_admin_token(&env.app, tenant_id, sso).await
 }
 
-/// root がテナントを作り、HOME 管理者を立てる（`tenant_isolation` と同じ手順）。
+/// root creates a tenant and sets up a HOME admin (same procedure as `tenant_isolation`).
 async fn create_tenant(env: &TestEnv, root_sso: &str, name: &str) -> CreatedTenant {
     let res = send(
         &env.app,
@@ -60,7 +60,7 @@ async fn create_tenant(env: &TestEnv, root_sso: &str, name: &str) -> CreatedTena
     }
 }
 
-/// テナントに利用者を作り、権限コードを 1 つだけ付ける。
+/// Creates a user in the tenant and grants exactly one permission code.
 async fn create_user_with_permission(
     env: &TestEnv,
     granter_sso: &str,
@@ -91,7 +91,7 @@ async fn create_user_with_permission(
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK, "grant {code}");
-    // 作った人をそのまま登場人物にするので、仮登録を外す（本人が設定を終えた、の代わり）。
+    // The created person is used as a character directly, so clear provisional status (instead of the user finishing setup).
     support::finish_setup(&env.pool, &user_id).await;
     user_id
 }
@@ -155,13 +155,13 @@ async fn a_tenant_decides_its_own_value_and_can_return_to_the_whole_idp() {
         min_length["whole_idp_value"], whole_idp_value,
         "the whole-IdP value is shown next to the override"
     );
-    // 1 キーだけ書いても、他のキーの写しは作らない。
+    // Writing one key does not create copies of other keys.
     assert_eq!(
         tenant_rows(&env, &a.id).await,
         vec![("PASSWORD_MIN_LENGTH".to_string(), "17".to_string())]
     );
 
-    // ⚠ 別のテナントには効かない。
+    // ⚠ It does not apply to other tenants.
     let res = send(&env.app, get(&tok(&env, &b.admin_sso, &b.id).await, &b_uri)).await;
     assert_eq!(res.status(), StatusCode::OK);
     let other = body_json(res).await;
@@ -174,7 +174,7 @@ async fn a_tenant_decides_its_own_value_and_can_return_to_the_whole_idp() {
         whole_idp_value
     );
 
-    // 型に合わない値は保存しない。
+    // Values that do not fit the type are not saved.
     let res = send(
         &env.app,
         put(
@@ -186,7 +186,7 @@ async fn a_tenant_decides_its_own_value_and_can_return_to_the_whole_idp() {
     .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST, "kind is checked");
 
-    // 全体に戻す ＝ 行を消す。
+    // Revert to global = delete the row.
     let res = send(
         &env.app,
         delete(&a_tok, &format!("{a_uri}/PASSWORD_MIN_LENGTH")),
@@ -200,7 +200,7 @@ async fn a_tenant_decides_its_own_value_and_can_return_to_the_whole_idp() {
     );
     assert!(tenant_rows(&env, &a.id).await.is_empty(), "the row is gone");
 
-    // 監査ログにはキーと設定/解除の別だけが残り、値は残らない。
+    // Only the key and whether it was set or cleared remain in the audit log, not the value.
     let reasons: Vec<String> = sqlx::query(
         "SELECT reason FROM audit_log WHERE event_type = 'tenant_settings.updated' \
          AND tenant_id = ? ORDER BY occurred_at",
@@ -253,7 +253,7 @@ async fn the_tenant_settings_code_never_opens_keys_decided_by_the_whole_idp() {
     };
     let whole_idp_before = whole_idp_rows().await;
 
-    // 読みは通り、並ぶのはテナントが上書きできるキーだけ。
+    // Reading works, and only keys tenants can override are listed.
     let res = send(&env.app, get(&user_tok, &uri)).await;
     assert_eq!(res.status(), StatusCode::OK, "write implies read");
     let list = body_json(res).await;
@@ -273,7 +273,7 @@ async fn the_tenant_settings_code_never_opens_keys_decided_by_the_whole_idp() {
         assert!(!keys.contains(&global), "{global} must not be listed");
     }
 
-    // 使う側: テナントの口でも全体のキーは書けない・消せない。
+    // Using side: even the tenant endpoint cannot write or delete global keys.
     for key in [
         "ACCESS_TOKEN_TTL_SECS",
         "ISSUER",
@@ -302,8 +302,8 @@ async fn the_tenant_settings_code_never_opens_keys_decided_by_the_whole_idp() {
         "whole IdP untouched"
     );
 
-    // 付与の側: 全体の設定の口は `idp.system.admin` の完全一致でしか通らない。
-    // テナント管理者（`idp.tenant.admin`）でも同じ。
+    // Granting side: the global settings endpoint passes only with an exact match of `idp.system.admin`.
+    // Same for tenant admins (`idp.tenant.admin`).
     let admin_tok = tok(&env, &tenant.admin_sso, &tenant.id).await;
     for token in [&user_tok, &admin_tok] {
         let res = send(
@@ -324,7 +324,7 @@ async fn the_tenant_settings_code_never_opens_keys_decided_by_the_whole_idp() {
         assert_eq!(res.status(), StatusCode::FORBIDDEN, "PUT runtime");
     }
 
-    // 読むだけの権限では書けない。
+    // Read-only permission cannot write.
     let reader = create_user_with_permission(
         &env,
         &tenant.admin_sso,
@@ -403,7 +403,7 @@ async fn the_whole_idp_settings_show_which_tenants_follow_and_which_do_not() {
         .as_str()
         .unwrap()
         .starts_with("SettingsAdoption"));
-    // root は書いていないので、少なくとも 1 件は従っている。
+    // root has not written it, so at least one tenant follows it.
     assert!(lock["tenants_following"].as_u64().unwrap() >= 1, "{lock}");
 
     let token_ttl = find("ACCESS_TOKEN_TTL_SECS");
@@ -415,8 +415,8 @@ async fn the_whole_idp_settings_show_which_tenants_follow_and_which_do_not() {
         .is_empty());
 }
 
-/// 締め出し得る値（ポリシーの既定を `deny`・割り当てを `enforce`）は、`confirmed` が無ければ
-/// 保存されない（409）。判定は定義の `locks_out` で、キー名では分岐していない。
+/// Values that can lock people out (policy default `deny`, assignment `enforce`) are not saved without `confirmed`
+/// (409). The decision comes from the definition's `locks_out`, not from branching on key names.
 #[tokio::test]
 async fn a_value_that_can_lock_people_out_is_not_saved_without_confirmation() {
     let Some(env) = support::setup("tenant settings confirmation").await else {
@@ -477,12 +477,12 @@ async fn a_value_that_can_lock_people_out_is_not_saved_without_confirmation() {
             json!("TENANT_OVERRIDE")
         );
 
-        // 後片付け（作ったテナントだけの行だが、残さない）。
+        // Cleanup (rows only for the created tenant, but do not leave them).
         let res = send(&env.app, delete(&admin_tok, &format!("{uri}/{key}"))).await;
         assert_eq!(res.status(), StatusCode::OK);
     }
 
-    // 選択肢に無い値は、確認があっても断る。
+    // Values not among the choices are refused even with confirmation.
     let res = send(
         &env.app,
         put(

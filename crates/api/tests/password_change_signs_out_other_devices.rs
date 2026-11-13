@@ -1,18 +1,18 @@
-//! 自分でパスワードを変えたら、他の端末とアプリが切れる（ADR-0045）。
+//! Changing one's own password signs out other devices and apps (ADR-0045).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' \
 //!     cargo test --test password_change_signs_out_other_devices
 //!
-//! 見るのは 3 つ。
+//! Three things are checked.
 //!
-//! 1. **他の端末の SSO セッションが消える。** これが無いと、前のパスワードで入られた側が
-//!    居座り続ける——「漏れたかもしれないから変える」という動機を裏切る。
-//! 2. **自分のセッションは残る。** `delete_all_for_user` を呼ぶと変えた本人がその場で
-//!    締め出される。リセットのリンク経由が全部消してよいのは、あれが「忘れた人」の経路で
-//!    手元にセッションが無いからで、ここは事情が違う。
-//! 3. **refresh token は全部落ちる。** アプリが持っている合鍵は取り直させてよい。
-//!    手元のセッションが生きているので、取り直しは SSO で素通りする。
+//! 1. **Other devices' SSO sessions are removed.** Otherwise whoever got in with the previous password
+//!    stays — betraying the motive "change it because it may have leaked".
+//! 2. **One's own session remains.** Calling `delete_all_for_user` would lock out the person who changed it on the spot.
+//!    The reset link path may delete everything because it is the path for "someone who forgot" and
+//!    has no session at hand; the situation here differs.
+//! 3. **All refresh tokens are dropped.** The duplicate keys apps hold may be fetched again.
+//!    The session at hand is alive, so fetching again passes through via SSO.
 
 mod support;
 
@@ -64,7 +64,7 @@ async fn register_user(app: &axum::Router, tenant: &str, username: &str) {
     assert_eq!(response.status(), StatusCode::CREATED, "user registration");
 }
 
-/// ログインして SSO Cookie を得る。`offline_access` を要求したときは refresh token も返す。
+/// Signs in and gets the SSO cookie. When `offline_access` is requested, a refresh token is returned too.
 async fn log_in(
     env: &TestEnv,
     client_id: &str,
@@ -207,10 +207,10 @@ async fn changing_your_password_signs_out_other_devices_but_not_you() {
     register_user(&env.app, &env.root_tenant_id, &username).await;
     support::mark_email_verified(&env.pool, &env.root_tenant_id, &username).await;
 
-    // 端末 A: これから変更を行う側（refresh token も持つ）。
+    // Device A: the one that will make the change (also holds a refresh token).
     let (device_a, refresh_a) = log_in(&env, &client_id, &secret, &username, true, "sa").await;
     let refresh_a = refresh_a.expect("refresh token");
-    // 端末 B: 置き去りにされる側。
+    // Device B: the one left behind.
     let (device_b, _) = log_in(&env, &client_id, &secret, &username, false, "sb").await;
 
     assert!(sso_session_exists(&env.pool, &device_a).await);
@@ -233,19 +233,19 @@ async fn changing_your_password_signs_out_other_devices_but_not_you() {
     assert_eq!(response.status(), StatusCode::OK, "change password");
     assert_eq!(body_json(response).await["result"], "ok");
 
-    // 1. 他の端末は切れる。
+    // 1. Other devices are signed out.
     assert!(
         !sso_session_exists(&env.pool, &device_b).await,
-        "他の端末のセッションが残っている（前のパスワードで入った側が居座る）"
+        "another device's session remains (whoever got in with the previous password stays)"
     );
-    // 2. 自分は残る（残さないと変更直後に自分が締め出される）。
+    // 2. One's own remains (otherwise one is locked out right after the change).
     assert!(
         sso_session_exists(&env.pool, &device_a).await,
-        "変更した本人のセッションまで消えている"
+        "even the session of the person who changed it was removed"
     );
-    // 3. refresh token は全部落ちる。
+    // 3. All refresh tokens are dropped.
     assert!(
         !refresh_works(&env, &client_id, &secret, &refresh_a).await,
-        "パスワードを変えたのに、アプリの合鍵がまだ使える"
+        "the password was changed, but the app's duplicate key still works"
     );
 }

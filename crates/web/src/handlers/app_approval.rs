@@ -1,13 +1,13 @@
-//! 「アプリで続ける」と認証アプリの鍵の登録の画面（task #892。ADR-0077）。
+//! Screens for "Continue in the app" and registering the authenticator app's key (task #892. ADR-0077).
 //!
-//! | 口 | 何をする |
+//! | Endpoint | What it does |
 //! |---|---|
-//! | `POST /{t}/login/app/start` | 依頼を始め、このブラウザに依頼の印（Cookie）を置き、認証アプリを開く画面を出す |
-//! | `GET /{t}/login/app/complete` | 認証アプリが開いたブラウザ。コードと印を api で照らし、合えばログイン |
-//! | `GET・POST /{t}/settings/app-approver/confirm` | 認証アプリの Auth Tab が開く登録の確認（ログイン＋パスキー） |
-//! | `POST /{t}/settings/security/revoke-approver-key` | 「端末」の欄の「認証アプリ」を取り消す |
+//! | `POST /{t}/login/app/start` | Starts a request, puts a request mark (cookie) in this browser, shows the screen that opens the authenticator app |
+//! | `GET /{t}/login/app/complete` | Browser opened by the authenticator app. Checks the code and mark with the api and signs in if they match |
+//! | `GET/POST /{t}/settings/app-approver/confirm` | Registration confirmation opened by the authenticator app's Auth Tab (login + passkey) |
+//! | `POST /{t}/settings/security/revoke-approver-key` | Revokes the "authenticator app" in the "devices" section |
 //!
-//! ⚠ 依頼を始めたタブは待つだけで、ここから完了させる口は作らない（`domain::app_approver`）。
+//! ⚠ The tab that started the request only waits; no endpoint completes it from here (`domain::app_approver`).
 
 use super::{api_internal_error, internal_call_status};
 use crate::client_ip::ClientIp;
@@ -32,7 +32,7 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use serde::Deserialize;
 
-/// 受付・依頼の識別子の形（base64url の 43 文字）。戻り先に載せる前に確かめる。
+/// Format of the reception/request identifier (43 base64url chars). Checked before putting it in a return URL.
 pub(crate) fn is_enrollment_id(value: &str) -> bool {
     value.len() == 43
         && value
@@ -40,8 +40,8 @@ pub(crate) fn is_enrollment_id(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// ⚠ `Messages`（FluentBundle）は `Send` でないので、ハンドラでは `await` をまたいで持たない。
-/// 言語（`Locale`）だけを持ち、描く直前に作る。
+/// ⚠ `Messages` (FluentBundle) is not `Send`, so handlers must not hold it across an `await`.
+/// Hold only the language (`Locale`) and create it right before rendering.
 fn message_page(locale: Locale, key: &str, status: StatusCode) -> Response {
     let messages = &Messages::new(locale);
     let body = render(&MessagePage {
@@ -52,7 +52,7 @@ fn message_page(locale: Locale, key: &str, status: StatusCode) -> Response {
     (status, Html(body)).into_response()
 }
 
-/// 依頼の印・コードを含む URL を、外へ漏らさない（リファラーにもキャッシュにも残さない）。
+/// Keeps URLs containing the request mark or code from leaking (neither in Referer nor in caches).
 fn private(mut response: Response) -> Response {
     let headers = response.headers_mut();
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -73,7 +73,7 @@ fn country(state: &WebState, headers: &HeaderMap) -> Option<String> {
         .map(str::to_string)
 }
 
-// ─── ログイン画面 ─────────────────────────────────────────────────────
+// ─── Login screen ─────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 pub struct StartForm {
@@ -81,9 +81,9 @@ pub struct StartForm {
     pub csrf_token: String,
 }
 
-/// 「アプリで続ける」（`POST /{tenant_id}/login/app/start`）。
+/// "Continue in the app" (`POST /{tenant_id}/login/app/start`).
 ///
-/// 認可の途中のログイン画面からだけ来る（ログイン画面の CSRF トークンで確かめる）。
+/// Comes only from the login screen in the middle of authorization (checked with the login screen's CSRF token).
 pub async fn start(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -175,7 +175,7 @@ pub struct CompleteQuery {
     pub code: String,
 }
 
-/// 認証アプリが開いたブラウザ（`GET /{tenant_id}/login/app/complete`）。
+/// Browser opened by the authenticator app (`GET /{tenant_id}/login/app/complete`).
 pub async fn complete(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -213,7 +213,7 @@ pub async fn complete(
             return internal_call_status(&e).into_response();
         }
     };
-    // 印は 1 回きり。成否にかかわらず消す。
+    // The mark is single-use. Delete it regardless of the outcome.
     let set_cookies = state.set_cookies().expire_local(&binding_cookie);
     let response = match outcome {
         InternalAppApprovalCompleteResponse::Success {
@@ -316,7 +316,7 @@ pub async fn complete(
     private(response)
 }
 
-// ─── 鍵の登録の確認（アカウント） ─────────────────────────────────────
+// ─── Key registration confirmation (account) ─────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 pub struct ConfirmQuery {
@@ -330,12 +330,12 @@ pub struct ConfirmForm {
     pub enrollment: String,
     #[serde(default)]
     pub csrf_token: String,
-    /// `register`（登録する）/ `cancel`（やめる）
+    /// `register` (register) / `cancel` (cancel)
     #[serde(default)]
     pub decision: String,
 }
 
-/// 認証アプリの Auth Tab が戻る先（`https://<発行者>/app/enrolled`）。
+/// Where the authenticator app's Auth Tab returns to (`https://<issuer>/app/enrolled`).
 fn enrolled_url(state: &WebState, enrollment: &str, result: &str) -> String {
     format!(
         "{}/app/enrolled?enrollment={enrollment}&{result}",
@@ -343,7 +343,7 @@ fn enrolled_url(state: &WebState, enrollment: &str, result: &str) -> String {
     )
 }
 
-/// 登録の確認（`GET /{tenant_id}/settings/app-approver/confirm?enrollment=…`）。
+/// Registration confirmation (`GET /{tenant_id}/settings/app-approver/confirm?enrollment=…`).
 pub async fn confirm_page(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -361,7 +361,7 @@ pub async fn confirm_page(
     }
     let enrollment_cookie = state.origin_bound_cookie(cookies::APP_APPROVER_ENROLLMENT_COOKIE);
     let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
-        // まだログインしていない: 受付を覚えてログインへ。ログインの後にここへ戻す（portal）。
+        // Not signed in yet: remember the reception and go to login. Return here after login (portal).
         return (
             state
                 .set_cookies()
@@ -405,9 +405,9 @@ pub async fn confirm_page(
                 level_key,
                 created_at: &created_at,
             });
-            // 「登録する」の送信は、発行者のホストの戻り先（`/app/enrolled`。Auth Tab がアプリへ返す）への
-            // 302 で終わる。Chrome は `form-action` を送信の後のリダイレクトにも当てるので、この画面だけ
-            // 戻り先のオリジンを許す（ログイン画面が RP のオリジンを許すのと同じ。SEC3）。
+            // Submitting "register" ends with a 302 to the return URL on the issuer's host (`/app/enrolled`; the Auth Tab
+            // returns it to the app). Chrome applies `form-action` to redirects after submission too, so only this screen
+            // allows the return URL's origin (same as the login screen allowing the RP's origin; SEC3).
             let enrolled = enrolled_url(&state, &query.enrollment, "");
             private(
                 (
@@ -447,10 +447,10 @@ pub async fn confirm_page(
     }
 }
 
-/// 登録する・やめる（`POST /{tenant_id}/settings/app-approver/confirm`）。
+/// Register / cancel (`POST /{tenant_id}/settings/app-approver/confirm`).
 ///
-/// **パスキーで確かめてから 5 分以内**だけ通す（端末の登録と同じ。まだなら本人確認の画面へ回し、
-/// 戻ってきたら利用者がもう一度押す）。
+/// Allowed only **within 5 minutes after a passkey check** (same as device registration; if not yet, redirect to the
+/// re-authentication screen, and the user presses again on return).
 pub async fn confirm(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -479,7 +479,7 @@ pub async fn confirm(
         return see_other(&page);
     }
     if form.decision != "register" {
-        // やめた: アプリへ「断られた」を返す（受付は 10 分で消える）。
+        // Cancelled: return "declined" to the app (the reception disappears after 10 minutes).
         return private(found(&enrolled_url(
             &state,
             &form.enrollment,
@@ -530,7 +530,7 @@ pub async fn confirm(
     }
 }
 
-// ─── 「端末」の欄の「認証アプリ」 ─────────────────────────────────────
+// ─── "Authenticator app" in the "devices" section ─────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 pub struct RevokeKeyForm {
@@ -538,9 +538,9 @@ pub struct RevokeKeyForm {
     pub csrf_token: String,
 }
 
-/// 認証アプリの鍵を取り消す（`POST /{tenant_id}/settings/security/revoke-approver-key`）。
+/// Revokes the authenticator app's key (`POST /{tenant_id}/settings/security/revoke-approver-key`).
 ///
-/// その鍵で承認したログイン状態も切るので、端末の取り消しと同じく本人確認を挟む。
+/// This also ends signed-in states approved with that key, so re-authentication is required as for revoking a device.
 pub async fn revoke_key(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,

@@ -1,8 +1,8 @@
-//! ヘルスの公開範囲（ADR-0031）。
+//! Exposure scope of health endpoints (ADR-0031).
 //!
-//! 公開面（`/healthz`）はサービス名まで、詳細（`/internal/health`）は内部トークンの内側という
-//! 線引きが、実際の応答で守られていることを固定する。ここが緩むと、**無認証で読める指紋情報**が
-//! 静かに増える（Swagger UI を既定で伏せている判断と同じ理由。SEC12）。
+//! Pins that the line "the public surface (`/healthz`) shows up to the service name, details (`/internal/health`)
+//! are behind the internal token" holds in actual responses. If this loosens, **fingerprinting information readable
+//! without auth** quietly grows (same reasoning as hiding Swagger UI by default; SEC12).
 
 mod support;
 
@@ -10,7 +10,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use support::{body_json, body_text, send, SERVICE_TOKEN, SERVICE_TOKEN_HEADER};
 
-/// 公開の liveness は「どのサービスが答えたか」までを返す。
+/// Public liveness returns up to "which service answered".
 #[tokio::test]
 async fn liveness_names_the_service_and_nothing_more() {
     let Some(env) = support::setup("health_disclosure").await else {
@@ -29,13 +29,13 @@ async fn liveness_names_the_service_and_nothing_more() {
     let json = body_json(response).await;
     assert_eq!(json["status"], "ok");
     assert_eq!(json["service"], "api");
-    // 公開面へ足してよいのはここまで（ADR-0031 決定 1）。
-    assert!(json.get("version").is_none(), "版数を無認証で出さない");
+    // This is as far as the public surface may go (ADR-0031 decision 1).
+    assert!(json.get("version").is_none(), "no version without auth");
     assert!(json.get("uptime_seconds").is_none());
     assert!(json.get("checks").is_none());
 }
 
-/// 詳細ヘルスはサービストークン無しでは読めない。
+/// Detailed health cannot be read without the service token.
 #[tokio::test]
 async fn the_detailed_health_requires_the_service_token() {
     let Some(env) = support::setup("health_disclosure").await else {
@@ -50,16 +50,16 @@ async fn the_detailed_health_requires_the_service_token() {
         assert_eq!(
             response.status(),
             StatusCode::UNAUTHORIZED,
-            "token={token:?} で詳細ヘルスが読めてはならない"
+            "detailed health must not be readable with token={token:?}"
         );
         assert!(
             !body_text(response).await.contains("git_version"),
-            "拒否応答にビルド情報を載せない"
+            "no build info in the rejection response"
         );
     }
 }
 
-/// トークンを付ければ、版数・稼働時間・サーバー時刻・依存先の検査結果が返る。
+/// With the token, version, uptime, server time and dependency check results are returned.
 #[tokio::test]
 async fn the_detailed_health_reports_version_uptime_and_dependencies() {
     let Some(env) = support::setup("health_disclosure").await else {
@@ -83,17 +83,17 @@ async fn the_detailed_health_reports_version_uptime_and_dependencies() {
     assert!(json["server_time"].is_string());
     assert!(json["uptime_seconds"].is_number());
 
-    // テストは実 DB へ繋いでマイグレーション済みなので、両検査とも通るはず。
+    // Tests connect to a real migrated DB, so both checks should pass.
     let checks = json["checks"].as_array().expect("checks");
     let names: Vec<&str> = checks.iter().map(|c| c["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"database"), "checks={names:?}");
     assert!(names.contains(&"schema"), "checks={names:?}");
     assert_eq!(json["status"], "pass", "body={json}");
 
-    // `detail` は状態の要約であって内部エラーの原文ではない（ADR-0031 決定 4）。健全な環境では
-    // 失敗経路を踏めないため、ここでは pass 経路の `detail` が決められた形であることを確かめる。
-    // （`_sqlx_migrations is unreadable` のように表名を含む文言は正当なので、単純な部分一致では
-    //   判定できない。原文を載せない保証はハンドラ側で `tracing::error!` へ送る形で担保する。）
+    // `detail` is a state summary, not the raw internal error (ADR-0031 decision 4). In a healthy environment the
+    // failure path cannot be reached, so here we check the pass path's `detail` has the defined shape.
+    // (Wording containing a table name like `_sqlx_migrations is unreadable` is legitimate, so a simple substring match
+    //   cannot decide it. Not including the raw text is guaranteed by the handler sending it to `tracing::error!`.)
     let schema = checks
         .iter()
         .find(|c| c["name"] == "schema")

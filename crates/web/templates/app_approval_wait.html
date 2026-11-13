@@ -7,8 +7,8 @@
   </div>
   <div class="card-body p-4">
     <p>{{ messages.get("app-approval-wait-lead") }}</p>
-    {#- 発行者のホスト（assay の画面とは別のホスト）へのリンク。Chrome は別のホストへのリンクを押したときに
-        App Link のアプリへ渡す（同じホストの中のリンクではアプリを開かない）。 -#}
+    {#- Link to the issuer's host (a host separate from assay's screens). Chrome hands a link to the App Link app when
+        a link to another host is pressed (links within the same host do not open the app). -#}
     <div class="d-grid mb-3">
       <a class="btn btn-primary" href="{{ approve_url }}"><i class="fa-solid fa-mobile-screen-button me-2" aria-hidden="true"></i>{{ messages.get("app-approval-open-app") }}</a>
     </div>

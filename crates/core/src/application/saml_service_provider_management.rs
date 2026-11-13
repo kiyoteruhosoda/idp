@@ -1,4 +1,4 @@
-//! SAML SP（クライアント）登録の管理ユースケース。
+//! Use cases for managing SAML SP (client) registrations.
 
 use crate::domain::clock::Clock;
 use crate::domain::id_generator::IdGenerator;
@@ -21,7 +21,7 @@ pub struct RegisterSamlServiceProviderCommand {
     pub enabled: bool,
 }
 
-/// 既存 SP の更新コマンド。対象はテナント境界内の `id` で特定する。
+/// Command to update an existing SP. The target is identified by `id` within the tenant boundary.
 pub struct UpdateSamlServiceProviderCommand {
     pub tenant_id: TenantId,
     pub id: Uuid,
@@ -83,7 +83,7 @@ impl SamlServiceProviderManagementService {
             .create(&provider)
             .await
             .map_err(|e| match e {
-                // 一意キーは (tenant_id, entity_id) のみ。
+                // The unique key is only (tenant_id, entity_id).
                 crate::domain::error::DomainError::Conflict(_) => {
                     SamlServiceProviderManagementError::Conflict(MessageKey::new(
                         "api-saml-sp-entity-id-conflict",
@@ -141,7 +141,7 @@ impl SamlServiceProviderManagementService {
                 }
                 other => SamlServiceProviderManagementError::Internal(other.to_string()),
             })?;
-        // find_by_id 成功後に別管理者が削除した競合（0 行更新）は not-found として扱う。
+        // A race where another admin deleted it after find_by_id succeeded (0 rows updated) is treated as not-found.
         if !updated {
             return Err(SamlServiceProviderManagementError::NotFound);
         }

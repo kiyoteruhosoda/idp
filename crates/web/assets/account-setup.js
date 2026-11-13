@@ -1,11 +1,11 @@
-// アカウント設定リンクからのパスキー登録（ADR-0062）。
+// Passkey registration from an account setup link (ADR-0062).
 //
-// 本人はまだログインしていない（パスワードを一度も持っていないことすらある）。本人性の根拠は
-// **リンクのトークンだけ**で、セッションは使わない。トークンは画面の data 属性で受け取り、
-// サーバへは毎回そのまま送る。
+// The user is not logged in yet (may never even have had a password). The only proof of identity is
+// **the link's token**; no session is used. The token is received via a data attribute on the page and
+// sent to the server as is every time.
 //
-// ⚠ **画面に出す文言は data 属性から採る**（SEC12 と同じ理由）。api の結果コードやブラウザの
-// 例外の `message` をそのまま出すと、識別子や英語が利用者の画面に並ぶ。
+// ⚠ **Wording shown on screen is taken from data attributes** (same reason as SEC12). Showing api result codes or
+// a browser exception's `message` as is would put identifiers and English on the user's screen.
 (function () {
   const section = document.getElementById('passkey-section');
   const button = document.getElementById('passkey-register');
@@ -18,7 +18,7 @@
   const messages = texts.dataset;
   const pending = window.idpButtonPending || { mark: function () {}, clear: function () {} };
 
-  // パスキーを作れない環境では、押せるだけで必ず失敗するボタンを置かない。
+  // Where passkeys cannot be created, don't put a button that can be pressed but always fails.
   if (!window.PublicKeyCredential || !navigator.credentials) {
     button.disabled = true;
     show(messages.unsupported);
@@ -61,7 +61,7 @@
       }
       credential = await navigator.credentials.create(options);
     } catch (e) {
-      // 利用者が中止しただけのときは黙って戻す（失敗ではない）。
+      // When the user merely cancelled, return silently (not a failure).
       if (e && (e.name === 'NotAllowedError' || e.name === 'AbortError')) { return; }
       show(messages.failed);
       return;
@@ -94,8 +94,8 @@
     const done = await completeRes.json();
     if (done.result !== 'ok') { show(messages.failed); return; }
 
-    // 成功したらリンクは消費済み。⚠ **同じ画面に留めない** —— 残しても押せる操作が無く、
-    // もう一度押すと「リンクが無効です」で終わる。完了の表示へ送る。
+    // On success the link is consumed. ⚠ **Don't stay on the same screen** -- nothing there could be pressed,
+    // and pressing again ends with "the link is invalid". Go to the completion view.
     window.location.assign(tenantPrefix + '/account-setup/done');
   }
 

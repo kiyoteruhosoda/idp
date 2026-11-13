@@ -1,14 +1,16 @@
-//! Tenants エンティティ（ADR-0009 §1）。
+//! Tenants entity (ADR-0009 §1).
 //!
-//! テナントは互いに独立した管理境界（Entra ID 型）。`parent_tenant_id` は作成元の系譜であり、
-//! 管理権限・データアクセスの境界としては意味を持たない（権限判定は §4 の完全一致のみ）。
+//! Tenants are mutually independent administrative boundaries (Entra ID style). `parent_tenant_id`
+//! is the lineage of creation and means nothing as a boundary for admin rights or data access
+//! (authorization is §4 exact match only).
 #![allow(dead_code)]
 
 use crate::domain::values::TenantStatus;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-/// テナントの一意識別子（値オブジェクト）。生の `Uuid` と区別し、取り違えを防ぐ。
+/// Unique identifier of a tenant (value object). Distinguished from a raw `Uuid` to prevent
+/// mix-ups.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TenantId(Uuid);
 
@@ -39,24 +41,28 @@ impl std::fmt::Display for TenantId {
 #[derive(Debug, Clone)]
 pub struct Tenant {
     pub id: TenantId,
-    /// 作成元テナント。`None` は root テナントのみ（構造的に唯一の行）。
+    /// The tenant this was created from. `None` only for the root tenant (structurally the single
+    /// such row).
     pub parent_tenant_id: Option<TenantId>,
-    /// 表示名。一意制約なし・URL には使わない。
+    /// Display name. Not unique; never used in URLs.
     pub name: String,
     pub status: TenantStatus,
-    /// 自己登録（`/auth/register`）を許可するか。既定は無効（fail-closed。SEC6）。
+    /// Whether self-registration (`/auth/register`) is allowed. Disabled by default (fail-closed;
+    /// SEC6).
     pub self_registration_enabled: bool,
-    /// `email` 種別のログイン識別子を解決に参加させるか。既定は無効（fail-closed。ADR-0050）。
+    /// Whether `email` login identifiers take part in resolution. Disabled by default (fail-closed;
+    /// ADR-0050).
     ///
-    /// 主メール行は移行で全利用者ぶん作られる（一意性のため）が、**このスイッチが入るまで
-    /// ログイン欄では一致しない**。行の有無と入り口の広さを別々のつまみにしてある。
+    /// Primary email rows are created for every user by the migration (for uniqueness), but **they
+    /// do not match in the login field until this switch is on**. Row existence and entry breadth
+    /// are separate knobs.
     pub email_login_enabled: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
 impl Tenant {
-    /// `parent_tenant_id IS NULL` の唯一の行として root を構造的に識別する（§1）。
+    /// Structurally identifies root as the single row with `parent_tenant_id IS NULL` (§1).
     pub fn is_root(&self) -> bool {
         self.parent_tenant_id.is_none()
     }

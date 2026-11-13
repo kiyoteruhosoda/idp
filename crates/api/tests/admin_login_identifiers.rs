@@ -1,21 +1,21 @@
-//! ログイン識別子の管理 API（`/{tenant_id}/admin/users/{user_id}/login-identifiers`。AP8）の
-//! 統合テスト（DB あり）。
+//! Integration tests (with DB) for the login identifier admin API
+//! (`/{tenant_id}/admin/users/{user_id}/login-identifiers`; AP8).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test admin_login_identifiers
 //!
-//! 検証するのは:
+//! What is checked:
 //!
-//! 1. 認可（未認証 401 / 権限なし 403）。
-//! 2. 追加した識別子で**実際にログインできる**こと（登録簿を足しただけで解決経路が変わる。ADR-0025）。
-//! 3. 無効化すると一致しなくなり、しかし行は残って他人が同じ値を取れないこと。
-//! 4. すでにログインに使える値を拒否すること（他人の識別子・他人のメール・自分の主識別子）。
-//! 5. 主たるログイン識別子は一覧に合成行として出るが、保存されていないので操作対象にならないこと。
-//! 6. 監査には種別だけが残り、値（PII）が漏れないこと。
+//! 1. Authorization (unauthenticated 401 / no permission 403).
+//! 2. An added identifier **can actually be used to sign in** (adding to the registry changes resolution; ADR-0025).
+//! 3. Disabling it stops matching, but the row stays so nobody else can take the same value.
+//! 4. Values already usable for login are rejected (others' identifiers, others' emails, one's own primary identifier).
+//! 5. The primary login identifier appears in the list as a synthetic row but is not stored, so it cannot be operated on.
+//! 6. Only the kind remains in the audit log; the value (PII) does not leak.
 
 mod support;
 
-/// テスト関数ごとのレート制限バケツ（下の `admin_login_result` のコメント参照）。
+/// Rate limit bucket per test function (see the comment on `admin_login_result` below).
 const IP_ASSIGN: &str = "203.0.113.81";
 const IP_CONFLICT: &str = "203.0.113.82";
 
@@ -27,15 +27,15 @@ use support::{
     SERVICE_TOKEN,
 };
 
-/// 管理コンソールのログイン経路（`/internal/authenticate/admin`）で解決を確かめる。
+/// Checks resolution through the admin console login path (`/internal/authenticate/admin`).
 ///
-/// ログイン識別子の解決は 4 経路が同じ `find_by_login_identifier` を通るため、代表 1 本で足りる。
-/// 管理ログインを選ぶのは、`auth_session` の準備なしに「入力 → 結果」だけを見られるため。
-/// 管理権限を持たない利用者なら、資格情報が正しければ `forbidden`（＝利用者は特定できた）、
-/// 特定できなければ `invalid_credentials` になる。この差で解決の成否が読める。
+/// All 4 paths resolve login identifiers through the same `find_by_login_identifier`, so one representative suffices.
+/// Admin login is chosen because it shows just "input → result" without preparing an `auth_session`.
+/// For a user without admin permission, correct credentials give `forbidden` (= the user was identified),
+/// and an unidentified one gives `invalid_credentials`. The difference reveals whether resolution succeeded.
 ///
-/// `ip` はテスト関数ごとに変える。IP 単位のレートリミッタはプロセス内メモリ（シングル
-/// インスタンス前提）で、同一バイナリ内で並行に走るテストがバケツを共有するため。
+/// `ip` differs per test function. The per-IP rate limiter lives in process memory (single
+/// instance assumed), and tests running in parallel in the same binary share buckets.
 async fn admin_login_result(
     app: &axum::Router,
     tenant: &str,
@@ -80,7 +80,7 @@ async fn audit_reasons(pool: &MySqlPool, tenant_id: &str, event_type: &str) -> V
     .collect()
 }
 
-/// 自己登録で利用者を 1 人作り、その内部 ID を返す。
+/// Creates one user by self-registration and returns its internal ID.
 async fn register(env: &support::TestEnv, username: &str, password: &str) -> String {
     support::register_user(&env.app, &env.root_tenant_id, username, password).await;
     support::find_user_id_by_username(&env.pool, &env.root_tenant_id, username)
@@ -104,7 +104,7 @@ async fn admin_assigns_a_phone_identifier_that_can_then_be_used_to_sign_in() {
         env.root_tenant_id
     );
 
-    // ── 認可。
+    // ── Authorization.
     let res = send(&env.app, support::anonymous(Method::GET, &uri, None)).await;
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 
@@ -113,9 +113,9 @@ async fn admin_assigns_a_phone_identifier_that_can_then_be_used_to_sign_in() {
     let res = send(&env.app, get(&outsider_token, &uri)).await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
 
-    // ── 一覧の先頭は主たる識別子、次が主メール（ADR-0050）。AP15 以降は登録簿にも実体の行が
-    //    あるので `id` が付く（合成行が返るのは、移送前に作られた利用者だけ。
-    //    `primary_login_identifier` テスト参照）。
+    // ── The list starts with the primary identifier, then the primary email (ADR-0050). Since AP15 the registry also
+    //    has real rows, so they have an `id` (synthetic rows come back only for users created before the migration;
+    //    see the `primary_login_identifier` test).
     let res = send(&env.app, get(&admin_tok, &uri)).await;
     assert_eq!(res.status(), StatusCode::OK);
     let listed = body_json(res).await;
@@ -134,9 +134,12 @@ async fn admin_assigns_a_phone_identifier_that_can_then_be_used_to_sign_in() {
     .fetch_one(&env.pool)
     .await
     .expect("count");
-    assert_eq!(stored, 1, "主識別子は登録簿にも載る（移送中は両方に在る）");
+    assert_eq!(
+        stored, 1,
+        "the primary identifier is in the registry too (in both during the migration)"
+    );
 
-    // ── 電話番号を追加する。表示は登録どおり、照合は正規化した値。
+    // ── Add a phone number. Displayed as registered, matched on the normalized value.
     let res = send(
         &env.app,
         post(
@@ -153,9 +156,9 @@ async fn admin_assigns_a_phone_identifier_that_can_then_be_used_to_sign_in() {
     assert_eq!(added["is_primary"], Value::Bool(false));
     let identifier_id = added["id"].as_str().expect("id").to_string();
 
-    // ── 区切り記号の書き方が違っても同じ番号として解決される（正規化の効き目）。
-    //    国際表記（`+81…`）は**別のキー**にしてある（国番号と国内プレフィクスの対応を
-    //    推測すると別人の番号に当たり得るため。domain::login_identifier のテスト参照）。
+    // ── Different separator styles resolve to the same number (normalization at work).
+    //    The international form (`+81…`) is **a different key** (guessing the mapping between country code and
+    //    domestic prefix could hit someone else's number; see the domain::login_identifier tests).
     assert_eq!(
         admin_login_result(
             &env.app,
@@ -166,9 +169,9 @@ async fn admin_assigns_a_phone_identifier_that_can_then_be_used_to_sign_in() {
         )
         .await,
         "forbidden",
-        "電話番号で利用者は特定できるが、この利用者は管理権限を持たない"
+        "the phone number identifies the user, but this user has no admin permission"
     );
-    // 資格情報が違えば invalid_credentials。識別子の解決とパスワード検証は別物である。
+    // Different credentials give invalid_credentials. Identifier resolution and password verification are separate.
     assert_eq!(
         admin_login_result(
             &env.app,
@@ -181,7 +184,7 @@ async fn admin_assigns_a_phone_identifier_that_can_then_be_used_to_sign_in() {
         "invalid_credentials"
     );
 
-    // ── 無効化すると解決されなくなる（＝未知の利用者と同じ扱い）。
+    // ── Once disabled it is not resolved (= treated like an unknown user).
     let item_uri = format!("{uri}/{identifier_id}");
     let res = send(
         &env.app,
@@ -202,7 +205,7 @@ async fn admin_assigns_a_phone_identifier_that_can_then_be_used_to_sign_in() {
         "invalid_credentials"
     );
 
-    // ── 無効化しても行は残るため、他の利用者は同じ値を取れない。
+    // ── Disabling keeps the row, so other users cannot take the same value.
     let other = support::create_plain_user(&env.pool, &env.root_tenant_id).await;
     let res = send(
         &env.app,
@@ -218,7 +221,7 @@ async fn admin_assigns_a_phone_identifier_that_can_then_be_used_to_sign_in() {
     .await;
     assert_eq!(res.status(), StatusCode::CONFLICT);
 
-    // ── 監査には種別だけが残り、番号は残らない。
+    // ── Only the kind remains in the audit log, not the number.
     let reasons = audit_reasons(
         &env.pool,
         &env.root_tenant_id,
@@ -228,14 +231,14 @@ async fn admin_assigns_a_phone_identifier_that_can_then_be_used_to_sign_in() {
     assert!(reasons.iter().any(|r| r.contains("type=phone_number")));
     assert!(
         !reasons.iter().any(|r| r.contains("1234")),
-        "監査に電話番号が残っている: {reasons:?}"
+        "the phone number remains in the audit log: {reasons:?}"
     );
 
-    // ── 削除できる（無効化した行も消せる）。
+    // ── It can be deleted (disabled rows too).
     let res = send(&env.app, delete(&admin_tok, &item_uri)).await;
     assert_eq!(res.status(), StatusCode::NO_CONTENT);
     let res = send(&env.app, delete(&admin_tok, &item_uri)).await;
-    assert_eq!(res.status(), StatusCode::NOT_FOUND, "二度目は 404");
+    assert_eq!(res.status(), StatusCode::NOT_FOUND, "second time is 404");
 }
 
 #[tokio::test]
@@ -256,7 +259,7 @@ async fn rejects_values_that_are_already_usable_for_signing_in() {
         env.root_tenant_id
     );
 
-    // 他人のユーザー名（大小違い）は拒否する。通すとログイン時に別人が返る。
+    // Another person's username (different case) is rejected. Allowing it would return someone else at login.
     let res = send(
         &env.app,
         post(
@@ -268,7 +271,7 @@ async fn rejects_values_that_are_already_usable_for_signing_in() {
     .await;
     assert_eq!(res.status(), StatusCode::CONFLICT);
 
-    // 他人のメールアドレスも拒否する（メールは現状ログインの入り口ではないが、なりすませる）。
+    // Another person's email address is rejected too (email is not currently a login entry, but it allows impersonation).
     let res = send(
         &env.app,
         post(
@@ -280,8 +283,8 @@ async fn rejects_values_that_are_already_usable_for_signing_in() {
     .await;
     assert_eq!(res.status(), StatusCode::CONFLICT);
 
-    // 自分の主識別子と同じ値も拒否する。登録できてしまうと、その行を無効化しても
-    // `users.preferred_username` へのフォールバックで認証が通る（「止めたのに使える」）。
+    // A value equal to one's own primary identifier is also rejected. If it could be registered, even after disabling that row
+    // authentication would pass via the fallback to `users.preferred_username` ("stopped but still usable").
     let res = send(
         &env.app,
         post(
@@ -293,12 +296,12 @@ async fn rejects_values_that_are_already_usable_for_signing_in() {
     .await;
     assert_eq!(res.status(), StatusCode::CONFLICT);
 
-    // ── 種別が違っても、同じ値は別人が取れない（migration 0041）。**無効な行でも取れない。**
+    // ── Even with a different kind, nobody else can take the same value (migration 0041). **Not even for an inactive row.**
     //
-    //    無効な行は解決にも空き判定にも当たらないため、ここは一意制約だけが止めている。
-    //    止めないと、無効化している間に別人が同じ値を別種別で取り、有効へ戻した瞬間に
-    //    「1 つの入力が 2 人に当たる」状態ができる —— 当人たちは正しいパスワードを出しても
-    //    入れなくなり、しかも当人以外からは見えない。
+    //    Inactive rows hit neither resolution nor availability checks, so only the unique constraint stops this.
+    //    Without it, someone else could take the same value with another kind while it is disabled, and the moment it
+    //    is re-enabled "one input matches two people" — those people can no longer get in even with correct
+    //    passwords, and nobody else can see why.
     let reserved = format!("7{:09}", uuid::Uuid::new_v4().as_u128() % 1_000_000_000);
     let res = send(
         &env.app,
@@ -312,7 +315,7 @@ async fn rejects_values_that_are_already_usable_for_signing_in() {
     assert_eq!(
         res.status(),
         StatusCode::CREATED,
-        "alice の社員番号（無効）"
+        "alice's employee number (inactive)"
     );
 
     let bob_id = support::find_user_id_by_username(&env.pool, &env.root_tenant_id, &bob)
@@ -333,10 +336,10 @@ async fn rejects_values_that_are_already_usable_for_signing_in() {
     assert_eq!(
         res.status(),
         StatusCode::CONFLICT,
-        "無効な行が押さえている値は、種別を変えても別人が取れない"
+        "a value held by an inactive row cannot be taken by someone else even with another kind"
     );
 
-    // 書式不正は 400（登録できてしまうと「一致しない識別子」になり、理由が分からない）。
+    // Malformed input is 400 (if it could be registered it would be "an identifier that never matches", with no visible reason).
     for bad in [
         json!({"identifier_type": "phone_number", "value": "090-1234-abcd"}),
         json!({"identifier_type": "employee_number", "value": "A 1234"}),
@@ -346,8 +349,8 @@ async fn rejects_values_that_are_already_usable_for_signing_in() {
         assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{bad}");
     }
 
-    // 自分のメールアドレスも拒否する。ADR-0050 以降、`users.email` は**主メール行として
-    // 登録簿に在る**ので、同じ値をもう 1 行足すのは重複である（以前はここが 201 だった）。
+    // One's own email address is rejected too. Since ADR-0050 `users.email` **is in the registry as the primary email
+    // row**, so adding the same value as another row is a duplicate (this used to be 201).
     let res = send(
         &env.app,
         post(
@@ -359,14 +362,14 @@ async fn rejects_values_that_are_already_usable_for_signing_in() {
     .await;
     assert_eq!(res.status(), StatusCode::CONFLICT);
 
-    // ── メールでのログインはテナントのスイッチが決める（ADR-0050 決定 3）。
+    // ── Email login is decided by the tenant switch (ADR-0050 decision 3).
     //
-    //    行は移行・作成時から在るが、スイッチが入るまでログイン欄では一致しない。
-    //    「一意性は常に効く／入り口はテナントが開ける」を分けてあることの確認である。
+    //    The rows exist since migration / creation, but do not match in the login field until the switch is on.
+    //    This confirms that "uniqueness always applies / the tenant opens the entrance" are kept separate.
     //
-    //    ⚠ **既定に頼らず、両方の状態を明示的に作る。** テナントは他のテストと共有で、DB は
-    //    実行をまたいで使い回される。切ってから確かめないと、前の実行が入れたままのスイッチで
-    //    「入っていない側」の検証が素通りする（実際にそれで 2 回目が落ちた）。
+    //    ⚠ **Do not rely on the default; set both states explicitly.** The tenant is shared with other tests and the DB is
+    //    reused across runs. Without turning it off first, the "off" check passes trivially with the switch a previous
+    //    run left on (the second run actually failed because of that).
     let set_email_login = |on: bool| {
         let pool = env.pool.clone();
         let tenant = env.root_tenant_id.clone();
@@ -391,7 +394,7 @@ async fn rejects_values_that_are_already_usable_for_signing_in() {
         )
         .await,
         "invalid_credentials",
-        "スイッチが入るまではメールで利用者を特定できない"
+        "email cannot identify the user until the switch is on"
     );
 
     set_email_login(true).await;
@@ -403,11 +406,11 @@ async fn rejects_values_that_are_already_usable_for_signing_in() {
         password,
     )
     .await;
-    // 共有テナントなので、確かめたら必ず戻す（次のテスト・次の実行へ持ち越さない）。
+    // The tenant is shared, so always restore after checking (do not carry it over to the next test or run).
     set_email_login(false).await;
     assert_eq!(
         with_switch_on, "forbidden",
-        "スイッチを入れるとメールで利用者が特定できる（この利用者は管理権限を持たない）"
+        "with the switch on, email identifies the user (this user has no admin permission)"
     );
 }
 
@@ -426,7 +429,7 @@ async fn the_primary_rows_cannot_be_targeted_even_by_their_real_id() {
         env.root_tenant_id
     );
 
-    // 存在しない id は 404。
+    // A nonexistent id is 404.
     let stray = uuid::Uuid::now_v7();
     let res = send(
         &env.app,
@@ -441,10 +444,10 @@ async fn the_primary_rows_cannot_be_targeted_even_by_their_real_id() {
     let res = send(&env.app, delete(&admin_tok, &format!("{uri}/{stray}"))).await;
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
 
-    // ── ⚠ **実在する id で撃つ。** AP15b で主識別子も登録簿の行になり `id` が付いたので、
-    //    「合成行には id が無いから宛先を作れない」はもう成り立たない。守っているのは
-    //    リポジトリの条件（`primary_of_user IS NULL` / `primary_email_of_user IS NULL`）
-    //    だけで、そこを撃たないとこのテストは**通る理由が違ってしまう**。
+    // ── ⚠ **Shoot at real ids.** Since AP15b the primary identifier is also a registry row with an `id`, so
+    //    "synthetic rows have no id, so no target can be built" no longer holds. What protects them is only
+    //    the repository condition (`primary_of_user IS NULL` / `primary_email_of_user IS NULL`), and
+    //    unless that is hit, this test **passes for the wrong reason**.
     let listed = body_json(send(&env.app, get(&admin_tok, &uri)).await).await;
     let rows = listed.as_array().expect("array");
     for key in ["is_primary", "is_primary_email"] {
@@ -462,13 +465,21 @@ async fn the_primary_rows_cannot_be_targeted_even_by_their_real_id() {
             ),
         )
         .await;
-        assert_eq!(res.status(), StatusCode::NOT_FOUND, "{key} は止められない");
+        assert_eq!(
+            res.status(),
+            StatusCode::NOT_FOUND,
+            "{key} cannot be disabled"
+        );
         let res = send(&env.app, delete(&admin_tok, &format!("{uri}/{id}"))).await;
-        assert_eq!(res.status(), StatusCode::NOT_FOUND, "{key} は消せない");
+        assert_eq!(
+            res.status(),
+            StatusCode::NOT_FOUND,
+            "{key} cannot be deleted"
+        );
     }
 
-    // プロフィール編集でログイン識別子を変えると、一覧も追随する（AP15 の移送中は `users` と
-    // 登録簿の両方へ書くので、古い値が片側に残らない）。
+    // Changing the login identifier via profile edit makes the list follow (during the AP15 migration both `users` and
+    // the registry are written, so no old value remains on one side).
     let renamed = format!("lq{}", &unique[..10]);
     let res = send(
         &env.app,
@@ -486,16 +497,16 @@ async fn the_primary_rows_cannot_be_targeted_even_by_their_real_id() {
     assert_eq!(rows.len(), 2, "{listed}");
     assert_eq!(rows[0]["is_primary"], Value::Bool(true));
     assert_eq!(rows[0]["normalized_value"], renamed.to_lowercase());
-    // 改名はユーザー名の行だけを動かす。主メール行はメールアドレスの写しなので、
-    // プロフィール編集でメールを変えていない以上そのままである（ADR-0050）。
+    // Renaming moves only the username row. The primary email row is a copy of the email address, and
+    // since the profile edit did not change the email it stays as is (ADR-0050).
     assert_eq!(rows[1]["is_primary_email"], Value::Bool(true));
     assert_eq!(rows[1]["identifier_type"], "email");
 }
 
-/// 別名のメールを主メールへ昇格させる（ADR-0052）。
+/// Promotes an alias email to the primary email (ADR-0052).
 ///
-/// 見るのは「入れ替わること」そのものより、**入れ替えが 1 つの取引として成立すること**である
-/// ——`users.email`（＝通知の宛先）と登録簿の主メール行が、同時に同じ値を指しているか。
+/// What matters is less "that they swap" than **that the swap happens as one transaction**
+/// — whether `users.email` (= notification address) and the registry's primary email row point to the same value at once.
 #[tokio::test]
 async fn promoting_an_alias_email_swaps_the_primary_email() {
     let Some(env) = support::setup("login identifier promote email").await else {
@@ -517,9 +528,9 @@ async fn promoting_an_alias_email_swaps_the_primary_email() {
         Some(original.as_str())
     );
 
-    // ── 別名を**無効なまま**足す。昇格したら有効になっていなければならない ——主メール行は
-    //    識別子単位で有効化できないので、無効なまま昇格すると二度と有効にできない行が
-    //    通知の宛先になる。
+    // ── Add the alias **while inactive**. It must be active after promotion — the primary email row
+    //    cannot be enabled per identifier, so promoting it while inactive would make a row that can never
+    //    be enabled the notification address.
     let res = send(
         &env.app,
         post(
@@ -535,11 +546,11 @@ async fn promoting_an_alias_email_swaps_the_primary_email() {
     assert_eq!(added["is_active"], Value::Bool(false));
     assert_eq!(added["is_primary_email"], Value::Bool(false));
 
-    // ── メール以外は昇格できない（`users.email` にメールでない文字列が入ると、
-    //    パスワードリセットの宛先がそこになる）。
+    // ── Non-email values cannot be promoted (if a non-email string got into `users.email`,
+    //    password resets would be sent there).
     //
-    //    ⚠ **値は毎回ちがうものにする。** テナントは他のテストと共有で、DB は実行をまたいで
-    //    使い回される。固定値だと他のテストが先に押さえていて、追加が 409 で落ちる。
+    //    ⚠ **Use a different value every time.** The tenant is shared with other tests and the DB is reused
+    //    across runs. A fixed value may already be held by another test, and the add fails with 409.
     let employee_number = format!("E{:09}", uuid::Uuid::new_v4().as_u128() % 1_000_000_000);
     let res = send(
         &env.app,
@@ -559,7 +570,7 @@ async fn promoting_an_alias_email_swaps_the_primary_email() {
     .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 
-    // 存在しない行も 404（降格だけが先に走って宛先を失う、ということが起きない）。
+    // A nonexistent row is 404 too (the demotion never runs first and loses the address).
     let stray = uuid::Uuid::now_v7();
     let res = send(
         &env.app,
@@ -570,10 +581,10 @@ async fn promoting_an_alias_email_swaps_the_primary_email() {
     assert_eq!(
         support::primary_email(&env.pool, &target).await.as_deref(),
         Some(original.as_str()),
-        "失敗した昇格が主メール行を消していない"
+        "the failed promotion did not delete the primary email row"
     );
 
-    // ── 昇格する。
+    // ── Promote.
     let res = send(
         &env.app,
         post_empty(&admin_tok, &format!("{uri}/{alias_id}/primary-email")),
@@ -585,7 +596,7 @@ async fn promoting_an_alias_email_swaps_the_primary_email() {
     assert_eq!(promoted["is_active"], Value::Bool(true), "{promoted}");
     assert_eq!(promoted["display_value"], alias);
 
-    // 登録簿と `users.email` が同じ値を指している。片方だけ動くと、入り口と宛先が割れる。
+    // The registry and `users.email` point to the same value. If only one moved, the entrance and the address would diverge.
     assert_eq!(
         support::primary_email(&env.pool, &target).await.as_deref(),
         Some(alias.as_str())
@@ -597,22 +608,22 @@ async fn promoting_an_alias_email_swaps_the_primary_email() {
         .expect("users.email");
     assert_eq!(stored_email, alias);
 
-    // ── もとの主メールは**別名として残る**（消さない。消すと同じ値を他人が取れてしまう）。
+    // ── The former primary email **remains as an alias** (not deleted; deleting it would let others take the value).
     let listed = body_json(send(&env.app, get(&admin_tok, &uri)).await).await;
     let rows = listed.as_array().expect("array");
     let demoted = rows
         .iter()
         .find(|r| r["display_value"] == Value::String(original.clone()))
-        .unwrap_or_else(|| panic!("もとの主メールの行が消えた: {listed}"));
+        .unwrap_or_else(|| panic!("the former primary email row disappeared: {listed}"));
     assert_eq!(demoted["is_primary_email"], Value::Bool(false), "{listed}");
     assert_eq!(demoted["identifier_type"], "email");
     let primary_rows = rows
         .iter()
         .filter(|r| r["is_primary_email"] == Value::Bool(true))
         .count();
-    assert_eq!(primary_rows, 1, "主メールは 1 行だけ: {listed}");
+    assert_eq!(primary_rows, 1, "exactly one primary email row: {listed}");
 
-    // ── 二度押しても壊れない（画面を開いたままの操作はありふれている）。
+    // ── Pressing twice does not break anything (operating on a screen left open is common).
     let res = send(
         &env.app,
         post_empty(&admin_tok, &format!("{uri}/{alias_id}/primary-email")),
@@ -624,7 +635,7 @@ async fn promoting_an_alias_email_swaps_the_primary_email() {
         Some(alias.as_str())
     );
 
-    // ── 監査には昇格したことだけが残り、アドレスは残らない。
+    // ── Only the fact of promotion remains in the audit log, not the address.
     let reasons = audit_reasons(&env.pool, &env.root_tenant_id, "user.primary_email_changed").await;
     assert!(
         reasons
@@ -634,6 +645,6 @@ async fn promoting_an_alias_email_swaps_the_primary_email() {
     );
     assert!(
         !reasons.iter().any(|r| r.contains(&username)),
-        "監査にアドレスが残っている: {reasons:?}"
+        "the address remains in the audit log: {reasons:?}"
     );
 }

@@ -1,13 +1,13 @@
-//! SSO セッションを端末の鍵へ結び付ける（Chrome の DBSC。task #887。ADR-0074）の web 側。
+//! Binding the SSO session to the device key (Chrome's DBSC. task #887. ADR-0074), web side.
 //!
-//! | 役 | 何をするか |
+//! | Role | What it does |
 //! |---|---|
-//! | [`registration_header`] | ログインの応答（SSO セッションの Cookie を置いた応答）に `Secure-Session-Registration` を付ける |
-//! | [`register`]（`POST /dbsc/register`） | Chrome の署名を api へ渡し、結び付いたら短い Cookie を出す |
-//! | [`refresh`]（`POST /dbsc/refresh`） | 短い Cookie が切れたときの更新。署名が無ければ 403 で challenge を渡す |
-//! | [`enforce`]（middleware） | 合う短い Cookie の無い要求で、結び付いたログイン状態なら長い Cookie を外す |
+//! | [`registration_header`] | Adds `Secure-Session-Registration` to the login response (the one that set the SSO session cookie) |
+//! | [`register`] (`POST /dbsc/register`) | Passes Chrome's signature to the api and issues the short cookie once bound |
+//! | [`refresh`] (`POST /dbsc/refresh`) | Refresh when the short cookie expires. Without a signature, hands a challenge with 403 |
+//! | [`enforce`] (middleware) | For requests without a matching short cookie, strips the long cookie if the signed-in state is bound |
 //!
-//! 決まり（ヘッダーの名前・JSON の形）は W3C WebAppSec の草案（2026-09-08 版）と Chrome の資料に合わせた。
+//! The rules (header names, JSON shapes) follow the W3C WebAppSec draft (2026-09-08 version) and Chrome's documents.
 
 use crate::client_ip::ClientIp;
 use crate::cookies::{self, SSO_SESSION_COOKIE};
@@ -28,16 +28,16 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// 「結び付いているか」の答えを覚えておく長さ。
+/// How long the answer to "is it bound" is remembered.
 const BINDING_CACHE_TTL: Duration = Duration::from_secs(60);
-/// 覚えておく件数の上限（越えたら古いものを捨てる）。
+/// Maximum number of remembered entries (oldest are dropped beyond it).
 const BINDING_CACHE_MAX: usize = 10_000;
 
-/// 「この SSO セッションは結び付いているか」の答えを短く覚える（入口で毎回 api を呼ばないため）。
+/// Briefly remembers the answer to "is this SSO session bound" (so the entry point does not call the api every time).
 ///
-/// 鍵は SSO セッションの Cookie の SHA-256（平文を持たない）。結び付けは「無い → ある」にしか変わらないので、
-/// 「無い」を 60 秒覚えると、結び付いた直後の 60 秒は長い Cookie だけでも通る（その間に Chrome は短い Cookie を
-/// 受け取っている）。
+/// The key is the SHA-256 of the SSO session cookie (no plaintext kept). Binding only changes from "no → yes", so
+/// remembering "no" for 60 s lets the long cookie alone pass for 60 s right after binding (meanwhile Chrome has
+/// received the short cookie).
 #[derive(Clone, Default)]
 pub struct SessionKeyCache {
     entries: Arc<Mutex<HashMap<String, (bool, Instant)>>>,
@@ -65,7 +65,7 @@ impl SessionKeyCache {
         entries.insert(key, (bound, Instant::now()));
     }
 
-    /// 結び付いたと分かったときに覚え直す（登録の直後）。
+    /// Re-remember when it is known to be bound (right after registration).
     pub fn mark_bound(&self, sso_session_id: &str) {
         self.put(cache_key(sso_session_id), true);
     }
@@ -80,13 +80,13 @@ fn now_secs() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
-/// ログインの応答に付ける `Secure-Session-Registration`（新しく置いた SSO セッションの Cookie の値で作る）。
+/// `Secure-Session-Registration` added to the login response (built from the value of the newly set SSO session cookie).
 pub fn registration_header(state: &WebState, sso_session_id: &str) -> Option<HeaderValue> {
     let challenge = contract::challenge(state.config.csrf_secret(), sso_session_id, now_secs());
     HeaderValue::from_str(&contract::registration_header(&challenge)).ok()
 }
 
-/// 短い Cookie のブラウザ上の名前（HTTPS では `__Host-` 前置）。
+/// Browser-side name of the short cookie (prefixed with `__Host-` over HTTPS).
 fn bound_cookie_name(state: &WebState) -> String {
     state
         .config
@@ -94,7 +94,7 @@ fn bound_cookie_name(state: &WebState) -> String {
         .origin_bound_name(contract::BOUND_COOKIE)
 }
 
-/// このブラウザの短い Cookie の期限（UNIX 秒）。無い・合わない・切れているなら `None`（task #896）。
+/// Expiry (UNIX seconds) of this browser's short cookie. `None` if missing, mismatched or expired (task #896).
 pub fn bound_cookie_expiry(
     state: &WebState,
     headers: &axum::http::HeaderMap,
@@ -109,7 +109,7 @@ pub fn bound_cookie_expiry(
     )
 }
 
-/// 短い Cookie を置く `Set-Cookie`。
+/// `Set-Cookie` setting the short cookie.
 fn set_bound_cookie(state: &WebState, sso_session_id: &str) -> String {
     let expires_at = now_secs() + contract::BOUND_COOKIE_MAX_AGE_SECS;
     let value = contract::bound_cookie(state.config.csrf_secret(), sso_session_id, expires_at);
@@ -120,7 +120,7 @@ fn set_bound_cookie(state: &WebState, sso_session_id: &str) -> String {
     )
 }
 
-/// 短い Cookie の属性（登録の応答の `credentials` に書く。Chrome はこれで Cookie を見分ける。Max-Age は見ない）。
+/// Attributes of the short cookie (written in the registration response's `credentials`; Chrome identifies the cookie by them and ignores Max-Age).
 fn bound_cookie_attributes(state: &WebState) -> String {
     let mut attributes = "Path=/; HttpOnly; SameSite=Lax".to_string();
     if state.config.cookie_policy().secure() {
@@ -158,7 +158,7 @@ fn caller(request: &Request) -> Caller {
     }
 }
 
-/// JSON の応答（キャッシュさせない）。
+/// JSON response (not cacheable).
 fn json_response(status: StatusCode, body: serde_json::Value) -> Response {
     let mut response = (status, body.to_string()).into_response();
     let headers = response.headers_mut();
@@ -167,7 +167,7 @@ fn json_response(status: StatusCode, body: serde_json::Value) -> Response {
     response
 }
 
-/// 「このログイン状態の結び付けは終わり」（Chrome は結び付けを捨てる）。
+/// "Binding of this signed-in state is over" (Chrome discards the binding).
 fn terminated() -> Response {
     json_response(StatusCode::OK, serde_json::json!({ "continue": false }))
 }
@@ -181,7 +181,7 @@ fn append_cookie(response: &mut Response, cookie: &str) {
     }
 }
 
-/// 結び付けが続いている応答に、短い Cookie と、置き直した長い Cookie（残りの長さ）を付ける。
+/// Adds the short cookie and the re-set long cookie (with remaining lifetime) to a response where binding continues.
 fn add_bound_cookies(
     state: &WebState,
     response: &mut Response,
@@ -199,7 +199,7 @@ fn add_bound_cookies(
     }
 }
 
-/// ログイン状態を終わらせたときに、ブラウザの Cookie も消す。
+/// Also deletes the browser's cookies when the signed-in state is ended.
 fn expire_cookies(state: &WebState, response: &mut Response) {
     let policy = state.config.cookie_policy();
     append_cookie(response, &policy.expire_local(&bound_cookie_name(state)));
@@ -208,10 +208,10 @@ fn expire_cookies(state: &WebState, response: &mut Response) {
     }
 }
 
-/// 登録と更新の応答の本文（結び付けの設定。草案 §9.6）。
+/// Body of the registration and refresh responses (binding configuration; draft §9.6).
 ///
-/// 範囲は assay のオリジンだけ（`include_site: false`）。各アプリから始まった要求（見えない枠の `prompt=none`）でも
-/// Chrome が短い Cookie を取り直すよう、`allowed_refresh_initiators` に設定のホストの型を入れる（task #934）。
+/// The scope is only assay's origin (`include_site: false`). The configured host patterns go into
+/// `allowed_refresh_initiators` so Chrome re-fetches the short cookie even for requests started from apps (hidden-frame `prompt=none`) (task #934).
 fn session_instructions(state: &WebState, session_identifier: &str) -> serde_json::Value {
     serde_json::json!({
         "session_identifier": session_identifier,
@@ -229,7 +229,7 @@ fn session_instructions(state: &WebState, session_identifier: &str) -> serde_jso
     })
 }
 
-/// 登録（`POST /dbsc/register`）。
+/// Registration (`POST /dbsc/register`).
 pub async fn register(State(state): State<WebState>, request: Request) -> Response {
     let who = caller(&request);
     let headers = request.headers();
@@ -274,7 +274,7 @@ pub async fn register(State(state): State<WebState>, request: Request) -> Respon
     }
 }
 
-/// 更新（`POST /dbsc/refresh`）。
+/// Refresh (`POST /dbsc/refresh`).
 pub async fn refresh(State(state): State<WebState>, request: Request) -> Response {
     let who = caller(&request);
     let headers = request.headers();
@@ -288,7 +288,7 @@ pub async fn refresh(State(state): State<WebState>, request: Request) -> Respons
         return terminated();
     };
     let Some(proof) = header_str(headers, contract::RESPONSE_HEADER).map(str::to_string) else {
-        // 署名が無い 1 回目: challenge を渡す（その前に、結び付けが生きているかを確かめる）。
+        // First attempt without a signature: hand out a challenge (checking first that the binding is still alive).
         return challenge_or_end(&state, &who, &sso_session_id, &session_identifier).await;
     };
     let req = InternalSessionKeyRefreshRequest {
@@ -304,8 +304,8 @@ pub async fn refresh(State(state): State<WebState>, request: Request) -> Respons
         .await
     {
         Ok(InternalSessionKeyResponse::Bound { remaining_secs, .. }) => {
-            // 登録と同じ設定を返す。草案（§8.8・§8.9）では本文のある更新の応答で結び付けの設定が置き換わるので、
-            // 設定を足す前に結び付いたログイン状態にも、次の更新で `allowed_refresh_initiators` が届く。
+            // Return the same configuration as registration. Per the draft (§8.8, §8.9) a refresh response with a body replaces the binding config,
+            // so signed-in states bound before the config was added also receive `allowed_refresh_initiators` at the next refresh.
             let mut response = json_response(
                 StatusCode::OK,
                 session_instructions(&state, &session_identifier),
@@ -313,7 +313,7 @@ pub async fn refresh(State(state): State<WebState>, request: Request) -> Respons
             add_bound_cookies(&state, &mut response, &sso_session_id, remaining_secs);
             response
         }
-        // 古い challenge など: 新しい challenge でもう一度。
+        // Stale challenge etc.: try again with a new challenge.
         Ok(InternalSessionKeyResponse::Rejected) => {
             challenge_response(&state, &sso_session_id, &session_identifier)
         }
@@ -323,7 +323,7 @@ pub async fn refresh(State(state): State<WebState>, request: Request) -> Respons
             response
         }
         Ok(InternalSessionKeyResponse::SessionGone) => terminated(),
-        // 一時的な失敗。Chrome は結び付けを保ったまま、あとでやり直す。
+        // Transient failure. Chrome keeps the binding and retries later.
         Ok(InternalSessionKeyResponse::Internal) | Err(_) => {
             StatusCode::SERVICE_UNAVAILABLE.into_response()
         }
@@ -374,11 +374,11 @@ fn challenge_response(
     response
 }
 
-/// 入口の確かめ（middleware）。`bind_session_cookie_names` より内側、ハンドラより外側に置く。
+/// Entry-point check (middleware). Placed inside `bind_session_cookie_names` and outside handlers.
 ///
-/// 長い Cookie があって、合う短い Cookie が無い要求について、そのログイン状態が結び付いていれば長い Cookie を
-/// 要求から外す（どの画面にも「ログインしていない」に見える）。`/dbsc/*`（登録・更新そのもの）と
-/// `/assets/*` は見ない。api に聞けなかったときも外す（結び付いているかもしれないものを通さない）。
+/// For requests with a long cookie but no matching short cookie, if that signed-in state is bound, the long cookie is
+/// removed from the request (every screen sees "not signed in"). `/dbsc/*` (registration/refresh itself) and
+/// `/assets/*` are skipped. It is also removed when the api could not be asked (do not pass what may be bound).
 pub async fn enforce(State(state): State<WebState>, mut request: Request, next: Next) -> Response {
     let path = request.uri().path();
     if path.starts_with("/dbsc/") || path.starts_with("/assets/") {
@@ -429,7 +429,7 @@ pub async fn enforce(State(state): State<WebState>, mut request: Request, next: 
     next.run(request).await
 }
 
-/// `Cookie` ヘッダーから SSO セッションの Cookie を外す（読み替え後の名前で。前置付きは読み替え済み）。
+/// Removes the SSO session cookie from the `Cookie` header (by the mapped name; prefixed names are already mapped).
 fn strip_session_cookie(headers: &mut HeaderMap) {
     let kept: Vec<String> = headers
         .get_all(COOKIE)

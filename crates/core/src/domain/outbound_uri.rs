@@ -1,20 +1,22 @@
-//! IdP がサーバ側から要求を出す宛先の制約（SEC2）。
+//! Constraints on destinations the IdP sends server-side requests to (SEC2).
 //!
-//! 外向きに POST する URI（現状は `backchannel_logout_uri`）はテナント管理者が登録できるため、
-//! 無制限だと認証済み blind SSRF になる（クラウドのインスタンスメタデータ・内部管理 API への到達）。
+//! Outbound POST URIs (currently `backchannel_logout_uri`) can be registered by tenant admins, so
+//! unrestricted they would be an authenticated blind SSRF (reaching cloud instance metadata,
+//! internal admin APIs).
 //!
-//! 判定を domain に置くのは、**登録時（`client_management`）と送信時（presentation の logout）の
-//! 二箇所が同じ規則を使う**ためである。登録時だけの検査では、本機能の導入前に登録された行や、
-//! DB を直接編集された行が素通りしてしまう。
+//! The check is in domain because **the same rule is used in two places: at registration
+//! (`client_management`) and at send time (presentation's logout)**. A registration-only check
+//! would let through rows registered before this feature existed or rows edited directly in the DB.
 //!
-//! ここで見るのは URI の字面だけである。**名前を引いた結果**は送る瞬間に見る
-//! （`infrastructure::outbound_http` の resolver。登録時に引いても DNS rebinding で覆せるうえ、
-//! 送信時の解決ともずれる。task #585）。字面の段では、明らかに内部を指す名前（点の無い名前・
-//! クラスタ内の名前）もここで弾く。
+//! Only the literal URI is examined here. **Name resolution results** are checked at the moment of
+//! sending (the resolver in `infrastructure::outbound_http`; resolving at registration can be
+//! overturned by DNS rebinding and diverges from resolution at send time; task #585). At the
+//! literal stage, names that obviously point inside (dotless names, in-cluster names) are rejected
+//! here too.
 
-/// URI が内部（ループバック・プライベート・リンクローカル等）を指すか。
+/// Whether the URI points inside (loopback, private, link-local, etc.).
 ///
-/// 解析できない URI は「安全側」に倒して内部扱いにする（送信させない）。
+/// Unparseable URIs fall to the "safe side" and are treated as internal (not sent).
 pub fn is_internal_destination(uri: &str) -> bool {
     match url::Url::parse(uri.trim()) {
         Ok(url) => url_is_internal(&url),
@@ -31,7 +33,8 @@ fn url_is_internal(url: &url::Url) -> bool {
     }
 }
 
-/// ホスト名（URL ではない）が字面だけで内部と分かるか（SMTP の宛先。task #740）。
+/// Whether a host name (not a URL) is internal from its literal alone (SMTP destinations; task
+/// #740).
 pub fn is_internal_host(host: &str) -> bool {
     let bare = host.trim().trim_start_matches('[').trim_end_matches(']');
     match bare.parse::<std::net::IpAddr>() {
@@ -40,12 +43,12 @@ pub fn is_internal_host(host: &str) -> bool {
     }
 }
 
-/// 字面だけで内部と分かる名前か（task #585）。
+/// Whether a name is internal from its literal alone (task #585).
 ///
-/// - `localhost` / `*.localhost`（自ホスト）
-/// - **点の無い名前**（`api`・`rp` のような、同じネットワークのサービス名。search ドメインで
-///   クラスタ内へ引ける）
-/// - クラスタ・社内向けの予約名（`*.svc`・`*.cluster.local`・`*.internal`・`*.local`）
+/// - `localhost` / `*.localhost` (own host)
+/// - **dotless names** (service names on the same network like `api` or `rp`; resolvable into the
+///   cluster via search domains)
+/// - reserved names for clusters / intranets (`*.svc`, `*.cluster.local`, `*.internal`, `*.local`)
 fn name_is_internal(host: &str) -> bool {
     let host = host.trim_end_matches('.').to_ascii_lowercase();
     host == "localhost"
@@ -56,7 +59,7 @@ fn name_is_internal(host: &str) -> bool {
             .any(|suffix| host.ends_with(suffix))
 }
 
-/// 名前を引いた結果の住所が内部か（送る瞬間の resolver が使う。task #585）。
+/// Whether a resolved address is internal (used by the resolver at send time; task #585).
 pub fn is_internal_address(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(v4) => ipv4_is_internal(v4),
@@ -64,25 +67,27 @@ pub fn is_internal_address(ip: std::net::IpAddr) -> bool {
     }
 }
 
-/// 名前を引いた結果が内部の住所でも送ってよい名前（設定 `OUTBOUND_TRUSTED_HOSTS`。task #585）。
+/// Names allowed to be sent to even if they resolve to internal addresses (setting
+/// `OUTBOUND_TRUSTED_HOSTS`; task #585).
 ///
-/// 宅内や社内で、公開名が内側の前段へ引ける配置（split DNS）では、正規の RP の宛先も内部の住所に
-/// なる。そこを一律に弾くと、ログアウトの知らせが 1 件も届かなくなる。**運用者が名指しした名前と
-/// その下だけ**を例外にする（テナント管理者には触らせない）。字面の検査（点の無い名前など）は
-/// 例外にしない。
+/// In deployments (split DNS) where public names resolve to an inner front end at home or in the
+/// office, legitimate RP destinations also become internal addresses. Rejecting those uniformly
+/// means no logout notice is ever delivered. **Only names the operator named and their subdomains**
+/// are exempt (tenant admins cannot touch this). Literal checks (dotless names etc.) are not
+/// exempted.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OutboundTrust {
     suffixes: Vec<String>,
 }
 
 impl OutboundTrust {
-    /// 何も信用しない（既定）。
+    /// Trusts nothing (default).
     pub fn none() -> Self {
         Self::default()
     }
 
-    /// カンマ区切りのドメイン名（`nolumia.com,example.org`）から作る。`nolumia.com` は
-    /// `nolumia.com` 自身と `*.nolumia.com` に当たる。空・空白だけの要素は捨てる。
+    /// Built from comma-separated domain names (`nolumia.com,example.org`). `nolumia.com` matches
+    /// `nolumia.com` itself and `*.nolumia.com`. Empty or whitespace-only elements are dropped.
     pub fn parse(list: &str) -> Self {
         Self {
             suffixes: list
@@ -94,7 +99,7 @@ impl OutboundTrust {
         }
     }
 
-    /// `host` が信用する名前か。
+    /// Whether `host` is a trusted name.
     pub fn trusts(&self, host: &str) -> bool {
         let host = host.trim_end_matches('.').to_ascii_lowercase();
         self.suffixes
@@ -111,18 +116,18 @@ fn ipv4_is_internal(ip: std::net::Ipv4Addr) -> bool {
         || ip.is_unspecified()
         || ip.is_broadcast()
         || ip.is_multicast()
-        // 「この網」（0.0.0.0/8）。
+        // "This network" (0.0.0.0/8).
         || a == 0
-        // CGNAT（100.64.0.0/10）。クラウドのメタデータ・内部 LB が置かれることがある。
+        // CGNAT (100.64.0.0/10). Cloud metadata and internal LBs may live here.
         || (a == 100 && (64..128).contains(&b))
-        // IETF プロトコル割り当て（192.0.0.0/24。NAT64 の発見などに使う）。
+        // IETF protocol assignments (192.0.0.0/24; used e.g. for NAT64 discovery).
         || (a == 192 && b == 0 && c == 0)
-        // ベンチマーク用（198.18.0.0/15）。閉じた網の中で使われることがある。
+        // Benchmarking (198.18.0.0/15). Sometimes used inside closed networks.
         || (a == 198 && (b == 18 || b == 19))
-        // 予約（240.0.0.0/4）。
+        // Reserved (240.0.0.0/4).
         || a >= 240
-    // なおドキュメント用レンジ（192.0.2.0/24 等）は塞がない。経路が無いだけで「内部」ではなく、
-    // 検証環境が RP の代用に使うことがあるため。
+    // Documentation ranges (192.0.2.0/24 etc.) are not blocked. They merely have no route, are not
+    // "internal", and test environments sometimes use them as stand-in RPs.
 }
 
 fn ipv6_is_internal(ip: std::net::Ipv6Addr) -> bool {
@@ -132,16 +137,16 @@ fn ipv6_is_internal(ip: std::net::Ipv6Addr) -> bool {
     ip.is_loopback()
         || ip.is_unspecified()
         || ip.is_multicast()
-        // unique local（fc00::/7）と link-local（fe80::/10）。
+        // unique local (fc00::/7) and link-local (fe80::/10).
         || (ip.segments()[0] & 0xfe00) == 0xfc00
         || (ip.segments()[0] & 0xffc0) == 0xfe80
 }
 
-/// IPv6 の中に IPv4 を埋め込む形（task #585）。埋め込まれた IPv4 で判定する。
+/// Forms embedding IPv4 inside IPv6 (task #585). Judged by the embedded IPv4.
 ///
-/// - IPv4 写像（`::ffff:a.b.c.d`）と IPv4 互換（`::a.b.c.d`。`::` と `::1` は除く）
-/// - NAT64（`64:ff9b::/96`。変換器を通ると埋め込んだ IPv4 へ届く）
-/// - 6to4（`2002::/16`。2〜5 バイト目が IPv4）
+/// - IPv4-mapped (`::ffff:a.b.c.d`) and IPv4-compatible (`::a.b.c.d`; excluding `::` and `::1`)
+/// - NAT64 (`64:ff9b::/96`; through a translator it reaches the embedded IPv4)
+/// - 6to4 (`2002::/16`; bytes 2–5 are the IPv4)
 fn embedded_ipv4(ip: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
     if let Some(v4) = ip.to_ipv4_mapped() {
         return Some(v4);
@@ -176,7 +181,7 @@ mod tests {
     #[test]
     fn internal_destinations_are_rejected() {
         for uri in [
-            // クラウドのインスタンスメタデータ（link-local）。
+            // Cloud instance metadata (link-local).
             "http://169.254.169.254/latest/meta-data/",
             "http://127.0.0.1:8080/internal",
             "http://localhost/internal",
@@ -190,14 +195,14 @@ mod tests {
             "http://[fd00::1]/internal",
             "http://[fe80::1]/internal",
             "http://[::ffff:127.0.0.1]/internal",
-            // 字面で内部と分かる名前（task #585）。
+            // Names that are internal by their literal (task #585).
             "http://rp:3000/bc",
             "http://api:8080/internal",
             "http://api.idp-prod.svc/internal",
             "http://api.idp-prod.svc.cluster.local:8080/",
             "http://metadata.google.internal/",
             "http://printer.local/",
-            // 弾く一覧の漏れ（task #585）。
+            // Gaps in the block list (task #585).
             "http://198.18.0.1/",
             "http://198.19.255.255/",
             "http://192.0.0.8/",
@@ -208,7 +213,7 @@ mod tests {
             "http://[::127.0.0.1]/",
             "http://[2002:a9fe:a9fe::]/",
             "http://[ff02::1]/",
-            // 解析できない値は送信させない。
+            // Unparseable values are not sent.
             "not a url",
             "",
         ] {
@@ -226,7 +231,7 @@ mod tests {
         assert!(trust.trusts("wiki.nolumia.com"));
         assert!(trust.trusts("WIKI.nolumia.com."));
         assert!(trust.trusts("a.example.org"));
-        // 名前の一部が同じだけの別の名前は当たらない。
+        // A different name that merely shares part of the name does not match.
         assert!(!trust.trusts("evilnolumia.com"));
         assert!(!trust.trusts("nolumia.com.evil.test"));
         assert!(!OutboundTrust::none().trusts("nolumia.com"));

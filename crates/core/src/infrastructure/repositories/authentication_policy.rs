@@ -1,4 +1,4 @@
-//! `AuthenticationPolicyRepository` の sqlx 実装（ユーザー認証・認証ポリシー仕様書 §7）。
+//! sqlx implementation of `AuthenticationPolicyRepository` (user authentication / authentication policy spec §7).
 
 use crate::domain::authentication_policy::{
     AuthenticationPolicy, PolicyConditions, PolicyEffect, RequiredMethods,
@@ -31,7 +31,7 @@ fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
     Utc.from_utc_datetime(&naive)
 }
 
-/// `(tenant_id, policy_code)` 一意制約違反を `Conflict` へ写像する。
+/// Maps a `(tenant_id, policy_code)` unique constraint violation to `Conflict`.
 fn map_write_err(e: sqlx::Error) -> DomainError {
     if let Some(db_err) = e.as_database_error() {
         if db_err.is_unique_violation() {
@@ -46,7 +46,7 @@ fn map_row(row: &MySqlRow) -> Result<AuthenticationPolicy> {
     let tenant_id: String = row.try_get("tenant_id").map_err(repo_err)?;
     let effect: String = row.try_get("effect").map_err(repo_err)?;
     let conditions_raw: Vec<u8> = row.try_get("conditions").map_err(repo_err)?;
-    // MariaDB の JSON カラムは sqlx では BLOB として返るため、バイト列で受けて parse する。
+    // sqlx returns MariaDB JSON columns as BLOB, so receive bytes and parse them.
     let effect_params_raw: Option<Vec<u8>> = row.try_get("effect_params").map_err(repo_err)?;
     Ok(AuthenticationPolicy {
         id: Uuid::parse_str(&id)
@@ -75,7 +75,7 @@ fn map_row(row: &MySqlRow) -> Result<AuthenticationPolicy> {
 const SELECT_COLUMNS: &str = "id, tenant_id, policy_code, policy_name, priority, enabled, \
      effect, effect_params, conditions, created_at, updated_at";
 
-/// `effect_params` を JSON 文字列（無ければ `NULL`）へ。
+/// `effect_params` as a JSON string (`NULL` if absent).
 fn effect_params_json(policy: &AuthenticationPolicy) -> Result<Option<String>> {
     policy
         .effect_params

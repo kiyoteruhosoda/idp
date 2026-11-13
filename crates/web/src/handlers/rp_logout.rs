@@ -1,20 +1,20 @@
-//! RP-initiated Logout（`GET /{tenant_id}/logout`、OIDC RP-initiated Logout 1.0、ADR-0018 決定 2）。
+//! RP-initiated Logout (`GET /{tenant_id}/logout`, OIDC RP-Initiated Logout 1.0, ADR-0018 decision 2).
 //!
-//! `end_session_endpoint` は web が受ける（api はブラウザ Cookie を読まない）。web は自ドメインの
-//! host-only `sso_session_id` Cookie とクエリパラメータを api の `POST /internal/logout/rp` へ
-//! 転送する。SSO セッションの失効・back-channel 通知・`post_logout_redirect_uri` の検証と
-//! `state` 付与は api が担い、web は **SSO Cookie の破棄**と、front-channel logout がある場合の
-//! iframe ページ描画を担う。
+//! web receives the `end_session_endpoint` (the api does not read browser cookies). web forwards our domain's
+//! host-only `sso_session_id` cookie and the query parameters to the api's `POST /internal/logout/rp`.
+//! Revoking the SSO session, back-channel notification, validating `post_logout_redirect_uri` and
+//! adding `state` are done by the api; web handles **discarding the SSO cookie** and rendering the
+//! iframe page when there is front-channel logout.
 //!
-//! `id_token_hint` は api へそのまま転送する（G12）。署名・issuer の検証と、`aud` による
-//! `post_logout_redirect_uri` の照合・`sub` の突き合わせは api が行う（web は鍵を持たない）。
-//! hint が**別の利用者**を指していた場合、api は何も変更せず `SubjectMismatch` を返す。このとき
-//! web は SSO Cookie を破棄しない（破棄すると DB にだけセッションが残り、ブラウザから戻れなくなる）。
+//! `id_token_hint` is forwarded to the api as is (G12). Signature/issuer verification, matching
+//! `post_logout_redirect_uri` by `aud`, and checking `sub` are done by the api (web has no keys).
+//! If the hint points to **another user**, the api changes nothing and returns `SubjectMismatch`. Then
+//! web does not discard the SSO cookie (discarding it would leave the session only in the DB, unreachable from the browser).
 //!
-//! ⚠ **`id_token_hint` の無い要求は、ログイン中なら確認画面を挟む**（task #588。OIDC RP-Initiated
-//! Logout 1.0 §2）。確認なしで終えると、リンク（`<img src>` でも）を踏ませるだけで他人を
-//! サインアウトさせられる。確認画面は CSRF 同期トークン付きの `POST /{tenant_id}/logout/confirm` で
-//! 実行する。hint 付きの要求（RP が自分の発行した ID Token を添える正規の経路）は今までどおり確認しない。
+//! ⚠ **A request without `id_token_hint` gets a confirmation screen if signed in** (task #588. OIDC RP-Initiated
+//! Logout 1.0 §2). Finishing without confirmation would let anyone sign others out just by making them follow
+//! a link (even `<img src>`). The confirmation screen executes via `POST /{tenant_id}/logout/confirm` with a CSRF
+//! synchronizer token. Requests with a hint (the legitimate path where the RP attaches its own ID Token) are not confirmed, as before.
 
 use super::{api_internal_error, internal_call_status, locale};
 use crate::client_ip::ClientIp;
@@ -33,7 +33,7 @@ use axum::http::header::CONTENT_SECURITY_POLICY;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 
-/// RP-initiated logout エンドポイント。
+/// RP-initiated logout endpoint.
 pub async fn logout(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -47,8 +47,8 @@ pub async fn logout(
         .as_deref()
         .is_some_and(|hint| !hint.is_empty());
     if !has_hint {
-        // ログイン中なら確認を挟む（task #588）。ログインしていなければ終えるものが無いので、
-        // そのまま進めてよい（戻り先の検証は api が行う）。
+        // If signed in, insert a confirmation (task #588). If not signed in there is nothing to end,
+        // so proceed as is (the api validates the return destination).
         if let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) {
             return confirmation_page(&state, &tenant, &headers, &sso, &query, StatusCode::OK);
         }
@@ -56,7 +56,7 @@ pub async fn logout(
     perform(&state, &correlation, &client_ip, &tenant, &headers, query).await
 }
 
-/// 確認画面からのサインアウト（`POST /{tenant_id}/logout/confirm`。task #588）。
+/// Sign-out from the confirmation screen (`POST /{tenant_id}/logout/confirm`. task #588).
 pub async fn confirm(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -72,7 +72,7 @@ pub async fn confirm(
                 correlation_id = %correlation.0,
                 "rp logout confirmation rejected: csrf token mismatch"
             );
-            // 何もせず確認画面を出し直す（新しいトークンで押し直せる）。
+            // Do nothing and re-show the confirmation screen (can be pressed again with a new token).
             return confirmation_page(
                 &state,
                 &tenant,
@@ -86,7 +86,7 @@ pub async fn confirm(
     perform(&state, &correlation, &client_ip, &tenant, &headers, query).await
 }
 
-/// サインアウトの確認画面。RP のパラメータは隠し項目で持ち回る（`id_token_hint` は無い要求だけが来る）。
+/// The sign-out confirmation screen. RP parameters are carried in hidden fields (only requests without `id_token_hint` come here).
 fn confirmation_page(
     state: &WebState,
     tenant: &WebTenant,
@@ -107,7 +107,7 @@ fn confirmation_page(
     (status, Html(body)).into_response()
 }
 
-/// サインアウトを実行する（api の `POST /internal/logout/rp` へ委ねる）。
+/// Performs the sign-out (delegated to the api's `POST /internal/logout/rp`).
 async fn perform(
     state: &WebState,
     correlation: &CorrelationId,
@@ -141,14 +141,14 @@ async fn perform(
             frontchannel_uris,
             redirect_to,
         } => {
-            // SSO Cookie の破棄は web が自ドメインで行う（ADR-0018 決定 2）。
+            // web discards the SSO cookie on its own domain (ADR-0018 decision 2).
             let set_cookies = state
                 .set_cookies()
                 .expire_session(cookies::SSO_SESSION_COOKIE);
 
-            // Front-channel logout がある場合は iframe ページを返す。外部 RP の URI を iframe で
-            // 読み込むため、既定 CSP（frame-src が default-src 'self' に落ちる）を通知先オリジンを
-            // 許可した CSP で上書きする（security_headers は設定済みの CSP を尊重する）。
+            // With front-channel logout, return the iframe page. External RP URIs are loaded in iframes,
+            // so override the default CSP (frame-src falls back to default-src 'self') with a CSP allowing
+            // the notification target origins (security_headers respects an already-set CSP).
             if !frontchannel_uris.is_empty() {
                 let body = render(&RpLogoutPage {
                     messages: &messages,
@@ -167,7 +167,7 @@ async fn perform(
                     .into_response();
             }
 
-            // Front-channel なし: redirect または完了ページ。
+            // No front-channel: redirect or the completion page.
             if let Some(uri) = redirect_to {
                 (set_cookies.into_headers(), found(&uri)).into_response()
             } else {
@@ -179,9 +179,9 @@ async fn perform(
                 (set_cookies.into_headers(), Html(body)).into_response()
             }
         }
-        // `id_token_hint` が別の利用者を指していた（G12）。api は何も変更していないので、
-        // **Cookie も消さない** —— 消すと DB にセッションが生きたままブラウザから戻れなくなり、
-        // 守ろうとした別利用者のログイン状態を結局は壊してしまう。
+        // `id_token_hint` pointed to another user (G12). The api changed nothing, so
+        // **do not delete the cookie either** — deleting it would leave the session alive in the DB but unreachable
+        // from the browser, ultimately breaking the signed-in state of the other user we meant to protect.
         InternalRpLogoutResponse::SubjectMismatch => {
             let body = render(&MessagePage {
                 lang: messages.lang(),
@@ -194,13 +194,13 @@ async fn perform(
     }
 }
 
-/// front-channel 通知先のオリジンだけを `frame-src` に許可した CSP を組み立てる
-/// （それ以外は `security_headers::CONTENT_SECURITY_POLICY` と同じ方針）。
+/// Builds a CSP allowing only the front-channel notification target origins in `frame-src`
+/// (otherwise the same policy as `security_headers::CONTENT_SECURITY_POLICY`).
 fn frontchannel_csp(frontchannel_uris: &[String]) -> String {
     let mut origins: Vec<String> = frontchannel_uris
         .iter()
         .map(|uri| crate::security_headers::origin_of(uri))
-        // 解釈できない URI は許可を足さない（fail-closed）。
+        // Do not add an allowance for URIs that cannot be parsed (fail-closed).
         .filter(|origin| !origin.is_empty())
         .collect();
     origins.sort();

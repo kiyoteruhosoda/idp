@@ -1,25 +1,25 @@
-//! ビルド成果物のバージョン情報。
+//! Version information of the build artifact.
 //!
-//! Domain 側は「どのような情報を公開するか」だけを表現し、取得元は `VersionInfoProvider` の
-//! ポリモーフィズムで差し替え可能にする。
+//! The domain side expresses only "what information is exposed"; the source can be swapped via
+//! `VersionInfoProvider` polymorphism.
 
 use serde::{Deserialize, Serialize};
 
-/// 実行中のバイナリが公開するバージョン情報。
+/// Version information exposed by the running binary.
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 pub struct VersionInfo {
     pub package_version: &'static str,
     pub git_version: &'static str,
-    /// ビルド番号（CI の通し番号）。**コミットが同じでもビルドし直せば上がる**ので、
-    /// 「新しい成果物が配置されたか」を版数だけで判断できる。手元ビルドでは空。
+    /// Build number (CI run counter). **It increases on every rebuild even for the same commit**, so
+    /// "was a new artifact deployed?" can be told from the version alone. Empty for local builds.
     pub build_number: &'static str,
 }
 
 impl VersionInfo {
-    /// 画面に出す版数（`v0.1.0+312`）。ビルド番号が無ければ `v0.1.0`。
+    /// Version shown on screen (`v0.1.0+312`). `v0.1.0` when there is no build number.
     ///
-    /// SemVer のビルドメタデータ（`+`）に合わせる。順序比較の対象ではなく「同じ版の別ビルド」を
-    /// 見分けるための値、という意味がそのまま当てはまる。
+    /// Follows SemVer build metadata (`+`). Its meaning, a value that tells apart "different builds of the
+    /// same version" and is not part of ordering, applies as is.
     pub fn display_version(&self) -> String {
         if self.build_number.is_empty() {
             format!("v{}", self.package_version)
@@ -28,23 +28,23 @@ impl VersionInfo {
         }
     }
 
-    /// git 版が埋め込まれているか。ビルド引数を渡し忘れると `unknown` になる。
+    /// Whether the git version is embedded. It becomes `unknown` if the build argument is forgotten.
     pub fn has_git_version(&self) -> bool {
         !self.git_version.is_empty() && self.git_version != "unknown"
     }
 }
 
-/// DB スキーマ（sqlx マイグレーション）の適用状態。運用者が DB を直接見られなくても、
-/// バージョン情報画面から「どこまでマイグレーションが適用されているか」を確認できるようにする。
+/// Applied state of the DB schema (sqlx migrations). Lets operators check "how far migrations are applied"
+/// from the version information screen even without direct DB access.
 ///
-/// - `expected`: 実行中の api バイナリに埋め込まれたマイグレーションの最大 version（＝アプリが期待する版）。
-/// - `db_readable`: `_sqlx_migrations` を読み取れたか。`false` のとき DB へ到達できても状態は取得できて
-///   おらず（接続断・権限変更・migrate 未実行等）、`applied` は意味を持たない。**「DB が遅れている」と
-///   「DB を読み取れない」を取り違えないため**の区別（後者は運用障害）。
-/// - `applied`: `db_readable = true` のときのみ有効。DB の `_sqlx_migrations` に成功記録された最大 version
-///   （適用がまだ無いなら `None`）。
+/// - `expected`: the max migration version embedded in the running api binary (= the version the app expects).
+/// - `db_readable`: whether `_sqlx_migrations` could be read. When `false`, the state could not be read even if
+///   the DB is reachable (disconnect, permission change, migrate not run etc.) and `applied` is meaningless. The
+///   distinction exists **so "the DB is behind" is not confused with "the DB cannot be read"** (the latter is an outage).
+/// - `applied`: valid only when `db_readable = true`. The max version recorded as successful in the DB's `_sqlx_migrations`
+///   (`None` if nothing is applied yet).
 ///
-/// api（DB を持つ側）が算出し、web は HTTP 越しに受け取って表示する（web は DB 非依存）。
+/// api (the side with the DB) computes it; web receives it over HTTP and displays it (web is DB-independent).
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SchemaVersionInfo {
     pub expected: Option<i64>,
@@ -52,12 +52,12 @@ pub struct SchemaVersionInfo {
     pub applied: Option<i64>,
 }
 
-/// バージョン情報の取得元を抽象化するポート。
+/// Port abstracting the source of version information.
 pub trait VersionInfoProvider: Send + Sync {
     fn version_info(&self) -> VersionInfo;
 }
 
-/// Cargo とビルドスクリプトが埋め込んだ静的メタデータを返す provider。
+/// Provider returning static metadata embedded by Cargo and the build script.
 #[derive(Debug, Clone, Copy)]
 pub struct BuildTimeVersionInfoProvider {
     package_version: &'static str,
@@ -91,20 +91,20 @@ mod tests {
         }
     }
 
-    /// ビルド番号は SemVer のビルドメタデータとして付ける（`v0.1.0+312`）。
-    /// コミットが同じでもビルドし直せば上がるので、成果物が入れ替わったことを版数で判断できる。
+    /// The build number is attached as SemVer build metadata (`v0.1.0+312`).
+    /// It increases on every rebuild even for the same commit, so a swapped artifact shows in the version.
     #[test]
     fn the_build_number_is_appended_as_semver_build_metadata() {
         assert_eq!(info("312", "abc1234").display_version(), "v0.1.0+312");
     }
 
-    /// 手元ビルドではビルド番号が付かない。`+` だけが残る形にはしない。
+    /// Local builds get no build number. Never leave a bare `+`.
     #[test]
     fn a_local_build_shows_the_package_version_alone() {
         assert_eq!(info("", "abc1234").display_version(), "v0.1.0");
     }
 
-    /// ビルド引数を渡し忘れると git 版が `unknown` になる。画面はこれを見て警告を出す。
+    /// If the build argument is forgotten the git version becomes `unknown`. The screen warns on it.
     #[test]
     fn a_missing_git_version_is_detectable() {
         assert!(info("312", "abc1234").has_git_version());

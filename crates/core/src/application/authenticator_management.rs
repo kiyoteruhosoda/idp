@@ -1,18 +1,18 @@
-//! 認証器の統合管理ユースケース（AP9。ユーザー認証・認証ポリシー仕様書 §5）。
+//! Unified authenticator management use case (AP9. User authentication & authentication policy spec §5).
 //!
-//! 扱うのは 3 つ:
+//! It handles three things:
 //!
-//! 1. **一覧と状態管理** — 種別によらず「この人が使える認証器」を 1 箇所で返し、一時停止・再開・
-//!    失効を行う。一時停止があるのは、端末を失くしたが手元に戻るかもしれないという状況に、
-//!    削除以外の答えを用意するため。
-//! 2. **リカバリーコード** — 認証器を全部失った利用者の自助手段。束（既定 10 本）で発行し、
-//!    1 本ずつ使い捨てる。平文は発行時にしか見せず、DB には SHA-256 だけ置く。
-//! 3. **email OTP / SMS OTP** — 認証アプリを持てない利用者向けの第二要素。短命コードを送り、
-//!    1 回だけ使える認証器として登録簿へ積む。email は `users.email` へ送るので登録が要らないが、
-//!    SMS は送信先の電話番号を**先に登録・確認**する必要がある（AP13）。
+//! 1. **Listing and state management** — returns "the authenticators this person can use" in one place regardless
+//!    of kind, and suspends, resumes and revokes them. Suspension exists to offer an answer other than deletion
+//!    for "I lost my device but it may come back".
+//! 2. **Recovery codes** — self-help for users who lost all their authenticators. Issued as a set (10 by default),
+//!    each used once. The plaintext is only shown at issuance; the DB holds only SHA-256.
+//! 3. **email OTP / SMS OTP** — a second factor for users who can't have an authenticator app. A short-lived code is
+//!    sent and recorded in the registry as a one-time authenticator. email goes to `users.email` so needs no registration,
+//!    but SMS requires the destination phone number to be **registered and confirmed first** (AP13).
 //!
-//! いずれも「登録簿（`user_authenticators`）」を単一の出所とし、ログイン側は種別ごとの分岐では
-//! なく登録簿の問い合わせで済むようにする。
+//! All of these use the registry (`user_authenticators`) as the single source, so the login side only needs to query
+//! the registry instead of branching per kind.
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::system_settings::SystemSettingsService;
@@ -32,29 +32,29 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// 一度に発行するリカバリーコードの本数。
+/// Number of recovery codes issued at once.
 ///
-/// 少なすぎると復旧の途中で尽き、多すぎると印刷・保管が雑になる（結果として漏れやすくなる）。
-/// 一般的な IdP と同じ 10 本にする。
+/// Too few and they run out mid-recovery; too many and printing/storage gets sloppy (making leaks likelier).
+/// We use 10, like typical IdPs.
 const RECOVERY_CODE_COUNT: usize = 10;
-/// リカバリーコード 1 本の乱数バイト数（80 bit）。人が書き写せる長さと推測不能性の折り合い。
+/// Random bytes per recovery code (80 bits). A compromise between a length people can copy and unguessability.
 const RECOVERY_CODE_BYTES: usize = 10;
-/// email OTP のコード桁数。
+/// Number of digits in an email OTP code.
 const EMAIL_OTP_DIGITS: u32 = 6;
-/// email OTP の有効期間。
+/// Validity period of an email OTP.
 const EMAIL_OTP_TTL_SECS: i64 = 600;
-/// SMS OTP のコード桁数（AP13）。email OTP と揃える。
+/// Number of digits in an SMS OTP code (AP13). Same as email OTP.
 const SMS_OTP_DIGITS: u32 = 6;
-/// SMS OTP の有効期間。email より短いのは、SMS は端末に残り続けるうえ転送もされやすいため。
+/// Validity period of an SMS OTP. Shorter than email because SMS stays on the device and is easily forwarded.
 const SMS_OTP_TTL_SECS: i64 = 300;
-/// OTP を送り直せる間隔（task #749）。⚠ 送らないときは前のコードを失効させないので、届いているコードは使える。
+/// Interval before an OTP can be resent (task #749). ⚠ When not sending, the previous code is not revoked, so a delivered code still works.
 const OTP_RESEND_INTERVAL_SECS: i64 = 30;
-/// 1 人に 1 時間で送れる OTP の数（種別ごと）。パスワードを知っている人が SMS の料金やメールで人を押せないように。
+/// OTPs that can be sent to one person per hour (per kind). So someone who knows the password can't push SMS charges or mail at people.
 const OTP_SENDS_PER_HOUR: usize = 10;
-/// 電話番号の登録確認コードの有効期間。入力までに手間取る前提で OTP より長くする。
+/// Validity period of the phone number registration confirmation code. Longer than OTP, assuming input may take a while.
 const PHONE_CONFIRMATION_TTL_SECS: i64 = 900;
 
-/// 一覧に出す認証器 1 件（秘密は含めない）。
+/// One authenticator in the list (no secrets).
 #[derive(Debug, Clone)]
 pub struct AuthenticatorSummary {
     pub id: Uuid,
@@ -73,26 +73,26 @@ pub enum AuthenticatorManagementError {
     InvalidTransition,
     #[error("email delivery is not configured")]
     MailUnavailable,
-    /// SMS ゲートウェイが未設定（AP13）。呼び出し側は「SMS は使えない」として別の要素へ倒す。
+    /// SMS gateway not configured (AP13). The caller treats it as "SMS unavailable" and falls back to another factor.
     #[error("sms delivery is not configured")]
     SmsUnavailable,
-    /// SMS OTP の送信先電話番号が未登録・未確認（AP13）。
+    /// The SMS OTP destination phone number is not registered or not confirmed (AP13).
     #[error("no confirmed phone number is registered")]
     PhoneNotRegistered,
-    /// 電話番号として読めない入力（AP13）。
+    /// Input that cannot be read as a phone number (AP13).
     #[error("invalid phone number")]
     InvalidPhoneNumber,
-    /// OTP の送り直しが早すぎる・多すぎる（task #749）。前のコードは有効なまま。
+    /// OTP resent too soon or too often (task #749). The previous code stays valid.
     #[error("otp was sent too recently or too often")]
     OtpRateLimited,
     #[error("internal error: {0}")]
     Internal(String),
 }
 
-/// OTP をいま送ってよいか。発行したコードの行（期限のある行）から数える。
+/// Whether an OTP may be sent now. Counted from the rows of issued codes (rows with an expiry).
 ///
-/// 表を増やさず数えられるのは、コードの行は失効の印を付けるだけで、片付けも窓の間は消さないから
-/// （`OTP_SEND_WINDOW_SECS`）。登録済みの電話番号の行には期限が無いので数えない。
+/// This can be counted without a new table because code rows are only marked revoked and cleanup doesn't delete
+/// them within the window (`OTP_SEND_WINDOW_SECS`). Rows of registered phone numbers have no expiry, so they are not counted.
 fn may_send_otp(
     rows: &[UserAuthenticator],
     authenticator_type: AuthenticatorType,
@@ -110,12 +110,12 @@ fn may_send_otp(
             .all(|at| now - *at >= Duration::seconds(OTP_RESEND_INTERVAL_SECS))
 }
 
-/// リポジトリ由来のエラーを内部エラーへ畳む（呼び出し側へ DB の事情を漏らさない）。
+/// Folds repository errors into internal errors (doesn't leak DB details to the caller).
 fn internal(e: crate::domain::error::DomainError) -> AuthenticatorManagementError {
     AuthenticatorManagementError::Internal(e.to_string())
 }
 
-/// リカバリーコードの発行結果。**平文はこの戻り値でしか得られない**（DB はハッシュのみ）。
+/// Result of issuing recovery codes. **The plaintext is only available from this return value** (the DB has hashes only).
 pub struct IssuedRecoveryCodes {
     pub codes: Vec<String>,
 }
@@ -125,7 +125,7 @@ pub struct AuthenticatorManagementService {
     users: Arc<dyn UserRepository>,
     system_settings: Arc<SystemSettingsService>,
     mailer: Arc<dyn Mailer>,
-    /// SMS 送信のポート（AP13）。ゲートウェイ接続情報は送信ごとにシステム設定から取る。
+    /// Port for sending SMS (AP13). Gateway connection info is taken from system settings for each send.
     sms: Arc<dyn SmsSender>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
@@ -156,10 +156,10 @@ impl AuthenticatorManagementService {
         }
     }
 
-    /// 利用者の認証器を一覧する（失効済みは出さない — 画面に並べても操作できず、数が増えるだけ）。
+    /// Lists the user's authenticators (revoked ones are omitted — listing them on screen allows no action and only adds clutter).
     ///
-    /// リカバリーコードは 1 本 1 行なので、そのまま並べると一覧が 10 行埋まる。呼び出し側が
-    /// 「残り n 本」として畳めるよう、種別ごとの件数は [`Self::usable_recovery_code_count`] で別に取る。
+    /// Recovery codes are one row each, so listing them as-is fills 10 rows. So the caller can fold them into
+    /// "n remaining", the per-kind count is fetched separately with [`Self::usable_recovery_code_count`].
     pub async fn list(
         &self,
         user_id: Uuid,
@@ -173,10 +173,10 @@ impl AuthenticatorManagementService {
             .into_iter()
             .filter(|a| a.status != AuthenticatorStatus::Revoked)
             .filter(|a| a.authenticator_type != AuthenticatorType::RecoveryCode)
-            // 発行済みのワンタイムコード（秘密と期限の両方を持つ行）は認証器ではなく
-            // **送信済みのコード**である。並べると「10 分で消える認証器」が一覧に増え、
-            // しかも利用者は操作できない（AP13 で SMS OTP を足す際に email OTP でも
-            // 起きていたことが分かったので、ここで一緒に落とす）。
+            // An issued one-time code (a row with both a secret and an expiry) is not an authenticator but
+            // **a sent code**. Listing it would add "authenticators that vanish in 10 minutes" to the list,
+            // which the user can't act on (while adding SMS OTP in AP13 we found this also happened with
+            // email OTP, so it is dropped here together).
             .filter(|a| !(a.secret_encrypted.is_some() && a.expires_at.is_some()))
             .map(|a| AuthenticatorSummary {
                 id: a.id,
@@ -189,7 +189,7 @@ impl AuthenticatorManagementService {
             .collect())
     }
 
-    /// 残っている（未使用・未失効の）リカバリーコードの本数。
+    /// Number of remaining (unused, unrevoked) recovery codes.
     pub async fn usable_recovery_code_count(
         &self,
         user_id: Uuid,
@@ -206,7 +206,7 @@ impl AuthenticatorManagementService {
         Ok(rows.len())
     }
 
-    /// 状態を変える（一時停止・再開・失効）。遷移の可否はドメインの規則で判定する。
+    /// Changes the state (suspend, resume, revoke). Whether the transition is allowed is decided by domain rules.
     pub async fn set_status(
         &self,
         tenant_id: crate::domain::tenant::TenantId,
@@ -254,10 +254,10 @@ impl AuthenticatorManagementService {
         Ok(())
     }
 
-    /// リカバリーコードを（再）発行する。**既存の束は必ず失効させる**。
+    /// (Re)issues recovery codes. **The existing set is always revoked.**
     ///
-    /// 古い束を残したまま新しい束を出すと、印刷して捨てたはずのコードがずっと有効なままになる。
-    /// 「今手元にある紙が唯一の束」でなければ、利用者は何が有効か管理できない。
+    /// Issuing a new set while keeping the old one would leave codes that were printed and thrown away valid forever.
+    /// Unless "the paper in hand is the only set", the user cannot manage what is valid.
     pub async fn issue_recovery_codes(
         &self,
         tenant_id: crate::domain::tenant::TenantId,
@@ -279,13 +279,13 @@ impl AuthenticatorManagementService {
                 authenticator_type: AuthenticatorType::RecoveryCode,
                 status: AuthenticatorStatus::Active,
                 label: String::new(),
-                // 平文は返り値でしか出さない。DB はハッシュのみ（他の bearer credential と同じ）。
+                // The plaintext only goes out in the return value. The DB holds hashes only (same as other bearer credentials).
                 secret_encrypted: Some(crypto::sha256_hex(&code)),
                 target: None,
                 confirmed_at: Some(now),
                 last_used_at: None,
-                // リカバリーコードは期限を持たない（使うのは「他が全部だめなとき」なので、
-                // その時点で期限切れだと手段が無くなる）。
+                // Recovery codes have no expiry (they are used "when everything else failed", so
+                // being expired at that point would leave no way in).
                 expires_at: None,
                 revoked_at: None,
                 created_at: now,
@@ -312,7 +312,7 @@ impl AuthenticatorManagementService {
         Ok(IssuedRecoveryCodes { codes })
     }
 
-    /// リカバリーコードを検証して消費する（1 回きり）。成功なら `true`。
+    /// Verifies and consumes a recovery code (one-time). `true` on success.
     pub async fn consume_recovery_code(
         &self,
         tenant_id: crate::domain::tenant::TenantId,
@@ -341,7 +341,7 @@ impl AuthenticatorManagementService {
                 Some(tenant_id),
                 Some(user_id),
                 None,
-                // 残数を残すと「あと何本か」を運用側から追える（コードそのものは記録しない）。
+                // Keeping the remaining count lets operations track "how many are left" (the codes themselves are not recorded).
                 Some(&format!(
                     "remaining={}",
                     self.remaining_after(user_id).await
@@ -352,7 +352,7 @@ impl AuthenticatorManagementService {
         Ok(used)
     }
 
-    /// email OTP を発行して送信する。送信先は登録済みメールアドレス。
+    /// Issues and sends an email OTP. The destination is the registered email address.
     pub async fn send_email_otp(
         &self,
         tenant_id: crate::domain::tenant::TenantId,
@@ -366,8 +366,8 @@ impl AuthenticatorManagementService {
             .map_err(|e| AuthenticatorManagementError::Internal(e.to_string()))?
             .ok_or(AuthenticatorManagementError::NotFound)?;
 
-        // 認証器は利用者の持ち物で、管理するのは所属元テナントである（ADR-0009）。コードも
-        // 所属元の経路で送る（ADR-0058 §8）。ログイン画面のテナント（ゲスト参加先）では決めない。
+        // Authenticators belong to the user and are managed by the home tenant (ADR-0009). Codes are also
+        // sent through the home tenant's channel (ADR-0058 §8). Not decided by the login screen's tenant (guest membership).
         let server = self
             .system_settings
             .smtp_server_for(user.tenant_id)
@@ -378,7 +378,7 @@ impl AuthenticatorManagementService {
         let now = self.clock.now();
         self.ensure_may_send_otp(user_id, AuthenticatorType::EmailOtp, now)
             .await?;
-        // 前のコードは必ず失効させる。同時に複数のコードが有効だと、総当たりの成功率が本数倍になる。
+        // Always revoke the previous code. With several valid codes at once, brute force success rate multiplies by their number.
         self.authenticators
             .revoke_all_of_type(user_id, AuthenticatorType::EmailOtp, now)
             .await
@@ -405,9 +405,9 @@ impl AuthenticatorManagementService {
             .await
             .map_err(|e| AuthenticatorManagementError::Internal(e.to_string()))?;
 
-        // 本文は運用言語（英語）ではなく利用者向けなので、訳出は Presentation 層が担うべきだが、
-        // メール送信は Application 層で完結する必要がある（送信の成否を判定に使うため）。
-        // 現状のメール文面（招待・パスワードリセット）と同じ扱いで、ここでは英語で組み立てる。
+        // The body is for users, not in the operations language (English), so translation should belong to Presentation,
+        // but sending mail must complete in the Application layer (the send result is used in the decision).
+        // Same as the existing mail texts (invitation, password reset): built in English here.
         let mail = OutgoingEmail {
             to: user.email.clone(),
             subject: "Your verification code".to_string(),
@@ -429,7 +429,7 @@ impl AuthenticatorManagementService {
                 Some(tenant_id),
                 Some(user_id),
                 None,
-                // 送信先アドレスは PII なので記録しない。
+                // The destination address is PII, so it is not recorded.
                 None,
                 ctx,
             )
@@ -437,26 +437,26 @@ impl AuthenticatorManagementService {
         Ok(())
     }
 
-    // ── SMS OTP（AP13）─────────────────────────────────────────────────────
+    // ── SMS OTP (AP13) ─────────────────────────────────────────────────────
     //
-    // メール OTP と違い、SMS は**送信先を先に登録・確認**しなければならない。`users` に電話番号の
-    // 列は無く、あっても「連絡先」と「第二要素の送信先」は別物である（連絡先の変更が黙って
-    // 第二要素の送信先を変えると、乗っ取りの経路になる）。そこで登録簿（`user_authenticators`）の
-    // `sms_otp` 行そのものを登録済み電話番号として持つ:
+    // Unlike email OTP, SMS requires **the destination to be registered and confirmed first**. `users` has no phone
+    // number column, and even if it did, "contact info" and "second-factor destination" are different things (if changing
+    // contact info silently changed the second-factor destination, it would be a takeover path). So the registry's
+    // (`user_authenticators`) `sms_otp` row itself holds the registered phone number:
     //
-    // | 行 | status | target | secret_encrypted | expires_at |
+    // | row | status | target | secret_encrypted | expires_at |
     // |---|---|---|---|---|
-    // | 確認待ちの登録 | pending | 電話番号 | 確認コードの SHA-256 | あり（放置されたら GC が消す） |
-    // | 確認済みの登録 | active | 電話番号 | NULL | **NULL**（消えない） |
-    // | 発行済みの OTP | active | 電話番号 | コードの SHA-256 | あり |
+    // | registration awaiting confirmation | pending | phone number | SHA-256 of confirmation code | set (GC deletes it if abandoned) |
+    // | confirmed registration | active | phone number | NULL | **NULL** (never deleted) |
+    // | issued OTP | active | phone number | SHA-256 of code | set |
     //
-    // 確認済みの登録から期限を落とすのが要点で、残すと GC がその行を消し、登録が黙って失われる。
+    // Dropping the expiry from the confirmed registration is the point; if kept, GC deletes the row and the registration is silently lost.
 
-    /// 電話番号の登録を始める（確認コードを SMS で送る）。AP13。
+    /// Starts registering a phone number (sends a confirmation code by SMS). AP13.
     ///
-    /// 既存の登録（確認済みを含む）は失効させる。1 利用者 1 番号にするのは、複数あると
-    /// 「どれに送ったか」が利用者からも運用からも見えなくなるため。番号を変えるときは
-    /// 登録し直す。
+    /// Existing registrations (including confirmed ones) are revoked. One number per user, because with several,
+    /// neither the user nor operations could see "which one it was sent to". To change the number,
+    /// register again.
     pub async fn start_phone_registration(
         &self,
         tenant_id: crate::domain::tenant::TenantId,
@@ -464,8 +464,8 @@ impl AuthenticatorManagementService {
         raw_phone: &str,
         ctx: &RequestContext,
     ) -> Result<(), AuthenticatorManagementError> {
-        // 書式の判定と正規化は、ログイン識別子の電話番号と同じ規則を使う（判定が 2 つあると
-        // 「登録できるのに送れない番号」が生まれる）。
+        // Format checking and normalization use the same rules as login identifier phone numbers (with two checks,
+        // "numbers that can be registered but not sent to" would appear).
         let phone = LoginIdentifierType::PhoneNumber
             .normalize_checked(raw_phone)
             .map_err(|_| AuthenticatorManagementError::InvalidPhoneNumber)?;
@@ -473,7 +473,7 @@ impl AuthenticatorManagementService {
         let gateway = self.usable_sms_gateway().await?;
 
         let now = self.clock.now();
-        // 登録し直しなので、確認済みの登録ごと入れ替える。
+        // This is a re-registration, so replace it along with any confirmed registration.
         self.authenticators
             .revoke_all_of_type(user_id, AuthenticatorType::SmsOtp, now)
             .await
@@ -504,7 +504,7 @@ impl AuthenticatorManagementService {
         Ok(())
     }
 
-    /// 送られた確認コードで電話番号の登録を確定する（AP13）。成功なら `true`。
+    /// Confirms the phone number registration with the sent confirmation code (AP13). `true` on success.
     pub async fn confirm_phone_registration(
         &self,
         tenant_id: crate::domain::tenant::TenantId,
@@ -536,7 +536,7 @@ impl AuthenticatorManagementService {
                     Some(tenant_id),
                     Some(user_id),
                     None,
-                    // 電話番号は PII なので記録しない（種別だけ残す）。
+                    // The phone number is PII, so it is not recorded (only the kind is kept).
                     Some("type=sms_otp status=active"),
                     ctx,
                 )
@@ -545,8 +545,8 @@ impl AuthenticatorManagementService {
         Ok(confirmed)
     }
 
-    /// 登録済みの電話番号があるか（画面が「登録する」と「登録済み」を出し分けるために使う）。
-    /// 返すのは有無だけで、番号そのものは返さない（PII を必要以上に持ち回らない）。
+    /// Whether a registered phone number exists (used by the screen to show "register" vs "registered").
+    /// Returns only presence, not the number itself (don't carry PII around more than needed).
     pub async fn has_confirmed_phone(
         &self,
         user_id: Uuid,
@@ -554,7 +554,7 @@ impl AuthenticatorManagementService {
         Ok(self.confirmed_phone(user_id).await?.is_some())
     }
 
-    /// SMS OTP を発行して登録済みの電話番号へ送る（AP13）。
+    /// Issues an SMS OTP and sends it to the registered phone number (AP13).
     pub async fn send_sms_otp(
         &self,
         tenant_id: crate::domain::tenant::TenantId,
@@ -570,8 +570,8 @@ impl AuthenticatorManagementService {
         let now = self.clock.now();
         self.ensure_may_send_otp(user_id, AuthenticatorType::SmsOtp, now)
             .await?;
-        // 前のコードだけを失効させる。`revoke_all_of_type` を使うと登録済みの電話番号まで
-        // 消えて、次回から送れなくなる。
+        // Revoke only the previous code. `revoke_all_of_type` would also wipe the registered phone number
+        // and sending would no longer work afterwards.
         self.authenticators
             .revoke_issued_codes_of_type(user_id, AuthenticatorType::SmsOtp, now)
             .await
@@ -602,7 +602,7 @@ impl AuthenticatorManagementService {
         Ok(())
     }
 
-    /// SMS OTP を検証して消費する（1 回きり）。成功なら `true`。
+    /// Verifies and consumes an SMS OTP (one-time). `true` on success.
     pub async fn consume_sms_otp(
         &self,
         user_id: Uuid,
@@ -619,7 +619,7 @@ impl AuthenticatorManagementService {
         .map_err(internal)
     }
 
-    /// OTP の送り直しの間隔と回数を見る（task #749）。⚠ 前のコードを失効させる前に呼ぶ。
+    /// Checks the OTP resend interval and count (task #749). ⚠ Call before revoking the previous code.
     async fn ensure_may_send_otp(
         &self,
         user_id: Uuid,
@@ -638,7 +638,7 @@ impl AuthenticatorManagementService {
         }
     }
 
-    /// 送信可能な SMS ゲートウェイ設定。未設定なら `SmsUnavailable`。
+    /// SMS gateway settings usable for sending. `SmsUnavailable` if not configured.
     async fn usable_sms_gateway(
         &self,
     ) -> Result<crate::domain::sms::SmsGatewayConfig, AuthenticatorManagementError> {
@@ -650,7 +650,7 @@ impl AuthenticatorManagementService {
             .ok_or(AuthenticatorManagementError::SmsUnavailable)
     }
 
-    /// 確認済み（`active` かつ期限なし）の登録から電話番号を取り出す。
+    /// Extracts the phone number from the confirmed registration (`active` with no expiry).
     async fn confirmed_phone(
         &self,
         user_id: Uuid,
@@ -660,15 +660,15 @@ impl AuthenticatorManagementService {
             .list_usable_for_user(user_id, Some(AuthenticatorType::SmsOtp), self.clock.now())
             .await
             .map_err(internal)?;
-        // 発行済みコードの行も同じ種別で並ぶため、**期限の無い行**（＝登録）だけを見る。
+        // Rows of issued codes have the same kind, so only look at **rows without an expiry** (= the registration).
         Ok(rows
             .into_iter()
             .find(|r| r.expires_at.is_none())
             .and_then(|r| r.target))
     }
 
-    /// コード本文を組み立てて送る。本文は利用者向けだが、メール OTP と同じ扱いで英語にする
-    /// （送信は Application 層で完結する必要があり、訳出の口がここには無い）。
+    /// Builds and sends the code body. The body is for users, but like email OTP it is in English
+    /// (sending must complete in the Application layer, and there is no translation hook here).
     async fn send_code(
         &self,
         gateway: &crate::domain::sms::SmsGatewayConfig,
@@ -686,7 +686,7 @@ impl AuthenticatorManagementService {
         self.sms.send(gateway, &sms).await.map_err(internal)
     }
 
-    /// 送信の監査。**電話番号もコードも記録しない**（用途の区別だけ残す）。
+    /// Audit of the send. **Neither the phone number nor the code is recorded** (only the purpose is kept).
     async fn record_sms_sent(
         &self,
         tenant_id: crate::domain::tenant::TenantId,
@@ -707,7 +707,7 @@ impl AuthenticatorManagementService {
             .await;
     }
 
-    /// email OTP を検証して消費する（1 回きり）。成功なら `true`。
+    /// Verifies and consumes an email OTP (one-time). `true` on success.
     pub async fn consume_email_otp(
         &self,
         user_id: Uuid,
@@ -724,13 +724,13 @@ impl AuthenticatorManagementService {
         .map_err(|e| AuthenticatorManagementError::Internal(e.to_string()))
     }
 
-    // ── 登録簿の同期（TOTP・WebAuthn） ──────────────────────────────────────
+    // ── Registry sync (TOTP, WebAuthn) ──────────────────────────────────────
     //
-    // 秘密は従来のテーブルに置いたままなので（expand フェーズ）、登録・削除のたびに登録簿へ
-    // 同じ出来事を反映する。ここが漏れると登録簿は「実際には使えない認証器を載せた一覧」に
-    // なり、一覧としても認証ポリシーの参照先としても信用できなくなる。
+    // The secrets still live in the old tables (expand phase), so every registration/deletion mirrors the same
+    // event into the registry. If this is missed, the registry becomes "a list including authenticators that can't
+    // actually be used", trustworthy neither as a list nor as what the authentication policy refers to.
 
-    /// TOTP の仮登録を登録簿へ積む（既存の TOTP 行は失効させて 1 本に保つ）。
+    /// Records a provisional TOTP registration in the registry (revokes existing TOTP rows to keep just one).
     pub async fn register_totp_pending(
         &self,
         user_id: Uuid,
@@ -746,8 +746,8 @@ impl AuthenticatorManagementService {
             authenticator_type: AuthenticatorType::Totp,
             status: AuthenticatorStatus::Pending,
             label: String::new(),
-            // 共有鍵はこの直後に `TotpSecretRepository::upsert` がこの行へ載せる（AP11b。
-            // 行を先に作るのはそのため —— 逆順にすると載せる先が無い）。
+            // The shared key is put onto this row right after by `TotpSecretRepository::upsert` (AP11b;
+            // that's why the row is created first —— in the reverse order there'd be nowhere to put it).
             secret_encrypted: None,
             target: None,
             confirmed_at: None,
@@ -763,7 +763,7 @@ impl AuthenticatorManagementService {
             .map_err(|e| AuthenticatorManagementError::Internal(e.to_string()))
     }
 
-    /// TOTP の確認完了を登録簿へ反映する（`pending` → `active`）。
+    /// Reflects TOTP confirmation in the registry (`pending` -> `active`).
     pub async fn activate_totp(&self, user_id: Uuid) -> Result<(), AuthenticatorManagementError> {
         let now = self.clock.now();
         let rows = self
@@ -775,7 +775,7 @@ impl AuthenticatorManagementService {
             a.authenticator_type == AuthenticatorType::Totp
                 && a.status == AuthenticatorStatus::Pending
         }) else {
-            // 登録簿の導入前に仮登録された行が無い場合。確認済みの行として作り直す。
+            // No provisional row from before the registry was introduced. Recreate it as a confirmed row.
             return self.create_active_totp(user_id, now).await;
         };
         self.authenticators
@@ -785,7 +785,7 @@ impl AuthenticatorManagementService {
             .map_err(|e| AuthenticatorManagementError::Internal(e.to_string()))
     }
 
-    /// TOTP の削除を登録簿へ反映する。
+    /// Reflects TOTP deletion in the registry.
     pub async fn revoke_totp(&self, user_id: Uuid) -> Result<(), AuthenticatorManagementError> {
         self.authenticators
             .revoke_all_of_type(user_id, AuthenticatorType::Totp, self.clock.now())
@@ -794,7 +794,7 @@ impl AuthenticatorManagementService {
             .map_err(|e| AuthenticatorManagementError::Internal(e.to_string()))
     }
 
-    /// 一時停止されているパスキーの行 id（AP9）。判定は [`suspended_passkey_ids`] が持つ。
+    /// Row ids of suspended passkeys (AP9). The decision lives in [`suspended_passkey_ids`].
     pub async fn suspended_passkey_ids(
         &self,
         user_id: Uuid,
@@ -804,10 +804,10 @@ impl AuthenticatorManagementService {
             .map_err(|e| AuthenticatorManagementError::Internal(e.to_string()))
     }
 
-    /// WebAuthn クレデンシャルの失効を登録簿へ反映する（対象が無ければ何もしない）。
+    /// Reflects revocation of a WebAuthn credential in the registry (does nothing if there is no target).
     ///
-    /// `credential_id` は登録簿の行 id ＝ パスキー 1 本の識別子である。AP11b で元の表を落とし、
-    /// 「呼び出し側が持っている id がどちらの表のものか」という曖昧さは無くなった。
+    /// `credential_id` is the registry row id = the identifier of one passkey. AP11b dropped the original table,
+    /// so the ambiguity of "which table does the caller's id belong to" is gone.
     pub async fn revoke_webauthn(
         &self,
         user_id: Uuid,
@@ -829,10 +829,10 @@ impl AuthenticatorManagementService {
             .map_err(|e| AuthenticatorManagementError::Internal(e.to_string()))
     }
 
-    /// 管理者による MFA 解除（MT21）を登録簿へ反映する（TOTP・WebAuthn・リカバリーコードを失効）。
+    /// Reflects an admin MFA reset (MT21) in the registry (revokes TOTP, WebAuthn and recovery codes).
     ///
-    /// リカバリーコードも落とすのは、端末を失った利用者の復旧手段を管理者が作り直す操作だから。
-    /// 古い束が生き残っていると「解除したのに古い紙で入れる」状態になる。
+    /// Recovery codes are dropped too because this is the admin rebuilding the recovery means of a user who lost their device.
+    /// If the old set survived, "reset done, yet the old paper still gets in" would be possible.
     pub async fn revoke_all_for_user(
         &self,
         user_id: Uuid,
@@ -878,7 +878,7 @@ impl AuthenticatorManagementService {
             .map_err(|e| AuthenticatorManagementError::Internal(e.to_string()))
     }
 
-    /// 監査へ載せる残数（取得に失敗しても監査を落とさないよう `-1` に倒す）。
+    /// Remaining count for the audit (falls back to `-1` so a failed lookup doesn't drop the audit).
     async fn remaining_after(&self, user_id: Uuid) -> i64 {
         match self.usable_recovery_code_count(user_id).await {
             Ok(n) => n as i64,
@@ -887,18 +887,18 @@ impl AuthenticatorManagementService {
     }
 }
 
-/// 登録簿で**止められている**認証器かを判定する（AP9。認証経路のゲート）。
+/// Decides whether an authenticator is **stopped** in the registry (AP9; the gate on authentication paths).
 ///
-/// 秘密も状態も登録簿にある（AP11b）が、秘密を引く経路（`TotpSecretRepository` /
-/// `WebAuthnCredentialRepository`）は「失効していない行」しか見ない。**一時停止**は
-/// そこを通ってしまうため、認証経路がこの判定を通らないと「画面では停止中なのに入れる」に
-/// なる。この関数がその 1 点を塞ぐ。
+/// Secrets and state are both in the registry (AP11b), but the paths that fetch secrets (`TotpSecretRepository` /
+/// `WebAuthnCredentialRepository`) only look at "not revoked rows". **Suspension** passes through
+/// there, so unless authentication paths go through this check, "suspended on screen yet still gets in"
+/// happens. This function closes that one gap.
 ///
-/// 判定は「止められた行があるか」に限る。行が無い・`pending` の場合は既存経路の判断
-/// （`confirmed_at` の有無など）に委ねる。
+/// The check is limited to "is there a stopped row". If there's no row or it's `pending`, the decision is left
+/// to the existing path (presence of `confirmed_at` etc.).
 ///
-/// `credential_id`（登録簿の行 id）を渡すと、そのパスキー 1 本だけを見る（1 本を止めても
-/// 他の本は使える）。`None` なら同じ種別の行を見る（TOTP は 1 利用者 1 本）。
+/// Passing `credential_id` (registry row id) looks only at that one passkey (stopping one leaves
+/// the others usable). With `None`, rows of the same kind are checked (TOTP is one per user).
 pub async fn is_blocked_in_registry(
     repository: &dyn UserAuthenticatorRepository,
     user_id: Uuid,
@@ -913,10 +913,10 @@ pub async fn is_blocked_in_registry(
         .any(|a| a.is_blocked()))
 }
 
-/// 一時停止されているパスキーの行 id（AP9）。
+/// Row ids of suspended passkeys (AP9).
 ///
-/// 停止は登録簿の `status` にしか無く、鍵を引く経路（`WebAuthnCredentialRepository`）は失効した
-/// 行しか落とさない。**停止中のパスキーも一覧には出る**ため、画面が印を付けるにはこの集合が要る。
+/// Suspension only exists in the registry's `status`, and the key-fetching path (`WebAuthnCredentialRepository`) only
+/// drops revoked rows. **Suspended passkeys still appear in the list**, so the screen needs this set to mark them.
 pub async fn suspended_passkey_ids(
     repository: &dyn UserAuthenticatorRepository,
     user_id: Uuid,
@@ -928,12 +928,12 @@ pub async fn suspended_passkey_ids(
         .collect())
 }
 
-/// **いま使える**パスキーを 1 本以上持っているか。
+/// Whether the user has at least one passkey **usable now**.
 ///
-/// パスキーの行は登録した瞬間から `active` で、削除は `revoked` へ、一時停止は `suspended` へ
-/// 動かす。したがって `active` の行がそのまま「押せば通るパスキー」である。本人確認（AP5）の
-/// 画面がパスキーの導線を出すかの判定に使う —— 持っていない利用者にボタンを見せると、ブラウザの
-/// ダイアログが出てから失敗する。
+/// A passkey row is `active` from the moment it is registered; deletion moves it to `revoked`, suspension to
+/// `suspended`. So an `active` row is exactly "a passkey that works when pressed". Used to decide whether the
+/// identity verification (AP5) screen offers the passkey path —— showing the button to users without one makes the
+/// browser dialog appear and then fail.
 pub async fn has_usable_passkey(
     repository: &dyn UserAuthenticatorRepository,
     user_id: Uuid,
@@ -943,7 +943,7 @@ pub async fn has_usable_passkey(
         .any(|a| a.status == AuthenticatorStatus::Active))
 }
 
-/// 登録簿のパスキー行（失効した行は含まない）。
+/// Passkey rows in the registry (revoked rows excluded).
 async fn passkey_rows(
     repository: &dyn UserAuthenticatorRepository,
     user_id: Uuid,
@@ -955,11 +955,11 @@ async fn passkey_rows(
     }))
 }
 
-/// 使い捨てコード（リカバリーコード・OTP）を正規化して消費する（AP9）。
+/// Normalizes and consumes a one-time code (recovery code, OTP) (AP9).
 ///
-/// ログイン経路（`MfaLoginService`）と管理ユースケースの両方が呼ぶため、**正規化の規則を 1 箇所に
-/// 置く**ことが目的の関数。正規化がずれると「発行時と同じ文字列なのに一致しない」が起きる。
-/// 空白と `-` を落とし、リカバリーコードは大小を無視する（紙から書き写す前提の値のため）。
+/// Called from both the login path (`MfaLoginService`) and admin use cases, so the purpose of this function is
+/// **keeping the normalization rules in one place**. If normalization drifts, "same string as issued, yet no match" happens.
+/// Strips whitespace and `-`, and ignores case for recovery codes (values assumed to be copied from paper).
 pub async fn consume_single_use_code(
     repository: &dyn UserAuthenticatorRepository,
     user_id: Uuid,
@@ -987,14 +987,14 @@ pub async fn consume_single_use_code(
     Ok(consumed.is_some())
 }
 
-/// 数字だけの使い捨てコードを作る（メール・SMS で読み上げ・転記される前提）。
+/// Makes a digits-only one-time code (assumed to be read aloud or copied from mail/SMS).
 ///
-/// 桁を落とさないよう先頭ゼロ埋めする（`012345` を `12345` にすると桁数が揺れ、検証側で
-/// 正規化が要る ＝ 事故のもとになる）。
+/// Zero-padded so digits aren't lost (turning `012345` into `12345` makes the length vary and the verifier
+/// would need normalization = a source of accidents).
 fn numeric_code(digits: u32) -> String {
     let modulus = 10u64.pow(digits);
-    // 暗号学的乱数から 64bit を取り、剰余で桁に収める。10^6 は 2^64 を割り切らないため厳密な
-    // 一様分布ではないが、偏りは 2^-44 未満で総当たり耐性に影響しない。
+    // Take 64 bits from a cryptographic RNG and reduce by modulo. 10^6 doesn't divide 2^64, so it isn't strictly
+    // uniform, but the bias is below 2^-44 and doesn't affect brute-force resistance.
     let bytes = crypto::random_hex(8);
     let value = u64::from_str_radix(&bytes, 16).unwrap_or(0) % modulus;
     format!("{value:0width$}", width = digits as usize)
@@ -1015,14 +1015,14 @@ mod tests {
         }
     }
 
-    /// 生成されるコードは毎回違う（同じ値が返るなら乱数源の取り違え）。
+    /// Generated codes differ every time (the same value would mean the wrong random source).
     #[test]
     fn numeric_codes_are_not_constant() {
         let first = numeric_code(6);
         assert!((0..50).any(|_| numeric_code(6) != first));
     }
 
-    /// 登録簿だけを返すフェイク（認証経路のゲートを見るのに秘密の表は要らない）。
+    /// A fake returning only the registry (checking the authentication path gate doesn't need the secret tables).
     struct FakeRegistry(Vec<UserAuthenticator>);
 
     #[async_trait]
@@ -1047,7 +1047,7 @@ mod tests {
         Uuid::from_u128(1)
     }
 
-    /// `id` は登録簿の行 id ＝ 認証器 1 本の識別子（AP11b でこれが唯一の識別子になった）。
+    /// `id` is the registry row id = the identifier of one authenticator (AP11b made it the only identifier).
     fn row(
         authenticator_type: AuthenticatorType,
         status: AuthenticatorStatus,
@@ -1082,7 +1082,7 @@ mod tests {
         r
     }
 
-    /// 送り直しは 30 秒あける。種別が違えば数えない。
+    /// Resends must be 30 seconds apart. Different kinds are not counted.
     #[test]
     fn otp_cannot_be_sent_again_too_soon() {
         let now = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
@@ -1097,7 +1097,7 @@ mod tests {
         ));
     }
 
-    /// 1 時間に 10 通まで。1 時間より前の分は数えない。
+    /// Up to 10 per hour. Sends older than one hour are not counted.
     #[test]
     fn otp_sends_per_hour_are_limited() {
         let now = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
@@ -1112,7 +1112,7 @@ mod tests {
         assert!(may_send_otp(&old, sms, now));
     }
 
-    /// 登録済みの電話番号の行（期限なし）は送った数に入れない。
+    /// Rows of registered phone numbers (no expiry) are not counted as sends.
     #[test]
     fn a_registered_phone_is_not_counted_as_a_send() {
         let now = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
@@ -1121,8 +1121,8 @@ mod tests {
         assert!(may_send_otp(&[phone], AuthenticatorType::SmsOtp, now));
     }
 
-    /// 一時停止・失効させた TOTP は認証に使わせない。秘密を引く経路は「失効していない行」を
-    /// 見るので、**一時停止**を塞ぐのはこの判定だけである。
+    /// Suspended or revoked TOTP can't be used for authentication. The secret-fetching path looks at "not revoked rows",
+    /// so this check is the only thing blocking **suspension**.
     #[tokio::test]
     async fn a_stopped_totp_is_blocked_even_though_its_secret_still_exists() {
         for status in [AuthenticatorStatus::Suspended, AuthenticatorStatus::Revoked] {
@@ -1136,7 +1136,7 @@ mod tests {
         }
     }
 
-    /// `active` / `pending` は塞がない（`pending` は「未確認」であって止められてはいない）。
+    /// `active` / `pending` are not blocked (`pending` means "unconfirmed", not stopped).
     #[tokio::test]
     async fn active_and_pending_authenticators_are_not_blocked() {
         for status in [AuthenticatorStatus::Active, AuthenticatorStatus::Pending] {
@@ -1150,8 +1150,8 @@ mod tests {
         }
     }
 
-    /// 登録簿に行が無い場合は塞がない（行が無い＝そもそも認証器が無いので、秘密を引く側が
-    /// 見つけられずに終わる。ここで塞ぐ判断を重ねる必要は無い）。
+    /// With no row in the registry, nothing is blocked (no row = no authenticator at all, so the secret-fetching side
+    /// finds nothing and ends there. No need to layer a blocking decision here).
     #[tokio::test]
     async fn a_missing_registry_row_does_not_block() {
         let repo = FakeRegistry(Vec::new());
@@ -1162,7 +1162,7 @@ mod tests {
         );
     }
 
-    /// パスキーは 1 利用者に複数ある。1 本を止めても、他の本は使えなければならない。
+    /// A user can have several passkeys. Stopping one must leave the others usable.
     #[tokio::test]
     async fn stopping_one_passkey_leaves_the_others_usable() {
         let stopped = Uuid::from_u128(10);
@@ -1191,7 +1191,7 @@ mod tests {
         );
     }
 
-    /// 種別が違えば干渉しない（TOTP を止めてもパスキーは使える）。
+    /// Different kinds don't interfere (stopping TOTP leaves passkeys usable).
     #[tokio::test]
     async fn stopping_one_type_does_not_block_another() {
         let repo = FakeRegistry(vec![row(

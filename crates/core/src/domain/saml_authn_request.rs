@@ -1,12 +1,12 @@
-//! SAML 2.0 AuthnRequest の受信（SP-initiated SSO、`/{tenant_id}/saml/sso`）。
+//! Receiving SAML 2.0 AuthnRequests (SP-initiated SSO, `/{tenant_id}/saml/sso`).
 //!
-//! - HTTP-Redirect binding: `SAMLRequest` クエリ = base64(raw DEFLATE(XML))
-//! - HTTP-POST binding: `SAMLRequest` フォーム値 = base64(XML)
+//! - HTTP-Redirect binding: `SAMLRequest` query = base64(raw DEFLATE(XML))
+//! - HTTP-POST binding: `SAMLRequest` form value = base64(XML)
 //!
-//! ここではデコードと XML 解析（SP の entityID・リクエスト ID・ACS URL の抽出）のみを行い、
-//! 登録済み SP との突き合わせ・ACS URL の検証は Application 層
-//! （[`crate::application::saml_sso`]）に委ねる。署名付き AuthnRequest の署名検証は行わない
-//! （ assay のメタデータは `WantAuthnRequestsSigned="false"` を宣言している）。
+//! This only decodes and parses XML (extracting the SP entityID, request ID, ACS URL);
+//! matching against registered SPs and ACS URL validation are left to the Application layer
+//! ([`crate::application::saml_sso`]). Signatures of signed AuthnRequests are not verified
+//! (assay's metadata declares `WantAuthnRequestsSigned="false"`).
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::xml_text;
@@ -16,21 +16,22 @@ use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::io::Read;
 
-/// デコード後 XML の上限（バイト）。展開爆弾（zip bomb）を遮断する。
+/// Upper bound (bytes) of the decoded XML. Blocks decompression bombs (zip bombs).
 const MAX_XML_BYTES: usize = 128 * 1024;
 
-/// 解析済み AuthnRequest。SP の特定と応答（`InResponseTo`）に必要な値のみ抽出する。
+/// A parsed AuthnRequest. Extracts only the values needed to identify the SP and respond
+/// (`InResponseTo`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedAuthnRequest {
-    /// `AuthnRequest/@ID`（応答の `InResponseTo` に使う）。
+    /// `AuthnRequest/@ID` (used for the response's `InResponseTo`).
     pub request_id: Option<String>,
-    /// `Issuer` 本文 = SP の entityID（登録済み SP の解決キー）。
+    /// `Issuer` text = the SP's entityID (key for resolving the registered SP).
     pub issuer: String,
-    /// `AuthnRequest/@AssertionConsumerServiceURL`（指定時は登録値との一致を要求する）。
+    /// `AuthnRequest/@AssertionConsumerServiceURL` (when given, must match the registered value).
     pub acs_url: Option<String>,
 }
 
-/// HTTP-Redirect binding の `SAMLRequest`（base64(raw DEFLATE(XML))）をデコードする。
+/// Decodes the HTTP-Redirect binding `SAMLRequest` (base64(raw DEFLATE(XML))).
 pub fn decode_redirect_binding(saml_request: &str) -> Result<String> {
     let compressed = decode_base64(saml_request)?;
     let mut decoder = flate2::read::DeflateDecoder::new(compressed.as_slice());
@@ -49,7 +50,7 @@ pub fn decode_redirect_binding(saml_request: &str) -> Result<String> {
         .map_err(|_| DomainError::InvalidValue("SAMLRequest is not valid UTF-8".to_string()))
 }
 
-/// HTTP-POST binding の `SAMLRequest`（base64(XML)）をデコードする。
+/// Decodes the HTTP-POST binding `SAMLRequest` (base64(XML)).
 pub fn decode_post_binding(saml_request: &str) -> Result<String> {
     let xml = decode_base64(saml_request)?;
     if xml.len() > MAX_XML_BYTES {
@@ -61,9 +62,10 @@ pub fn decode_post_binding(saml_request: &str) -> Result<String> {
         .map_err(|_| DomainError::InvalidValue("SAMLRequest is not valid UTF-8".to_string()))
 }
 
-/// base64 デコード。スペースは `+` へ戻し（`+` を percent-encode しない SP のクエリは
-/// フォームデコードでスペース化する既知の互換問題。スペースは base64 に現れないため安全）、
-/// 改行等の空白は除去してから標準アルファベットで復号する。
+/// Base64 decoding. Spaces are turned back into `+` (a known compatibility issue: SPs that do not
+/// percent-encode `+` get it turned into a space by form decoding; safe because spaces never appear
+/// in base64), and whitespace such as newlines is removed before decoding with the standard
+/// alphabet.
 fn decode_base64(value: &str) -> Result<Vec<u8>> {
     let cleaned: String = value
         .chars()
@@ -75,8 +77,9 @@ fn decode_base64(value: &str) -> Result<Vec<u8>> {
         .map_err(|e| DomainError::InvalidValue(format!("SAMLRequest base64 decode failed: {e}")))
 }
 
-/// AuthnRequest XML を解析する。ルート要素が `AuthnRequest` でない・`Issuer` が無い場合はエラー。
-/// 名前空間接頭辞は実装依存のためローカル名で判定する（[`crate::domain::saml_metadata`] と同方針）。
+/// Parses AuthnRequest XML. Errors if the root element is not `AuthnRequest` or `Issuer` is
+/// missing. Namespace prefixes are implementation-dependent, so local names are used (same policy
+/// as [`crate::domain::saml_metadata`]).
 pub fn parse_authn_request(xml: &str) -> Result<ParsedAuthnRequest> {
     let mut reader = Reader::from_str(xml);
 
@@ -164,7 +167,7 @@ pub fn parse_authn_request(xml: &str) -> Result<ParsedAuthnRequest> {
     })
 }
 
-/// `samlp:AuthnRequest` → `AuthnRequest` のように接頭辞を除く。
+/// Strips the prefix, e.g. `samlp:AuthnRequest` → `AuthnRequest`.
 fn strip_prefix(name: &str) -> &str {
     name.split_once(':').map_or(name, |(_, local)| local)
 }
@@ -218,9 +221,9 @@ mod tests {
 
     #[test]
     fn tolerates_plus_decoded_to_space_and_embedded_newlines() {
-        // `+` を percent-encode しない SP はクエリのフォームデコードで `+` がスペースになる。
-        // スペースは base64 に現れないため `+` へ戻して受理する。改行入り base64（POST binding の
-        // 折り返し）も受理する。
+        // For SPs that do not percent-encode `+`, form decoding of the query turns `+` into a
+        // space. Spaces never appear in base64, so they are turned back into `+` and accepted.
+        // Base64 with newlines (POST binding line wrapping) is accepted too.
         let encoded = redirect_encode(AUTHN_REQUEST);
         let mangled = encoded.replace('+', " ");
         let xml = decode_redirect_binding(&mangled).expect("decode with spaces");
@@ -264,7 +267,8 @@ mod tests {
 
     #[test]
     fn rejects_oversized_payloads() {
-        // 128 KiB 超の XML は Redirect / POST の両バインディングで拒否する（展開爆弾対策）。
+        // XML over 128 KiB is rejected for both Redirect and POST bindings (against decompression
+        // bombs).
         let big = format!(
             "<AuthnRequest xmlns=\"urn:oasis:names:tc:SAML:2.0:protocol\"><Issuer>urn:sp</Issuer><!--{}--></AuthnRequest>",
             "x".repeat(MAX_XML_BYTES)

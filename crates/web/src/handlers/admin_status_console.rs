@@ -1,8 +1,8 @@
-//! 状況確認画面（web。A3・ADR-0007 §4）。監査ログ一覧・エラー警告ログ一覧・クライアント状況一覧。
+//! Status screens (web. A3, ADR-0007 §4). Audit log list, error/warning log list, client status list.
 //!
-//! api の JSON 管理 API（`GET /admin/audit-logs`・`GET /admin/logs`・`GET /admin/clients/status`）を管理者の SSO Cookie
-//! 転送で呼び、結果を Askama テンプレートに描画する（`{{ }}` は自動 HTML エスケープ）。読み取り専用の
-//! ため CSRF は無い。期間（from/to）の形式不正は api が 400 を返すため、web はそれを日時エラー表示へ写す。
+//! Calls the api's JSON admin APIs (`GET /admin/audit-logs`, `GET /admin/logs`, `GET /admin/clients/status`) by forwarding
+//! the admin's SSO cookie and renders the results with Askama templates (`{{ }}` auto-escapes HTML). Read-only,
+//! so no CSRF. For a malformed period (from/to) the api returns 400, which web maps to a date error display.
 
 use super::locale;
 use crate::admin_dto::AuditLogView;
@@ -28,10 +28,10 @@ use serde::Deserialize;
 
 const AUDIT_SEGMENT: &str = "/admin/audit-logs";
 const APPLICATION_LOG_SEGMENT: &str = "/admin/logs";
-/// api の既定ページサイズ（`audit_query::DEFAULT_LIMIT` と一致させる。ページャの「次あり」判定に使う）。
+/// The api's default page size (keep equal to `audit_query::DEFAULT_LIMIT`; used for the pager's "has next" check).
 const DEFAULT_LIMIT: i64 = 50;
 
-// ── 監査ログ一覧 ──────────────────────────────────────────────────────────────
+// ── Audit log list ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Default, Deserialize)]
 pub struct AuditForm {
@@ -64,7 +64,7 @@ pub async fn audit_logs(
     };
     let offset = form.offset.unwrap_or(0).max(0);
 
-    // フィルタを (key, value) の並びへ（空値は送らない）。offset は常に送る。
+    // Turn filters into (key, value) pairs (empty values are not sent). offset is always sent.
     let mut query: Vec<(&str, String)> = Vec::new();
     let mut push = |k: &'static str, v: &Option<String>| {
         if let Some(v) = v.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
@@ -89,7 +89,7 @@ pub async fn audit_logs(
             &messages, &tenant, &admin, &form, offset, false, &entries,
         ))
         .into_response(),
-        // from/to の形式不正（api が 400）→ 日時エラー表示・空一覧。
+        // Malformed from/to (api 400) → date error display, empty list.
         Err(AdminApiError::Validation(_)) => Html(render_audit(
             &messages,
             &tenant,
@@ -106,7 +106,7 @@ pub async fn audit_logs(
     }
 }
 
-// ── エラー・警告ログ一覧 ──────────────────────────────────────────────────────
+// ── Error/warning log list ──────────────────────────────────────────────────────
 
 #[derive(Debug, Default, Deserialize)]
 pub struct ApplicationLogForm {
@@ -126,8 +126,8 @@ pub struct ApplicationLogForm {
     pub offset: Option<i64>,
 }
 
-/// エラー・警告ログ画面（`log` テーブル）。api 側は `idp.system.admin` を要求するため、テナント
-/// 管理者が開くと 403 画面になる（テナント横断の運用情報のため。api の handler コメント参照）。
+/// Error/warning log screen (`log` table). The api requires `idp.system.admin`, so a tenant
+/// admin gets the 403 screen (cross-tenant operational information; see the api handler's comment).
 pub async fn application_logs(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -165,7 +165,7 @@ pub async fn application_logs(
             &messages, &tenant, &admin, &form, offset, false, &entries,
         ))
         .into_response(),
-        // from/to の形式不正（api が 400）→ 日時エラー表示・空一覧。
+        // Malformed from/to (api 400) → date error display, empty list.
         Err(AdminApiError::Validation(_)) => Html(render_application_logs(
             &messages,
             &tenant,
@@ -182,7 +182,7 @@ pub async fn application_logs(
     }
 }
 
-// ── クライアント状況一覧 ──────────────────────────────────────────────────────
+// ── Client status list ──────────────────────────────────────────────────────
 
 pub async fn client_status(
     State(state): State<WebState>,
@@ -211,7 +211,7 @@ fn sso(headers: &HeaderMap) -> String {
     crate::cookies::get(headers, crate::cookies::SSO_SESSION_COOKIE).unwrap_or_default()
 }
 
-// ── レンダリング ──────────────────────────────────────────────────────────────
+// ── Rendering ──────────────────────────────────────────────────────────────
 
 fn render_audit(
     messages: &Messages,
@@ -240,7 +240,7 @@ fn render_audit(
     })
 }
 
-/// ページャの前後リンク（クエリ文字列付き URL）。該当がなければ `None`。
+/// The pager's prev/next links (URLs with query string). `None` when not applicable.
 fn pager_links(
     tenant: &WebTenant,
     form: &AuditForm,
@@ -356,16 +356,16 @@ fn render_status(
     })
 }
 
-// ── バージョン情報 ────────────────────────────────────────────────────────────
+// ── Version information ────────────────────────────────────────────────────────────
 
-/// 稼働中のビルドと、DB へ適用済みのマイグレーションを表示する（ADR-0034）。
+/// Shows the running build and the migrations applied to the DB (ADR-0034).
 ///
-/// **管理コンソールの内側に置く。** 稼働中のコミットが分かると、どの既知の不具合が塞がって
-/// いないかを外から判断できるため、無認証の面には出さない。一方で「DB を直接見られない管理者が
-/// 適用状況を確認できる」ことは、この画面が作られた目的そのものなので、ログイン済みには見せる。
+/// **Placed inside the admin console.** Knowing the running commit lets outsiders judge which known bugs are
+/// not yet fixed, so it is not exposed on an unauthenticated surface. On the other hand, "admins who cannot see the
+/// DB directly can check the migration state" is the very purpose of this screen, so signed-in users see it.
 ///
-/// api 未到達時はスキーマ欄を「取得できません」表示にフォールバックする（fail-soft）。稼働中の
-/// ビルドは web 自身が知っているので、api が落ちていても版数は読める。
+/// When the api is unreachable, the schema field falls back to "unavailable" (fail-soft). web itself knows
+/// the running build, so the version is readable even if the api is down.
 pub async fn version(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -389,16 +389,16 @@ pub async fn version(
     .into_response()
 }
 
-/// 稼働中のビルドの表記だけを返す（`GET /{tenant_id}/admin/version/current`）。
+/// Returns only the running build's label (`GET /{tenant_id}/admin/version/current`).
 ///
-/// 開いたままの画面が、新しいバージョンが配られたことに気付くための口。共通レイアウトは
-/// 描いたときのビルドを `data-build` に持ち、`assets/console.js` がここの値と比べて、違えば
-/// 「新しいバージョンがあります」を出す。
+/// Endpoint letting an open screen notice that a new version has been deployed. The shared layout keeps
+/// the build at render time in `data-build`, and `assets/console.js` compares it with this value and, if different,
+/// shows "a new version is available".
 ///
-/// ⚠ **管理コンソールの内側に置く**（ADR-0034。稼働中のコミットを無認証の面に出さない）。
-/// 未ログインならログイン画面への 302 が返り、スクリプトはそれを追わずに何もしない。
-/// ⚠ ここで引く whoami は SSO セッションの有効期限を延ばさない（延ばすのは認可要求のときだけ）。
-/// 開いたままの画面が問い合わせ続けても、「操作が無いときにログアウトする」は効いたままである。
+/// ⚠ **Placed inside the admin console** (ADR-0034; the running commit is not exposed on an unauthenticated surface).
+/// If not signed in, a 302 to the login screen is returned, and the script does not follow it and does nothing.
+/// ⚠ The whoami looked up here does not extend the SSO session's expiry (only authorization requests do).
+/// Even if an open screen keeps polling, "sign out after inactivity" still works.
 pub async fn current_build(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -413,7 +413,7 @@ pub async fn current_build(
     (
         [
             (CONTENT_TYPE, "text/plain; charset=utf-8"),
-            // 比べる相手は「いま答えたプロセス」のビルドなので、途中で持たせない。
+            // The comparison target is the build of "the process that just answered", so do not cache it.
             (CACHE_CONTROL, "no-store"),
         ],
         crate::templates::footer_version(),
@@ -421,7 +421,7 @@ pub async fn current_build(
         .into_response()
 }
 
-// ── 共通ヘルパー ──────────────────────────────────────────────────────────────
+// ── Shared helpers ──────────────────────────────────────────────────────────────
 
 fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -486,7 +486,7 @@ mod tests {
             false,
             &[entry("login.failed", "failure", Some("<bad>"))],
         );
-        // Askama は HTML を数値文字参照でエスケープする（`<` → `&#60;`）。生タグが残らないことを確認する。
+        // Askama escapes HTML with numeric character references (`<` → `&#60;`). Verify no raw tags remain.
         assert!(html.contains("&#60;client&#62;"));
         assert!(html.contains("&#60;bad&#62;"));
         assert!(html.contains("result-failure"));
@@ -546,7 +546,7 @@ mod tests {
             &AdminContext::for_test("admin-1", Some("Acme")),
             &views,
         );
-        // Askama は HTML を数値文字参照でエスケープする（`<` → `&#60;`）。
+        // Askama escapes HTML with numeric character references (`<` → `&#60;`).
         assert!(html.contains("&#60;Used&#62;"));
         assert!(html.contains("DISABLED"));
         assert!(html.contains("openid profile"));
@@ -586,14 +586,14 @@ mod tests {
                 log_entry("WARN", "web", None),
             ],
         );
-        // Askama は HTML を数値文字参照でエスケープする（`<` → `&#60;`）。生タグが残らないこと。
+        // Askama escapes HTML with numeric character references (`<` → `&#60;`). No raw tags must remain.
         assert!(html.contains("&#60;script&#62;"));
         assert!(!html.contains("<script>alert"));
         assert!(html.contains("&#60;timeout&#62;"));
-        // レベルごとにバッジを塗り分ける（一覧でエラーを拾いやすくするため）。
+        // Badges are colored per level (so errors stand out in the list).
         assert!(html.contains("level-error"));
         assert!(html.contains("level-warn"));
-        // traceback がある行だけ詳細を折りたたんで出す。
+        // Only rows with a traceback show collapsible details.
         assert_eq!(html.matches("<details").count(), 1);
     }
 
@@ -622,7 +622,7 @@ mod tests {
         let url = application_log_query_string(&tenant(), &form, 50);
         assert!(url.contains("/admin/logs?"));
         assert!(url.contains("level=ERROR"));
-        // `_` は非予約文字なのでそのまま、`:` と空白はパーセントエンコードされる。
+        // `_` is an unreserved character so it stays as is; `:` and spaces are percent-encoded.
         assert!(url.contains("target=assay_api%3A%3Aa%20b"));
         assert!(url.ends_with("offset=50"));
     }

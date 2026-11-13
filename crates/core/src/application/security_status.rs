@@ -1,19 +1,19 @@
-//! 本人が見る「状況」（task #896。ADR-0078）。
+//! The "status" the user sees (task #896. ADR-0078).
 //!
-//! 「アカウントのセキュリティ」の先頭に、次を 1 か所にまとめて返す。読むだけで何も書かない。
+//! At the top of "Account security", returns the following gathered in one place. Read only; writes nothing.
 //!
-//! | まとまり | 中身 |
+//! | Group | Contents |
 //! |---|---|
-//! | ログイン状態 | 入り方・端末（登録済みか）・端末の鍵の結び付け（DBSC）・認証アプリの承認・長さとその根拠 |
-//! | 持ち物 | パスキー・TOTP・認証アプリの鍵・登録した端末・SSH の鍵と、それぞれ最後に使った時刻 |
-//! | アプリとトークン | リフレッシュトークンの有無と DPoP の結び付き・更新の回数・使い回しの検知・同意の範囲 |
-//! | 組織の決まり | 知らせ・SSH の鍵・長さ・端末の期限（自分に効いている値） |
-//! | 注意 | 直近 30 日の使い回し・別の鍵の署名・登録していない端末でのログイン・失敗の多い日 |
+//! | Signed-in states | How signed in, device (registered or not), device key binding (DBSC), authenticator app approval, lifetime and its basis |
+//! | Possessions | Passkeys, TOTP, authenticator app keys, registered devices, SSH keys, and the last time each was used |
+//! | Apps and tokens | Whether there is a refresh token and its DPoP binding, refresh count, reuse detection, consented scope |
+//! | Organization rules | Notifications, SSH keys, lifetime, device expiry (the values in effect for oneself) |
+//! | Warnings | Reuse, signatures from a different key, sign-ins on unregistered devices, days with many failures in the last 30 days |
 //!
-//! 長さの根拠は `session_key::lifetime_basis`（長さを決めるのと同じ判定）から取る。画面の説明と実際の
-//! 長さが別々の判定で食い違わないようにするため。
+//! The lifetime basis is taken from `session_key::lifetime_basis` (the same decision that sets the lifetime), so that the
+//! screen's explanation and the actual lifetime do not diverge through separate decisions.
 //!
-//! 本人の分だけ。利用者は SSO セッションの持ち主で決まり、利用者 id は外から受け取らない。
+//! Only the user's own. The user is determined by the SSO session's owner; no user id is accepted from outside.
 
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
@@ -39,16 +39,16 @@ use chrono::{DateTime, Duration, Utc};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// ログイン状態 1 つの状況。
+/// Status of one signed-in state.
 #[derive(Debug, Clone)]
 pub struct SessionStatus {
-    /// 画面の識別子（`SsoSession::display_id`。既存の「ログイン状態」の行と同じ値）。
+    /// Identifier on screen (`SsoSession::display_id`. Same value as the existing "signed-in state" rows).
     pub id: String,
-    /// 今見ているログイン状態か。
+    /// Whether this is the signed-in state currently being viewed.
     pub current: bool,
     pub auth_time: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
-    /// 切れる時刻（idle と absolute の早いほう）。
+    /// Expiry time (the earlier of idle and absolute).
     pub expires_at: DateTime<Utc>,
     pub methods: Vec<AuthenticationMethod>,
     pub multi_factor: bool,
@@ -61,11 +61,11 @@ pub struct SessionStatus {
     pub approver: Option<ApproverStatus>,
     pub binding: SessionBinding,
     pub lifetime_basis: LifetimeBasis,
-    /// パスキーの本人確認が新しいうち（端末の登録・SSH の鍵の操作ができる）の期限。過ぎていれば `None`。
+    /// Deadline while the passkey verification is fresh (device registration and SSH key operations allowed). `None` if past.
     pub passkey_fresh_until: Option<DateTime<Utc>>,
 }
 
-/// 持ち物の種類。
+/// Kind of possession.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BelongingKind {
     Passkey,
@@ -87,32 +87,32 @@ impl BelongingKind {
     }
 }
 
-/// 信頼している持ち物 1 つ。
+/// One trusted possession.
 #[derive(Debug, Clone)]
 pub struct Belonging {
     pub kind: BelongingKind,
     pub name: String,
-    /// 種類ごとの補足（認証アプリの鍵の置き場・端末の名乗り・SSH の鍵の型）。
+    /// Per-kind detail (where the authenticator app key is, the device's name, the SSH key type).
     pub detail: Option<String>,
     pub registered_at: DateTime<Utc>,
-    /// 最後に使った時刻。assay から使われたことが見えないもの（SSH の鍵）は常に `None`。
+    /// Last used time. Always `None` for things whose use assay cannot see (SSH keys).
     pub last_used_at: Option<DateTime<Utc>>,
-    /// 期限（登録した端末だけ。最後に使ってから 180 日）。
+    /// Expiry (registered devices only. 180 days after last use).
     pub expires_at: Option<DateTime<Utc>>,
 }
 
-/// 自分に効いている組織の決まり。
+/// Organization rules in effect for oneself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PolicyStatus {
-    /// 登録していない端末でのログインを知らせるか（所属元の組織）。
+    /// Whether sign-ins on unregistered devices are notified (home organization).
     pub unregistered_device_alerts: bool,
-    /// SSH の鍵を登録できるか（今の組織）。
+    /// Whether SSH keys can be registered (current organization).
     pub ssh_keys_enabled: bool,
-    /// ログイン状態の長さ（秒。所属元の組織）。
+    /// Lifetime of the signed-in state (seconds. home organization).
     pub idle_ttl_secs: i64,
     pub absolute_ttl_secs: i64,
     pub bound_ttl_secs: i64,
-    /// 登録した端末の期限（最後に使ってからの日数）。
+    /// Expiry of registered devices (days since last use).
     pub device_expiry_days: i64,
 }
 
@@ -126,7 +126,7 @@ pub struct SecurityStatus {
 }
 
 impl SecurityStatus {
-    /// 今見ているログイン状態。
+    /// The signed-in state currently being viewed.
     pub fn current(&self) -> Option<&SessionStatus> {
         self.sessions.iter().find(|s| s.current)
     }
@@ -151,7 +151,7 @@ pub struct SecurityStatusService {
     clock: Arc<dyn Clock>,
 }
 
-/// 依存の束（引数が多すぎて取り違えないよう名前で渡す）。
+/// Bundle of dependencies (passed by name to avoid mixing up too many arguments).
 pub struct SecurityStatusDeps {
     pub query: Arc<dyn SecurityStatusQuery>,
     pub sso_sessions: Arc<dyn SsoSessionRepository>,
@@ -179,7 +179,7 @@ impl SecurityStatusService {
         }
     }
 
-    /// ログイン状態の持ち主の「状況」を返す。`tenant` は今開いている組織（SSH の鍵はここで見る）。
+    /// Returns the "status" of the signed-in state's owner. `tenant` is the currently open organization (SSH keys are viewed here).
     pub async fn status(
         &self,
         tenant: TenantContext,
@@ -227,7 +227,7 @@ impl SecurityStatusService {
             device_expiry_days: UNUSED_DEVICE_EXPIRY_DAYS,
         };
 
-        // ログイン状態（期限切れは GC を待たずに落とす）。今のものを先頭に、あとは新しい順。
+        // Signed-in states (expired ones are dropped without waiting for GC). The current one first, then newest first.
         let mut contexts: HashMap<String, SessionContextStatus> = self
             .query
             .session_contexts(user.id)
@@ -316,7 +316,7 @@ impl SecurityStatusService {
         }
         let expiry = Duration::days(UNUSED_DEVICE_EXPIRY_DAYS);
         for d in self.devices.list_for_user(user_id).await? {
-            // 期限を過ぎた端末は見回りを待たずに落とす（「まだ信頼している」と見せない）。
+            // Devices past their expiry are dropped without waiting for the sweep (do not show them as "still trusted").
             if d.last_used_at + expiry <= now {
                 continue;
             }
@@ -349,7 +349,7 @@ impl SecurityStatusService {
     }
 }
 
-/// ログイン状態 1 つの状況を組み立てる（DB に触らない部分。試験しやすいよう切り出す）。
+/// Builds the status of one signed-in state (the part that does not touch the DB; split out for testability).
 fn session_status(
     s: &SsoSession,
     context: SessionContextStatus,
@@ -386,8 +386,8 @@ fn session_status(
     }
 }
 
-/// 結び付けの種類。認証アプリの承認は確立のときに決まり、DBSC はその後に結び付く。両方あれば承認を採る
-/// （確立のときの長さを決めたのは承認だから）。
+/// Kind of binding. Authenticator app approval is decided at establishment, and DBSC binds afterwards. If both, approval wins
+/// (because approval decided the lifetime at establishment).
 fn binding_of(context: &SessionContextStatus) -> SessionBinding {
     if context.approver.is_some() {
         SessionBinding::AppApproval
@@ -398,7 +398,7 @@ fn binding_of(context: &SessionContextStatus) -> SessionBinding {
     }
 }
 
-/// パスキーの本人確認が新しいうちの期限（`user_device::passkey_verified_recently` と同じ根拠）。
+/// Deadline while passkey verification is fresh (same basis as `user_device::passkey_verified_recently`).
 fn passkey_fresh_until(
     s: &SsoSession,
     passkey_verified_at: Option<DateTime<Utc>>,
@@ -479,7 +479,7 @@ mod tests {
             status.lifetime_basis,
             LifetimeBasis::BoundOnRegisteredDevice
         );
-        // パスキーで入って 2 分 → 残り 3 分。
+        // Signed in with a passkey 2 minutes ago -> 3 minutes left.
         assert_eq!(status.passkey_fresh_until, Some(at(1, 5)));
     }
 

@@ -1,11 +1,11 @@
-{#- このアカウントが使えるアプリ（ADR-0063 / ADR-0065）。人とサービスアカウントの 1 件の画面が
-    同じものを使う。アプリの詳細（誰が使えるか）の裏返しで、可否は判定と同じ規則で api が答える。
+{#- Apps this account can use (ADR-0063 / ADR-0065). Shared by the single-item screens of people and service accounts.
+    The reverse of the app detail (who can use it); the api answers availability with the same rules as the check.
 
-    呼ぶ側が用意する値:
+    Values the caller provides:
       apps                … &AccountApplicationListView
-      for_service_account … サービスアカウントか。⚠ 「全員」に含まれるのは人だけなので、
-                            サービスアカウントにはモードを問わず出し入れの口を出す（ADR-0059 の決定 5）
-    出し入れの送り先は呼ぶ側の構造体の `assignment_action()`。 -#}
+      for_service_account … whether it is a service account. ⚠ "Everyone" includes only people, so
+                            service accounts always get assign/unassign controls regardless of mode (ADR-0059 decision 5)
+    The assign/unassign target is the caller struct's `assignment_action()`. -#}
 <div class="card mb-4">
   <div class="card-header">
     <div class="fw-semibold">{{ messages.get("admin-member-applications-title") }}</div>
@@ -19,8 +19,8 @@
   {% if apps.applications.is_empty() %}
   <p class="card-body text-muted mb-0">{% if for_service_account %}{{ messages.get("admin-service-account-applications-none") }}{% else %}{{ messages.get("admin-member-applications-none") }}{% endif %}</p>
   {% else %}
-  {#- その場で絞り込む（`assets/list-filter.js`）。名前の部分一致と、使えるかどうかの 2 つで絞る。
-      サーバへは送らない ——1 つのアカウントが使うアプリは多くても数十で、全件を 1 回で受け取っている。 -#}
+  {#- Filters in place (`assets/list-filter.js`) by two things: partial name match and whether usable.
+      Nothing is sent to the server -- one account uses at most a few dozen apps, all received at once. -#}
   <div data-list-filter>
   <div class="card-body border-bottom d-flex flex-wrap align-items-center gap-2">
     <div class="input-group input-group-sm member-apps-search">
@@ -50,8 +50,8 @@
       {% if app.access == "allowed" %}<span class="badge text-bg-success">{{ messages.get("admin-member-applications-allowed") }}</span>
       {% else if app.access == "application_disabled" %}<span class="badge text-bg-warning">{{ messages.get("admin-member-applications-disabled") }}</span>
       {% else %}<span class="badge text-bg-secondary">{{ messages.get("admin-member-applications-not-assigned") }}</span>{% endif %}
-      {#- 人は「個別」のアプリだけ（「全員」のアプリで外しても入れてしまう）。サービスアカウントは
-          「全員」に含まれないので、モードを問わず出し入れする。 -#}
+      {#- People only for "individual" apps (removing them from an "everyone" app would still let them in). Service accounts
+          are not in "everyone", so they are assigned/unassigned regardless of mode. -#}
       {% if app.assignment_mode == "INDIVIDUAL" || for_service_account %}
       {% if app.assigned_at.is_some() %}
       <form method="post" action="{{ self.assignment_action(app.application_id.as_str(), "unassign") }}" data-confirm="{{ messages.get("admin-member-applications-unassign-confirm") }}">

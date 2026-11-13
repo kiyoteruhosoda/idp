@@ -1,32 +1,32 @@
-//! 実行中サービスの再起動要求（ADR-0017）。
+//! Restart request for the running service (ADR-0017).
 //!
-//! ランタイム設定の DB 上書きは**起動時にしか読まれない**（ADR-0014）。反映には再起動が要るが、
-//! それまでは運用者がシェルへ入って `docker compose restart` を打つしかなく、設定画面から設定を
-//! 変えられるのに反映だけができない、という中途半端な状態だった。
+//! DB overrides of runtime settings are **read only at startup** (ADR-0014). Applying them needs a restart,
+//! but until now operators had to get a shell and run `docker compose restart`; settings could be changed
+//! from the settings screen but not applied, a half-finished state.
 //!
-//! アプリは自分自身を起動し直せない（プロセスを起こすのはプロセス管理側の役目）。できるのは
-//! **自分を綺麗に終わらせること**だけである。そこで本モジュールは graceful shutdown を起こす所まで
-//! を担い、新しいプロセスの起動は配置側の再起動ポリシー（Compose の `restart: unless-stopped`・
-//! systemd の `Restart=always`・k8s の `restartPolicy: Always`）に委ねる。終了コードは 0 なので、
-//! **`on-failure` 系のポリシーでは再起動されない**（`docs/OPERATIONS.md` に明記する）。
+//! An app cannot restart itself (starting processes is the process manager's job). All it can do is
+//! **shut itself down cleanly**. So this module goes as far as triggering graceful shutdown, and
+//! leaves starting the new process to the deployment's restart policy (Compose `restart: unless-stopped`,
+//! systemd `Restart=always`, k8s `restartPolicy: Always`). The exit code is 0, so
+//! **`on-failure` style policies do not restart it** (stated in `docs/OPERATIONS.md`).
 //!
-//! **単一インスタンス配置が前提である。** 止まるのは要求を受け取ったこのプロセスだけなので、
-//! 複数レプリカ配置では他のレプリカが起動時スナップショットのまま残り、古い issuer / 設定で
-//! 応答し続ける。多重化した時点で「設定を反映する」はデプロイ全体のロールアウト（k8s なら
-//! `kubectl rollout restart`）になり、アプリ内の仕組みでは担えない。本リポジトリの配置形態は
-//! api 1・web 1 の Compose（ADR-0007・ADR-0016）で、`InMemoryLoginRateLimiter` や権限キャッシュも
-//! 同じ前提に立っている。判断の経緯は ADR-0017 §Consequences を参照。
+//! **A single-instance deployment is assumed.** Only the process that received the request stops, so
+//! with multiple replicas the others keep their startup snapshot and keep answering with the old issuer /
+//! settings. Once replicated, "apply the settings" becomes a rollout of the whole deployment (on k8s
+//! `kubectl rollout restart`), which an in-app mechanism cannot do. This repository deploys as a
+//! Compose of api 1 and web 1 (ADR-0007, ADR-0016), and `InMemoryLoginRateLimiter` and the permission cache
+//! rest on the same assumption. See ADR-0017 §Consequences for the reasoning.
 
 use crate::domain::service_lifecycle::ServiceRestarter;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::Notify;
 
-/// 再起動要求の受け渡し口。`AppState` 経由でハンドラへ、`run()` 経由で graceful shutdown へ渡る。
+/// Handoff point for restart requests. Goes to handlers via `AppState` and to graceful shutdown via `run()`.
 #[derive(Clone)]
 pub struct ServiceRestart {
-    // `notify_one` を使う（`notify_waiters` ではない）。要求はサーバが shutdown future を待ち始める
-    // 前にも起こり得るため、待機者がいなければ permit を蓄えてくれる方でないと取りこぼす。
+    // Uses `notify_one` (not `notify_waiters`). A request can come before the server starts awaiting the
+    // shutdown future, so we need the one that stores a permit when nobody is waiting, or it would be lost.
     notify: Arc<Notify>,
     requested: Arc<AtomicBool>,
 }
@@ -39,18 +39,18 @@ impl ServiceRestart {
         }
     }
 
-    /// 再起動を要求する（graceful shutdown を起こす）。
+    /// Requests a restart (triggers graceful shutdown).
     pub fn request(&self) {
         self.requested.store(true, Ordering::SeqCst);
         self.notify.notify_one();
     }
 
-    /// 再起動が要求されるまで待つ。
+    /// Waits until a restart is requested.
     pub async fn requested(&self) {
         self.notify.notified().await;
     }
 
-    /// 再起動要求によって終了しようとしているか（シグナル停止と区別してログへ出す）。
+    /// Whether we are exiting because of a restart request (logged distinctly from a signal stop).
     pub fn was_requested(&self) -> bool {
         self.requested.load(Ordering::SeqCst)
     }
@@ -62,7 +62,7 @@ impl Default for ServiceRestart {
     }
 }
 
-/// Application 層（`application::service_restart`）から見た DIP 境界の実装。
+/// Implementation of the DIP boundary as seen from the application layer (`application::service_restart`).
 impl ServiceRestarter for ServiceRestart {
     fn request_restart(&self) {
         self.request();
@@ -73,14 +73,14 @@ impl ServiceRestarter for ServiceRestart {
 mod tests {
     use super::*;
 
-    /// 待機を始める**前**の要求も取りこぼさない（応答を返してから終了するため、要求が先に立つのが
-    /// 通常の順序になる）。
+    /// Does not lose requests made **before** waiting starts (we exit after returning the response, so the
+    /// request coming first is the normal order).
     #[tokio::test]
     async fn a_request_made_before_waiting_still_wakes_the_waiter() {
         let restart = ServiceRestart::new();
         restart.request();
         assert!(restart.was_requested());
-        // permit が蓄えられているので即座に返る（返らなければテストはタイムアウトで落ちる）。
+        // A permit is stored, so this returns immediately (if not, the test fails by timeout).
         restart.requested().await;
     }
 

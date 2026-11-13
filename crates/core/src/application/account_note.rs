@@ -1,15 +1,15 @@
-//! アカウントの管理者メモを書く（ADR-0063 / ADR-0065）。
+//! Writes an admin note on an account (ADR-0063 / ADR-0065).
 //!
-//! - 人: `PUT /{tenant_id}/admin/members/{user_id}/note`
-//! - サービスアカウント: `PUT /{tenant_id}/admin/service-accounts/{client_id}/note`
+//! - Person: `PUT /{tenant_id}/admin/members/{user_id}/note`
+//! - Service account: `PUT /{tenant_id}/admin/service-accounts/{client_id}/note`
 //!
-//! 口は種別ごとに分かれる（書く権限が `idp.members:write` / `idp.clients:write` で違う）が、
-//! 規則（上限・正規化・監査）はこのサービスにしか無い。読むのは一覧・詳細の結合
-//! （[`crate::application::account_directory`]・[`crate::application::member_directory`]）で済むので、
-//! ここは書き込みだけを持つ。
+//! The routes are split per kind (the write permission differs: `idp.members:write` / `idp.clients:write`),
+//! but the rules (limit, normalization, audit) live only in this service. Reading is done by the list
+//! and detail joins ([`crate::application::account_directory`], [`crate::application::member_directory`]),
+//! so this holds only the write.
 //!
-//! ⚠ **監査にはメモの中身を載せない。** 経緯の自由記述には個人の事情が入る。残すのは「誰が・
-//! 誰のメモを・書いたか消したか」だけにする（`UserProfileUpdated` が値を残さないのと同じ）。
+//! ⚠ **The audit does not carry the note's content.** Free-text history includes personal circumstances.
+//! Only "who wrote or cleared whose note" is kept (just as `UserProfileUpdated` keeps no values).
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::account::{AccountLocator, AccountRef};
@@ -25,9 +25,9 @@ use std::sync::Arc;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum AccountNoteError {
-    /// 要求テナントのアカウントではない（他テナントの存在を推測させない）。
+    /// Not an account of the requested tenant (do not let other tenants' existence be inferred).
     NotFound,
-    /// 長すぎる。
+    /// Too long.
     Invalid(MessageKey),
     Internal(String),
 }
@@ -57,10 +57,10 @@ impl AccountNoteService {
         }
     }
 
-    /// メモを書く。空（空白だけ）なら消す。
+    /// Writes the note. Empty (whitespace only) clears it.
     ///
-    /// 人は HOME / GUEST を問わず書ける。メモはこのテナントの管理者の覚え書きであって、ゲストの
-    /// 利用者そのもの（所属元の管理者しか触れない。ADR-0009 §3）を変えるものではない。
+    /// People can be written regardless of HOME / GUEST. The note is this tenant's admin memo and does
+    /// not change the guest user themselves (only the home tenant's admins may; ADR-0009 §3).
     pub async fn write(
         &self,
         tenant: TenantContext,
@@ -69,7 +69,7 @@ impl AccountNoteService {
         actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<(), AccountNoteError> {
-        // ⚠ 検証を先にする（長すぎるなら、相手が居るかどうかを問い合わせる前に断る）。
+        // ⚠ Validate first (if too long, refuse before asking whether the target exists).
         let text = normalize_account_note(raw).map_err(AccountNoteError::Invalid)?;
         let account = self.resolve(tenant, target).await?;
         let tenant_id = tenant.tenant_id();
@@ -107,12 +107,12 @@ impl AccountNoteService {
         Ok(())
     }
 
-    /// 経路の値を、メモの相手（[`AccountRef`]）へ読み替える。
+    /// Maps the route value to the note's target ([`AccountRef`]).
     ///
-    /// - 人: 要求テナントのメンバーであること（メモはメンバーシップに付く。外部キーも拒む）
-    /// - サービスアカウント: 要求テナントの client で、サービスアカウントであり、削除されていないこと。
-    ///   ⚠ 連携先（ログイン用の client）にはメモを書かせない ——メモはアカウントの経緯であって、
-    ///   連携先の設定ではない（ADR-0065 の決定 2）
+    /// - Person: must be a member of the requested tenant (the note attaches to the membership; the FK rejects otherwise)
+    /// - Service account: a client of the requested tenant that is a service account and not deleted.
+    ///   ⚠ Notes are not allowed on integrations (login clients): the note is the account's history,
+    ///   not the integration's settings (decision 2 of ADR-0065)
     async fn resolve(
         &self,
         tenant: TenantContext,

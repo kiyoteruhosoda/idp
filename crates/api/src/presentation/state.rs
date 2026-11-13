@@ -1,12 +1,12 @@
-//! axum の共有状態。各サービスを `Arc` で保持し、`FromRef` でハンドラへ部分注入する。
+//! Shared axum state. Holds each service in an `Arc` and injects parts into handlers via `FromRef`.
 //!
-//! [`AppState::build`] がユースケースの組み立て（依存注入）を一手に担う。
-//! バイナリ（`lib.rs::run`）と統合テストの双方から同じ組み立てを使う。
+//! [`AppState::build`] alone assembles the use cases (dependency injection).
+//! Both the binary (`lib.rs::run`) and the integration tests use the same assembly.
 //!
-//! テナントは `/{tenant_id}/...` ルートでは `TenantResolver` middleware が、`/internal/*` では
-//! web が DTO で送る `tenant_id`（`require_internal_tenant`。未指定・不正は 400）が解決する。
-//! かつての「起動時に解決した root を既定テナントとして全リクエストへ適用する」過渡運用
-//! （`default_tenant`）は SEC4 で撤去した。
+//! The tenant is resolved by the `TenantResolver` middleware on `/{tenant_id}/...` routes, and on
+//! `/internal/*` by the `tenant_id` web sends in the DTO (`require_internal_tenant`; missing / invalid is 400).
+//! The former transitional mode "apply the root resolved at startup to every request as the default
+//! tenant" (`default_tenant`) was removed in SEC4.
 
 use crate::application::access_token_verification::AccessTokenVerifier;
 use crate::application::account_directory::AccountDirectoryService;
@@ -167,15 +167,15 @@ use crate::service_restart::ServiceRestart;
 use axum::extract::FromRef;
 use std::sync::Arc;
 
-/// IP 単位のログインレート制限: 5 分間で最大 30 試行（設計仕様 §4.3「IP単位でもレート制限」）。
+/// Per-IP login rate limit: at most 30 attempts in 5 minutes (design spec §4.3 "rate limit per IP too").
 const LOGIN_RATE_LIMIT_MAX_ATTEMPTS: usize = 30;
 const LOGIN_RATE_LIMIT_WINDOW_MINUTES: i64 = 5;
 
-/// IP 単位の自己登録レート制限: 5 分間で最大 10 試行（SEC6。列挙・大量作成の抑止）。
+/// Per-IP self-registration rate limit: at most 10 attempts in 5 minutes (SEC6; deters enumeration and mass creation).
 const REGISTER_RATE_LIMIT_MAX_ATTEMPTS: usize = 10;
 const REGISTER_RATE_LIMIT_WINDOW_MINUTES: i64 = 5;
 
-/// IP 単位のパスワードリセット要求レート制限: 15 分間で最大 5 試行（MT18。メール爆撃・列挙の抑止）。
+/// Per-IP password reset request rate limit: at most 5 attempts in 15 minutes (MT18; deters mail bombing and enumeration).
 const PASSWORD_RESET_RATE_LIMIT_MAX_ATTEMPTS: usize = 5;
 const PASSWORD_RESET_RATE_LIMIT_WINDOW_MINUTES: i64 = 15;
 
@@ -183,172 +183,172 @@ const PASSWORD_RESET_RATE_LIMIT_WINDOW_MINUTES: i64 = 15;
 pub struct AppState {
     pub pool: Db,
     pub config: Arc<Config>,
-    /// プロセスの起動時刻。`/internal/health` が稼働時間を出すために持つ（ADR-0031）。
-    /// 再起動が起きたかどうかは、版数だけを見ても分からない。
+    /// Process start time. Kept so `/internal/health` can report uptime (ADR-0031).
+    /// Whether a restart happened cannot be told from the version alone.
     pub started_at: chrono::DateTime<chrono::Utc>,
-    /// 時刻の取得口（テストで固定実装に差し替える）。Presentation 層が「今」を要る場面
-    /// （ロック期限の判定など）で使う。
+    /// Clock source (replaced by a fixed implementation in tests). Used where the presentation layer
+    /// needs "now" (e.g. checking lock expiry).
     pub clock: Arc<dyn Clock>,
-    /// Prometheus メトリクスのレンダリング口（G6）。収集器の設置に失敗した構成では `None`。
+    /// Prometheus metrics renderer (G6). `None` when installing the recorder failed.
     pub metrics: Option<Arc<metrics_exporter_prometheus::PrometheusHandle>>,
-    /// トークン系エンドポイント（`/token`・`/introspect`・`/revoke`）の負荷ゲート（SEC10）。
-    /// Argon2 照合の同時実行数と送信元単位の要求数を抑える。
+    /// Load gate for the token endpoints (`/token`, `/introspect`, `/revoke`) (SEC10).
+    /// Limits concurrent Argon2 verifications and requests per source.
     pub token_endpoint_load: Arc<crate::presentation::token_endpoint_load::TokenEndpointLoadGate>,
-    /// テナント解決（id → tenant）。`TenantResolver` middleware が使う（MT9 でルーターへ mount）。
+    /// Tenant resolution (id → tenant). Used by the `TenantResolver` middleware (mounted on the router in MT9).
     pub tenant_resolution: Arc<TenantResolutionService>,
-    /// テナント設定の解決（ADR-0058。テナントの行 > 全体の行 > 環境変数 > 組み込み既定）。
-    /// ⚠ テナントが上書きできるキーを `Config` から読まない（`Config` はもう持っていない）。
-    /// ここで具象を持つのは管理の口（一覧・書き込み・キャッシュの無効化）のため。値を読む
-    /// ユースケースには `EffectiveTenantSettings` として渡す。
+    /// Tenant setting resolution (ADR-0058; tenant row > global row > env var > built-in default).
+    /// ⚠ Do not read keys a tenant can override from `Config` (`Config` no longer holds them).
+    /// The concrete type is held here for the admin endpoints (list, write, cache invalidation). Use
+    /// cases that read values get it as `EffectiveTenantSettings`.
     pub tenant_settings: Arc<crate::application::tenant_settings::TenantSettingsService>,
     pub register: Arc<RegisterService>,
-    /// 自己登録アカウントのメール検証（確認リンク送出・消費。SEC6b）。
+    /// Email verification for self-registered accounts (sending and consuming the confirmation link; SEC6b).
     pub email_verification: Arc<EmailVerificationService>,
     pub authorize: Arc<AuthorizeService>,
     pub login: Arc<LoginService>,
-    /// 強制パスワード変更（ADR-0009 §5）。`LoginService` の `must_change_password` 検出を受けて
-    /// `auth_session_id` ベースでパスワードを設定する。
+    /// Forced password change (ADR-0009 §5). Sets the password by `auth_session_id` after
+    /// `LoginService` detects `must_change_password`.
     pub change_password: Arc<ChangePasswordService>,
     pub consent: Arc<ConsentService>,
     pub token: Arc<TokenService>,
     pub userinfo: Arc<UserInfoService>,
     pub keys: Arc<KeyService>,
     pub admin_access: Arc<AdminAccessService>,
-    /// 管理 API の認可（ADR-0037）。`RequirePerms` が呼ぶ判定と、SSO セッション → 管理トークンの交換。
+    /// Admin API authorization (ADR-0037). The check `RequirePerms` calls, and the SSO session → admin token exchange.
     pub management_tokens: Arc<ManagementTokenService>,
-    /// クライアントへの管理権限の付与・剥奪（`/admin/clients/{client_id}/permissions`）。
+    /// Grants and revokes admin permissions for clients (`/admin/clients/{client_id}/permissions`).
     pub client_permissions_admin: Arc<ClientPermissionManagementService>,
-    /// 保護リソース（`aud` に入る宛名）の登録と、クライアントへの貸し出し（ADR-0042）。
+    /// Registration of protected resources (audiences put in `aud`) and lending them to clients (ADR-0042).
     pub resources_admin: Arc<ResourceManagementService>,
-    /// アプリ（ADR-0054）の登録・binding・利用者の割り当て。
+    /// App (ADR-0054) registration, bindings and user assignments.
     pub applications_admin: Arc<ApplicationManagementService>,
-    /// アプリの名簿の照会（ADR-0057）。RP の定期照合が読む読み取り専用の経路で、割り当ての変更
-    /// （`applications_admin`）とは関心を分ける。
+    /// App roster lookup (ADR-0057). A read-only path read by the RP's periodic reconciliation, kept
+    /// separate from assignment changes (`applications_admin`).
     pub application_users: Arc<ApplicationUserDirectoryService>,
     pub admin_login: Arc<AdminLoginService>,
-    /// エンドユーザー・ポータルの直接ログイン（クライアント非依存。TOTP を尊重して SSO を直接発行する）。
+    /// Direct login to the end-user portal (client-independent; issues SSO directly while honouring TOTP).
     pub portal_login: Arc<PortalLoginService>,
     pub clients_admin: Arc<ClientManagementService>,
     pub clients_status: Arc<ClientStatusService>,
     pub permissions_admin: Arc<PermissionManagementService>,
-    /// 細粒度コードの持ち主から、管理者の口座と管理者の権限を守る（task #579）。口座の操作・権限の
-    /// 付与の各口が、本体の処理の前に呼ぶ。
+    /// Protects admin accounts and admin permissions from holders of fine-grained codes (task #579).
+    /// Each account operation and permission grant endpoint calls it before the main processing.
     pub admin_account_guard: Arc<AdminAccountGuard>,
-    /// 認証ポリシーの管理（CRUD。ユーザー認証・認証ポリシー仕様書 §7）。評価はログイン系サービスが行う。
+    /// Authentication policy management (CRUD; user authentication / auth policy spec §7). Evaluation is done by the login services.
     pub authentication_policies_admin: Arc<AuthenticationPolicyManagementService>,
-    /// 管理者による利用者作成（自動生成パスワード・must_change_password。ADR-0009 §5）。
+    /// User creation by an admin (auto-generated password, must_change_password; ADR-0009 §5).
     pub users_admin: Arc<UserManagementService>,
-    /// 管理者によるログイン識別子の割り当て（AP8）。
+    /// Login identifier assignment by an admin (AP8).
     pub login_identifiers_admin: Arc<LoginIdentifierManagementService>,
-    /// 管理者による利用者ライフサイクル操作（無効化・削除・パスワード再発行。ADR-0009 §5）。
+    /// User lifecycle operations by an admin (disable, delete, password reissue; ADR-0009 §5).
     pub users_lifecycle: Arc<UserLifecycleService>,
-    /// テナント作成・管理（idp.system.admin 必須。ADR-0009 §5・§6）。設定画面のテナント設定区画
-    /// （自テナント参照・表示名更新。MT14）も本サービスを通す。
+    /// Tenant creation and management (requires idp.system.admin; ADR-0009 §5, §6). The tenant settings
+    /// section of the settings screen (own tenant lookup, display name update; MT14) also goes through it.
     pub tenants_admin: Arc<TenantManagementService>,
-    /// システム設定（SMTP 等。root/idp.system.admin のみ。MT14）。
+    /// System settings (SMTP etc.; root / idp.system.admin only; MT14).
     pub system_settings: Arc<SystemSettingsService>,
-    /// セルフサービスのパスワード変更（ログイン済みユーザーの設定画面。MT15）。
+    /// Self-service password change (settings screen of a signed-in user; MT15).
     pub account_password: Arc<AccountPasswordService>,
-    /// セルフサービスの表示言語変更（ログイン済みユーザーの設定画面。MT20）。
+    /// Self-service display language change (settings screen of a signed-in user; MT20).
     pub account_language: Arc<AccountLanguageService>,
     pub account_theme: Arc<AccountThemeService>,
-    /// セルフサービスの表示名（プロフィール）取得・更新（ログイン済みユーザーの設定画面）。
+    /// Self-service display name (profile) read and update (settings screen of a signed-in user).
     pub account_profile: Arc<AccountProfileService>,
-    /// ログイン中ユーザーの所属テナント列挙（テナント切り替え UI）。
+    /// Lists the tenants of the signed-in user (tenant switcher UI).
     pub account_tenants: Arc<AccountTenantsService>,
-    /// セルフサービス・パスワードリセット（忘失時。メールリンク経由。MT18）。
+    /// Self-service password reset (when forgotten; via email link; MT18).
     pub password_reset: Arc<PasswordResetService>,
-    /// ゲスト招待・メンバーシップ（ADR-0009 §3）。
+    /// Guest invitations and memberships (ADR-0009 §3).
     pub invitations: Arc<InvitationService>,
     pub member_directory: Arc<MemberDirectoryService>,
-    /// アカウント（人・サービスアカウント）の管理者メモ（ADR-0063 / ADR-0065）。
+    /// Admin notes on accounts (people, service accounts) (ADR-0063 / ADR-0065).
     pub account_notes: Arc<AccountNoteService>,
-    /// アカウント一覧（人とサービスアカウント。ADR-0065）。
+    /// Account list (people and service accounts; ADR-0065).
     pub account_directory: Arc<AccountDirectoryService>,
     pub audit_query: Arc<AuditQueryService>,
-    /// 監査イベントの記録と保持期間による掃除（設計仕様 §7・G8）。各ユースケースへ注入している
-    /// ものと同じ実体で、保持期間の掃除タスクがここから参照する。
+    /// Records audit events and purges them by retention period (design spec §7, G8). The same instance
+    /// injected into each use case; the retention purge task references it from here.
     pub audit: Arc<AuditService>,
-    /// エラー・警告ログ（`log` テーブル）の取り込み・参照・掃除（CLAUDE.md「ログ」）。
-    /// api 自身の `tracing` 取り込みタスク・web からの `/internal/logs`・管理画面の参照が共有する。
+    /// Ingests, reads and purges error / warning logs (`log` table) (CLAUDE.md "Logs").
+    /// Shared by api's own `tracing` ingest task, `/internal/logs` from web, and the admin screen.
     pub application_logs: Arc<ApplicationLogService>,
     pub logout: Arc<LogoutService>,
-    /// セルフサービスのセキュリティ画面（セッション一覧・失効／連携アプリ解除。G10）。
+    /// Self-service security screen (session list, revocation / unlinking apps; G10).
     pub account_security: Arc<AccountSecurityService>,
-    /// 利用者の端末の一覧と、登録していない端末でのログインの知らせ（task #872）。
+    /// The user's device list and notices of logins from unregistered devices (task #872).
     pub device_registry: Arc<DeviceRegistryService>,
-    /// 登録した端末の関門（task #916）。組織の設定を有効にする前の「入れなくなる人」もここで引く。
+    /// The registered-device gate (task #916). Also looks up "who would be locked out" before an org enables the setting.
     pub device_gate: Arc<DeviceGate>,
-    /// 登録していない端末で正しく入ろうとしたときの、その場での端末の登録（task #916）。
+    /// Registering the device on the spot when signing in correctly from an unregistered device (task #916).
     pub device_enrollment: Arc<DeviceEnrollmentService>,
-    /// 本人が見るログイン履歴（task #879）。
+    /// Sign-in history the user sees (task #879).
     pub sign_in_history: Arc<SignInHistoryService>,
-    /// 本人が見る「状況」（task #896）。
+    /// The "Status" the user sees (task #896).
     pub security_status: Arc<SecurityStatusService>,
-    /// 利用者が登録する SSH の公開鍵と、配る機械への一覧（task #885）。
+    /// SSH public keys registered by users, and the list for the distributing machine (task #885).
     pub ssh_keys: Arc<SshKeyRegistryService>,
-    /// SSO セッションの端末の鍵への結び付け（DBSC。task #887）。
+    /// Binding the SSO session to the device key (DBSC; task #887).
     pub session_key_binding: Arc<SessionKeyBindingService>,
-    /// 認証アプリで承認するログインと、認証アプリの鍵（task #892）。
+    /// Logins approved in the authenticator app, and the authenticator app keys (task #892).
     pub app_approval: Arc<AppApprovalService>,
-    /// Step-up 認証（重要操作の直前の本人確認。AP5）。
+    /// Step-up authentication (re-verifying identity right before a sensitive operation; AP5).
     pub step_up: Arc<StepUpService>,
-    /// 認証器の統合管理（一覧・状態変更・リカバリーコード・email OTP。AP9）。
+    /// Unified authenticator management (list, state change, recovery codes, email OTP; AP9).
     pub authenticators: Arc<AuthenticatorManagementService>,
-    /// 認証器の登録簿（AP9）。
+    /// Authenticator registry (AP9).
     pub authenticator_repository: Arc<dyn crate::domain::repositories::UserAuthenticatorRepository>,
-    /// 外部 IdP ログイン（AP10）。
+    /// External IdP login (AP10).
     pub external_login: Arc<ExternalLoginService>,
-    /// 外部 IdP 設定の管理（AP10）。
+    /// External IdP settings management (AP10).
     pub external_idps: Arc<ExternalIdpManagementService>,
-    /// 外部 IdP（OIDC）の discovery ドキュメント取り込み（登録はしない。task #77）。
+    /// External IdP (OIDC) discovery document import (does not register; task #77).
     pub external_idp_discovery: Arc<ExternalIdpDiscoveryService>,
-    /// 外部 IdP 設定の参照（ログイン画面のボタン用）。GC・一覧が直接使う。
+    /// External IdP settings lookup (for login screen buttons). Used directly by GC and listing.
     pub external_providers:
         Arc<dyn crate::domain::repositories::ExternalIdentityProviderRepository>,
-    /// 外部 IdP ログインの進行状態（AP10）。
+    /// External IdP login progress state (AP10).
     pub external_login_requests:
         Arc<dyn crate::domain::repositories::ExternalLoginRequestRepository>,
-    /// 期限切れレコードの一括 GC（G2）。対象表の一覧は
-    /// [`crate::infrastructure::repositories::expired_records`] にある。
+    /// Bulk GC of expired records (G2). The list of target tables is in
+    /// [`crate::infrastructure::repositories::expired_records`].
     pub expired_records: Arc<ExpiredRecordPurgeService>,
-    /// CORS の許可オリジン判定（G1）。ミドルウェアが使う。
+    /// CORS allowed-origin check (G1). Used by the middleware.
     pub cors_policy: Arc<ApiCorsPolicy>,
-    /// Back-channel logout の送信キュー（G5）。ハンドラは積むだけ、送信はワーカーが行う。
+    /// Back-channel logout send queue (G5). Handlers only enqueue; the worker sends.
     pub backchannel_logout: Arc<BackchannelLogoutDeliveryService>,
     pub revocation: Arc<RevocationService>,
     pub introspection: Arc<IntrospectionService>,
     pub totp_registration: Arc<TotpRegistrationService>,
     pub mfa_login: Arc<MfaLoginService>,
     pub passkey_registration: Arc<PasskeyRegistrationService>,
-    /// 管理者が発行したアカウント設定リンク（ADR-0062）。リンク先の画面が読む・使う。
+    /// Account setup links issued by admins (ADR-0062). Read and used by the linked screen.
     pub account_setup: Arc<AccountSetupService>,
     pub passkey_authentication: Arc<PasskeyAuthenticationService>,
-    /// SAML SP（クライアント）登録（テナント管理者向け）。
+    /// SAML SP (client) registration (for tenant admins).
     pub saml_service_providers: Arc<SamlServiceProviderManagementService>,
-    /// SAML SP-initiated SSO（`/saml/sso` の受信と `/internal/saml/resume` の応答発行）。
+    /// SAML SP-initiated SSO (receiving `/saml/sso` and issuing the response for `/internal/saml/resume`).
     pub saml_sso: Arc<SamlSsoService>,
-    /// 設定画面からの再起動要求（ADR-0017）。`run()` の graceful shutdown がこの値を待つ。
-    /// テストでは `build` が作った値を誰も待たないため、要求しても何も起きない。
+    /// Restart request from the settings screen (ADR-0017). The graceful shutdown in `run()` waits on this value.
+    /// In tests nobody waits on the value `build` creates, so requesting does nothing.
     pub restart: ServiceRestart,
-    /// 再起動ユースケース（監査記録 → 停止要求。ADR-0017）。`restart` と同じ signal を指す。
+    /// Restart use case (audit record → stop request; ADR-0017). Points to the same signal as `restart`.
     pub service_restart: Arc<ServiceRestartService>,
 }
 
-/// Back-channel logout ワーカーが 1 回の起動で扱う通知の最大件数。
+/// Maximum number of notifications the back-channel logout worker handles per run.
 ///
-/// 大きくすると復旧時の追いつきは速いが、落ちている RP が多いと 1 回の走行が長引く（各件で
-/// タイムアウトを待つため）。ポーリング間隔（`BACKCHANNEL_LOGOUT_POLL_INTERVAL_SECS`）に対して
-/// 走行が伸びすぎない程度に抑える。
+/// Larger values catch up faster on recovery, but with many RPs down a run takes longer (each item
+/// waits for its timeout). Keep it low enough that a run does not grow too long relative to the
+/// polling interval (`BACKCHANNEL_LOGOUT_POLL_INTERVAL_SECS`).
 const BACKCHANNEL_LOGOUT_BATCH_SIZE: u32 = 50;
 
 impl AppState {
-    /// すべてのユースケースを組み立てる（トレイト越しのコンストラクタ注入）。
+    /// Assembles all use cases (constructor injection through traits).
     pub fn build(pool: Db, config: Arc<Config>, clock: Arc<dyn Clock>) -> Self {
         let started_at = clock.now();
         let users = Arc::new(SqlxUserRepository::new(pool.clone()));
         let tenant_memberships = Arc::new(SqlxTenantMembershipRepository::new(pool.clone()));
-        // テナントへ割り当てたドメイン（ADR-0029）。ログインの解決と管理 API が共有する。
+        // Domains assigned to tenants (ADR-0029). Shared by login resolution and the admin API.
         let tenant_domains = Arc::new(SqlxTenantDomainRepository::new(pool.clone()));
         let clients = Arc::new(SqlxClientRepository::new(pool.clone()));
         let auth_sessions = Arc::new(SqlxAuthSessionRepository::new(pool.clone()));
@@ -360,9 +360,9 @@ impl AppState {
         let saml_service_provider_repo =
             Arc::new(SqlxSamlServiceProviderRepository::new(pool.clone()));
         let tenants = Arc::new(SqlxTenantRepository::new(pool.clone()));
-        // scope→権限解決（ADR-0009 §7）: `has_permission` の判定結果を TTL キャッシュし、付与・剥奪時に
-        // invalidate する。判定（admin_access）と変更（permissions_admin）が同一インスタンスを共有する
-        // ため、付与直後の反映漏れ（stale allow/deny）を避けられる。
+        // scope → permission resolution (ADR-0009 §7): caches `has_permission` results with a TTL and
+        // invalidates on grant / revoke. The check (admin_access) and changes (permissions_admin) share the
+        // same instance, which avoids stale allow/deny right after a grant.
         let permission_cache: Arc<dyn Cache<PermissionKey, bool>> =
             Arc::new(InMemoryTtlCache::new(
                 chrono_from_std(config.permission_cache_ttl()),
@@ -379,33 +379,33 @@ impl AppState {
             Arc::new(SqlxAuthenticationPolicyRepository::new(pool.clone()));
         let webauthn_credentials = Arc::new(SqlxWebAuthnCredentialRepository::new(pool.clone()));
         let passkey_challenges = Arc::new(SqlxPasskeyChallengeRepository::new(pool.clone()));
-        // 断ったログインは監査ログへ書く所で本人の履歴へも写す（task #879）。
+        // Rejected logins are also copied to the user's history where they are written to the audit log (task #879).
         let sign_in_history_repository: Arc<dyn SignInHistoryRepository> =
             Arc::new(SqlxSignInHistoryRepository::new(pool.clone()));
         let audit_sink = Arc::new(SignInFailureRecordingSink::new(
             Arc::new(SqlxAuditLogSink::new(pool.clone())),
             sign_in_history_repository.clone(),
-            // 国は web が内部の呼び出しに添えた値だけ（task #895。`/internal/*` でだけ読む）。
+            // The country is only the value web attached to the internal call (task #895; read only on `/internal/*`).
             Arc::new(crate::presentation::client_country::TaskLocalRequestCountry),
         ));
         let audit_logs = Arc::new(SqlxAuditLogQuery::new(pool.clone()));
         let hasher = Arc::new(Argon2PasswordHasher::new());
         let ids: Arc<dyn IdGenerator> = Arc::new(UuidV7Generator);
-        // AP8: ログイン識別子の登録簿。ログイン時の解決は `SqlxUserRepository` 側（1 クエリ）で、
-        // ここに載せるのは管理操作と `users.preferred_username` の写しの同期。
+        // AP8: login identifier registry. Resolution at login is on the `SqlxUserRepository` side (one query);
+        // what lives here is admin operations and syncing the `users.preferred_username` copy.
         let login_identifier_repository: Arc<
             dyn crate::domain::repositories::UserLoginIdentifierRepository,
         > = Arc::new(SqlxUserLoginIdentifierRepository::new(pool.clone()));
-        // 監査はテナント設定の書き込み（#111）も使うので、テナント設定より先に組み立てる。
+        // Auditing is also used by tenant setting writes (#111), so it is assembled before tenant settings.
         let audit = Arc::new(AuditService::new(audit_sink, clock.clone()));
-        // テナント設定の解決（ADR-0058）。テナントの行と全体の行は参照のたびに引き、テナント解決と
-        // 同じ寿命の TTL キャッシュで抑える。⚠ キャッシュの寿命そのものをテナントの設定にしない
-        // （テナントが自分の解決を止められてしまう）。環境変数 → 組み込み既定の層は実行中に変わらない
-        // ので、ここで 1 回だけ作って渡す。
-        // パスワードポリシー・認証ポリシーの既定動作・アプリ割り当ての強制もここから引く（ADR-0058 §4）
-        // ので、判定する側（パスワードポリシー・アプリの門・認証の各経路）より先に組み立てる。
-        // 読む側へは domain のトレイト `EffectiveTenantSettings` として**1 本だけ**渡す（同じ解決器を
-        // 別の口で 2 回渡さない）。具象のまま持つのは `AppState` の管理の口（一覧・書き込み・無効化）だけ。
+        // Tenant setting resolution (ADR-0058). Tenant and global rows are read on every lookup and bounded
+        // by a TTL cache with the same lifetime as tenant resolution. ⚠ Do not make the cache lifetime itself
+        // a tenant setting (a tenant could stop its own resolution). The env var → built-in default layers do
+        // not change at runtime, so they are built once here and passed in.
+        // Password policy, default auth policy behaviour and app assignment enforcement are also read from
+        // here (ADR-0058 §4), so it is assembled before the deciders (password policy, app gate, auth paths).
+        // Readers get it as the domain trait `EffectiveTenantSettings`, **only once** (never pass the same
+        // resolver twice through different handles). Only `AppState`'s admin endpoints (list, write, invalidate) keep the concrete type.
         let tenant_settings_fallback =
             crate::domain::system_setting::tenant_overridable_setting_keys()
                 .filter_map(|key| {
@@ -435,12 +435,12 @@ impl AppState {
             ),
         );
 
-        // AP7: パスワードポリシー。パスワードを設定する全経路（自己登録・強制変更・セルフサービス
-        // 変更・リセット）がこの 1 本を通す。漏えい照合は既定で無効（外向き通信を前提にしない）。
+        // AP7: password policy. Every path that sets a password (self-registration, forced change, self-service
+        // change, reset) goes through this one. The breach check is off by default (no outbound traffic assumed).
         let password_history: Arc<dyn crate::domain::repositories::PasswordHistoryRepository> =
             Arc::new(SqlxPasswordHistoryRepository::new(pool.clone()));
-        // 漏えい照合を使うかはテナントごとに決まる（`PASSWORD_BREACH_CHECK_ENABLED`。ADR-0058）ので、
-        // 照合器は常に組んでおく。外向きの通信は、照合を有効にしたテナントの検証でしか起きない。
+        // Whether to use the breach check is decided per tenant (`PASSWORD_BREACH_CHECK_ENABLED`; ADR-0058), so
+        // the checker is always built. Outbound traffic only happens when validating for tenants that enabled it.
         let breach_checker: Arc<dyn crate::domain::password_policy::BreachedPasswordChecker> =
             match RangeApiBreachedPasswordChecker::new(
                 config.password_breach_api_base_url(),
@@ -448,9 +448,9 @@ impl AppState {
             ) {
                 Ok(checker) => Arc::new(checker),
                 Err(e) => {
-                    // クライアントを組めない = 照合できない。起動は続け、漏えい確認だけを
-                    // 落とす（実装側と同じ fail-open。ここで落とすと設定ミスで assay 全体が
-                    // 起動しなくなる）。
+                    // Cannot build the client = cannot check. Keep starting and drop only the breach
+                    // check (the same fail-open as the implementation; failing here would stop the whole of
+                    // assay from starting because of a misconfiguration).
                     tracing::error!(
                         error = %e,
                         "failed to build breached password checker; breach check is disabled"
@@ -476,12 +476,12 @@ impl AppState {
             ids.clone(),
             clock.clone(),
         ));
-        // システム設定（SMTP 等。root のみ。MT14）。秘匿値は key_encryption_key で暗号化して保存する。
-        // 開発用既定 secret の使用状況も渡す（ランタイム設定の保存前に「その値で次回起動できるか」を
-        // 判定するため。ADR-0017）。
+        // System settings (SMTP etc.; root only; MT14). Secrets are stored encrypted with key_encryption_key.
+        // Also passes whether the development default secrets are in use (to decide, before saving runtime
+        // settings, "can the next start succeed with that value"; ADR-0017).
         let system_settings = Arc::new(SystemSettingsService::new(
             Arc::new(SqlxSystemSettingsRepository::new(pool.clone())),
-            // テナントのメールの経路（ADR-0058 §8）。
+            // The tenant's mail route (ADR-0058 §8).
             Arc::new(
                 crate::infrastructure::repositories::tenant_setting::SqlxTenantSettingsRepository::new(
                     pool.clone(),
@@ -492,8 +492,8 @@ impl AppState {
             audit.clone(),
             clock.clone(),
         ));
-        // AP9: 認証器の統合管理。種別ごとの表に散っていた登録状況を 1 つの登録簿へ集約し、
-        // リカバリーコード・email OTP を追加する。
+        // AP9: unified authenticator management. Gathers registration status scattered over per-kind tables
+        // into one registry, and adds recovery codes and email OTP.
         let authenticator_repository: Arc<
             dyn crate::domain::repositories::UserAuthenticatorRepository,
         > = Arc::new(SqlxUserAuthenticatorRepository::new(pool.clone()));
@@ -510,11 +510,11 @@ impl AppState {
             ids.clone(),
         ));
 
-        // セルフサービスのパスワード変更（ログイン済みユーザー。MT15）。
+        // Self-service password change (signed-in user; MT15).
         let account_password = Arc::new(AccountPasswordService::new(
             sso_sessions.clone(),
             users.clone(),
-            // 変更後に他端末ぶんの refresh token と未消費の code を落とす（ADR-0045）。
+            // After the change, drops refresh tokens and unconsumed codes for other devices (ADR-0045).
             refresh_tokens.clone(),
             codes.clone(),
             hasher.clone(),
@@ -522,35 +522,35 @@ impl AppState {
             audit.clone(),
             clock.clone(),
         ));
-        // セルフサービスの表示言語変更（ログイン済みユーザー。MT20）。
+        // Self-service display language change (signed-in user; MT20).
         let account_language = Arc::new(AccountLanguageService::new(
             sso_sessions.clone(),
             users.clone(),
             clock.clone(),
         ));
-        // セルフサービスの配色変更（ログイン済みユーザー）。
+        // Self-service color scheme change (signed-in user).
         let account_theme = Arc::new(AccountThemeService::new(
             sso_sessions.clone(),
             users.clone(),
             clock.clone(),
         ));
-        // セルフサービスの表示名（プロフィール）取得・更新（ログイン済みユーザー）。
+        // Self-service display name (profile) read and update (signed-in user).
         let account_profile = Arc::new(AccountProfileService::new(
             sso_sessions.clone(),
             users.clone(),
             clock.clone(),
         ));
-        // ログイン中ユーザーの所属テナント列挙（テナント切り替え UI）。
+        // Lists the tenants of the signed-in user (tenant switcher UI).
         let account_tenants = Arc::new(AccountTenantsService::new(
             sso_sessions.clone(),
             tenant_memberships.clone(),
             tenants.clone(),
             clock.clone(),
         ));
-        // パスワードリセット（忘失時。MT18）。SMTP はシステム設定（MT14）、配送は MT17 の Mailer を
-        // 再利用する。要求は IP 単位でレート制限し、成功時は全セッション・トークンを失効させる。
-        // ⚠ パスワード再設定とアカウント設定リンクは**同じ表**を使う（ADR-0062）。同じ値を
-        // 2 回作らず、1 つのリポジトリを両方へ渡す。
+        // Password reset (when forgotten; MT18). SMTP comes from system settings (MT14), delivery reuses the
+        // MT17 Mailer. Requests are rate-limited per IP; on success all sessions and tokens are revoked.
+        // ⚠ Password reset and account setup links use **the same table** (ADR-0062). Do not create the same
+        // value twice; pass one repository to both.
         let reset_tokens = Arc::new(SqlxPasswordResetTokenRepository::new(pool.clone()));
         let password_reset = Arc::new(PasswordResetService::new(
             users.clone(),
@@ -576,8 +576,8 @@ impl AppState {
             clock.clone(),
             *config.key_encryption_key(),
         ));
-        // アプリ（ADR-0054）。「どの利用者がどのアプリを使ってよいか」の単一の出所で、
-        // code 発行の門（`CodeIssuanceService`）と認証ポリシーの宛先解決の両方が引く。
+        // Apps (ADR-0054). The single source of "which user may use which app", read by both the
+        // code issuance gate (`CodeIssuanceService`) and auth policy target resolution.
         let applications: Arc<dyn crate::domain::repositories::ApplicationRepository> =
             Arc::new(SqlxApplicationRepository::new(pool.clone()));
         let application_access = Arc::new(ApplicationAccessService::new(
@@ -585,7 +585,7 @@ impl AppState {
             audit.clone(),
             tenant_settings.clone(),
         ));
-        // 認証ポリシーの評価の入口（8 経路で共有する。`authentication_policy_gate`）。
+        // Entry point of auth policy evaluation (shared by 8 paths; `authentication_policy_gate`).
         let policy_gate = Arc::new(AuthenticationPolicyGate::new(
             authentication_policies.clone(),
             tenant_settings.clone(),
@@ -598,24 +598,24 @@ impl AppState {
             clock.clone(),
             config.authorization_code_ttl(),
         ));
-        // task #872: 利用者の端末の一覧と、知らせの送り口。task #916 の関門も使う。
+        // task #872: the user's device list and the notice sender. Also used by the task #916 gate.
         let security_alerts = security_alert_sink(&config);
         let user_devices: Arc<dyn UserDeviceRepository> =
             Arc::new(SqlxUserDeviceRepository::new(pool.clone()));
-        // 登録した端末からだけログインを終わらせる関門（task #916・ADR-0079）。SSO セッションを作る
-        // 8 か所（`sign_in_completion`・ポータル・管理コンソール）がどれもここを通る。
+        // The gate that lets logins finish only from registered devices (task #916, ADR-0079). All 8 places
+        // that create an SSO session (`sign_in_completion`, portal, admin console) go through it.
         let device_gate = Arc::new(DeviceGate::new(
             user_devices.clone(),
             users.clone(),
             tenant_settings.clone(),
-            // 端末の印は web が内部の呼び出しに添えた値だけ（`/internal/*` でだけ読む）。
+            // The device mark is only the value web attached to the internal call (read only on `/internal/*`).
             Arc::new(crate::presentation::client_device::TaskLocalRequestDevice),
             Arc::new(crate::presentation::client_country::TaskLocalRequestCountry),
             security_alerts.clone(),
             audit.clone(),
             *config.csrf_secret(),
         ));
-        // 認証が成立した後の共通の後段（5 経路で共有する。`sign_in_completion`）。
+        // Common post-processing after authentication succeeds (shared by 5 paths; `sign_in_completion`).
         let sign_in = Arc::new(
             SignInCompletion::new(
                 sso_sessions.clone(),
@@ -628,8 +628,8 @@ impl AppState {
             .with_device_gate(device_gate.clone()),
         );
 
-        // 自己登録（SEC6）: テナント設定トグル（既定 OFF）＋ IP 単位レート制限。ログインとは別の
-        // 制限器を使う（登録の失敗でログイン試行枠を消費させない）。
+        // Self-registration (SEC6): tenant setting toggle (default OFF) + per-IP rate limit. Uses a limiter
+        // separate from login (so failed registrations do not consume the login attempt budget).
         let register_rate_limiter = Arc::new(InMemoryLoginRateLimiter::new(
             REGISTER_RATE_LIMIT_MAX_ATTEMPTS,
             chrono::Duration::minutes(REGISTER_RATE_LIMIT_WINDOW_MINUTES),
@@ -644,8 +644,8 @@ impl AppState {
             clock.clone(),
             ids.clone(),
         ));
-        // メール検証（SEC6b）: 自己登録で確認リンクを送り、消費で email_verified を立てる。SMTP は
-        // システム設定（MT14）、配送は MT17 の Mailer を再利用する。
+        // Email verification (SEC6b): sends a confirmation link on self-registration; consuming it sets
+        // email_verified. SMTP comes from system settings (MT14), delivery reuses the MT17 Mailer.
         let email_verification = Arc::new(EmailVerificationService::new(
             users.clone(),
             Arc::new(SqlxEmailVerificationTokenRepository::new(pool.clone())),
@@ -656,7 +656,7 @@ impl AppState {
             tenant_settings.clone(),
             config.public_web_base_url().to_string(),
         ));
-        // SSO 復元の共通判定（OIDC authorize と SAML SSO が共有する）。
+        // Common SSO restore check (shared by OIDC authorize and SAML SSO).
         let sso_restorer = Arc::new(SsoRestorer::new(
             sso_sessions.clone(),
             users.clone(),
@@ -665,10 +665,10 @@ impl AppState {
             clock.clone(),
             tenant_settings.clone(),
         ));
-        // テナント解決（ADR-0009 §7）: id → tenant のホットパスを TTL キャッシュ + 更新時 invalidation で
-        // 抑える。MT9 で `TenantResolver` middleware がこのサービスをルーターへ mount する。
-        // `AuthorizeService`（ログイン画面のテナント表示名）も同じキャッシュに相乗りするため、
-        // 依存する側より先に組み立てる。
+        // Tenant resolution (ADR-0009 §7): keeps the id → tenant hot path cheap with a TTL cache + invalidation
+        // on update. In MT9 the `TenantResolver` middleware mounts this service on the router.
+        // `AuthorizeService` (tenant display name on the login screen) also rides on the same cache, so it is
+        // assembled before its dependents.
         let tenant_cache: Arc<dyn Cache<TenantId, Tenant>> = Arc::new(InMemoryTtlCache::new(
             chrono_from_std(config.tenant_cache_ttl()),
             clock.clone(),
@@ -686,7 +686,7 @@ impl AppState {
             policy_gate.clone(),
             tenant_resolution.clone(),
         ));
-        // SAML SP-initiated SSO。進行状態の TTL は OIDC の auth_session と同じ値を使う。
+        // SAML SP-initiated SSO. The progress state TTL uses the same value as the OIDC auth_session.
         let saml_sso = Arc::new(SamlSsoService::new(
             Arc::new(SqlxSamlServiceProviderRepository::new(pool.clone())),
             Arc::new(SqlxSamlSsoRequestRepository::new(pool.clone())),
@@ -733,13 +733,13 @@ impl AppState {
             audit.clone(),
             clock.clone(),
         ));
-        // WebAuthn の RP ID・origin は **web の公開ベース URL のホスト**から導出する（ADR-0019 決定 2。
-        // Passkey のセレモニーは web のページ上で実行されるため。`PUBLIC_WEB_BASE_URL` 未設定時は
-        // issuer に追従し、single-origin では従来と同値になる）。per-tenant のパスは渡さない —
-        // WebAuthn はプロトコル上ホスト単位であり、パスを含められないため（ADR-0009 §6）。
-        // テナント分離は「クレデンシャル ⇔ ユーザー ⇔ 所属元テナント」のアプリ層の紐付けで実現する。
+        // The WebAuthn RP ID and origin are derived from **the host of web's public base URL** (ADR-0019 decision 2;
+        // Passkey ceremonies run on web's pages. When `PUBLIC_WEB_BASE_URL` is unset it follows the
+        // issuer, so under single-origin it is the same as before). No per-tenant path is passed —
+        // WebAuthn is per host by protocol and cannot include a path (ADR-0009 §6).
+        // Tenant isolation is achieved by the app-level link "credential ⇔ user ⇔ home tenant".
         let webauthn = Arc::new(WebAuthnService::new(config.public_web_base_url()));
-        // パスキーの登録（本人の設定画面と、管理者が発行した設定リンクの両方が使う。ADR-0062）。
+        // Passkey registration (used by both the user's settings screen and admin-issued setup links; ADR-0062).
         let passkey_registration = Arc::new(PasskeyRegistrationService::new(
             authenticators.clone(),
             webauthn_credentials.clone(),
@@ -749,7 +749,7 @@ impl AppState {
             clock.clone(),
             ids.clone(),
         ));
-        // 管理者が発行するアカウント設定リンク（ADR-0062）。作成・再発行と、リンク先の画面が使う。
+        // Account setup links issued by admins (ADR-0062). Used for create / reissue and by the linked screen.
         let account_setup_links = Arc::new(AccountSetupLinkIssuer::new(
             reset_tokens.clone(),
             tenant_settings.clone(),
@@ -763,8 +763,8 @@ impl AppState {
             audit.clone(),
             clock.clone(),
         ));
-        // Passkey のセレモニー（チャレンジ発行・アサーション検証）。OIDC 認可フロー・管理コンソール・
-        // ポータルの 3 経路が同じものを使う（`application::passkey_assertion`）。
+        // Passkey ceremonies (challenge issuance, assertion verification). Shared by the three paths: OIDC
+        // authorization flow, admin console and portal (`application::passkey_assertion`).
         let passkey_assertion = Arc::new(PasskeyAssertionService::new(
             webauthn_credentials.clone(),
             authenticator_repository.clone(),
@@ -775,7 +775,7 @@ impl AppState {
             audit.clone(),
             clock.clone(),
         ));
-        // 管理コンソールのログイン（ADR-0006 §6）。IP レート制限は通常ログインと同一の制限器を共有する。
+        // Admin console login (ADR-0006 §6). The IP rate limiter is shared with normal login.
         let admin_login = Arc::new(
             AdminLoginService::new(
                 users.clone(),
@@ -794,8 +794,8 @@ impl AppState {
             )
             .with_device_gate(device_gate.clone()),
         );
-        // エンドユーザー・ポータルの直接ログイン。admin_login と同機構（クライアント非依存の SSO 直接発行）
-        // だが admin 権限を要求せず、TOTP（MFA）を尊重する。`mfa_ticket` の署名鍵は CSRF 秘密鍵を流用する。
+        // Direct login to the end-user portal. Same mechanism as admin_login (client-independent direct SSO issuance)
+        // but it does not require admin permission and honours TOTP (MFA). The `mfa_ticket` signing key reuses the CSRF secret.
         let portal_login = Arc::new(
             PortalLoginService::new(
                 authenticator_repository.clone(),
@@ -816,7 +816,7 @@ impl AppState {
             )
             .with_device_gate(device_gate.clone()),
         );
-        // 登録していない端末で正しく入ろうとした人が、パスキーで確かめてその端末を登録する（task #916）。
+        // A person signing in correctly from an unregistered device verifies with a passkey and registers it (task #916).
         let device_enrollment = Arc::new(DeviceEnrollmentService::new(
             device_gate.clone(),
             user_devices.clone(),
@@ -827,7 +827,7 @@ impl AppState {
             audit.clone(),
             clock.clone(),
         ));
-        // 管理者メモ（ADR-0063 / ADR-0065）。人とサービスアカウントで 1 つの表・1 つのリポジトリ。
+        // Admin notes (ADR-0063 / ADR-0065). One table and one repository for people and service accounts.
         let account_note_repository: Arc<dyn AccountNoteRepository> =
             Arc::new(SqlxAccountNoteRepository::new(pool.clone(), ids.clone()));
         let clients_admin = Arc::new(ClientManagementService::new(
@@ -839,7 +839,7 @@ impl AppState {
             clock.clone(),
             ids.clone(),
         ));
-        // クライアント状況一覧（A3）: 登録クライアント × 監査ログ由来の最終利用時刻。
+        // Client status list (A3): registered clients × last-used time from the audit log.
         let clients_status = Arc::new(ClientStatusService::new(
             clients.clone(),
             audit_logs.clone(),
@@ -850,23 +850,23 @@ impl AppState {
             Arc::new(SqlxApplicationLogQuery::new(pool.clone())),
             clock.clone(),
         ));
-        // トークン系 3 経路（`/token`・`/introspect`・`/revoke`）が共有するクライアント認証
-        // （ADR-0030）。方式ごとの分岐を 1 つの実装に閉じ込め、各サービスへ注入する。
+        // Client authentication shared by the three token paths (`/token`, `/introspect`, `/revoke`)
+        // (ADR-0030). Keeps the per-method branching in one implementation injected into each service.
         let client_auth = Arc::new(ClientAuthenticator::new(
             hasher.clone(),
             Arc::new(SqlxClientAssertionReplayRepository::new(pool.clone())),
             clock.clone(),
             config.issuer().to_string(),
         ));
-        // システム用クライアントが保有する管理 API の権限（ADR-0037）。`client_credentials` に
-        // `resource` で管理 API を要求されたときにだけ引く。
+        // Admin API permissions held by system clients (ADR-0037). Looked up only when `client_credentials`
+        // requests the admin API via `resource`.
         let client_permissions: Arc<dyn crate::domain::repositories::ClientPermissionRepository> =
             Arc::new(SqlxClientPermissionRepository::new(pool.clone()));
-        // トークンに刻む宛名と、その宛先を要求してよいクライアント（ADR-0042）。`resource` に
-        // assay 自身以外を指定された `client_credentials` でのみ引く。
+        // Audiences stamped into tokens and the clients allowed to request them (ADR-0042). Looked up only for
+        // `client_credentials` whose `resource` names something other than assay itself.
         let resources: Arc<dyn crate::domain::repositories::ProtectedResourceRepository> =
             Arc::new(SqlxProtectedResourceRepository::new(pool.clone()));
-        // DPoP の証明（ADR-0075）。`/token` と `/userinfo` が同じものを使う。
+        // DPoP proofs (ADR-0075). `/token` and `/userinfo` use the same one.
         let dpop = Arc::new(
             crate::application::dpop_proof_verification::DpopProofVerifier::new(
                 Arc::new(SqlxDpopProofReplayRepository::new(pool.clone())),
@@ -895,7 +895,7 @@ impl AppState {
             config.id_token_ttl(),
             config.refresh_token_ttl(),
         ));
-        // アクセストークンの検証（/userinfo・/introspect・/revoke で共有する。`access_token_verification`）。
+        // Access token verification (shared by /userinfo, /introspect, /revoke; `access_token_verification`).
         let access_tokens = Arc::new(AccessTokenVerifier::new(
             signing_keys.clone(),
             revoked_access_tokens.clone(),
@@ -925,15 +925,15 @@ impl AppState {
             tenants.clone(),
             applications.clone(),
         ));
-        // 認証ポリシーの管理（CRUD）。評価用のリポジトリ（login / passkey_authentication）と同一実装を共有する。
+        // Auth policy management (CRUD). Shares the same implementation as the evaluation repositories (login / passkey_authentication).
         let authentication_policies_admin = Arc::new(AuthenticationPolicyManagementService::new(
             authentication_policies.clone(),
             audit.clone(),
             clock.clone(),
             ids.clone(),
         ));
-        // 管理者による利用者作成（ADR-0009 §5）。テナント作成フロー（tenants_admin）が生成する初期
-        // 管理者ユーザーもこのサービスを通す（作成ロジックの単一の出所）。
+        // User creation by an admin (ADR-0009 §5). The initial admin user created by the tenant creation flow
+        // (tenants_admin) also goes through this service (single source of the creation logic).
         let users_admin = Arc::new(UserManagementService::new(
             users.clone(),
             tenant_memberships.clone(),
@@ -944,8 +944,8 @@ impl AppState {
             clock.clone(),
             ids.clone(),
         ));
-        // G5: Back-channel logout の送信キュー。ログアウトのハンドラは通知要求を積むだけで終え、
-        // 実際の HTTP 送信は `assay_api::run` が起動するワーカーが再試行付きで行う。
+        // G5: back-channel logout send queue. Logout handlers only enqueue notification requests, and the
+        // actual HTTP sending is done with retries by the worker `assay_api::run` starts.
         let backchannel_logout = Arc::new(BackchannelLogoutDeliveryService::new(
             Arc::new(SqlxBackchannelLogoutDeliveryRepository::new(pool.clone())),
             Arc::new(KeyServiceLogoutTokenSigner::new(keys.clone())),
@@ -959,14 +959,14 @@ impl AppState {
             BACKCHANNEL_LOGOUT_BATCH_SIZE,
         ));
 
-        // ADR-0049 I7: 失効させたことを RP へ伝える出口。⚠ assay の中で消すだけでは RP 側の
-        // ログイン状態は残るため、管理操作はここを通して back-channel logout を積む。
+        // ADR-0049 I7: the outlet that tells RPs about revocations. ⚠ Deleting inside assay alone leaves the RP's
+        // login state, so admin operations go through here to enqueue back-channel logout.
         let stop_announcement = Arc::new(StopAnnouncementService::new(
             clients.clone(),
             backchannel_logout.clone(),
         ));
-        // 管理者による利用者ライフサイクル操作（ADR-0009 §5・MT21）。パスワード再発行・無効化・
-        // MFA 解除時は当該利用者のセッション・トークンを失効させる。
+        // User lifecycle operations by an admin (ADR-0009 §5, MT21). Password reissue, disable and MFA reset
+        // revoke that user's sessions and tokens.
         let users_lifecycle = Arc::new(UserLifecycleService::new(
             authenticator_repository.clone(),
             users.clone(),
@@ -982,8 +982,8 @@ impl AppState {
             account_setup_links.clone(),
             clock.clone(),
         ));
-        // 管理者によるログイン識別子の割り当て（AP8。仕様 §4）。電話番号・社員番号のような
-        // 組織がすでに配っている値でログインさせるための管理操作。
+        // Login identifier assignment by an admin (AP8; spec §4). An admin operation to let users sign in with
+        // values the organization already hands out, like phone numbers or employee numbers.
         let login_identifiers_admin = Arc::new(LoginIdentifierManagementService::new(
             login_identifier_repository.clone(),
             users.clone(),
@@ -992,10 +992,10 @@ impl AppState {
             clock.clone(),
             ids.clone(),
         ));
-        // テナント作成・管理（ADR-0009 §4・§6）。作成者を新テナントのブートストラップ管理者
-        // （ACTIVE GUEST + idp.tenant.admin）として登録し、テナント・メンバーシップ・権限付与は
-        // 単一トランザクションで永続化する（unit of work。REF2）。付与は判定キャッシュを経由しないが、
-        // 新規生成テナント ID のため該当キーがキャッシュに載っていることはない。
+        // Tenant creation and management (ADR-0009 §4, §6). Registers the creator as the new tenant's bootstrap admin
+        // (ACTIVE GUEST + idp.tenant.admin), persisting tenant, membership and permission grants in a
+        // single transaction (unit of work; REF2). Grants bypass the check cache, but since the tenant ID is
+        // newly generated, no such key can be in the cache.
         let tenants_admin = Arc::new(TenantManagementService::new(
             tenants.clone(),
             tenant_domains.clone(),
@@ -1004,14 +1004,14 @@ impl AppState {
             clock.clone(),
             ids.clone(),
         ));
-        // ゲスト招待・メンバーシップ（ADR-0009 §3）。権限は同一キャッシュ付きリポジトリを共有するため、
-        // メンバーシップ解除に伴う権限剥奪も判定キャッシュへ即時反映される。招待メール（MT17）は
-        // システム設定の SMTP（MT14）で best-effort 送信し、未設定・失敗時はトークンの手動伝達に戻る。
+        // Guest invitations and memberships (ADR-0009 §3). Permissions share the same cached repository, so
+        // permission revocation from membership removal is reflected in the check cache immediately. Invitation
+        // mails (MT17) are sent best-effort via system SMTP (MT14); if unset or failing, the token is passed by hand.
         let invitations = Arc::new(InvitationService::new(
             users.clone(),
             tenant_memberships.clone(),
             user_permissions.clone(),
-            // ゲスト停止時、当該テナント分の refresh token を失効させる（MT24）。
+            // When a guest is suspended, revoke refresh tokens for that tenant (MT24).
             refresh_tokens.clone(),
             system_settings.clone(),
             Arc::new(LettreSmtpMailer::with_trust(config.outbound_trust())),
@@ -1020,8 +1020,8 @@ impl AppState {
             tenant_settings.clone(),
             config.public_web_base_url().to_string(),
         ));
-        // メンバー一覧の参照（MT22）。絞り込み・ページングを DB 側で行う読み取り専用の経路で、
-        // メンバーシップの変更（InvitationService）とは関心を分ける。
+        // Member list lookup (MT22). A read-only path that filters and pages on the DB side, kept
+        // separate from membership changes (InvitationService).
         let member_directory = Arc::new(MemberDirectoryService::new(Arc::new(
             SqlxTenantMemberQuery::new(pool.clone()),
         )));
@@ -1032,7 +1032,7 @@ impl AppState {
             audit.clone(),
             clock.clone(),
         ));
-        // アカウント一覧（人とサービスアカウント。ADR-0065）。読める種別だけを並べる。
+        // Account list (people and service accounts; ADR-0065). Lists only readable kinds.
         let account_directory = Arc::new(AccountDirectoryService::new(Arc::new(
             SqlxAccountQuery::new(pool.clone()),
         )));
@@ -1043,8 +1043,8 @@ impl AppState {
             tenant_memberships.clone(),
             clock.clone(),
         ));
-        // 管理 API の認可（ADR-0037）。`RequirePerms` の判定と、管理コンソールの
-        // 「SSO セッション → 管理トークン」交換の双方をここが担う。
+        // Admin API authorization (ADR-0037). Handles both the `RequirePerms` check and the admin console's
+        // "SSO session → admin token" exchange.
         let management_tokens = Arc::new(ManagementTokenService::new(
             admin_access.clone(),
             keys.clone(),
@@ -1063,8 +1063,8 @@ impl AppState {
             audit.clone(),
             clock.clone(),
         ));
-        // アプリの管理（ADR-0054）。判定側（`ApplicationAccessService`）と同じリポジトリ実装を
-        // 共有するので、割り当ての追加・削除は次の code 発行から効く。
+        // App management (ADR-0054). Shares the repository implementation with the decider
+        // (`ApplicationAccessService`), so adding / removing assignments takes effect from the next code issuance.
         let applications_admin = Arc::new(ApplicationManagementService::new(
             applications.clone(),
             clients.clone(),
@@ -1075,14 +1075,14 @@ impl AppState {
             clock.clone(),
             ids.clone(),
         ));
-        // アプリの名簿の照会（ADR-0057 / ADR-0059）。宛先のアプリは、呼んできたサービスアカウントの
-        // 名乗り（`find_by_binding_target`）で決まる。
+        // App roster lookup (ADR-0057 / ADR-0059). The target app is determined by the calling service
+        // account's identity binding (`find_by_binding_target`).
         let application_users = Arc::new(ApplicationUserDirectoryService::new(
             applications.clone(),
             Arc::new(SqlxApplicationUserQuery::new(pool.clone())),
         ));
-        // 宛名の登録と、クライアントへの貸し出し（ADR-0042）。発行側（TokenService）と同じ
-        // リポジトリ実装を共有するので、登録・剥奪の直後から発行に効く。
+        // Audience registration and lending to clients (ADR-0042). Shares the repository implementation with
+        // the issuer (TokenService), so registration / revocation affects issuance immediately.
         let resources_admin = Arc::new(ResourceManagementService::new(
             resources,
             audit.clone(),
@@ -1091,33 +1091,33 @@ impl AppState {
             config.issuer().to_string(),
         ));
 
-        // F4: Logout（RP-initiated / front-channel / back-channel）。
+        // F4: Logout (RP-initiated / front-channel / back-channel).
         let logout = Arc::new(LogoutService::new(
             sso_sessions.clone(),
             users.clone(),
             clients.clone(),
             codes,
-            // `id_token_hint` の署名検証に使う（G12）。退役済みの鍵で署名された古い ID Token も
-            // hint として届くため、ACTIVE 鍵ではなく kid 引きのリポジトリを渡す。
+            // Used to verify the `id_token_hint` signature (G12). Old ID Tokens signed with retired keys also
+            // arrive as hints, so a kid-lookup repository is passed rather than the ACTIVE key.
             signing_keys.clone(),
-            // ログアウトしたセッションから出た refresh token を落とすために引く（ADR-0044）。
+            // Looked up to drop refresh tokens issued from the logged-out session (ADR-0044).
             refresh_tokens.clone(),
             audit.clone(),
             clock.clone(),
             config.issuer().to_string(),
         ));
 
-        // AP10: 外部 IdP ログイン。外部 IdP は「assay がクライアントとして振る舞う」唯一の経路で、
-        // ID Token の検証（署名・iss・aud・exp・nonce）は `ExternalOidcClient` の実装に閉じている。
+        // AP10: external IdP login. External IdPs are the only path where "assay acts as a client", and
+        // ID Token validation (signature, iss, aud, exp, nonce) is enclosed in the `ExternalOidcClient` implementation.
         let external_providers: Arc<
             dyn crate::domain::repositories::ExternalIdentityProviderRepository,
         > = Arc::new(SqlxExternalIdentityProviderRepository::new(pool.clone()));
         let external_login_requests: Arc<
             dyn crate::domain::repositories::ExternalLoginRequestRepository,
         > = Arc::new(SqlxExternalLoginRequestRepository::new(pool.clone()));
-        // 外部 IdP への HTTP は 1 つのクライアント（タイムアウト・リダイレクトを追わない）で出す。
-        // ログイン時のトークン交換と、登録前の discovery 取り込み（task #77）が同じ作法になる。
-        // 名前を引いた結果の住所も確かめる（内部なら繋がない。task #585）。
+        // HTTP to external IdPs goes through one client (with timeouts, not following redirects).
+        // Token exchange at login and discovery import before registration (task #77) follow the same rules.
+        // Also checks the addresses a name resolves to (does not connect if internal; task #585).
         let external_oidc_client = Arc::new(ReqwestExternalOidcClient::with_trust(
             config.outbound_trust(),
         ));
@@ -1146,13 +1146,13 @@ impl AppState {
         let external_idp_discovery =
             Arc::new(ExternalIdpDiscoveryService::new(external_oidc_client));
 
-        // AP5: Step-up 認証。IP レート制限はログインと同一の制限器を共有する（別枠にすると、
-        // ログインで締め出された攻撃者が step-up 経由で試行を続けられる）。
+        // AP5: step-up authentication. Shares the IP rate limiter with login (with a separate budget,
+        // an attacker locked out of login could keep trying through step-up).
         let step_up = Arc::new(StepUpService::new(
             sso_sessions.clone(),
             users.clone(),
             totp_secrets.clone(),
-            // 本人確認のパスキー経路（AP5・T38）。セレモニーはログインの 3 経路と同じ実装を共有する。
+            // Passkey path for identity verification (AP5, T38). The ceremony shares the implementation with the three login paths.
             passkey_assertion.clone(),
             authenticator_repository.clone(),
             hasher.clone(),
@@ -1163,7 +1163,7 @@ impl AppState {
             tenant_settings.clone(),
         ));
 
-        // G10: セルフサービスのセキュリティ画面。
+        // G10: self-service security screen.
         let account_security = Arc::new(AccountSecurityService::new(
             sso_sessions.clone(),
             users.clone(),
@@ -1174,7 +1174,7 @@ impl AppState {
             clock.clone(),
         ));
 
-        // task #872: 利用者の端末の一覧と、登録していない端末でのログインの知らせ。
+        // task #872: the user's device list and notices of logins from unregistered devices.
         let device_registry = Arc::new(DeviceRegistryService::new(
             user_devices.clone(),
             sso_sessions.clone(),
@@ -1185,7 +1185,7 @@ impl AppState {
             audit.clone(),
             clock.clone(),
         ));
-        // task #885: 利用者が登録する SSH の公開鍵（知らせの送り口は端末と同じ）。
+        // task #885: SSH public keys registered by users (the notice sender is the same as for devices).
         let ssh_keys = Arc::new(SshKeyRegistryService::new(
             Arc::new(SqlxUserSshKeyRepository::new(pool.clone())),
             sso_sessions.clone(),
@@ -1195,7 +1195,7 @@ impl AppState {
             audit.clone(),
             clock.clone(),
         ));
-        // SSO セッションの端末の鍵への結び付け（DBSC。task #887・ADR-0074）。
+        // Binding the SSO session to the device key (DBSC; task #887, ADR-0074).
         let session_key_binding = Arc::new(SessionKeyBindingService::new(
             Arc::new(SqlxSessionKeyBindingRepository::new(pool.clone())),
             sso_sessions.clone(),
@@ -1208,7 +1208,7 @@ impl AppState {
             clock.clone(),
             *config.csrf_secret(),
         ));
-        // 認証アプリで承認するログイン（「アプリで続ける」。task #892・ADR-0077）。
+        // Logins approved in the authenticator app ("Continue with the app"; task #892, ADR-0077).
         let app_approval = Arc::new(AppApprovalService::new(
             AppApprovalDependencies {
                 keys: Arc::new(SqlxApproverKeyRepository::new(pool.clone())),
@@ -1231,7 +1231,7 @@ impl AppState {
             app_approver_policy(&config),
         ));
 
-        // task #896: 本人が見る「状況」（読むだけ）。
+        // task #896: the "Status" the user sees (read-only).
         let security_status = Arc::new(SecurityStatusService::new(SecurityStatusDeps {
             query: Arc::new(SqlxSecurityStatusQuery::new(pool.clone())),
             sso_sessions: sso_sessions.clone(),
@@ -1244,7 +1244,7 @@ impl AppState {
             clock: clock.clone(),
         }));
 
-        // task #879: 本人が見るログイン履歴。
+        // task #879: sign-in history the user sees.
         let sign_in_history = Arc::new(SignInHistoryService::new(
             sign_in_history_repository.clone(),
             sso_sessions.clone(),
@@ -1252,7 +1252,7 @@ impl AppState {
             clock.clone(),
         ));
 
-        // F5: Token 管理（revocation / introspection）。
+        // F5: token management (revocation / introspection).
         let revocation = Arc::new(RevocationService::new(
             clients.clone(),
             refresh_tokens.clone(),
@@ -1287,8 +1287,8 @@ impl AppState {
             totp_secrets,
             users.clone(),
             sign_in.clone(),
-            // パスワード認証と同じ limiter インスタンス・同じロックポリシーを共有する（SEC3）。
-            // 別枠にすると「パスワードで上限まで、TOTP でさらに上限まで」と試行できてしまう。
+            // Shares the same limiter instance and lock policy as password authentication (SEC3).
+            // With a separate budget one could try "up to the limit with password, then up to the limit with TOTP".
             rate_limiter.clone(),
             audit.clone(),
             clock.clone(),
@@ -1303,23 +1303,23 @@ impl AppState {
             auth_sessions.clone(),
             policy_gate.clone(),
             sign_in.clone(),
-            // レート制限はログイン・直接ログインのパスキー経路と同じ枠を共有する（T39）。
+            // The rate limit shares its budget with the passkey paths of login and direct login (T39).
             rate_limiter.clone(),
             audit.clone(),
             clock.clone(),
         ));
-        // 設定画面からの再起動（ADR-0017）。signal 自体は `run()` の graceful shutdown へ、
-        // ユースケース（監査 → 停止要求）はハンドラへ渡すため、同じ値を 2 経路で保持する。
+        // Restart from the settings screen (ADR-0017). The signal itself goes to `run()`'s graceful shutdown and
+        // the use case (audit → stop request) to the handler, so the same value is held on two paths.
         let restart = ServiceRestart::new();
         let service_restart = Arc::new(ServiceRestartService::new(
             Arc::new(restart.clone()),
             audit.clone(),
         ));
 
-        // CORS の許可オリジン（G1）。`/token`・`/userinfo` はホットパスのため、テナント→オリジン
-        // 集合をテナント解決と同じ TTL でキャッシュする。管理画面で `redirect_uris` を変えた直後は
-        // 最大 TTL 分だけ古い集合が使われるが、TTL は既定で短く、影響は「新しいオリジンからの
-        // 読み取りが少しの間できない」だけ（古いオリジンが余分に通ることも同じ長さで起きる）。
+        // CORS allowed origins (G1). `/token` and `/userinfo` are hot paths, so the tenant → origin set is
+        // cached with the same TTL as tenant resolution. Right after `redirect_uris` change in the admin screen
+        // a set up to TTL old may be used, but the TTL is short by default and the only effect is "reads from a
+        // new origin fail for a short while" (an old origin passing extra for the same duration also happens).
         let cors_policy = Arc::new(ApiCorsPolicy::new(
             clients.clone(),
             config.cors_allowed_origins(),
@@ -1329,8 +1329,8 @@ impl AppState {
             )),
         ));
 
-        // 期限切れレコードの一括 GC（G2）。対象表の一覧は infrastructure 側に単一定義してあり、
-        // ここは組み立てて `run()` のタスクへ渡すだけ。
+        // Bulk GC of expired records (G2). The target table list is defined once on the infrastructure side;
+        // this only assembles it and passes it to the `run()` task.
         let expired_records = Arc::new(ExpiredRecordPurgeService::new(
             crate::infrastructure::repositories::expired_records::all_expiring_record_stores(
                 pool.clone(),
@@ -1338,8 +1338,8 @@ impl AppState {
             clock.clone(),
         ));
 
-        // トークン系エンドポイントの負荷ゲート（SEC10）。Argon2 照合の同時実行数と
-        // 送信元単位の要求数を抑える。
+        // Load gate for the token endpoints (SEC10). Limits concurrent Argon2 verifications and
+        // requests per source.
         let token_endpoint_load = Arc::new(
             crate::presentation::token_endpoint_load::TokenEndpointLoadGate::from_config(
                 &config,
@@ -1432,8 +1432,8 @@ impl AppState {
     }
 }
 
-/// 設定値（`std::time::Duration`）を解決キャッシュの TTL（`chrono::Duration`）へ変換する。
-/// TTL は秒精度で扱うため丸めは問題にならない（オーバーフロー時は上限に飽和させる）。
+/// Converts a setting value (`std::time::Duration`) to a resolution cache TTL (`chrono::Duration`).
+/// TTLs are second-precision, so rounding does not matter (saturates at the maximum on overflow).
 fn chrono_from_std(d: std::time::Duration) -> chrono::Duration {
     chrono::Duration::from_std(d).unwrap_or(chrono::Duration::MAX)
 }
@@ -1450,14 +1450,14 @@ impl FromRef<AppState> for Arc<RegisterService> {
     }
 }
 
-/// セキュリティの知らせの送り口（task #872）。送り先が無い・鍵を読めないときは送らない。
+/// Notice sender for security notices (task #872). Does not send when there is no destination or the key cannot be read.
 ///
-/// ⚠ 鍵を読めないからといって起動は止めない（知らせのためにログインを止めない）。代わりに
-/// エラーログを残し、出来事は監査ログで追える。
-/// 認証アプリの鍵の確かめの決まり（環境変数だけ。ADR-0077）。パッケージ名が無ければ口を閉じる（`None`）。
+/// ⚠ Failing to read the key does not stop startup (logins are not stopped for the sake of notices). Instead
+/// an error log is left, and the event can be traced in the audit log.
+/// Rules for verifying authenticator app keys (env vars only; ADR-0077). Without a package name the endpoint is closed (`None`).
 ///
-/// 設定が壊れているとき（指紋の形が違う・根のファイルが読めない）は、口を閉じて起動を続ける
-/// （ログインそのものは止めない。知らせの送り口と同じ扱い）。
+/// When the settings are broken (malformed fingerprint, unreadable root file), the endpoint is closed and startup
+/// continues (login itself is not stopped; same treatment as the notice sender).
 fn app_approver_policy(
     config: &Config,
 ) -> Option<crate::domain::key_attestation::AttestationPolicy> {

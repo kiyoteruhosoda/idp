@@ -1,4 +1,4 @@
-//! `log` テーブルの sqlx 実装。書き込み（`ApplicationLogSink`）と読み取り（`ApplicationLogQuery`）。
+//! sqlx implementation of the `log` table. Writing (`ApplicationLogSink`) and reading (`ApplicationLogQuery`).
 
 use crate::domain::application_log::{
     ApplicationLogEntry, ApplicationLogFilter, ApplicationLogRecord,
@@ -101,7 +101,7 @@ fn map_row(row: &MySqlRow) -> Result<ApplicationLogEntry> {
 #[async_trait]
 impl ApplicationLogQuery for SqlxApplicationLogQuery {
     async fn search(&self, filter: &ApplicationLogFilter) -> Result<Vec<ApplicationLogEntry>> {
-        // 条件は指定された項目のみ AND で積む。値はすべてバインドする（SQL インジェクション対策）。
+        // Conditions are ANDed only for the given fields. All values are bound (SQL injection protection).
         let mut qb: QueryBuilder<MySql> = QueryBuilder::new(
             "SELECT id, occurred_at, level, service, target, message, correlation_id, \
              tenant_id, traceback FROM log WHERE 1 = 1",
@@ -113,7 +113,7 @@ impl ApplicationLogQuery for SqlxApplicationLogQuery {
             qb.push(" AND service = ").push_bind(service.as_str());
         }
         if let Some(prefix) = &filter.target_prefix {
-            // 前方一致。LIKE のメタ文字はエスケープしてから連結する（利用者入力をパターンにしない）。
+            // Prefix match. LIKE metacharacters are escaped before concatenation (user input never becomes a pattern).
             qb.push(" AND target LIKE ")
                 .push_bind(format!("{}%", escape_like(prefix)))
                 .push(" ESCAPE '\\\\'");
@@ -137,8 +137,8 @@ impl ApplicationLogQuery for SqlxApplicationLogQuery {
     }
 }
 
-/// LIKE パターンのメタ文字（`%` / `_` / `\`）を無効化する。前方一致検索の入力は「文字列」であり
-/// パターンではないため、利用者が `%` を書いても全件一致にならないようにする。
+/// Neutralizes LIKE pattern metacharacters (`%` / `_` / `\`). Prefix search input is a "string",
+/// not a pattern, so a user writing `%` must not match everything.
 fn escape_like(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for c in value.chars() {

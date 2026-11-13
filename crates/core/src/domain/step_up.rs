@@ -1,43 +1,50 @@
-//! Step-up 認証（ユーザー認証・認証ポリシー仕様書 §15。AP5）。
+//! Step-up authentication (user authentication / auth policy spec §15; AP5).
 //!
-//! ログイン済みであることと、**今この操作をしてよいと確認できていること**は別物である。
-//! セッションは既定 8 時間有効で、盗まれたセッションを持つ攻撃者は、その間ずっと「ログイン済み」
-//! として振る舞える。パスワード変更・MFA 設定変更のような、成功すれば**アカウントを乗っ取れる**
-//! 操作については、セッションの有無ではなく「直前に本人確認を通ったか」を条件にする。
+//! Being logged in and **having confirmed that this operation may be done now** are different
+//! things. Sessions are valid for 8 hours by default, and an attacker holding a stolen session can
+//! act as "logged in" the whole time. For operations that, if successful, **let someone take over
+//! the account**, such as changing the password or MFA settings, the condition is "passed
+//! re-verification just before", not having a session.
 //!
-//! 判定材料は AP4 で SSO セッションに記録した認証コンテキスト（認証方式・強度・MFA 完了時刻）と、
-//! step-up を通した時刻。評価は純粋関数（[`evaluate_step_up`]）で、DB・フレームワークに依存しない。
+//! Inputs are the authentication context recorded in the SSO session in AP4 (methods, strength, MFA
+//! completion time) and the step-up time. Evaluation is a pure function ([`evaluate_step_up`])
+//! independent of the DB and frameworks.
 
 use crate::domain::sso_session::SsoSession;
 use crate::domain::values::AuthenticationStrength;
 use chrono::{DateTime, Duration, Utc};
 
-/// Step-up を要求する重要操作（仕様 §15）。
+/// Sensitive operations that require step-up (spec §15).
 ///
-/// 「成功するとアカウントの支配権が移る」操作を対象にする。閲覧系（セッション一覧・連携アプリ
-/// 一覧）は含めない — 見えるだけでは支配権は移らず、全操作に再認証を課すと利用者が確認を
-/// 読まずに通すようになる（保護の実効が落ちる）。
+/// Targets operations where "success transfers control of the account". Viewing (session list,
+/// linked apps list) is not included — seeing does not transfer control, and requiring
+/// re-authentication for every operation makes users click through confirmations without reading
+/// (weakening the actual protection).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SensitiveOperation {
-    /// パスワードの変更（現行パスワードの提示は別途要るが、それだけでは第二要素を跨げない）。
+    /// Changing the password (presenting the current password is also required, but that alone
+    /// cannot cross the second factor).
     ChangePassword,
-    /// 認証器（TOTP・パスキー）の追加・削除。攻撃者が自分の認証器を足せば、以後は正規の
-    /// 資格情報として振る舞えるため、最も強く守る必要がある。
+    /// Adding / removing authenticators (TOTP, passkey). If an attacker adds their own
+    /// authenticator, they can act as legitimate credentials from then on, so this needs the
+    /// strongest protection.
     ManageAuthenticators,
-    /// 外部 IdP との紐付け・解除（AP10）。紐付けは新しいログイン経路を作る操作にあたる。
+    /// Linking / unlinking an external IdP (AP10). Linking creates a new login path.
     ManageExternalIdentities,
-    /// ログイン中セッションの失効（他端末の締め出し）。
+    /// Revoking signed-in sessions (locking out other devices).
     RevokeSession,
-    /// 今のブラウザを「自分の端末」として登録する（task #872）。**パスキーでしか通さない**
-    /// （[`Self::passkey_only`]）。パスワードを盗んだだけの者に、自分の端末を登録させない。
+    /// Registering the current browser as "my device" (task #872). **Only passkeys pass**
+    /// ([`Self::passkey_only`]). Someone who merely stole the password cannot register their own
+    /// device.
     RegisterDevice,
-    /// SSH の公開鍵の登録・取り消し（task #885）。**パスキーでしか通さない**。登録した鍵は機器へ
-    /// 自動で配られるので、パスワードを盗んだだけの者に自分の鍵を足させない（外させもしない）。
+    /// Registering / revoking SSH public keys (task #885). **Only passkeys pass**. Registered keys
+    /// are automatically distributed to machines, so someone who merely stole the password cannot
+    /// add their own key (nor remove one).
     ManageSshKeys,
 }
 
 impl SensitiveOperation {
-    /// 監査ログ・API 契約で使う安定した文字列表現。
+    /// Stable string representation used in audit logs and API contracts.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::ChangePassword => "change_password",
@@ -61,16 +68,18 @@ impl SensitiveOperation {
         }
     }
 
-    /// この操作が「利用者が第二要素を持っているなら第二要素まで求める」ものか。
+    /// Whether this operation "requires the second factor if the user has one".
     ///
-    /// 認証器の管理と外部 IdP の紐付けは、単一要素で通せると「パスワードを盗んだだけの攻撃者が
-    /// MFA を外して（または自分の認証器を足して）以後を乗っ取る」経路になるため、必ず第二要素を要る
-    /// ものとする。パスワード変更・セッション失効は現行パスワードの提示で足りる。
-    /// パスキーでの確認だけを受け付ける操作か（パスワードの再確認では通さない。task #872）。
+    /// If authenticator management and external IdP linking could pass with a single factor, it
+    /// would be a path where "an attacker who merely stole the password removes MFA (or adds their
+    /// own authenticator) and takes over", so they always require the second factor. Password
+    /// changes and session revocation suffice with the current password. Whether the operation
+    /// accepts only passkey verification (password re-verification does not pass; task #872).
     ///
-    /// 新しさの基準も他と違い、テナントの step-up の間隔ではなく
-    /// [`crate::domain::user_device::REGISTRATION_PASSKEY_MAX_AGE_SECS`]（5 分）で、`step_up_at` ではなく
-    /// パスキーで確かめた時刻で測る（[`crate::domain::user_device::passkey_verified_recently`]）。
+    /// The freshness criterion also differs: not the tenant's step-up interval but
+    /// [`crate::domain::user_device::REGISTRATION_PASSKEY_MAX_AGE_SECS`] (5 minutes), measured not
+    /// by `step_up_at` but by the passkey verification time
+    /// ([`crate::domain::user_device::passkey_verified_recently`]).
     pub fn passkey_only(&self) -> bool {
         matches!(self, Self::RegisterDevice | Self::ManageSshKeys)
     }
@@ -83,22 +92,25 @@ impl SensitiveOperation {
     }
 }
 
-/// Step-up の要件。
+/// Step-up requirements.
 #[derive(Debug, Clone, Copy)]
 pub struct StepUpRequirement {
-    /// 直近の本人確認からこの秒数を超えていたら再確認を求める（仕様 §18.2 と同じ考え方で、
-    /// 対象が「セッション全体」ではなく「この操作の直前」である点だけが違う）。
+    /// Re-verification is required if more than this many seconds passed since the last
+    /// verification (same idea as spec §18.2, differing only in that the target is "right before
+    /// this operation" rather than "the whole session").
     pub max_age_secs: u64,
-    /// 求める認証強度。利用者が第二要素を持たない場合の扱いは Application 層が決める
-    /// （持っていない人に多要素を求めても通せないため）。
+    /// Required authentication strength. How to treat users without a second factor is decided by
+    /// the Application layer (requiring multiple factors from someone who has none can never pass).
     pub required_strength: AuthenticationStrength,
 }
 
 impl StepUpRequirement {
-    /// 操作と「利用者が第二要素を登録しているか」から要件を決める。
+    /// Decides the requirements from the operation and "whether the user has registered a second
+    /// factor".
     ///
-    /// 第二要素を持たない利用者へ多要素を求めても操作が永久に通らないだけなので、単一要素の
-    /// 再確認へ落とす（MFA を必須にしたい組織は認証ポリシーの `require_mfa` で入口を締める）。
+    /// Requiring multiple factors from a user without a second factor would just block the
+    /// operation forever, so it falls back to single-factor re-verification (organizations wanting
+    /// mandatory MFA close the entrance with auth policy `require_mfa`).
     pub fn for_operation(
         operation: SensitiveOperation,
         max_age_secs: u64,
@@ -116,21 +128,22 @@ impl StepUpRequirement {
     }
 }
 
-/// Step-up の判定結果。
+/// Result of the step-up decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StepUpDecision {
-    /// 直近の本人確認が要件を満たしている。そのまま操作してよい。
+    /// The last verification satisfies the requirements. The operation may proceed.
     Satisfied,
-    /// 本人確認が古い。同じ強度で構わないので、もう一度確認する。
+    /// Verification is stale. Same strength is fine; verify once more.
     ReauthenticationRequired,
-    /// 強度が足りない（第二要素を通していない）。第二要素まで確認する。
+    /// Strength is insufficient (second factor not passed). Verify through the second factor.
     SecondFactorRequired,
 }
 
-/// 直近の本人確認時刻。`step_up_at` があればそれを、無ければログイン時刻（`auth_time`）を使う。
+/// Time of the last verification. Uses `step_up_at` if present, otherwise the login time
+/// (`auth_time`).
 ///
-/// ログイン直後は step-up 済みとみなす（ログインそのものが本人確認であり、直後にもう一度
-/// 同じことを求めるのは利用者にとって無意味な繰り返しになる）。
+/// Right after login it counts as stepped up (login itself is a verification, and asking the same
+/// again right after would be a pointless repetition for the user).
 fn last_verified_at(session: &SsoSession, step_up_at: Option<DateTime<Utc>>) -> DateTime<Utc> {
     match step_up_at {
         Some(at) if at > session.auth_time => at,
@@ -138,13 +151,14 @@ fn last_verified_at(session: &SsoSession, step_up_at: Option<DateTime<Utc>>) -> 
     }
 }
 
-/// Step-up を評価する（仕様 §15）。
+/// Evaluates step-up (spec §15).
 ///
-/// - 強度が足りなければ `SecondFactorRequired`（新しさに関わらず。古い単一要素の確認を
-///   「新しいから」で通してしまわない）。
-/// - 強度は足りるが古ければ `ReauthenticationRequired`。
-/// - 多要素を要求する場合の「新しさ」は**第二要素の完了時刻**で測る。パスワードだけ入れ直しても
-///   第二要素の鮮度は回復しないため。
+/// - If strength is insufficient, `SecondFactorRequired` (regardless of freshness; an old
+///   single-factor verification is not let through "because it is fresh").
+/// - If strength suffices but it is stale, `ReauthenticationRequired`.
+/// - When multiple factors are required, "freshness" is measured by **the second factor's
+///   completion time**. Re-entering only the password does not restore the second factor's
+///   freshness.
 pub fn evaluate_step_up(
     session: &SsoSession,
     step_up_at: Option<DateTime<Utc>>,
@@ -160,8 +174,9 @@ pub fn evaluate_step_up(
 
     let max_age = Duration::seconds(requirement.max_age_secs as i64);
     let fresh = if requirement.required_strength == AuthenticationStrength::MultiFactor {
-        // 第二要素の鮮度で測る。step-up で第二要素を通し直した場合は `mfa_completed_at` も
-        // 更新されるため、この 1 本で「ログイン時の MFA」と「step-up の MFA」の両方を見られる。
+        // Measured by the second factor's freshness. Passing the second factor again in step-up
+        // also updates `mfa_completed_at`, so this one value covers both "MFA at login" and "MFA at
+        // step-up".
         session
             .mfa_completed_at
             .is_some_and(|at| now - at <= max_age)
@@ -217,7 +232,7 @@ mod tests {
         }
     }
 
-    /// ログイン直後は step-up 済みとみなす（同じことをもう一度求めない）。
+    /// Right after login it counts as stepped up (the same is not asked again).
     #[test]
     fn a_fresh_login_satisfies_step_up() {
         let s = session(vec![AuthenticationMethod::Password], now());
@@ -239,7 +254,7 @@ mod tests {
         );
     }
 
-    /// step-up を通した時刻が新しければ、ログインが古くても満たす。
+    /// If the step-up time is fresh, it satisfies even when the login is old.
     #[test]
     fn a_recent_step_up_refreshes_an_old_login() {
         let s = session(
@@ -257,7 +272,7 @@ mod tests {
         );
     }
 
-    /// 単一要素のセッションは、どれだけ新しくても多要素の要件を満たさない。
+    /// A single-factor session never satisfies a multi-factor requirement, however fresh.
     #[test]
     fn a_single_factor_session_never_satisfies_a_multi_factor_requirement() {
         let s = session(vec![AuthenticationMethod::Password], now());
@@ -267,8 +282,8 @@ mod tests {
         );
     }
 
-    /// 多要素の要件では、パスワードだけの step-up では鮮度が回復しない
-    /// （`mfa_completed_at` で測るため）。
+    /// Under a multi-factor requirement, a password-only step-up does not restore freshness
+    /// (because it is measured by `mfa_completed_at`).
     #[test]
     fn multi_factor_freshness_is_measured_from_the_second_factor() {
         let mut s = session(
@@ -276,12 +291,13 @@ mod tests {
             now() - Duration::hours(4),
         );
         s.mfa_completed_at = Some(now() - Duration::hours(4));
-        // パスワードだけ入れ直した（step_up_at は新しい）が、第二要素は 4 時間前のまま。
+        // Re-entered only the password (step_up_at is fresh), but the second factor is still from 4
+        // hours ago.
         assert_eq!(
             evaluate_step_up(&s, Some(now()), multi_factor(300), now()),
             StepUpDecision::ReauthenticationRequired
         );
-        // 第二要素まで通し直せば満たす。
+        // Passing through the second factor again satisfies it.
         s.mfa_completed_at = Some(now() - Duration::seconds(10));
         assert_eq!(
             evaluate_step_up(&s, Some(now()), multi_factor(300), now()),
@@ -289,7 +305,7 @@ mod tests {
         );
     }
 
-    /// 第二要素を持たない利用者には多要素を求めない（求めても永久に通らないため）。
+    /// Users without a second factor are not asked for multiple factors (it could never pass).
     #[test]
     fn requirement_falls_back_to_single_factor_without_an_enrolled_authenticator() {
         let with =
@@ -301,7 +317,8 @@ mod tests {
             without.required_strength,
             AuthenticationStrength::SingleFactor
         );
-        // 第二要素を要求しない操作は、認証器を持っていても単一要素で足りる。
+        // Operations not requiring a second factor are satisfied by a single factor even with an
+        // authenticator.
         let password =
             StepUpRequirement::for_operation(SensitiveOperation::ChangePassword, 300, true);
         assert_eq!(

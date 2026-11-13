@@ -1,10 +1,10 @@
-//! 期限切れレコードの一括 GC（G2）。
+//! Bulk GC of expired records (G2).
 //!
-//! 進行状態・使い捨てトークンの表は「期限が来たら意味を失う」が、消す主体はどのユースケースにも
-//! 属さない。表ごとに掃除ループを生やすと追加のたびに漏れるため、
-//! [`crate::domain::repositories::ExpiringRecordStore`] を実装した掃除口を 1 本のタスクへ束ねる。
+//! Tables of in-progress state and one-time tokens "lose meaning once they expire", but deleting them belongs
+//! to no use case. Growing a cleanup loop per table means one is missed with every addition, so
+//! cleaners implementing [`crate::domain::repositories::ExpiringRecordStore`] are bundled into one task.
 //!
-//! 掃除口の一覧は [`crate::infrastructure::repositories::expired_records`] にある。
+//! The list of cleaners is in [`crate::infrastructure::repositories::expired_records`].
 
 use crate::domain::clock::Clock;
 use crate::domain::repositories::ExpiringRecordStore;
@@ -20,11 +20,11 @@ impl ExpiredRecordPurgeService {
         Self { stores, clock }
     }
 
-    /// 全対象表を 1 巡して期限切れ行を削除し、削除できた合計件数を返す。
+    /// Makes one pass over every target table deleting expired rows, and returns the total number deleted.
     ///
-    /// **1 つの表の失敗で残りを止めない。** ある表のロック待ちやデッドロックで巡回全体が
-    /// 止まると、無関係な表が無限に伸び続ける（そもそも掃除が無かったのが G2 の症状である）。
-    /// 失敗は表名付きで記録し、次の周期で再試行する。
+    /// **A failure in one table does not stop the rest.** If a lock wait or deadlock in one table stopped
+    /// the whole pass, unrelated tables would grow without bound (having no cleanup at all was the G2 symptom).
+    /// Failures are logged with the table name and retried on the next cycle.
     pub async fn purge_once(&self) -> u64 {
         let now = self.clock.now();
         let mut total = 0;
@@ -44,7 +44,7 @@ impl ExpiredRecordPurgeService {
         total
     }
 
-    /// 掃除対象の表名（起動ログ・テスト用）。
+    /// Names of the tables to clean (for the startup log and tests).
     pub fn table_names(&self) -> Vec<&'static str> {
         self.stores.iter().map(|s| s.table_name()).collect()
     }
@@ -85,8 +85,8 @@ mod tests {
         }
     }
 
-    /// 1 つの表が失敗しても、その後ろの表は掃除される。ここが止まると「掃除されない表」が
-    /// 静かに増え続け、G2 の症状に戻る。
+    /// Even if one table fails, the tables after it are cleaned. If this stopped, "uncleaned tables"
+    /// would quietly keep growing, back to the G2 symptom.
     #[tokio::test]
     async fn a_failing_table_does_not_stop_the_rest() {
         let failing = Arc::new(FakeStore {

@@ -1,40 +1,40 @@
-//! 内部認証 API（`/internal/authenticate*`、ADR-0007 §3）の DTO 契約。
+//! DTO contracts of the internal authentication API (`/internal/authenticate*`, ADR-0007 §3).
 //!
-//! web（ログイン画面）→api の内部認証呼び出しで共有する。web が [`InternalAuthenticateRequest`] /
-//! [`InternalAdminAuthenticateRequest`] を送信（serialize）し、api が受信（deserialize）する。応答は
-//! `result` タグで判別し、成功時のみ SSO/redirect 情報を含む。Cookie 組み立て（Secure/HttpOnly/
-//! SameSite/TTL）とエラー文言のローカライズは呼び出し側（web）が担う。
+//! Shared by web (login screen) -> api internal auth calls. web sends (serializes) [`InternalAuthenticateRequest`] /
+//! [`InternalAdminAuthenticateRequest`], and api receives (deserializes) them. Responses are
+//! discriminated by the `result` tag and carry SSO/redirect information only on success. Building cookies (Secure/HttpOnly/
+//! SameSite/TTL) and localizing error messages are the caller's (web's) job.
 //!
-//! `/internal/*` は外部公開しない内部 I/F のため OpenAPI（`utoipa::ToSchema`）には含めない。
+//! `/internal/*` is an internal interface not exposed externally, so it is not included in OpenAPI (`utoipa::ToSchema`).
 
 use serde::{Deserialize, Serialize};
 
-/// api が**テナントを解決できなかった**ときに `/internal/*` のエラー本文へ載せるコード（MT28）。
+/// Code put in the `/internal/*` error body when api **could not resolve the tenant** (MT28).
 ///
-/// `/internal/*` はテナントプレフィクスを持たないため §7 の `TenantResolver` middleware を通らず、
-/// `tenant_id` は本文のフィールドとして届く。不存在・`DISABLED` のときは 400 で拒否するが、
-/// **他の 400（本文の不正等）と機械的に区別できる必要がある** —— web はこれだけを 404 の画面へ
-/// 倒し、それ以外は「web の実装/構成エラー」として 502 に倒すためである。説明文（人間向け）で
-/// 判別すると、文言を直した瞬間に静かに壊れる。
+/// `/internal/*` has no tenant prefix, so it does not pass the §7 `TenantResolver` middleware and
+/// `tenant_id` arrives as a body field. Nonexistent or `DISABLED` is rejected with 400, but it
+/// **must be machine-distinguishable from other 400s (invalid body etc.)**: web turns only this into the 404
+/// screen and everything else into 502 as "a web implementation/configuration error". Discriminating by the
+/// description (for humans) would break silently the moment the wording is fixed.
 ///
-/// 値の一致が api と web で崩れると「不存在テナントが 502 になる」に戻るだけで気付きにくいので、
-/// `contracts` に単一定義する。
+/// If the value drifts between api and web, it merely reverts to "a nonexistent tenant becomes 502", which is easy to miss,
+/// so it is defined once in `contracts`.
 pub const UNKNOWN_TENANT_ERROR_CODE: &str = "unknown_tenant";
 
-/// 認可フロー再開 API（`POST /internal/authorize/resume`、ADR-0018 決定 2）のリクエスト。
+/// Request of the authorization flow resume API (`POST /internal/authorize/resume`, decision 2 of ADR-0018).
 ///
-/// api の `/authorize` はブラウザ Cookie を読まず、web へのリダイレクト URL に単回・短命の
-/// ハンドル（`?auth_session=`）を載せる。web はハンドルと**自ドメインの host-only**
-/// `sso_session_id` Cookie の値を本 API へ渡し、api がハンドル交換（単回消費）と SSO 判定・
-/// 同意チェック・code 発行までを行う（`/internal/authenticate` と同じ応答パターン）。
+/// api's `/authorize` does not read browser cookies and puts a single-use, short-lived handle (`?auth_session=`)
+/// on the redirect URL to web. web passes the handle and the value of its **own-domain host-only**
+/// `sso_session_id` cookie to this API, and api does the handle exchange (single consumption), the SSO decision,
+/// the consent check and code issuance (same response pattern as `/internal/authenticate`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAuthorizeResumeRequest {
-    /// フローのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する（fail-closed。SEC4）。
+    /// The flow's tenant (ADR-0009 §8). **Required**. api rejects a missing or invalid UUID with 400 (fail-closed; SEC4).
     #[serde(default)]
     pub tenant_id: Option<String>,
-    /// `/authorize` がリダイレクト URL に載せた単回ハンドル。
+    /// The single-use handle `/authorize` put on the redirect URL.
     pub handle: String,
-    /// web の host-only `sso_session_id` Cookie の値（無ければ `None` = 未ログイン）。
+    /// Value of web's host-only `sso_session_id` cookie (`None` if absent = not logged in).
     #[serde(default)]
     pub sso_session_id: Option<String>,
     #[serde(default)]
@@ -43,74 +43,74 @@ pub struct InternalAuthorizeResumeRequest {
     pub user_agent: Option<String>,
 }
 
-/// 認可フロー再開 API のレスポンス。`result` タグで判別する。
+/// Response of the authorization flow resume API. Discriminated by the `result` tag.
 ///
-/// SSO 復元に成功した応答（`Redirect`・`ConsentRequired`）には `sso_absolute_ttl_secs` を含める。
-/// web はこれで手元の `sso_session_id` を host-only で**再発行**する。`COOKIE_DOMAIN`（旧 ADR-0012
-/// 構成の掃除）設定中は再発行に旧 `Domain` 付き Cookie の削除が併送されるため、明示的な
-/// ログイン・ログアウトを経ない既存セッションもサイレント復元の時点で host-only へ移行し、
-/// 旧親ドメイン配下（stg 等）へ bearer credential が送信され続ける露出を閉じる。
-/// `response_mode=form_post` の認可応答で POST する hidden フィールド（G12）。
+/// Responses with successful SSO restoration (`Redirect`, `ConsentRequired`) include `sso_absolute_ttl_secs`.
+/// web uses it to **reissue** its `sso_session_id` as host-only. While `COOKIE_DOMAIN` (cleanup of the old ADR-0012
+/// setup) is set, the reissue also sends a deletion of the old `Domain` cookie, so existing sessions that do not go
+/// through an explicit login/logout also migrate to host-only at silent restoration, closing the exposure of the
+/// bearer credential continuing to be sent under the old parent domain (stg etc.).
+/// Hidden fields POSTed in a `response_mode=form_post` authorization response (G12).
 ///
-/// `None` は `query`（`redirect_to` へ 302 する）。`Some` のとき web は、`redirect_to` を
-/// action にした**自動送信フォーム**を描いてこのフィールドを POST する。
+/// `None` means `query` (302 to `redirect_to`). When `Some`, web renders an **auto-submitting form** with
+/// `redirect_to` as the action and POSTs these fields.
 ///
-/// フィールドを URL へ畳んだ形で渡さないのは、`redirect_uri` 自身がクエリを持ち得るため
-/// 「どこまでが RP のクエリでどこからが認可応答か」を URL からは復元できないからである。
-/// この形のとき `redirect_to` には**認可応答のパラメータが載っていない**（見落とした経路が
-/// 302 しても、認可コードが履歴・`Referer` に残らない）。
+/// The fields are not folded into the URL because `redirect_uri` itself may have a query, so
+/// "where the RP's query ends and the authorization response begins" cannot be recovered from the URL.
+/// In this shape, `redirect_to` **carries no authorization response parameters** (even if an overlooked path
+/// 302s, the authorization code does not remain in history or `Referer`).
 pub type FormPostFields = Vec<(String, String)>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAuthorizeResumeResponse {
-    /// SSO 有効かつ同意済み。code 発行済みの `redirect_to`（RP URL）へ 302 する。
+    /// SSO valid and consented. 302 to `redirect_to` (RP URL) with a code already issued.
     Redirect {
         redirect_to: String,
-        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        /// Hidden fields POSTed for `form_post` (G12). `None` means `query`.
         #[serde(default)]
         form_post: Option<FormPostFields>,
         sso_absolute_ttl_secs: u64,
     },
-    /// リクエスト続行不可（`prompt=none` で未ログイン・未同意など）。RP へエラーを返す。
-    /// `Redirect` と同じく、`form_post` が `Some` なら `redirect_to` へ hidden フィールドを POST する
-    /// （エラーも要求された `response_mode` で返す。G12）。`None` は `query`（`redirect_to` へ 302）。
+    /// The request cannot continue (not logged in or not consented with `prompt=none` etc.). Returns an error to the RP.
+    /// As with `Redirect`, if `form_post` is `Some`, POST hidden fields to `redirect_to`
+    /// (errors are also returned in the requested `response_mode`; G12). `None` means `query` (302 to `redirect_to`).
     ErrorRedirect {
         redirect_to: String,
         #[serde(default)]
         form_post: Option<FormPostFields>,
     },
-    /// SSO 有効だが同意が必要。web は `auth_session_id` を host-only Cookie 化して `/consent` へ。
+    /// SSO valid but consent required. web turns `auth_session_id` into a host-only cookie and goes to `/consent`.
     ConsentRequired {
         auth_session_id: String,
         sso_absolute_ttl_secs: u64,
     },
-    /// 認証が必要。web は `auth_session_id` を host-only Cookie 化してログインフォームを表示する。
+    /// Authentication required. web turns `auth_session_id` into a host-only cookie and shows the login form.
     LoginRequired { auth_session_id: String },
-    /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
-    /// web は assay の画面で断る ——利用者から見れば「入れたのに弾かれた」ので、認証は通っている
-    /// という事実と、アプリ名と、管理者へ頼む導線を出す。
+    /// Authenticated, but use of this app is not permitted (ADR-0054). ⚠ **Not returned to the RP.**
+    /// web refuses on assay's screen: to the user it is "I got in and was then kicked out", so it shows the fact that
+    /// authentication passed, the app name, and a way to ask the admin.
     ApplicationNotPermitted { application_name: String },
-    /// ハンドルが無効・期限切れ・使用済み（`/authorize` からやり直し）。
+    /// The handle is invalid, expired or used (start over from `/authorize`).
     ExpiredHandle,
-    /// api 内部エラー。
+    /// api internal error.
     Internal,
 }
 
-/// 認可フロー継続 API（`POST /internal/authorize/continue`）のリクエスト。
+/// Request of the authorization flow continue API (`POST /internal/authorize/continue`).
 ///
-/// ログイン画面を出したあと、別のタブで認証を済ませてから元のタブを開き直したときに使う。
-/// ハンドルは最初の受領で消費済みなので、web は host-only `auth_session_id` Cookie と
-/// `sso_session_id` Cookie の値を渡し、api が同じ認可要求で SSO 復元を試す。応答は
-/// [`InternalAuthorizeResumeResponse`]（`expired_handle` は `auth_session_id` が無効・期限切れ）。
+/// Used when, after the login screen was shown, authentication was completed in another tab and the original tab is reopened.
+/// The handle was consumed on first receipt, so web passes the values of the host-only `auth_session_id` cookie and the
+/// `sso_session_id` cookie, and api tries SSO restoration with the same authorization request. The response is
+/// [`InternalAuthorizeResumeResponse`] (`expired_handle` means `auth_session_id` is invalid or expired).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAuthorizeContinueRequest {
-    /// フローのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する。
+    /// The flow's tenant (ADR-0009 §8). **Required**. api rejects a missing or invalid UUID with 400.
     #[serde(default)]
     pub tenant_id: Option<String>,
-    /// web の host-only `auth_session_id` Cookie の値。
+    /// Value of web's host-only `auth_session_id` cookie.
     pub auth_session_id: String,
-    /// web の host-only `sso_session_id` Cookie の値。
+    /// Value of web's host-only `sso_session_id` cookie.
     #[serde(default)]
     pub sso_session_id: Option<String>,
     #[serde(default)]
@@ -119,78 +119,78 @@ pub struct InternalAuthorizeContinueRequest {
     pub user_agent: Option<String>,
 }
 
-/// ログイン画面の文脈取得 API（`POST /internal/authorize/login-context`。G12）のリクエスト。
+/// Request of the login screen context API (`POST /internal/authorize/login-context`; G12).
 ///
-/// `/authorize` が受け取った `login_hint` / `ui_locales` は auth_session に保存されるが、web は
-/// resume の 303（ハンドルを URL から外す付け替え）で状態を落とすため、ログイン画面の描画時に
-/// 手元へ残っていない。web は host-only `auth_session_id` Cookie の値を渡して取り直す。
+/// `login_hint` / `ui_locales` received by `/authorize` are saved in the auth_session, but web drops state in
+/// resume's 303 (the redirect removing the handle from the URL), so they are not at hand when rendering the login
+/// screen. web passes the value of the host-only `auth_session_id` cookie to fetch them again.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAuthorizeLoginContextRequest {
-    /// フローのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する。
+    /// The flow's tenant (ADR-0009 §8). **Required**. api rejects a missing or invalid UUID with 400.
     #[serde(default)]
     pub tenant_id: Option<String>,
-    /// web の host-only `auth_session_id` Cookie の値。
+    /// Value of web's host-only `auth_session_id` cookie.
     pub auth_session_id: String,
 }
 
-/// ログイン画面の文脈取得 API のレスポンス。`result` タグで判別する。
+/// Response of the login screen context API. Discriminated by the `result` tag.
 ///
-/// 認可要求が持ち込んだ**表示上のヒントだけ**を返す（利用者・資格情報・同意状態は含めない）。
-/// `login_hint` は RP が指定した任意の文字列であり、実在するアカウントを意味しない。
-/// `client_name` / `tenant_name` は IdP が登録済みの値から引いた表示名で、RP の申告ではない。
+/// Returns **only the display hints** the authorization request brought (no user, credentials or consent state).
+/// `login_hint` is an arbitrary string specified by the RP and does not imply an existing account.
+/// `client_name` / `tenant_name` are display names looked up from values registered in the IdP, not claims by the RP.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAuthorizeLoginContextResponse {
     Ok {
-        /// `login_hint`（ログイン欄のプリフィル用。未指定は `None`）。
+        /// `login_hint` (for prefilling the login field; `None` if unspecified).
         login_hint: Option<String>,
-        /// `ui_locales`（空白区切りの BCP47 タグ。未指定は `None`）。
+        /// `ui_locales` (space-separated BCP47 tags; `None` if unspecified).
         ui_locales: Option<String>,
-        /// この認可要求の `redirect_uri`（登録済みの値と完全一致したもの）。
+        /// This authorization request's `redirect_uri` (the one that exactly matched the registered value).
         ///
-        /// **web が CSP の `form-action` に許可するオリジンの出所である。** ログインフォームの
-        /// 送信は、SSO と同意が揃っていればそのまま RP へリダイレクトする。Chrome は
-        /// `form-action` をフォーム送信後のリダイレクト先にも適用するため、RP のオリジンを
-        /// 許可しないとその遷移が遮断される（SAML の ACS と同じ事情。`handlers::saml_sso`）。
+        /// **The source of the origins web allows in the CSP `form-action`.** Submitting the login form
+        /// redirects straight to the RP when SSO and consent are in place. Chrome applies
+        /// `form-action` to redirect targets after form submission too, so unless the RP's origin is
+        /// allowed, that navigation is blocked (same situation as SAML's ACS; `handlers::saml_sso`).
         redirect_uri: Option<String>,
-        /// 認可要求を出したクライアントの表示名。ログイン画面の見出し
-        /// （「〇〇 にログイン」）に使う。
+        /// Display name of the client that made the authorization request. Used in the login screen heading
+        /// ("Sign in to ○○").
         ///
-        /// **`Option` かつ `#[serde(default)]` なのは配信順への耐性のためである**
-        /// （`InternalConsentInfoResponse::Ok` の `redirect_uri` と同じ事情。api と web の
-        /// 入れ替えの数秒間は「新しい web ＋ 古い api」が成立し得る）。`None` のときは
-        /// 表示名を出さない（＝この画面が変わる前の見出しに戻るだけ）。
+        /// **`Option` with `#[serde(default)]` for tolerance to deployment order**
+        /// (same situation as `redirect_uri` of `InternalConsentInfoResponse::Ok`: during the few seconds api and web
+        /// are swapped, "new web + old api" can occur). When `None`, the
+        /// display name is not shown (= it just reverts to the heading before this screen changed).
         #[serde(default)]
         client_name: Option<String>,
-        /// フローのテナントの表示名。ログイン画面のナビバーに出す。`None` のときは既定の
-        /// `IdP` を出す（`client_name` と同じく配信順への耐性のため `Option`）。
+        /// Display name of the flow's tenant. Shown in the login screen's navbar. When `None`, the default
+        /// `IdP` is shown (`Option` for tolerance to deployment order, like `client_name`).
         #[serde(default)]
         tenant_name: Option<String>,
     },
-    /// `auth_session_id` が無効・期限切れ（web は文脈なしで描画を続ける）。
+    /// `auth_session_id` is invalid or expired (web continues rendering without context).
     SessionExpired,
-    /// api 内部エラー。
+    /// api internal error.
     Internal,
 }
 
-/// SAML SSO 再開 API（`POST /internal/saml/resume`）のリクエスト。
+/// Request of the SAML SSO resume API (`POST /internal/saml/resume`).
 ///
-/// api の `/{tenant_id}/saml/sso` は AuthnRequest を検証して web の `/saml/continue` へ
-/// 単回・短命のハンドル付きで 302 する（OIDC の `/authorize` と同じハンドオフ。ADR-0018 決定 2）。
-/// web は初回はハンドル、ログイン後の再開は `saml_request_id`（host-only Cookie）を、自ドメインの
-/// `sso_session_id` Cookie の値とともに本 API へ渡す。
+/// api's `/{tenant_id}/saml/sso` validates the AuthnRequest and 302s to web's `/saml/continue`
+/// with a single-use, short-lived handle (the same handoff as OIDC's `/authorize`; decision 2 of ADR-0018).
+/// web passes the handle the first time, and `saml_request_id` (host-only cookie) when resuming after login, along with
+/// the value of its own-domain `sso_session_id` cookie, to this API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalSamlResumeRequest {
-    /// フローのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する。
+    /// The flow's tenant (ADR-0009 §8). **Required**. api rejects a missing or invalid UUID with 400.
     #[serde(default)]
     pub tenant_id: Option<String>,
-    /// `/saml/sso` がリダイレクト URL に載せた単回ハンドル（初回のみ）。
+    /// The single-use handle `/saml/sso` put on the redirect URL (first time only).
     #[serde(default)]
     pub handle: Option<String>,
-    /// ログイン後の再開に使う進行状態 id（web の host-only `saml_request_id` Cookie の値）。
+    /// Progress state id used to resume after login (value of web's host-only `saml_request_id` cookie).
     #[serde(default)]
     pub saml_request_id: Option<String>,
-    /// web の host-only `sso_session_id` Cookie の値（無ければ `None` = 未ログイン）。
+    /// Value of web's host-only `sso_session_id` cookie (`None` if absent = not logged in).
     #[serde(default)]
     pub sso_session_id: Option<String>,
     #[serde(default)]
@@ -199,56 +199,56 @@ pub struct InternalSamlResumeRequest {
     pub user_agent: Option<String>,
 }
 
-/// SAML SSO 再開 API のレスポンス。`result` タグで判別する。
+/// Response of the SAML SSO resume API. Discriminated by the `result` tag.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalSamlResumeResponse {
-    /// SSO 有効。web は `acs_url` へ `SAMLResponse`（base64 済み）と `relay_state` を自動 POST する
-    /// フォームを描画し、`saml_request_id` Cookie を失効させる。
+    /// SSO valid. web renders a form auto-POSTing `SAMLResponse` (already base64) and `relay_state` to `acs_url`,
+    /// and expires the `saml_request_id` cookie.
     Completed {
         acs_url: String,
         saml_response: String,
         #[serde(default)]
         relay_state: Option<String>,
     },
-    /// 認証が必要。web は `saml_request_id` を host-only Cookie 化してポータルログインへ誘導する。
+    /// Authentication required. web turns `saml_request_id` into a host-only cookie and leads to the portal login.
     LoginRequired { saml_request_id: String },
-    /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **ACS へ POST しない。**
-    /// web は OIDC の経路と同じ画面で断り、`saml_request_id` Cookie を失効させる（進行状態は
-    /// api 側で消費済み）。
+    /// Authenticated, but use of this app is not permitted (ADR-0054). ⚠ **Does not POST to the ACS.**
+    /// web refuses on the same screen as the OIDC path and expires the `saml_request_id` cookie (the progress state
+    /// was already consumed on the api side).
     ApplicationNotPermitted { application_name: String },
-    /// ハンドル・進行状態が無効・期限切れ・使用済み（SP からやり直し）。
+    /// The handle or progress state is invalid, expired or used (start over from the SP).
     Expired,
-    /// api 内部エラー。
+    /// api internal error.
     Internal,
 }
 
-/// RP-initiated Logout の内部 API（`POST /internal/logout/rp`、ADR-0018 決定 2）のリクエスト。
+/// Request of the internal API for RP-initiated Logout (`POST /internal/logout/rp`, decision 2 of ADR-0018).
 ///
-/// OIDC の `end_session_endpoint` は web（`GET /{tenant_id}/logout`）が受け、web が自ドメインの
-/// `sso_session_id` Cookie とクエリパラメータを本 API へ転送する。api は SSO セッションの失効・
-/// back-channel 通知・`post_logout_redirect_uri` の検証と組み立て（`state` 付与を含む）を担い、
-/// **SSO Cookie の破棄と front-channel iframe ページの描画は web が行う**。
+/// OIDC's `end_session_endpoint` is received by web (`GET /{tenant_id}/logout`), which forwards its own-domain
+/// `sso_session_id` cookie and the query parameters to this API. api handles revoking the SSO session,
+/// back-channel notification, and validating and building `post_logout_redirect_uri` (including adding `state`), while
+/// **web discards the SSO cookie and renders the front-channel iframe page**.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalRpLogoutRequest {
-    /// ログアウト対象フローのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する。
+    /// Tenant of the flow being logged out (ADR-0009 §8). **Required**. api rejects a missing or invalid UUID with 400.
     #[serde(default)]
     pub tenant_id: Option<String>,
-    /// web の host-only `sso_session_id` Cookie の値（無ければ `None` = ログアウト済み扱い）。
+    /// Value of web's host-only `sso_session_id` cookie (`None` if absent = treated as already logged out).
     #[serde(default)]
     pub sso_session_id: Option<String>,
-    /// `client_id` クエリ（`post_logout_redirect_uri` の検証に使う。任意）。
+    /// `client_id` query (used to validate `post_logout_redirect_uri`; optional).
     #[serde(default)]
     pub client_id: Option<String>,
-    /// `id_token_hint` クエリ（OIDC RP-Initiated Logout 1.0 §2。G12）。api が署名・issuer を
-    /// 検証し、`aud` を `post_logout_redirect_uri` の照合先に、`sub` を「誰のログアウトか」の
-    /// 確認に使う。期限切れでも受け付ける（hint は過去に発行した ID Token であるため）。
+    /// `id_token_hint` query (OIDC RP-Initiated Logout 1.0 §2; G12). api verifies its signature and issuer,
+    /// uses `aud` as the match target for `post_logout_redirect_uri`, and `sub` to confirm "whose logout
+    /// it is". Accepted even if expired (the hint is an ID token issued in the past).
     #[serde(default)]
     pub id_token_hint: Option<String>,
-    /// RP が指定したログアウト後のリダイレクト先（登録済みのもののみ許可される）。
+    /// Post-logout redirect target specified by the RP (only registered ones are allowed).
     #[serde(default)]
     pub post_logout_redirect_uri: Option<String>,
-    /// RP が受け取るランダム値（検証済み redirect URI に透過的に付与される）。
+    /// Random value the RP receives (transparently appended to the validated redirect URI).
     #[serde(default)]
     pub state: Option<String>,
     #[serde(default)]
@@ -257,43 +257,43 @@ pub struct InternalRpLogoutRequest {
     pub user_agent: Option<String>,
 }
 
-/// RP-initiated Logout の内部 API のレスポンス。
+/// Response of the internal API for RP-initiated Logout.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalRpLogoutResponse {
-    /// ログアウト処理完了（セッションが無かった場合も冪等に成功）。web は SSO Cookie を破棄し、
-    /// `frontchannel_uris` があれば iframe ページを描画、無ければ `redirect_to` へ 302
-    /// （どちらも無ければ完了ページを表示）する。
+    /// Logout done (idempotently succeeds even if there was no session). web discards the SSO cookie and
+    /// renders the iframe page if there are `frontchannel_uris`, otherwise 302s to `redirect_to`
+    /// (if neither, shows the completion page).
     Ok {
-        /// front-channel logout の iframe に読み込ませる URI 群（`iss` クエリ付与済み）。
+        /// URIs loaded into the front-channel logout iframes (with the `iss` query added).
         frontchannel_uris: Vec<String>,
-        /// 検証済みの post-logout リダイレクト先（`state` 付与済み。未指定・検証失敗は `None`）。
+        /// Validated post-logout redirect target (with `state` added; `None` if unspecified or validation failed).
         redirect_to: Option<String>,
     },
-    /// `id_token_hint` が指す利用者と、web が転送したセッションの利用者が一致しないため
-    /// **何もしなかった**（G12）。web は **SSO Cookie を消してはならない** —— 消すと DB には
-    /// セッションが生きたままブラウザから戻れなくなり、守ろうとした別利用者のログイン状態を
-    /// 結局は壊してしまう。画面は「何も変更していない」ことを伝える。
+    /// **Did nothing** because the user `id_token_hint` points to does not match the user of the session web
+    /// forwarded (G12). web **must not delete the SSO cookie**: doing so would leave the session alive in the DB
+    /// with no way back from the browser, ultimately breaking the login state of the other user it tried
+    /// to protect. The screen conveys that "nothing was changed".
     SubjectMismatch,
-    /// api 内部エラー。
+    /// api internal error.
     Internal,
 }
 
-/// 内部認証 API（`POST /internal/authenticate`）のリクエスト。
+/// Request of the internal authentication API (`POST /internal/authenticate`).
 ///
-/// web が資格情報・`auth_session_id` 参照・接続元情報（`X-Forwarded-For` 由来 IP・User-Agent）を
-/// api へ転送する。CSRF は `csrf_token`（`auth_session_id` 由来）を api の LoginService が検証する。
+/// web forwards credentials, the `auth_session_id` reference and client connection info (IP from `X-Forwarded-For`, User-Agent)
+/// to api. CSRF is verified by api's LoginService using `csrf_token` (derived from `auth_session_id`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAuthenticateRequest {
-    /// フローのテナント（ADR-0009 §8）。認証の対象は当該テナントの ACTIVE なメンバー（所属元の
-    /// HOME と、招待で参加している GUEST）に限られるため、テナント指定のない認証は成立しない。
-    /// **必須**。api は未指定・不正な UUID を 400 で拒否する（fail-closed。SEC4）。
+    /// The flow's tenant (ADR-0009 §8). Authentication targets only ACTIVE members of that tenant (HOME
+    /// members and GUESTs who joined by invitation), so authentication without a tenant cannot hold.
+    /// **Required**. api rejects a missing or invalid UUID with 400 (fail-closed; SEC4).
     #[serde(default)]
     pub tenant_id: Option<String>,
     #[serde(default)]
     pub auth_session_id: Option<String>,
-    /// ログイン識別子（ユーザー名 = `preferred_username`。ADR-0009 §8）。既定では email と同値
-    /// （作成時に未指定なら email を採用）だが、照合は `preferred_username` に対して行う。
+    /// Login identifier (username = `preferred_username`; ADR-0009 §8). By default the same as the email
+    /// (the email is used if unspecified at creation), but matching is against `preferred_username`.
     pub username: String,
     pub password: String,
     pub csrf_token: String,
@@ -303,108 +303,108 @@ pub struct InternalAuthenticateRequest {
     pub user_agent: Option<String>,
 }
 
-/// 内部認証 API のレスポンス。`result` タグで判別する。成功時のみ SSO/redirect 情報を返す。
+/// Response of the internal authentication API. Discriminated by the `result` tag. SSO/redirect info is returned only on success.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAuthenticateResponse {
-    /// 認証成功かつ同意済み。`redirect_to`（code 付き RP URL）へ 302 し、`sso_session_id` を Cookie 化する。
+    /// Authenticated and consented. 302 to `redirect_to` (RP URL with code) and turn `sso_session_id` into a cookie.
     Success {
         redirect_to: String,
-        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        /// Hidden fields POSTed for `form_post` (G12). `None` means `query`.
         #[serde(default)]
         form_post: Option<FormPostFields>,
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
-        /// ユーザーの表示言語設定（`ja` / `en`。MT20）。None = 未設定。
-        /// web は `lang` Cookie をこの値で上書きし、優先度2（ユーザー設定）を実現する。
+        /// The user's display language setting (`ja` / `en`; MT20). None = unset.
+        /// web overwrites the `lang` cookie with this value, realizing priority 2 (user setting).
         #[serde(default)]
         user_language: Option<String>,
     },
-    /// 認証成功だが同意が必要。`auth_session_id` Cookie を発行して `/consent` へ 302 する。
-    /// `sso_session_id` も発行する（SSO Cookie をセットするため）。
+    /// Authenticated but consent required. Issue the `auth_session_id` cookie and 302 to `/consent`.
+    /// `sso_session_id` is also issued (to set the SSO cookie).
     ConsentRequired {
         auth_session_id: String,
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
     },
-    /// パスワード認証成功だが MFA（TOTP）が設定済み。TOTP 入力画面 `/mfa/totp` へ誘導する。
-    /// `auth_session_id` Cookie はそのまま維持する（MFA 検証で使う）。
+    /// Password authentication succeeded but MFA (TOTP) is configured. Leads to the TOTP input screen `/mfa/totp`.
+    /// The `auth_session_id` cookie is kept as is (used for MFA verification).
     MfaRequired { auth_session_id: String },
-    /// パスワード認証成功だが `must_change_password`（ADR-0009 §5）。パスワード変更画面へ誘導する。
-    /// `auth_session_id` Cookie はそのまま維持する（変更処理で使う）。
+    /// Password authentication succeeded but `must_change_password` (ADR-0009 §5). Leads to the password change screen.
+    /// The `auth_session_id` cookie is kept as is (used for the change).
     PasswordChangeRequired { auth_session_id: String },
-    /// パスワード認証成功だが自己登録アカウントのメール未検証（SEC6b）。確認リンクを踏むまで
-    /// ログインを許可しない。web は「メールを確認して」の案内を表示する。
+    /// Password authentication succeeded but the self-registered account's email is unverified (SEC6b). Login is not
+    /// allowed until the confirmation link is followed. web shows a "check your email" notice.
     EmailVerificationRequired,
-    /// 認証ポリシーにより拒否（ユーザー認証・認証ポリシー仕様書 §7.4 `deny`）。
-    /// web は「組織のポリシーで拒否された」旨を表示する（資格情報は検証済みのため列挙リスクは無い）。
+    /// Refused by an authentication policy (user authentication and authentication policy spec §7.4 `deny`).
+    /// web shows that it was "refused by the organization's policy" (credentials are already verified, so there is no enumeration risk).
     PolicyDenied,
-    /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
-    /// web は assay の画面で断る ——利用者から見れば「入れたのに弾かれた」ので、認証は通っている
-    /// という事実と、アプリ名と、管理者へ頼む導線を出す。
+    /// Authenticated, but use of this app is not permitted (ADR-0054). ⚠ **Not returned to the RP.**
+    /// web refuses on assay's screen: to the user it is "I got in and was then kicked out", so it shows the fact that
+    /// authentication passed, the app name, and a way to ask the admin.
     ApplicationNotPermitted {
         application_name: String,
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
     },
-    /// 認証ポリシーが MFA を必須としたが、使用可能な認証器（確認済み TOTP）が無い。
-    /// web はポータルから MFA を設定するよう案内する。
+    /// An authentication policy required MFA, but there is no usable authenticator (confirmed TOTP).
+    /// web guides the user to set up MFA from the portal.
     MfaEnrollmentRequired,
-    /// AuthSession が無い・期限切れ（`/authorize` からやり直し）。
+    /// No AuthSession, or expired (start over from `/authorize`).
     SessionExpired,
-    /// CSRF トークン不一致。
+    /// CSRF token mismatch.
     CsrfMismatch,
-    /// IP 単位のレート制限超過。
+    /// Per-IP rate limit exceeded.
     RateLimited,
-    /// 資格情報不正。
+    /// Invalid credentials.
     InvalidCredentials,
-    /// アカウントロック中。
+    /// Account is locked.
     Locked,
-    /// api 内部エラー。
+    /// api internal error.
     Internal,
-    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916。ADR-0079）。
-    /// SSO Cookie は無い。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    /// Authenticated, but on an unregistered device in an organization limited to registered devices (task #916, ADR-0079).
+    /// No SSO cookie. web puts `ticket` in a cookie and sends the user to the device registration screen.
     DeviceEnrollmentRequired { ticket: String },
 }
 
-/// TOTP セットアップ開始 API（`POST /internal/mfa/totp/setup`）のリクエスト。
+/// Request of the TOTP setup start API (`POST /internal/mfa/totp/setup`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalTotpSetupRequest {
-    /// SSO セッション Cookie の生値（web が転送）。
+    /// Raw value of the SSO session cookie (forwarded by web).
     ///
-    /// 認証アプリに出す宛名は**受け取る側（api）がこのセッションの利用者から引く**。web は
-    /// 利用者名を知らないため、以前はここへ空文字を渡していて、QR の宛名が空のまま出ていた。
+    /// The account label shown in the authenticator app is **looked up by the receiver (api) from this session's user**.
+    /// web does not know the user name, so it used to pass an empty string here and the QR label came out empty.
     pub sso_session_id: String,
 }
 
-/// TOTP セットアップ開始 API のレスポンス。
+/// Response of the TOTP setup start API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalTotpSetupResponse {
-    /// セットアップ開始成功。QR URI と生シークレット（base32）を返す。
+    /// Setup started. Returns the QR URI and the raw secret (base32).
     Ok {
-        /// `otpauth://totp/...` URI。QR コード生成に使う。
+        /// `otpauth://totp/...` URI. Used to generate the QR code.
         totp_uri: String,
-        /// base32 エンコードされたシークレット。QR が使えないユーザーへ直接表示する。
+        /// base32-encoded secret. Shown directly to users who cannot use the QR.
         secret_base32: String,
     },
-    /// すでに有効な TOTP が設定済み（再セットアップ不可。先に削除が必要）。
+    /// A valid TOTP is already configured (cannot set up again; delete it first).
     AlreadyConfigured,
-    /// SSO セッションが無い・期限切れ。
+    /// No SSO session, or expired.
     SessionExpired,
-    /// api 内部エラー。
+    /// api internal error.
     Internal,
 }
 
-/// TOTP 確認 API（`POST /internal/mfa/totp/confirm`）のリクエスト。
+/// Request of the TOTP confirm API (`POST /internal/mfa/totp/confirm`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalTotpConfirmRequest {
     pub sso_session_id: String,
-    /// ユーザーが認証アプリから入力した 6 桁コード。
+    /// 6-digit code the user entered from the authenticator app.
     pub code: String,
 }
 
-/// TOTP 確認 API のレスポンス。
+/// Response of the TOTP confirm API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalTotpConfirmResponse {
@@ -416,13 +416,13 @@ pub enum InternalTotpConfirmResponse {
     Internal,
 }
 
-/// TOTP 削除 API（`POST /internal/mfa/totp/delete`）のリクエスト。
+/// Request of the TOTP delete API (`POST /internal/mfa/totp/delete`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalTotpDeleteRequest {
     pub sso_session_id: String,
 }
 
-/// TOTP 削除 API のレスポンス。
+/// Response of the TOTP delete API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalTotpDeleteResponse {
@@ -431,10 +431,10 @@ pub enum InternalTotpDeleteResponse {
     Internal,
 }
 
-/// ログイン TOTP 検証 API（`POST /internal/mfa/totp/verify`）のリクエスト。
+/// Request of the login TOTP verification API (`POST /internal/mfa/totp/verify`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalVerifyTotpRequest {
-    /// フローのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する（fail-closed。SEC4）。
+    /// The flow's tenant (ADR-0009 §8). **Required**. api rejects a missing or invalid UUID with 400 (fail-closed; SEC4).
     #[serde(default)]
     pub tenant_id: Option<String>,
     pub auth_session_id: Option<String>,
@@ -446,18 +446,18 @@ pub struct InternalVerifyTotpRequest {
     pub user_agent: Option<String>,
 }
 
-/// ログイン TOTP 検証 API のレスポンス。成功系は `InternalAuthenticateResponse` と同等。
+/// Response of the login TOTP verification API. The success variants are equivalent to `InternalAuthenticateResponse`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalVerifyTotpResponse {
     Success {
         redirect_to: String,
-        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        /// Hidden fields POSTed for `form_post` (G12). `None` means `query`.
         #[serde(default)]
         form_post: Option<FormPostFields>,
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
-        /// ユーザーの表示言語設定（MT20）。web は `lang` Cookie をこの値で上書きする。
+        /// The user's display language setting (MT20). web overwrites the `lang` cookie with this value.
         #[serde(default)]
         user_language: Option<String>,
     },
@@ -469,37 +469,37 @@ pub enum InternalVerifyTotpResponse {
     SessionExpired,
     CsrfMismatch,
     InvalidCode,
-    /// IP 単位のレート制限に掛かった（SEC3）。
+    /// Hit the per-IP rate limit (SEC3).
     RateLimited,
-    /// アカウントがロック中（TOTP の連続失敗、またはパスワード認証側の失敗によるロック。SEC3）。
+    /// The account is locked (by consecutive TOTP failures, or failures on the password side; SEC3).
     Locked,
-    /// 認証ポリシーにより拒否された（AP2/AP3）。第二要素まで通っていても、`deny` へ変わった場合や
-    /// `require_specific_method` を満たさない方式だった場合はここへ来る。
+    /// Refused by an authentication policy (AP2/AP3). Even after passing the second factor, this is reached when it changed to `deny`
+    /// or the method did not satisfy `require_specific_method`.
     PolicyDenied,
-    /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
-    /// web は assay の画面で断る ——利用者から見れば「入れたのに弾かれた」ので、認証は通っている
-    /// という事実と、アプリ名と、管理者へ頼む導線を出す。
+    /// Authenticated, but use of this app is not permitted (ADR-0054). ⚠ **Not returned to the RP.**
+    /// web refuses on assay's screen: to the user it is "I got in and was then kicked out", so it shows the fact that
+    /// authentication passed, the app name, and a way to ask the admin.
     ApplicationNotPermitted {
         application_name: String,
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
     },
     Internal,
-    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916。ADR-0079）。
-    /// SSO Cookie は無い。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    /// Authenticated, but on an unregistered device in an organization limited to registered devices (task #916, ADR-0079).
+    /// No SSO cookie. web puts `ticket` in a cookie and sends the user to the device registration screen.
     DeviceEnrollmentRequired {
         ticket: String,
     },
 }
 
-/// パスワード変更 API（`POST /internal/change-password`、ADR-0009 §5）のリクエスト。
+/// Request of the password change API (`POST /internal/change-password`, ADR-0009 §5).
 ///
-/// `LoginService` が検出した `must_change_password` を受けて、ログイン中の `auth_session_id`
-/// （パスワード検証済み状態）で新パスワードを設定する。「ログイン済みユーザーが現行パスワードで
-/// 認証したうえで新パスワードを設定する」フローのため、現行パスワードを含める。
+/// In response to `must_change_password` detected by `LoginService`, sets a new password with the in-login `auth_session_id`
+/// (password-verified state). Since the flow is "a logged-in user authenticates with the current password and then
+/// sets a new password", the current password is included.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalChangePasswordRequest {
-    /// フローのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する（fail-closed。SEC4）。
+    /// The flow's tenant (ADR-0009 §8). **Required**. api rejects a missing or invalid UUID with 400 (fail-closed; SEC4).
     #[serde(default)]
     pub tenant_id: Option<String>,
     #[serde(default)]
@@ -513,32 +513,32 @@ pub struct InternalChangePasswordRequest {
     pub user_agent: Option<String>,
 }
 
-/// 新しいパスワードが受け付けられなかった理由（AP7）。
+/// Why a new password was not accepted (AP7).
 ///
-/// 「弱い」の一語にまとめないのは、利用者が次に取るべき行動が理由ごとに違うためである
-/// （長さ不足は伸ばせばよいが、漏えい・再利用は**別の値を考える**しかない）。web はこの値を
-/// 画面の文言キーへ写す。
+/// It is not lumped into the single word "weak" because the user's next action differs by reason
+/// (too short can be lengthened, but breached or reused means **thinking of a different value**). web maps this value
+/// to the screen's message key.
 ///
-/// 既定は `Policy`（長さ等）。理由を持たない古い応答を読んでも従来と同じ表示になる。
+/// The default is `Policy` (length etc.). Reading an old response without a reason shows the same as before.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PasswordRejectionReason {
-    /// 長さ等、入力そのものの要件を満たさない。
+    /// Does not meet requirements on the input itself, such as length.
     #[default]
     Policy,
-    /// 既知の漏えいパスワード。
+    /// A known breached password.
     Breached,
-    /// 現行または過去に使ったパスワードの再利用。
+    /// Reuse of the current or a previously used password.
     Reused,
 }
 
-/// パスワード変更 API のレスポンス。成功系は `InternalAuthenticateResponse` と同等。
+/// Response of the password change API. The success variants are equivalent to `InternalAuthenticateResponse`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalChangePasswordResponse {
     Success {
         redirect_to: String,
-        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        /// Hidden fields POSTed for `form_post` (G12). `None` means `query`.
         #[serde(default)]
         form_post: Option<FormPostFields>,
         sso_session_id: String,
@@ -549,49 +549,49 @@ pub enum InternalChangePasswordResponse {
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
     },
-    /// 変更成功だが認証ポリシーが MFA を必須とし、TOTP 設定済み。`auth_session_id` Cookie を維持して
-    /// TOTP 入力画面 `/mfa/totp` へ誘導する（SSO はまだ発行しない）。
+    /// Changed, but an authentication policy requires MFA and TOTP is configured. Keeps the `auth_session_id` cookie and
+    /// leads to the TOTP input screen `/mfa/totp` (SSO is not issued yet).
     MfaRequired {
         auth_session_id: String,
     },
-    /// 変更は成功したが認証ポリシーによりログインを拒否（仕様 §7.4 `deny`）。
+    /// Changed, but login was refused by an authentication policy (spec §7.4 `deny`).
     PolicyDenied,
-    /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
-    /// web は assay の画面で断る ——利用者から見れば「入れたのに弾かれた」ので、認証は通っている
-    /// という事実と、アプリ名と、管理者へ頼む導線を出す。
+    /// Authenticated, but use of this app is not permitted (ADR-0054). ⚠ **Not returned to the RP.**
+    /// web refuses on assay's screen: to the user it is "I got in and was then kicked out", so it shows the fact that
+    /// authentication passed, the app name, and a way to ask the admin.
     ApplicationNotPermitted {
         application_name: String,
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
     },
-    /// 変更は成功したが認証ポリシーが MFA を必須とし、使用可能な認証器（確認済み TOTP）が無い。
-    /// web はポータルから MFA を設定するよう案内する。
+    /// Changed, but an authentication policy requires MFA and there is no usable authenticator (confirmed TOTP).
+    /// web guides the user to set up MFA from the portal.
     MfaEnrollmentRequired,
     SessionExpired,
     CsrfMismatch,
-    /// 現行パスワードが不一致。
+    /// The current password does not match.
     InvalidCurrentPassword,
-    /// 新パスワードがポリシーを満たさない（長さ・漏えい済み・再利用）。
+    /// The new password does not satisfy the policy (length, breached, reused).
     WeakPassword {
         #[serde(default)]
         reason: PasswordRejectionReason,
     },
     Internal,
-    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916。ADR-0079）。
-    /// SSO Cookie は無い。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    /// Authenticated, but on an unregistered device in an organization limited to registered devices (task #916, ADR-0079).
+    /// No SSO cookie. web puts `ticket` in a cookie and sends the user to the device registration screen.
     DeviceEnrollmentRequired {
         ticket: String,
     },
 }
 
-/// セルフサービスのパスワード変更 API（`POST /internal/account/change-password`、MT15）のリクエスト。
+/// Request of the self-service password change API (`POST /internal/account/change-password`, MT15).
 ///
-/// ログインフロー中の強制変更（[`InternalChangePasswordRequest`]、`auth_session` ベース）とは別に、
-/// **SSO セッションを持つログイン済みユーザー**が設定画面から自分のパスワードを変更する経路。
-/// web が SSO Cookie の生値を転送し、api が本人を解決して現行パスワードを再検証する。
+/// Separate from the forced change during the login flow ([`InternalChangePasswordRequest`], `auth_session` based),
+/// this is the route where **a logged-in user with an SSO session** changes their own password from the settings screen.
+/// web forwards the raw SSO cookie value, and api resolves the user and re-verifies the current password.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAccountChangePasswordRequest {
-    /// SSO セッション Cookie の生値。
+    /// Raw value of the SSO session cookie.
     pub sso_session_id: String,
     pub current_password: String,
     pub new_password: String,
@@ -601,16 +601,16 @@ pub struct InternalAccountChangePasswordRequest {
     pub user_agent: Option<String>,
 }
 
-/// セルフサービスのパスワード変更 API のレスポンス。OIDC フローではないため redirect/code は返さない。
+/// Response of the self-service password change API. Not an OIDC flow, so no redirect/code is returned.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAccountChangePasswordResponse {
     Ok,
-    /// SSO セッションが無い・期限切れ（未ログイン扱い）。
+    /// No SSO session, or expired (treated as logged out).
     SessionExpired,
-    /// 現行パスワードが不一致。
+    /// The current password does not match.
     InvalidCurrentPassword,
-    /// 新パスワードがポリシーを満たさない（長さ・漏えい済み・再利用）。
+    /// The new password does not satisfy the policy (length, breached, reused).
     WeakPassword {
         #[serde(default)]
         reason: PasswordRejectionReason,
@@ -618,11 +618,11 @@ pub enum InternalAccountChangePasswordResponse {
     Internal,
 }
 
-/// パスワードリセット要求 API（`POST /internal/password-reset/request`。MT18）のリクエスト。
-/// 未ログイン経路のため SSO は不要。web の CSRF はフォームセッション非依存のため api では検証しない。
+/// Request of the password reset request API (`POST /internal/password-reset/request`; MT18).
+/// An unauthenticated path, so no SSO is needed. web's CSRF does not depend on a form session, so api does not verify it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalPasswordResetRequestRequest {
-    /// ログイン画面のテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する。
+    /// Tenant of the login screen (ADR-0009 §8). **Required**. api rejects a missing or invalid UUID with 400.
     #[serde(default)]
     pub tenant_id: Option<String>,
     pub email: String,
@@ -632,24 +632,24 @@ pub struct InternalPasswordResetRequestRequest {
     pub user_agent: Option<String>,
 }
 
-/// パスワードリセット要求 API のレスポンス。アカウントの有無では分岐しない（列挙防止。MT18）。
+/// Response of the password reset request API. Does not branch on whether the account exists (anti-enumeration; MT18).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalPasswordResetRequestResponse {
-    /// 受理（アカウントが存在すればメールを送った）。
+    /// Accepted (an email was sent if the account exists).
     Accepted,
-    /// SMTP 未設定で機能自体が利用できない（アカウント非依存）。
+    /// SMTP is not configured, so the feature itself is unavailable (account-independent).
     Unavailable,
     RateLimited,
 }
 
-/// パスワードリセット実行 API（`POST /internal/password-reset/complete`。MT18）のリクエスト。
+/// Request of the password reset completion API (`POST /internal/password-reset/complete`; MT18).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalPasswordResetCompleteRequest {
-    /// リセット画面のテナント。**必須**（トークン所有者の所属元と一致しないと失敗する）。
+    /// Tenant of the reset screen. **Required** (fails unless it matches the token owner's home tenant).
     #[serde(default)]
     pub tenant_id: Option<String>,
-    /// メールのリンクで受け取った平文トークン。
+    /// Plain token received via the email link.
     pub token: String,
     pub new_password: String,
     #[serde(default)]
@@ -658,14 +658,14 @@ pub struct InternalPasswordResetCompleteRequest {
     pub user_agent: Option<String>,
 }
 
-/// パスワードリセット実行 API のレスポンス。
+/// Response of the password reset completion API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalPasswordResetCompleteResponse {
     Ok,
-    /// トークンが無効・期限切れ・使用済み・別テナント。
+    /// The token is invalid, expired, used, or for another tenant.
     InvalidOrExpired,
-    /// 新パスワードがポリシーを満たさない（長さ・漏えい済み・再利用）。
+    /// The new password does not satisfy the policy (length, breached, reused).
     WeakPassword {
         #[serde(default)]
         reason: PasswordRejectionReason,
@@ -673,35 +673,35 @@ pub enum InternalPasswordResetCompleteResponse {
     Internal,
 }
 
-/// アカウント設定リンクの中身を読む API（`POST /internal/account-setup/describe`。ADR-0062）の
-/// リクエスト。⚠ **読むだけで消費しない**（プレビューの bot に食われないため）。
+/// Request of the API reading the content of an account setup link (`POST /internal/account-setup/describe`; ADR-0062).
+/// ⚠ **Only reads; does not consume** (so a preview bot does not eat it).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAccountSetupDescribeRequest {
-    /// リンクのテナント。**必須**（トークン所有者の所属元と一致しないと失敗する）。
+    /// The link's tenant. **Required** (fails unless it matches the token owner's home tenant).
     #[serde(default)]
     pub tenant_id: Option<String>,
-    /// リンクで受け取った平文トークン。
+    /// Plain token received via the link.
     pub token: String,
 }
 
-/// アカウント設定リンクの中身。
+/// Content of an account setup link.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAccountSetupDescribeResponse {
     Ok {
-        /// 誰のリンクか（画面に出す。リンクの持ち主にしか見えない）。
+        /// Whose link it is (shown on screen; visible only to the link holder).
         email: String,
-        /// この画面でパスキーを登録してよいか（`setup` のリンクだけ真。ADR-0062）。
+        /// Whether a passkey may be registered on this screen (true only for `setup` links; ADR-0062).
         allows_passkey: bool,
-        /// リンクの失効時刻（RFC3339）。
+        /// The link's expiry time (RFC3339).
         expires_at: String,
     },
-    /// 不存在・期限切れ・使用済み・別テナント。**言い分けない**。
+    /// Nonexistent, expired, used, or another tenant. **Not distinguished**.
     InvalidOrExpired,
     Internal,
 }
 
-/// 設定リンクからのパスキー登録開始（`POST /internal/account-setup/passkey/begin`。ADR-0062）。
+/// Start of passkey registration from a setup link (`POST /internal/account-setup/passkey/begin`; ADR-0062).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAccountSetupPasskeyBeginRequest {
     #[serde(default)]
@@ -709,32 +709,32 @@ pub struct InternalAccountSetupPasskeyBeginRequest {
     pub token: String,
 }
 
-/// 設定リンクからのパスキー登録開始のレスポンス。
+/// Response of starting passkey registration from a setup link.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAccountSetupPasskeyBeginResponse {
     Ok {
-        /// complete で返す一時 ID。
+        /// Temporary ID returned in complete.
         challenge_id: String,
-        /// ブラウザの `navigator.credentials.create()` に渡す JSON。
+        /// JSON passed to the browser's `navigator.credentials.create()`.
         options: serde_json::Value,
     },
     InvalidOrExpired,
-    /// この用途のリンクでは登録を許していない。
+    /// Links of this purpose do not allow registration.
     NotAllowed,
     Internal,
 }
 
-/// 設定リンクからのパスキー登録完了（`POST /internal/account-setup/passkey/complete`。ADR-0062）。
+/// Completion of passkey registration from a setup link (`POST /internal/account-setup/passkey/complete`; ADR-0062).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAccountSetupPasskeyCompleteRequest {
     #[serde(default)]
     pub tenant_id: Option<String>,
     pub token: String,
     pub challenge_id: String,
-    /// 認証器に付ける名前（画面で打てる。空なら既定を入れる）。
+    /// Name given to the authenticator (typed on screen; a default is used if empty).
     pub name: String,
-    /// ブラウザが返した公開鍵クレデンシャル。
+    /// Public key credential returned by the browser.
     pub credential: serde_json::Value,
     #[serde(default)]
     pub ip_address: Option<String>,
@@ -742,27 +742,27 @@ pub struct InternalAccountSetupPasskeyCompleteRequest {
     pub user_agent: Option<String>,
 }
 
-/// 設定リンクからのパスキー登録完了のレスポンス。
+/// Response of completing passkey registration from a setup link.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAccountSetupPasskeyCompleteResponse {
     Ok,
     InvalidOrExpired,
     NotAllowed,
-    /// 認証器が返した値を受け付けられなかった。
+    /// The value returned by the authenticator could not be accepted.
     InvalidCredential,
     Internal,
 }
 
-/// 管理コンソール内部認証 API（`POST /internal/authenticate/admin`、ADR-0007 §3・§4）のリクエスト。
+/// Request of the admin console internal authentication API (`POST /internal/authenticate/admin`, ADR-0007 §3, §4).
 ///
-/// 管理ログインの CSRF は web 側で検証済み（ADR-0007 §4）のため本 API には含めない。
+/// CSRF of admin login is already verified on the web side (ADR-0007 §4), so it is not included in this API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAdminAuthenticateRequest {
-    /// 管理ログインのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する（fail-closed。SEC4）。
+    /// Tenant of the admin login (ADR-0009 §8). **Required**. api rejects a missing or invalid UUID with 400 (fail-closed; SEC4).
     #[serde(default)]
     pub tenant_id: Option<String>,
-    /// ログイン識別子（ユーザー名 = `preferred_username`。ADR-0009 §8）。
+    /// Login identifier (username = `preferred_username`; ADR-0009 §8).
     pub username: String,
     pub password: String,
     #[serde(default)]
@@ -771,13 +771,13 @@ pub struct InternalAdminAuthenticateRequest {
     pub user_agent: Option<String>,
 }
 
-/// 内部ログアウト API（`POST /internal/logout`、ADR-0007）のリクエスト。
+/// Request of the internal logout API (`POST /internal/logout`, ADR-0007).
 ///
-/// web が管理コンソールのログアウトで、失効させたい SSO セッション id（Cookie 値）と接続元情報を転送する。
-/// Cookie の失効は web が行い、api は DB のセッション削除と監査記録を担う。
+/// On admin console logout, web forwards the SSO session id to revoke (cookie value) and the client connection info.
+/// web expires the cookie; api deletes the session from the DB and records the audit.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalLogoutRequest {
-    /// ログアウト対象フローのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する（fail-closed。SEC4）。
+    /// Tenant of the flow being logged out (ADR-0009 §8). **Required**. api rejects a missing or invalid UUID with 400 (fail-closed; SEC4).
     #[serde(default)]
     pub tenant_id: Option<String>,
     pub sso_session_id: String,
@@ -787,48 +787,48 @@ pub struct InternalLogoutRequest {
     pub user_agent: Option<String>,
 }
 
-/// 管理コンソール内部認証 API のレスポンス。成功時は SSO セッション id を返す（code/redirect は無い）。
+/// Response of the admin console internal authentication API. On success returns the SSO session id (no code/redirect).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAdminAuthenticateResponse {
-    /// 認証成功かつ `idp.tenant.admin` 保有。`sso_session_id` を Cookie 化して管理コンソールへ 302 する。
+    /// Authenticated and holds `idp.tenant.admin`. Turn `sso_session_id` into a cookie and 302 to the admin console.
     Success {
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
     },
-    /// IP 単位のレート制限超過。
+    /// Per-IP rate limit exceeded.
     RateLimited,
-    /// 資格情報不正。
+    /// Invalid credentials.
     InvalidCredentials,
-    /// アカウントロック中。
+    /// Account is locked.
     Locked,
-    /// 資格情報は正しいが テナント admin 権限を保有しない。
+    /// Credentials are correct but no tenant admin permission is held.
     Forbidden,
-    /// 認証成功・管理権限保有だが `must_change_password`（ADR-0009 §5）。パスワード変更画面へ誘導する。
-    /// `username` はフォーム再表示用に入力値をそのまま返す。SSO はまだ発行しない。
+    /// Authenticated and holds admin permission, but `must_change_password` (ADR-0009 §5). Leads to the password change screen.
+    /// `username` returns the input as is for redisplaying the form. SSO is not issued yet.
     PasswordChangeRequired { username: String },
-    /// 認証ポリシーにより拒否（AP2。ユーザー認証・認証ポリシー仕様書 §7.4 `deny`）。
+    /// Refused by an authentication policy (AP2; user authentication and authentication policy spec §7.4 `deny`).
     PolicyDenied,
-    /// 認証ポリシーが MFA を必須としたが、使用可能な認証器（確認済み TOTP）が無い（AP2）。
+    /// An authentication policy required MFA, but there is no usable authenticator (confirmed TOTP) (AP2).
     MfaEnrollmentRequired,
-    /// 認証ポリシーが MFA を必須で、認証器は登録済み（AP2）。管理コンソールのログインは第二要素の
-    /// 入力ステップを持たないため、ポータルログインで MFA を通してから入るよう案内する。
+    /// An authentication policy requires MFA and an authenticator is registered (AP2). Admin console login has no
+    /// second-factor input step, so it guides the user to pass MFA via portal login before entering.
     MfaRequired,
-    /// api 内部エラー。
+    /// api internal error.
     Internal,
-    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916。ADR-0079）。
-    /// SSO Cookie は無い。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    /// Authenticated, but on an unregistered device in an organization limited to registered devices (task #916, ADR-0079).
+    /// No SSO cookie. web puts `ticket` in a cookie and sends the user to the device registration screen.
     DeviceEnrollmentRequired { ticket: String },
 }
 
-/// 管理コンソールの強制パスワード変更 API（`POST /internal/authenticate/admin/change-password`、
-/// ADR-0009 §5）のリクエスト。管理ログインは `auth_session_id` のような一時状態を持たないため、
-/// 現行パスワードを含めフルに再検証する。
+/// Request of the admin console forced password change API (`POST /internal/authenticate/admin/change-password`,
+/// ADR-0009 §5). Admin login has no temporary state like `auth_session_id`, so everything,
+/// including the current password, is fully re-verified.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAdminChangePasswordRequest {
     #[serde(default)]
     pub tenant_id: Option<String>,
-    /// ログイン識別子（ユーザー名 = `preferred_username`。ADR-0009 §8）。
+    /// Login identifier (username = `preferred_username`; ADR-0009 §8).
     pub username: String,
     pub current_password: String,
     pub new_password: String,
@@ -838,8 +838,8 @@ pub struct InternalAdminChangePasswordRequest {
     pub user_agent: Option<String>,
 }
 
-/// 管理コンソールの強制パスワード変更 API のレスポンス。成功時は `InternalAdminAuthenticateResponse`
-/// と同等（SSO セッション id を返す）。
+/// Response of the admin console forced password change API. On success it is equivalent to `InternalAdminAuthenticateResponse`
+/// (returns the SSO session id).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAdminChangePasswordResponse {
@@ -851,36 +851,36 @@ pub enum InternalAdminChangePasswordResponse {
     InvalidCredentials,
     Locked,
     Forbidden,
-    /// 新パスワードがポリシーを満たさない（長さ・漏えい済み・再利用）。
+    /// The new password does not satisfy the policy (length, breached, reused).
     WeakPassword {
         #[serde(default)]
         reason: PasswordRejectionReason,
     },
-    /// 変更は成功したが認証ポリシーにより拒否（AP2）。
+    /// Changed, but refused by an authentication policy (AP2).
     PolicyDenied,
-    /// 変更は成功したが認証ポリシーが MFA を必須とし、使用可能な認証器が無い（AP2）。
+    /// Changed, but an authentication policy requires MFA and there is no usable authenticator (AP2).
     MfaEnrollmentRequired,
-    /// 変更は成功したが認証ポリシーが MFA を必須（認証器は登録済み。AP2）。
+    /// Changed, but an authentication policy requires MFA (an authenticator is registered; AP2).
     MfaRequired,
     Internal,
-    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916。ADR-0079）。
-    /// SSO Cookie は無い。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    /// Authenticated, but on an unregistered device in an organization limited to registered devices (task #916, ADR-0079).
+    /// No SSO cookie. web puts `ticket` in a cookie and sends the user to the device registration screen.
     DeviceEnrollmentRequired {
         ticket: String,
     },
 }
 
-/// エンドユーザー・ポータル内部認証 API（`POST /internal/authenticate/portal`）のリクエスト。
+/// Request of the end-user portal internal authentication API (`POST /internal/authenticate/portal`).
 ///
-/// 管理コンソールの [`InternalAdminAuthenticateRequest`] と同形。ポータルは OIDC クライアント（RP）を
-/// 介さず IdP 自身のアカウント画面（`/{tenant_id}/settings`）へ入るための直接ログインで、成功時は
-/// authorization code を発行せず SSO セッションを直接発行する。CSRF は web 側で検証済み。
+/// Same shape as the admin console's [`InternalAdminAuthenticateRequest`]. The portal is a direct login into the IdP's own
+/// account screen (`/{tenant_id}/settings`) without an OIDC client (RP), and on success it issues an SSO session directly
+/// without issuing an authorization code. CSRF is already verified on the web side.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalPortalAuthenticateRequest {
-    /// ログインのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する。
+    /// Tenant of the login (ADR-0009 §8). **Required**. api rejects a missing or invalid UUID with 400.
     #[serde(default)]
     pub tenant_id: Option<String>,
-    /// ログイン識別子（ユーザー名 = `preferred_username`。ADR-0009 §8）。
+    /// Login identifier (username = `preferred_username`; ADR-0009 §8).
     pub username: String,
     pub password: String,
     #[serde(default)]
@@ -889,50 +889,50 @@ pub struct InternalPortalAuthenticateRequest {
     pub user_agent: Option<String>,
 }
 
-/// ポータル内部認証 API のレスポンス。成功時は SSO セッション id を返す（code/redirect は無い）。
+/// Response of the portal internal authentication API. On success returns the SSO session id (no code/redirect).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalPortalAuthenticateResponse {
-    /// 認証成功（TOTP 未設定）。`sso_session_id` を Cookie 化してアカウント画面へ 302 する。
+    /// Authenticated (TOTP not configured). Turn `sso_session_id` into a cookie and 302 to the account screen.
     Success {
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
         #[serde(default)]
         user_language: Option<String>,
     },
-    /// パスワード認証成功だが TOTP が必要。`mfa_ticket` は署名付きの短命チケット（user_id ＋ 期限）で、
-    /// web はこれを Cookie 化して TOTP 入力画面へ誘導する。SSO はまだ発行しない。
+    /// Password authentication succeeded but TOTP is required. `mfa_ticket` is a signed short-lived ticket (user_id + expiry),
+    /// which web turns into a cookie and leads to the TOTP input screen. SSO is not issued yet.
     MfaRequired { mfa_ticket: String },
-    /// 自己登録アカウントのメール未検証（SEC6b）。確認リンクを踏むよう案内する。
+    /// The self-registered account's email is unverified (SEC6b). Guides the user to follow the confirmation link.
     EmailVerificationRequired,
-    /// 強制パスワード変更が必要（ADR-0009 §5）。web は強制パスワード変更フォームへ誘導する
-    /// （管理コンソールと同方式。`username` は入力値をフォーム再表示用にそのまま返す）。
+    /// A forced password change is required (ADR-0009 §5). web leads to the forced password change form
+    /// (same approach as the admin console; `username` returns the input as is for redisplaying the form).
     PasswordChangeRequired { username: String },
-    /// 認証ポリシーにより拒否（AP2。仕様 §7.4 `deny`）。
+    /// Refused by an authentication policy (AP2; spec §7.4 `deny`).
     PolicyDenied,
-    /// 認証ポリシーが MFA を必須としたが、使用可能な認証器（確認済み TOTP）が無い（AP2）。
+    /// An authentication policy required MFA, but there is no usable authenticator (confirmed TOTP) (AP2).
     MfaEnrollmentRequired,
-    /// IP 単位のレート制限超過。
+    /// Per-IP rate limit exceeded.
     RateLimited,
-    /// 資格情報不正。
+    /// Invalid credentials.
     InvalidCredentials,
-    /// アカウントロック中。
+    /// Account is locked.
     Locked,
-    /// api 内部エラー。
+    /// api internal error.
     Internal,
-    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916。ADR-0079）。
-    /// SSO Cookie は無い。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    /// Authenticated, but on an unregistered device in an organization limited to registered devices (task #916, ADR-0079).
+    /// No SSO cookie. web puts `ticket` in a cookie and sends the user to the device registration screen.
     DeviceEnrollmentRequired { ticket: String },
 }
 
-/// ポータルの強制パスワード変更 API（`POST /internal/authenticate/portal/change-password`、
-/// ADR-0009 §5）のリクエスト。ポータルログインは `auth_session_id` のような一時状態を持たないため、
-/// 管理コンソールと同じく現行パスワードを含めフルに再検証する（admin 権限は要求しない）。
+/// Request of the portal forced password change API (`POST /internal/authenticate/portal/change-password`,
+/// ADR-0009 §5). Portal login has no temporary state like `auth_session_id`, so,
+/// like the admin console, everything including the current password is fully re-verified (admin permission is not required).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalPortalChangePasswordRequest {
     #[serde(default)]
     pub tenant_id: Option<String>,
-    /// ログイン識別子（ユーザー名 = `preferred_username`）。
+    /// Login identifier (username = `preferred_username`).
     pub username: String,
     pub current_password: String,
     pub new_password: String,
@@ -942,8 +942,8 @@ pub struct InternalPortalChangePasswordRequest {
     pub user_agent: Option<String>,
 }
 
-/// ポータルの強制パスワード変更 API のレスポンス。成功時は SSO セッション id を返す
-/// （`InternalPortalAuthenticateResponse::Success` と同様に code/redirect は無い）。
+/// Response of the portal forced password change API. On success returns the SSO session id
+/// (no code/redirect, as with `InternalPortalAuthenticateResponse::Success`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalPortalChangePasswordResponse {
@@ -953,40 +953,40 @@ pub enum InternalPortalChangePasswordResponse {
         #[serde(default)]
         user_language: Option<String>,
     },
-    /// パスワード変更成功だが TOTP が必要（`login()` と同じ MFA ゲート）。`mfa_ticket` を Cookie 化して
-    /// TOTP 入力画面へ誘導する。SSO はまだ発行しない。
+    /// Password changed but TOTP is required (the same MFA gate as `login()`). Turn `mfa_ticket` into a cookie and
+    /// lead to the TOTP input screen. SSO is not issued yet.
     MfaRequired {
         mfa_ticket: String,
     },
-    /// 自己登録アカウントのメール未検証（SEC6b）。確認リンクを踏むよう案内する。
+    /// The self-registered account's email is unverified (SEC6b). Guides the user to follow the confirmation link.
     EmailVerificationRequired,
-    /// 変更は成功したが認証ポリシーにより拒否（AP2）。
+    /// Changed, but refused by an authentication policy (AP2).
     PolicyDenied,
-    /// 変更は成功したが認証ポリシーが MFA を必須とし、使用可能な認証器が無い（AP2）。
+    /// Changed, but an authentication policy requires MFA and there is no usable authenticator (AP2).
     MfaEnrollmentRequired,
     RateLimited,
-    /// 資格情報不正（利用者不存在・現行パスワード不一致・無効アカウント等を区別しない）。
+    /// Invalid credentials (missing user, current password mismatch, disabled account etc. are not distinguished).
     InvalidCredentials,
     Locked,
-    /// 新パスワードがポリシーを満たさない（長さ・漏えい済み・再利用）。
+    /// The new password does not satisfy the policy (length, breached, reused).
     WeakPassword {
         #[serde(default)]
         reason: PasswordRejectionReason,
     },
     Internal,
-    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916。ADR-0079）。
-    /// SSO Cookie は無い。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    /// Authenticated, but on an unregistered device in an organization limited to registered devices (task #916, ADR-0079).
+    /// No SSO cookie. web puts `ticket` in a cookie and sends the user to the device registration screen.
     DeviceEnrollmentRequired {
         ticket: String,
     },
 }
 
-/// ポータルの TOTP 検証 API（`POST /internal/authenticate/portal/mfa`）のリクエスト。
+/// Request of the portal TOTP verification API (`POST /internal/authenticate/portal/mfa`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalPortalMfaRequest {
     #[serde(default)]
     pub tenant_id: Option<String>,
-    /// [`InternalPortalAuthenticateResponse::MfaRequired`] で返した署名付きチケット。
+    /// The signed ticket returned in [`InternalPortalAuthenticateResponse::MfaRequired`].
     pub mfa_ticket: String,
     pub totp_code: String,
     #[serde(default)]
@@ -995,7 +995,7 @@ pub struct InternalPortalMfaRequest {
     pub user_agent: Option<String>,
 }
 
-/// ポータルの TOTP 検証 API のレスポンス。成功時は SSO セッション id を返す。
+/// Response of the portal TOTP verification API. On success returns the SSO session id.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalPortalMfaResponse {
@@ -1005,62 +1005,62 @@ pub enum InternalPortalMfaResponse {
         #[serde(default)]
         user_language: Option<String>,
     },
-    /// TOTP コード不正（チケットが有効なら再試行できる）。
+    /// Invalid TOTP code (can retry if the ticket is valid).
     InvalidCode,
-    /// チケットが無効・期限切れ（ログインからやり直し）。
+    /// The ticket is invalid or expired (start over from login).
     TicketExpired,
-    /// 認証ポリシーにより拒否（AP2。チケット発行後にポリシーが変わった場合）。
+    /// Refused by an authentication policy (AP2; when the policy changed after the ticket was issued).
     PolicyDenied,
-    /// IP 単位のレート制限超過。
+    /// Per-IP rate limit exceeded.
     RateLimited,
-    /// api 内部エラー。
+    /// api internal error.
     Internal,
-    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916。ADR-0079）。
-    /// SSO Cookie は無い。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    /// Authenticated, but on an unregistered device in an organization limited to registered devices (task #916, ADR-0079).
+    /// No SSO cookie. web puts `ticket` in a cookie and sends the user to the device registration screen.
     DeviceEnrollmentRequired { ticket: String },
 }
 
-/// 同意画面情報 API（`GET /internal/consent-info`）のリクエスト。
+/// Request of the consent screen info API (`GET /internal/consent-info`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalConsentInfoRequest {
-    /// フローのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する（fail-closed。SEC4）。
+    /// The flow's tenant (ADR-0009 §8). **Required**. api rejects a missing or invalid UUID with 400 (fail-closed; SEC4).
     #[serde(default)]
     pub tenant_id: Option<String>,
     pub auth_session_id: String,
 }
 
-/// 同意画面情報 API のレスポンス。
+/// Response of the consent screen info API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalConsentInfoResponse {
-    /// セッションが有効。同意画面に必要な情報を返す。
+    /// The session is valid. Returns the information needed for the consent screen.
     Ok {
         auth_session_id: String,
         client_name: String,
         client_id: String,
-        /// 同意を求めるスコープ（`openid` は除く）。
+        /// Scopes consent is asked for (excluding `openid`).
         requested_scopes: Vec<String>,
-        /// この認可要求の `redirect_uri`（登録済みの値と完全一致したもの）。
+        /// This authorization request's `redirect_uri` (the one that exactly matched the registered value).
         ///
-        /// **web が CSP の `form-action` に許可するオリジンの出所である。** 同意フォームの送信は
-        /// RP へのリダイレクトで終わり、Chrome は `form-action` をフォーム送信後のリダイレクト先にも
-        /// 適用する。許可しないと、同意は記録されコードも発行されたのにブラウザが RP へ戻れない。
+        /// **The source of the origins web allows in the CSP `form-action`.** Submitting the consent form
+        /// ends in a redirect to the RP, and Chrome applies `form-action` to redirect targets after form submission
+        /// too. Without allowing it, consent is recorded and a code is issued, yet the browser cannot return to the RP.
         ///
-        /// **`Option` なのは配信順への耐性のためである。** api と web は別コンテナで、入れ替えの
-        /// 数秒間は「新しい web ＋ 古い api」が成立し得る。必須にすると、その窓で本応答の
-        /// デシリアライズが失敗し**同意画面ごと落ちる**。`None` のときは許可を足さない（＝この不具合が
-        /// 直る前の状態に戻るだけ）に留める。姉妹の `InternalAuthorizeLoginContextResponse::Ok` も同じ。
+        /// **It is `Option` for tolerance to deployment order.** api and web are separate containers, and during the few
+        /// seconds of swapping, "new web + old api" can occur. If required, deserializing this response would fail in that
+        /// window and **the whole consent screen would go down**. When `None`, no allowance is added (= it merely reverts to
+        /// the state before this bug was fixed). The sibling `InternalAuthorizeLoginContextResponse::Ok` is the same.
         #[serde(default)]
         redirect_uri: Option<String>,
     },
-    /// AuthSession が無い・期限切れ・認証済みユーザー未設定（`/authorize` からやり直し）。
+    /// No AuthSession, expired, or no authenticated user set (start over from `/authorize`).
     SessionExpired,
 }
 
-/// 同意承認 API（`POST /internal/consent/approve`）のリクエスト。
+/// Request of the consent approval API (`POST /internal/consent/approve`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalConsentApproveRequest {
-    /// フローのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する（fail-closed。SEC4）。
+    /// The flow's tenant (ADR-0009 §8). **Required**. api rejects a missing or invalid UUID with 400 (fail-closed; SEC4).
     #[serde(default)]
     pub tenant_id: Option<String>,
     pub auth_session_id: String,
@@ -1070,31 +1070,31 @@ pub struct InternalConsentApproveRequest {
     pub user_agent: Option<String>,
 }
 
-/// 同意承認 API のレスポンス。
+/// Response of the consent approval API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalConsentApproveResponse {
-    /// 同意付与・code 発行成功。`redirect_to`（code 付き RP URL）へ 302 する。
+    /// Consent granted and code issued. 302 to `redirect_to` (RP URL with code).
     Success {
         redirect_to: String,
-        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        /// Hidden fields POSTed for `form_post` (G12). `None` means `query`.
         #[serde(default)]
         form_post: Option<FormPostFields>,
     },
-    /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
-    /// web は assay の画面で断る ——利用者から見れば「入れたのに弾かれた」ので、認証は通っている
-    /// という事実と、アプリ名と、管理者へ頼む導線を出す。
+    /// Authenticated, but use of this app is not permitted (ADR-0054). ⚠ **Not returned to the RP.**
+    /// web refuses on assay's screen: to the user it is "I got in and was then kicked out", so it shows the fact that
+    /// authentication passed, the app name, and a way to ask the admin.
     ApplicationNotPermitted { application_name: String },
-    /// AuthSession が無い・期限切れ。
+    /// No AuthSession, or expired.
     SessionExpired,
-    /// api 内部エラー。
+    /// api internal error.
     Internal,
 }
 
-/// 同意拒否 API（`POST /internal/consent/deny`）のリクエスト。
+/// Request of the consent denial API (`POST /internal/consent/deny`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalConsentDenyRequest {
-    /// フローのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する（fail-closed。SEC4）。
+    /// The flow's tenant (ADR-0009 §8). **Required**. api rejects a missing or invalid UUID with 400 (fail-closed; SEC4).
     #[serde(default)]
     pub tenant_id: Option<String>,
     pub auth_session_id: String,
@@ -1104,120 +1104,120 @@ pub struct InternalConsentDenyRequest {
     pub user_agent: Option<String>,
 }
 
-/// 同意拒否 API のレスポンス。
+/// Response of the consent denial API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalConsentDenyResponse {
-    /// 拒否処理完了。`redirect_to`（`access_denied` エラー付き RP URL）へ 302 する。
+    /// Denial done. 302 to `redirect_to` (RP URL with the `access_denied` error).
     Ok {
         redirect_to: String,
-        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
-        /// エラーも成功と同じ `response_mode` で返す（RP は同じ受け口で待っている）。
+        /// Hidden fields POSTed for `form_post` (G12). `None` means `query`.
+        /// Errors are returned in the same `response_mode` as success (the RP waits at the same endpoint).
         #[serde(default)]
         form_post: Option<FormPostFields>,
     },
-    /// AuthSession が無い・期限切れ（RP へのリダイレクトができない）。
+    /// No AuthSession, or expired (cannot redirect to the RP).
     SessionExpired,
-    /// api 内部エラー。
+    /// api internal error.
     Internal,
 }
 
-// ─── Passkey（WebAuthn）登録 API ─────────────────────────────────────────────
+// ─── Passkey (WebAuthn) registration API ─────────────────────────────────────────────
 
-/// Passkey 登録開始 API（`POST /internal/passkey/register/begin`）のリクエスト。
+/// Request of the passkey registration start API (`POST /internal/passkey/register/begin`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalPasskeyRegisterBeginRequest {
-    /// SSO セッション Cookie の生値。
+    /// Raw value of the SSO session cookie.
     pub sso_session_id: String,
-    /// 認証器に表示するユーザー名（通常は email）。
+    /// User name shown on the authenticator (usually the email).
     pub user_name: String,
 }
 
-/// Passkey 登録開始 API のレスポンス。
+/// Response of the passkey registration start API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalPasskeyRegisterBeginResponse {
-    /// 開始成功。`challenge_id` を complete で使う。`options` を JS WebAuthn API に渡す。
+    /// Started. Use `challenge_id` in complete. Pass `options` to the JS WebAuthn API.
     Ok {
         challenge_id: String,
         options: serde_json::Value,
     },
-    /// SSO セッションが無い・期限切れ。
+    /// No SSO session, or expired.
     SessionExpired,
-    /// api 内部エラー。
+    /// api internal error.
     Internal,
 }
 
-/// Passkey 登録完了 API（`POST /internal/passkey/register/complete`）のリクエスト。
+/// Request of the passkey registration completion API (`POST /internal/passkey/register/complete`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalPasskeyRegisterCompleteRequest {
     pub sso_session_id: String,
     pub challenge_id: String,
-    /// ユーザーが付けたデバイス名（例: "MacBook Touch ID"）。
+    /// Device name given by the user (e.g. "MacBook Touch ID").
     pub name: String,
-    /// ブラウザの `navigator.credentials.create()` が返したオブジェクト（JSON）。
+    /// Object (JSON) returned by the browser's `navigator.credentials.create()`.
     pub credential: serde_json::Value,
 }
 
-/// Passkey 登録完了 API のレスポンス。
+/// Response of the passkey registration completion API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalPasskeyRegisterCompleteResponse {
-    /// 登録成功。`credential_id` は管理画面表示用。
+    /// Registered. `credential_id` is for display on the admin screen.
     Ok { credential_id: String },
-    /// チャレンジが見つからない・期限切れ。
+    /// The challenge was not found or expired.
     ChallengeNotFound,
-    /// クレデンシャルが無効。
+    /// The credential is invalid.
     InvalidCredential,
-    /// 同一デバイスが既に登録済み。
+    /// The same device is already registered.
     DuplicateCredential,
-    /// SSO セッションが無い・期限切れ。
+    /// No SSO session, or expired.
     SessionExpired,
-    /// api 内部エラー。
+    /// api internal error.
     Internal,
 }
 
-/// Passkey 削除 API（`POST /internal/passkey/delete`）のリクエスト。
+/// Request of the passkey delete API (`POST /internal/passkey/delete`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalPasskeyDeleteRequest {
     pub sso_session_id: String,
-    /// 削除対象の内部 UUID（`InternalPasskeyRegisterCompleteResponse::Ok.credential_id`）。
+    /// Internal UUID to delete (`InternalPasskeyRegisterCompleteResponse::Ok.credential_id`).
     pub credential_id: String,
 }
 
-/// Passkey 削除 API のレスポンス。
+/// Response of the passkey delete API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalPasskeyDeleteResponse {
     Ok,
-    /// その利用者の使えるパスキーとして見つからない（既に消えている・他人の id・壊れた id）。
-    /// 画面は「消しました」と言ってはいけないので、成功と区別して返す。
+    /// Not found as a usable passkey of that user (already gone, someone else's id, a broken id).
+    /// The screen must not say "deleted", so it is returned distinct from success.
     NotFound,
     SessionExpired,
     Internal,
 }
 
-/// Passkey 一覧 API（`POST /internal/passkey/list`）のリクエスト。
+/// Request of the passkey list API (`POST /internal/passkey/list`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalPasskeyListRequest {
     pub sso_session_id: String,
 }
 
-/// 登録済みクレデンシャルの概要。
+/// Summary of a registered credential.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PasskeyCredentialInfo {
     pub id: String,
     pub name: String,
     pub created_at: String,
     pub last_used_at: Option<String>,
-    /// 認証器の登録簿（AP9）で一時停止されている。**一覧には出るが、これではサインインできない。**
-    /// 画面がこれを出さないと、利用者は使えないパスキーを使えるものとして眺めることになる
-    /// （停止は `/{tenant_id}/settings/authenticators` から掛ける・外す）。
+    /// Suspended in the authenticator registry (AP9). **It appears in the list, but cannot be used to sign in.**
+    /// Unless the screen shows this, the user would look at an unusable passkey as if it were usable
+    /// (suspension is applied and lifted from `/{tenant_id}/settings/authenticators`).
     #[serde(default)]
     pub suspended: bool,
 }
 
-/// Passkey 一覧 API のレスポンス。
+/// Response of the passkey list API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalPasskeyListResponse {
@@ -1228,39 +1228,39 @@ pub enum InternalPasskeyListResponse {
     Internal,
 }
 
-// ─── Passkey（WebAuthn）認証 API ─────────────────────────────────────────────
+// ─── Passkey (WebAuthn) authentication API ─────────────────────────────────────────────
 
-/// Passkey 認証開始 API（`POST /internal/passkey/login/begin`）のリクエスト。
+/// Request of the passkey authentication start API (`POST /internal/passkey/login/begin`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalPasskeyLoginBeginRequest {
-    /// OIDC フローの auth_session_id（Cookie 値）。complete で OIDC フローを継続するために必要。
+    /// auth_session_id (cookie value) of the OIDC flow. Needed to continue the OIDC flow in complete.
     ///
-    /// **`None` は認可フロー外の直接ログイン**（管理コンソール・ポータル）用のチャレンジになる。
-    /// チャレンジの用途はこの有無で決まり、完了 API は自分の用途と違うチャレンジを受け付けない。
+    /// **`None` makes a challenge for direct login outside the authorization flow** (admin console, portal).
+    /// The challenge's purpose is decided by its presence, and the completion APIs do not accept a challenge of another purpose.
     pub auth_session_id: Option<String>,
 }
 
-/// Passkey 認証開始 API のレスポンス。
+/// Response of the passkey authentication start API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalPasskeyLoginBeginResponse {
-    /// 開始成功。`challenge_id` を complete で使う。`options` を JS WebAuthn API に渡す。
+    /// Started. Use `challenge_id` in complete. Pass `options` to the JS WebAuthn API.
     Ok {
         challenge_id: String,
         options: serde_json::Value,
     },
-    /// api 内部エラー。
+    /// api internal error.
     Internal,
 }
 
-/// Passkey 認証完了 API（`POST /internal/passkey/login/complete`）のリクエスト。
+/// Request of the passkey authentication completion API (`POST /internal/passkey/login/complete`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalPasskeyLoginCompleteRequest {
-    /// フローのテナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する（fail-closed。SEC4）。
+    /// The flow's tenant (ADR-0009 §8). **Required**. api rejects a missing or invalid UUID with 400 (fail-closed; SEC4).
     #[serde(default)]
     pub tenant_id: Option<String>,
     pub challenge_id: String,
-    /// ブラウザの `navigator.credentials.get()` が返したオブジェクト（JSON）。
+    /// Object (JSON) returned by the browser's `navigator.credentials.get()`.
     pub credential: serde_json::Value,
     #[serde(default)]
     pub ip_address: Option<String>,
@@ -1268,13 +1268,13 @@ pub struct InternalPasskeyLoginCompleteRequest {
     pub user_agent: Option<String>,
 }
 
-/// Passkey 認証完了 API のレスポンス。成功系は `InternalAuthenticateResponse` と同等。
+/// Response of the passkey authentication completion API. The success variants are equivalent to `InternalAuthenticateResponse`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalPasskeyLoginCompleteResponse {
     Success {
         redirect_to: String,
-        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        /// Hidden fields POSTed for `form_post` (G12). `None` means `query`.
         #[serde(default)]
         form_post: Option<FormPostFields>,
         sso_session_id: String,
@@ -1285,41 +1285,41 @@ pub enum InternalPasskeyLoginCompleteResponse {
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
     },
-    /// チャレンジが見つからない・期限切れ。
+    /// The challenge was not found or expired.
     ChallengeNotFound,
-    /// AuthSession が無い・期限切れ。
+    /// No AuthSession, or expired.
     SessionExpired,
-    /// クレデンシャルが無効。
+    /// The credential is invalid.
     InvalidCredential,
-    /// 認証ポリシーにより拒否（ユーザー認証・認証ポリシー仕様書 §7.4 `deny`）。
+    /// Refused by an authentication policy (user authentication and authentication policy spec §7.4 `deny`).
     PolicyDenied,
-    /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
-    /// web は assay の画面で断る ——利用者から見れば「入れたのに弾かれた」ので、認証は通っている
-    /// という事実と、アプリ名と、管理者へ頼む導線を出す。
+    /// Authenticated, but use of this app is not permitted (ADR-0054). ⚠ **Not returned to the RP.**
+    /// web refuses on assay's screen: to the user it is "I got in and was then kicked out", so it shows the fact that
+    /// authentication passed, the app name, and a way to ask the admin.
     ApplicationNotPermitted {
         application_name: String,
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
     },
-    /// IP 単位のレート制限超過。直接ログインのパスキー経路と同じ枠を消費する。
+    /// Per-IP rate limit exceeded. Consumes the same bucket as the direct login passkey path.
     RateLimited,
-    /// api 内部エラー。
+    /// api internal error.
     Internal,
-    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916。ADR-0079）。
-    /// SSO Cookie は無い。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    /// Authenticated, but on an unregistered device in an organization limited to registered devices (task #916, ADR-0079).
+    /// No SSO cookie. web puts `ticket` in a cookie and sends the user to the device registration screen.
     DeviceEnrollmentRequired { ticket: String },
 }
 
-/// 管理コンソールの Passkey ログイン完了 API（`POST /internal/passkey/login/admin/complete`）の
-/// リクエスト。開始は 3 経路共通の `POST /internal/passkey/login/begin` を `auth_session_id`
-/// なしで呼ぶ（＝直接ログイン用のチャレンジ）。
+/// Request of the admin console passkey login completion API (`POST /internal/passkey/login/admin/complete`).
+/// The start calls `POST /internal/passkey/login/begin`, shared by the 3 paths, without `auth_session_id`
+/// (= a challenge for direct login).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAdminPasskeyLoginCompleteRequest {
-    /// ログイン先テナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する。
+    /// Tenant to log in to (ADR-0009 §8). **Required**. api rejects a missing or invalid UUID with 400.
     #[serde(default)]
     pub tenant_id: Option<String>,
     pub challenge_id: String,
-    /// ブラウザの `navigator.credentials.get()` が返したオブジェクト（JSON）。
+    /// Object (JSON) returned by the browser's `navigator.credentials.get()`.
     pub credential: serde_json::Value,
     #[serde(default)]
     pub ip_address: Option<String>,
@@ -1327,46 +1327,46 @@ pub struct InternalAdminPasskeyLoginCompleteRequest {
     pub user_agent: Option<String>,
 }
 
-/// 管理コンソールの Passkey ログイン完了 API のレスポンス。
+/// Response of the admin console passkey login completion API.
 ///
-/// パスワード経路（`InternalAdminAuthenticateResponse`）に在る `Locked` /
-/// `PasswordChangeRequired` / `MfaRequired` / `MfaEnrollmentRequired` はここには無い。パスキーは
-/// パスワードを使わず、単独で `require_mfa` を満たすためである。
+/// `Locked` / `PasswordChangeRequired` / `MfaRequired` / `MfaEnrollmentRequired`, present in the password path
+/// (`InternalAdminAuthenticateResponse`), are absent here, because a passkey uses no password
+/// and satisfies `require_mfa` on its own.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAdminPasskeyLoginCompleteResponse {
-    /// 認証成功かつ テナント admin 権限を保有。`sso_session_id` を Cookie 化して管理コンソールへ。
+    /// Authenticated and holds tenant admin permission. Turn `sso_session_id` into a cookie and go to the admin console.
     Success {
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
     },
-    /// チャレンジが見つからない・期限切れ・用途違い。やり直しを促す。
+    /// The challenge was not found, expired, or is for another purpose. Prompts a retry.
     ChallengeNotFound,
-    /// クレデンシャルが無効（不存在・検証失敗・停止中・テナント非所属・アカウント無効）。
+    /// The credential is invalid (nonexistent, verification failed, suspended, not in the tenant, account disabled).
     InvalidCredential,
-    /// パスキーは正しいが テナント admin 権限を保有しない。
+    /// The passkey is correct but no tenant admin permission is held.
     Forbidden,
-    /// 認証ポリシーにより拒否（AP2。仕様 §7.4 `deny`）。
+    /// Refused by an authentication policy (AP2; spec §7.4 `deny`).
     PolicyDenied,
-    /// IP 単位のレート制限超過。
+    /// Per-IP rate limit exceeded.
     RateLimited,
-    /// api 内部エラー。
+    /// api internal error.
     Internal,
-    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916。ADR-0079）。
-    /// SSO Cookie は無い。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    /// Authenticated, but on an unregistered device in an organization limited to registered devices (task #916, ADR-0079).
+    /// No SSO cookie. web puts `ticket` in a cookie and sends the user to the device registration screen.
     DeviceEnrollmentRequired { ticket: String },
 }
 
-/// ポータルの Passkey ログイン完了 API（`POST /internal/passkey/login/portal/complete`）の
-/// リクエスト。開始は 3 経路共通の `POST /internal/passkey/login/begin` を `auth_session_id`
-/// なしで呼ぶ（＝直接ログイン用のチャレンジ）。
+/// Request of the portal passkey login completion API (`POST /internal/passkey/login/portal/complete`).
+/// The start calls `POST /internal/passkey/login/begin`, shared by the 3 paths, without `auth_session_id`
+/// (= a challenge for direct login).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalPortalPasskeyLoginCompleteRequest {
-    /// ログイン先テナント（ADR-0009 §8）。**必須**。api は未指定・不正な UUID を 400 で拒否する。
+    /// Tenant to log in to (ADR-0009 §8). **Required**. api rejects a missing or invalid UUID with 400.
     #[serde(default)]
     pub tenant_id: Option<String>,
     pub challenge_id: String,
-    /// ブラウザの `navigator.credentials.get()` が返したオブジェクト（JSON）。
+    /// Object (JSON) returned by the browser's `navigator.credentials.get()`.
     pub credential: serde_json::Value,
     #[serde(default)]
     pub ip_address: Option<String>,
@@ -1374,229 +1374,229 @@ pub struct InternalPortalPasskeyLoginCompleteRequest {
     pub user_agent: Option<String>,
 }
 
-/// ポータルの Passkey ログイン完了 API のレスポンス。
+/// Response of the portal passkey login completion API.
 ///
-/// パスワード経路（`InternalPortalAuthenticateResponse`）に在る `MfaRequired` /
-/// `MfaEnrollmentRequired` / `Locked` / `PasswordChangeRequired` はここには無い（パスキーは
-/// 単独で `require_mfa` を満たし、パスワードを使わない）。メール未検証のゲートは残る。
+/// `MfaRequired` / `MfaEnrollmentRequired` / `Locked` / `PasswordChangeRequired`, present in the password path
+/// (`InternalPortalAuthenticateResponse`), are absent here (a passkey satisfies `require_mfa` on its own and
+/// uses no password). The unverified email gate remains.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalPortalPasskeyLoginCompleteResponse {
-    /// 認証成功。`sso_session_id` を Cookie 化してアカウント画面へ。
+    /// Authenticated. Turn `sso_session_id` into a cookie and go to the account screen.
     Success {
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
         #[serde(default)]
         user_language: Option<String>,
     },
-    /// チャレンジが見つからない・期限切れ・用途違い。やり直しを促す。
+    /// The challenge was not found, expired, or is for another purpose. Prompts a retry.
     ChallengeNotFound,
-    /// クレデンシャルが無効（不存在・検証失敗・停止中・テナント非所属・アカウント無効）。
+    /// The credential is invalid (nonexistent, verification failed, suspended, not in the tenant, account disabled).
     InvalidCredential,
-    /// 自己登録アカウントのメール未検証（SEC6b）。確認リンクを踏むよう案内する。
+    /// The self-registered account's email is unverified (SEC6b). Guides the user to follow the confirmation link.
     EmailVerificationRequired,
-    /// 認証ポリシーにより拒否（AP2。仕様 §7.4 `deny`）。
+    /// Refused by an authentication policy (AP2; spec §7.4 `deny`).
     PolicyDenied,
-    /// IP 単位のレート制限超過。
+    /// Per-IP rate limit exceeded.
     RateLimited,
-    /// api 内部エラー。
+    /// api internal error.
     Internal,
-    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916。ADR-0079）。
-    /// SSO Cookie は無い。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    /// Authenticated, but on an unregistered device in an organization limited to registered devices (task #916, ADR-0079).
+    /// No SSO cookie. web puts `ticket` in a cookie and sends the user to the device registration screen.
     DeviceEnrollmentRequired { ticket: String },
 }
 
-/// セルフサービスの表示言語更新 API（`POST /internal/account/update-language`。MT20）のリクエスト。
+/// Request of the self-service display language update API (`POST /internal/account/update-language`; MT20).
 ///
-/// web の設定画面で言語を変更した際、DB の `users.language` を更新する。Cookie の更新は web が行う。
+/// When the language is changed on web's settings screen, updates `users.language` in the DB. web updates the cookie.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAccountUpdateLanguageRequest {
-    /// SSO セッション Cookie の生値（web が転送）。
+    /// Raw value of the SSO session cookie (forwarded by web).
     pub sso_session_id: String,
-    /// 設定する言語コード（`ja` または `en`）。
+    /// Language code to set (`ja` or `en`).
     pub language: String,
 }
 
-/// セルフサービスの表示言語更新 API のレスポンス。
+/// Response of the self-service display language update API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAccountUpdateLanguageResponse {
     Ok,
-    /// SSO セッションが無い・期限切れ。
+    /// No SSO session, or expired.
     SessionExpired,
-    /// 指定した言語コードが非対応（`ja`・`en` 以外）。
+    /// The given language code is unsupported (anything other than `ja` and `en`).
     InvalidLanguage,
-    /// api 内部エラー。
+    /// api internal error.
     Internal,
 }
 
-/// セルフサービスの配色更新 API（`POST /internal/account/update-theme`）のリクエスト。
+/// Request of the self-service color scheme update API (`POST /internal/account/update-theme`).
 ///
-/// ログイン済みユーザーが SSO セッション経由で自分の `users.theme` を更新する。
+/// A logged-in user updates their own `users.theme` via the SSO session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAccountUpdateThemeRequest {
-    /// SSO セッション Cookie の生値（web が転送）。
+    /// Raw value of the SSO session cookie (forwarded by web).
     pub sso_session_id: String,
-    /// 設定する配色（`light` / `dark` / `system`）。
+    /// Color scheme to set (`light` / `dark` / `system`).
     pub theme: String,
 }
 
-/// セルフサービスの配色更新 API のレスポンス。
+/// Response of the self-service color scheme update API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAccountUpdateThemeResponse {
     Ok,
-    /// SSO セッションが無い・期限切れ。
+    /// No SSO session, or expired.
     SessionExpired,
-    /// 指定した配色が非対応。
+    /// The given color scheme is unsupported.
     InvalidTheme,
-    /// api 内部エラー。
+    /// api internal error.
     Internal,
 }
 
-/// セルフサービスのプロフィール取得 API（`POST /internal/account/profile`）のリクエスト。
+/// Request of the self-service profile API (`POST /internal/account/profile`).
 ///
-/// 設定画面が現在の表示名などを再表示（プリフィル）するために、SSO セッション経由で本人の
-/// プロフィールを取得する。取得のみで副作用は無い（POST なのは SSO を body で転送するため）。
+/// Fetches the user's own profile via the SSO session so the settings screen can redisplay (prefill) the current
+/// display name etc. Read-only with no side effects (POST because the SSO is forwarded in the body).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAccountProfileRequest {
-    /// SSO セッション Cookie の生値（web が転送）。
+    /// Raw value of the SSO session cookie (forwarded by web).
     pub sso_session_id: String,
 }
 
-/// セルフサービスのプロフィール取得 API のレスポンス。
+/// Response of the self-service profile API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAccountProfileResponse {
     Ok {
-        /// 表示名（未設定なら `None`）。
+        /// Display name (`None` if unset).
         name: Option<String>,
-        /// ログイン識別子（未設定なら `None`）。表示のみ・変更不可。
+        /// Login identifier (`None` if unset). Display only; cannot be changed.
         preferred_username: Option<String>,
-        /// メールアドレス。
+        /// Email address.
         email: String,
-        /// 保存済みの表示言語（`ja` / `en`。未設定なら `None`）。web の表示言語決定で
-        /// Cookie より優先する（MT20。`CLAUDE.md`「国際化」の優先順 2 位）。
+        /// Saved display language (`ja` / `en`; `None` if unset). Takes priority over the cookie in web's display
+        /// language decision (MT20; priority 2 in `CLAUDE.md` "Internationalization").
         #[serde(default)]
         language: Option<String>,
-        /// 保存済みの配色（`light` / `dark` / `system`。未設定なら `None`）。言語と同じく
-        /// Cookie より優先する。旧 api と混在しても復号に失敗しないよう `#[serde(default)]`。
+        /// Saved color scheme (`light` / `dark` / `system`; `None` if unset). Like the language, it takes
+        /// priority over the cookie. `#[serde(default)]` so decoding does not fail when mixed with an old api.
         #[serde(default)]
         theme: Option<String>,
     },
-    /// SSO セッションが無い・期限切れ。
+    /// No SSO session, or expired.
     SessionExpired,
-    /// api 内部エラー。
+    /// api internal error.
     Internal,
 }
 
-/// セルフサービスの表示名更新 API（`POST /internal/account/update-name`）のリクエスト。
+/// Request of the self-service display name update API (`POST /internal/account/update-name`).
 ///
-/// ログイン済みユーザーが SSO セッション経由で自分の `users.name`（表示名）を更新する。
-/// `name` が空文字・空白のみ・`None` の場合は表示名を解除（DB は `NULL`）する。
+/// A logged-in user updates their own `users.name` (display name) via the SSO session.
+/// When `name` is empty, whitespace-only or `None`, the display name is cleared (DB `NULL`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAccountUpdateNameRequest {
-    /// SSO セッション Cookie の生値（web が転送）。
+    /// Raw value of the SSO session cookie (forwarded by web).
     pub sso_session_id: String,
-    /// 新しい表示名。空・空白のみ・未指定は解除扱い。
+    /// New display name. Empty, whitespace-only or unspecified clears it.
     #[serde(default)]
     pub name: Option<String>,
 }
 
-/// セルフサービスの表示名更新 API のレスポンス。
+/// Response of the self-service display name update API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAccountUpdateNameResponse {
     Ok,
-    /// SSO セッションが無い・期限切れ。
+    /// No SSO session, or expired.
     SessionExpired,
-    /// 表示名が長すぎる等、値が不正。
+    /// The value is invalid, e.g. the display name is too long.
     Invalid,
-    /// api 内部エラー。
+    /// api internal error.
     Internal,
 }
 
-/// 切り替え可能なテナント 1 件の要約（テナント切り替え UI 用）。
+/// Summary of one switchable tenant (for the tenant switcher UI).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountTenantSummary {
-    /// テナントの内部 ID（URL プレフィクスに使う）。
+    /// Internal ID of the tenant (used in the URL prefix).
     pub tenant_id: String,
-    /// テナント表示名。
+    /// Tenant display name.
     pub name: String,
-    /// メンバーシップ種別（`HOME` / `GUEST`）。
+    /// Membership kind (`HOME` / `GUEST`).
     pub membership_type: String,
 }
 
-/// セルフサービスの所属テナント一覧 API（`POST /internal/account/tenants`）のリクエスト。
+/// Request of the self-service tenant list API (`POST /internal/account/tenants`).
 ///
-/// ログイン中ユーザーが `ACTIVE` なメンバーシップを持つテナントを列挙する（テナント切り替え用）。
+/// Lists tenants where the logged-in user has an `ACTIVE` membership (for tenant switching).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAccountTenantsRequest {
-    /// SSO セッション Cookie の生値（web が転送）。
+    /// Raw value of the SSO session cookie (forwarded by web).
     pub sso_session_id: String,
 }
 
-/// セルフサービスの所属テナント一覧 API のレスポンス。
+/// Response of the self-service tenant list API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAccountTenantsResponse {
     Ok {
         tenants: Vec<AccountTenantSummary>,
     },
-    /// SSO セッションが無い・期限切れ。
+    /// No SSO session, or expired.
     SessionExpired,
-    /// api 内部エラー。
+    /// api internal error.
     Internal,
 }
 
-// ── セルフサービスのセキュリティ画面（G10） ──────────────────────────────────
+// ── Self-service security screen (G10) ──────────────────────────────────
 
-/// ログイン中セッション 1 件の要約（セキュリティ画面）。
+/// Summary of one signed-in session (security screen).
 ///
-/// `id` は失効要求で指すための表示用 ID。SSO Cookie の値でも DB の主キー（`session_hash`）でも
-/// なく、そこから非可逆に導いた値なので、提示しても他人のセッションを解決・詐称する材料にならない。
+/// `id` is a display ID used to reference it in revocation requests. It is neither the SSO cookie value nor the DB
+/// primary key (`session_hash`) but an irreversible derivation of it, so presenting it gives no means to resolve or impersonate another person's session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountSessionSummary {
     pub id: String,
-    /// 今このブラウザで使っているセッションか（画面で「現在のセッション」と示す）。
+    /// Whether this is the session used by this browser now (shown on screen as "current session").
     pub current: bool,
-    /// 認証時刻（RFC 3339）。
+    /// Authentication time (RFC 3339).
     pub auth_time: String,
-    /// 第二要素まで完了しているか（AP4 の記録）。
+    /// Whether the second factor was completed (recorded by AP4).
     pub multi_factor: bool,
     #[serde(default)]
     pub user_agent: Option<String>,
     #[serde(default)]
     pub ip_address: Option<String>,
     pub created_at: String,
-    /// 無操作での失効時刻（RFC 3339）。
+    /// Idle expiry time (RFC 3339).
     pub idle_expires_at: String,
-    /// 絶対期限（RFC 3339）。
+    /// Absolute expiry (RFC 3339).
     pub absolute_expires_at: String,
 }
 
-/// 連携済みアプリ 1 件の要約（セキュリティ画面）。
+/// Summary of one connected app (security screen).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountConnectedAppSummary {
     pub client_id: String,
-    /// 表示名（クライアントが削除済みなら `client_id` と同じ値になる）。
+    /// Display name (the same value as `client_id` if the client was deleted).
     pub app_name: String,
     pub scopes: Vec<String>,
     pub granted_at: String,
     pub updated_at: String,
 }
 
-/// ログインした端末の結び付け API（`POST /internal/devices/observe`。task #872）のリクエスト。
+/// Request of the API binding the logged-in device (`POST /internal/devices/observe`; task #872).
 ///
-/// web は SSO セッションの Cookie を置いたその応答で呼ぶ。テナントは要らない（利用者の所属元で決まる）。
+/// web calls it with the very response that sets the SSO session cookie. No tenant is needed (decided by the user's home tenant).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalDeviceObserveRequest {
-    /// web が置いたばかりの SSO セッション Cookie の値。
+    /// Value of the SSO session cookie web just set.
     pub sso_session_id: String,
-    /// 端末の印（web の Cookie）。置けなかったときは `None`。
+    /// Device mark (web's cookie). `None` if it could not be set.
     #[serde(default)]
     pub device_token: Option<String>,
-    /// `CF-IPCountry`（web が `TRUST_FORWARDED_HEADERS` で信じると決めたときだけ）。
+    /// `CF-IPCountry` (only when web decided to trust it via `TRUST_FORWARDED_HEADERS`).
     #[serde(default)]
     pub country: Option<String>,
     #[serde(default)]
@@ -1605,7 +1605,7 @@ pub struct InternalDeviceObserveRequest {
     pub user_agent: Option<String>,
 }
 
-/// ログインした端末の結び付け API のレスポンス。
+/// Response of the API binding the logged-in device.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalDeviceObserveResponse {
@@ -1615,12 +1615,12 @@ pub enum InternalDeviceObserveResponse {
     Internal,
 }
 
-/// 「端末」の欄の 1 行。時刻は RFC 3339。
+/// One row of the "devices" section. Times are RFC 3339.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountDeviceSummary {
     pub id: String,
     pub name: String,
-    /// 今見ているブラウザか。
+    /// Whether this is the browser being viewed now.
     pub current: bool,
     #[serde(default)]
     pub user_agent: Option<String>,
@@ -1628,11 +1628,11 @@ pub struct AccountDeviceSummary {
     pub last_used_at: String,
     #[serde(default)]
     pub last_country: Option<String>,
-    /// 使われないまま過ぎると登録が切れる時刻。
+    /// Time the registration expires if it goes unused.
     pub expires_at: String,
 }
 
-/// 「端末」の欄の取得 API（`POST /internal/account/devices`）のリクエスト。
+/// Request of the API fetching the "devices" section (`POST /internal/account/devices`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAccountDevicesRequest {
     #[serde(default)]
@@ -1647,20 +1647,20 @@ pub struct InternalAccountDevicesRequest {
 pub enum InternalAccountDevicesResponse {
     Ok {
         devices: Vec<AccountDeviceSummary>,
-        /// 今見ているブラウザが登録済みか。
+        /// Whether the browser being viewed now is registered.
         current_registered: bool,
-        /// 今見ているブラウザに端末の印があるか（無ければ登録できない）。
+        /// Whether the browser being viewed now has a device mark (it cannot be registered without one).
         current_identified: bool,
-        /// パスキーでの本人確認がまだ有効か。
+        /// Whether identity confirmation by passkey is still valid.
         passkey_fresh: bool,
-        /// この組織で「登録していない端末」の知らせが有効か。
+        /// Whether the "unregistered device" notice is enabled in this organization.
         alerts_enabled: bool,
     },
     SessionExpired,
     Internal,
 }
 
-/// 端末の登録 API（`POST /internal/account/devices/register`）のリクエスト。
+/// Request of the device registration API (`POST /internal/account/devices/register`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAccountRegisterDeviceRequest {
     #[serde(default)]
@@ -1681,7 +1681,7 @@ pub struct InternalAccountRegisterDeviceRequest {
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAccountRegisterDeviceResponse {
     Registered,
-    /// パスキーで本人を確かめてから 5 分を過ぎている。web はパスキーの確認へ回す。
+    /// More than 5 minutes have passed since identity confirmation by passkey. web sends the user to passkey confirmation.
     PasskeyRequired,
     AlreadyRegistered,
     InvalidName,
@@ -1690,7 +1690,7 @@ pub enum InternalAccountRegisterDeviceResponse {
     Internal,
 }
 
-/// 端末の取り消し API（`POST /internal/account/devices/revoke`）のリクエスト。
+/// Request of the device revocation API (`POST /internal/account/devices/revoke`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAccountRevokeDeviceRequest {
     #[serde(default)]
@@ -1712,19 +1712,19 @@ pub enum InternalAccountRevokeDeviceResponse {
     Internal,
 }
 
-/// 「SSH の鍵」の欄の 1 行（task #885）。時刻は RFC 3339。
+/// One row of the "SSH keys" section (task #885). Times are RFC 3339.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountSshKeySummary {
     pub id: String,
     pub name: String,
-    /// 鍵の型（`sk-ssh-ed25519@openssh.com` など）。
+    /// Key type (`sk-ssh-ed25519@openssh.com` etc.).
     pub key_type: String,
-    /// `SHA256:…`。
+    /// `SHA256:…`.
     pub fingerprint: String,
     pub created_at: String,
 }
 
-/// 「SSH の鍵」の欄の取得 API（`POST /internal/account/ssh-keys`）のリクエスト。
+/// Request of the API fetching the "SSH keys" section (`POST /internal/account/ssh-keys`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAccountSshKeysRequest {
     #[serde(default)]
@@ -1736,9 +1736,9 @@ pub struct InternalAccountSshKeysRequest {
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAccountSshKeysResponse {
     Ok {
-        /// この組織で SSH の鍵を使うか（無効なら欄を出さない）。
+        /// Whether this organization uses SSH keys (if disabled, the section is not shown).
         enabled: bool,
-        /// パスキーでの本人確認がまだ有効か。
+        /// Whether identity confirmation by passkey is still valid.
         passkey_fresh: bool,
         keys: Vec<AccountSshKeySummary>,
     },
@@ -1746,13 +1746,13 @@ pub enum InternalAccountSshKeysResponse {
     Internal,
 }
 
-/// SSH の鍵の登録 API（`POST /internal/account/ssh-keys/register`）のリクエスト。
+/// Request of the SSH key registration API (`POST /internal/account/ssh-keys/register`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAccountRegisterSshKeyRequest {
     #[serde(default)]
     pub tenant_id: Option<String>,
     pub sso_session_id: String,
-    /// 貼り付けられた公開鍵（authorized_keys の 1 行）。
+    /// The pasted public key (one authorized_keys line).
     pub public_key: String,
     pub name: String,
     #[serde(default)]
@@ -1768,14 +1768,14 @@ pub enum InternalAccountRegisterSshKeyResponse {
         fingerprint: String,
     },
     Disabled,
-    /// パスキーで本人を確かめてから 5 分を過ぎている。web はパスキーの確認へ回す。
+    /// More than 5 minutes have passed since identity confirmation by passkey. web sends the user to passkey confirmation.
     PasskeyRequired,
     InvalidName,
-    /// 秘密鍵らしきものが貼られた（保存していない）。
+    /// Something resembling a private key was pasted (not saved).
     PrivateKey,
-    /// sk 型ではない。
+    /// Not an sk type.
     NotSecurityKey,
-    /// 形が壊れている。
+    /// The format is broken.
     Malformed,
     AlreadyRegistered,
     TooMany,
@@ -1783,7 +1783,7 @@ pub enum InternalAccountRegisterSshKeyResponse {
     Internal,
 }
 
-/// SSH の鍵の取り消し API（`POST /internal/account/ssh-keys/revoke`）のリクエスト。
+/// Request of the SSH key revocation API (`POST /internal/account/ssh-keys/revoke`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAccountRevokeSshKeyRequest {
     #[serde(default)]
@@ -1806,17 +1806,17 @@ pub enum InternalAccountRevokeSshKeyResponse {
     Internal,
 }
 
-/// セキュリティ画面の表示内容取得 API（`POST /internal/account/security`）のリクエスト。
+/// Request of the security screen content API (`POST /internal/account/security`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAccountSecurityRequest {
-    /// フローのテナント（連携済みアプリはテナント単位で持つため必須）。
+    /// The flow's tenant (required because connected apps are held per tenant).
     #[serde(default)]
     pub tenant_id: Option<String>,
-    /// SSO セッション Cookie の生値（web が転送）。
+    /// Raw value of the SSO session cookie (forwarded by web).
     pub sso_session_id: String,
 }
 
-/// セキュリティ画面の表示内容取得 API のレスポンス。
+/// Response of the security screen content API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAccountSecurityResponse {
@@ -1824,18 +1824,18 @@ pub enum InternalAccountSecurityResponse {
         sessions: Vec<AccountSessionSummary>,
         connected_apps: Vec<AccountConnectedAppSummary>,
     },
-    /// SSO セッションが無い・期限切れ・利用者が無効。
+    /// No SSO session, expired, or the user is disabled.
     SessionExpired,
     Internal,
 }
 
-/// セッション失効 API（`POST /internal/account/security/revoke-session`）のリクエスト。
+/// Request of the session revocation API (`POST /internal/account/security/revoke-session`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAccountRevokeSessionRequest {
     #[serde(default)]
     pub tenant_id: Option<String>,
     pub sso_session_id: String,
-    /// [`AccountSessionSummary::id`] で示した表示用 ID。
+    /// The display ID shown in [`AccountSessionSummary::id`].
     pub session_id: String,
     #[serde(default)]
     pub ip_address: Option<String>,
@@ -1843,21 +1843,21 @@ pub struct InternalAccountRevokeSessionRequest {
     pub user_agent: Option<String>,
 }
 
-/// セッション失効 API のレスポンス。
+/// Response of the session revocation API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAccountRevokeSessionResponse {
-    /// 失効した（既に消えていた場合も含む）。
+    /// Revoked (including when it was already gone).
     Ok,
-    /// 指定 ID が当人のセッションに無い（他人のセッション・古い画面からの再送）。
+    /// The given ID is not among the user's sessions (another person's session, or a resend from an old screen).
     NotFound,
-    /// 今使っているセッション自身は切らせない（ログアウト導線へ回す）。
+    /// The session in use itself cannot be cut (sent to the logout flow).
     CurrentSession,
     SessionExpired,
     Internal,
 }
 
-/// 連携解除 API（`POST /internal/account/security/revoke-consent`）のリクエスト。
+/// Request of the disconnect API (`POST /internal/account/security/revoke-consent`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAccountRevokeConsentRequest {
     #[serde(default)]
@@ -1870,17 +1870,17 @@ pub struct InternalAccountRevokeConsentRequest {
     pub user_agent: Option<String>,
 }
 
-/// 連携解除 API のレスポンス。
+/// Response of the disconnect API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAccountRevokeConsentResponse {
-    /// 取り消した（同意が無かった場合も含む）。
+    /// Revoked (including when there was no consent).
     Ok,
     SessionExpired,
     Internal,
 }
 
-/// トークン再発行 API（`POST /internal/account/security/reissue-tokens`。ADR-0047）のリクエスト。
+/// Request of the token reissue API (`POST /internal/account/security/reissue-tokens`; ADR-0047).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAccountReissueTokensRequest {
     #[serde(default)]
@@ -1892,11 +1892,11 @@ pub struct InternalAccountReissueTokensRequest {
     pub user_agent: Option<String>,
 }
 
-/// トークン再発行 API のレスポンス。
+/// Response of the token reissue API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAccountReissueTokensResponse {
-    /// 失効させた。`revoked` は落とした本数で、**0 も成功**（生きているトークンが無かった）。
+    /// Revoked. `revoked` is the number dropped, and **0 is also success** (there were no live tokens).
     Ok {
         revoked: u64,
     },
@@ -1904,47 +1904,47 @@ pub enum InternalAccountReissueTokensResponse {
     Internal,
 }
 
-// ── Step-up 認証（AP5） ──────────────────────────────────────────────────────
+// ── Step-up authentication (AP5) ──────────────────────────────────────────────────────
 
-/// Step-up の判定・検証 API が扱う重要操作。値は `domain::step_up::SensitiveOperation` の
-/// 文字列表現と一致させる（api 側で `parse` する）。
+/// Sensitive operations handled by the step-up check and verification APIs. Values match the string representation
+/// of `domain::step_up::SensitiveOperation` (api `parse`s them).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalStepUpCheckRequest {
     #[serde(default)]
     pub tenant_id: Option<String>,
-    /// SSO セッション Cookie の生値（web が転送）。
+    /// Raw value of the SSO session cookie (forwarded by web).
     pub sso_session_id: String,
-    /// 対象操作（`change_password` / `manage_authenticators` / `manage_external_identities` /
-    /// `revoke_session`）。
+    /// Target operation (`change_password` / `manage_authenticators` / `manage_external_identities` /
+    /// `revoke_session`).
     pub operation: String,
 }
 
-/// Step-up 判定 API のレスポンス。
+/// Response of the step-up check API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalStepUpCheckResponse {
-    /// 直近の本人確認が要件を満たしている。そのまま操作してよい。
+    /// The recent identity confirmation meets the requirement. The operation may proceed as is.
     Satisfied,
-    /// 本人確認をやり直す必要がある。`second_factor_required` が真なら TOTP まで求める。
+    /// Identity confirmation must be redone. If `second_factor_required` is true, TOTP is required too.
     ChallengeRequired {
         second_factor_required: bool,
-        /// パスキーでの確認を画面に出してよいか（**いま使える**パスキーを持っている）。
-        /// 持っていない利用者にボタンを見せると、ブラウザのダイアログが出てから失敗する。
+        /// Whether passkey confirmation may be shown on screen (the user has a passkey **usable now**).
+        /// Showing the button to a user without one would fail after the browser dialog appears.
         #[serde(default)]
         passkey_available: bool,
-        /// パスキーでしか確かめられない操作か（端末の登録。task #872）。画面はパスワードの欄を
-        /// 出さず、パスキーが無ければその旨を出す。
+        /// Whether the operation can be confirmed only by passkey (device registration; task #872). The screen shows no
+        /// password field, and says so if there is no passkey.
         #[serde(default)]
         passkey_only: bool,
     },
-    /// SSO セッションが無い・期限切れ・利用者が無効。
+    /// No SSO session, expired, or the user is disabled.
     SessionExpired,
-    /// 未知の操作名（api が受け付けない値）。
+    /// Unknown operation name (a value api does not accept).
     UnknownOperation,
     Internal,
 }
 
-/// Step-up 検証 API のリクエスト。
+/// Request of the step-up verification API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalStepUpVerifyRequest {
     #[serde(default)]
@@ -1952,7 +1952,7 @@ pub struct InternalStepUpVerifyRequest {
     pub sso_session_id: String,
     pub operation: String,
     pub password: String,
-    /// 第二要素が求められている場合のみ必要。
+    /// Needed only when a second factor is required.
     #[serde(default)]
     pub totp_code: Option<String>,
     #[serde(default)]
@@ -1961,15 +1961,15 @@ pub struct InternalStepUpVerifyRequest {
     pub user_agent: Option<String>,
 }
 
-/// Step-up 検証 API のレスポンス。
+/// Response of the step-up verification API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalStepUpVerifyResponse {
-    /// 確認できた。続けて操作してよい。
+    /// Confirmed. The operation may continue.
     Ok,
-    /// パスワードまたは TOTP が不一致（どちらが違うかは返さない）。
+    /// The password or TOTP does not match (which one is not returned).
     InvalidCredentials,
-    /// 第二要素が要るのにコードが提示されていない。
+    /// A second factor is required but no code was presented.
     SecondFactorRequired,
     RateLimited,
     SessionExpired,
@@ -1977,11 +1977,11 @@ pub enum InternalStepUpVerifyResponse {
     Internal,
 }
 
-/// パスキーでの本人確認の開始 API（`POST /internal/step-up/passkey/begin`）のリクエスト。
+/// Request of the API starting identity confirmation by passkey (`POST /internal/step-up/passkey/begin`).
 ///
-/// ログインの開始（`/internal/passkey/login/begin`）と分けるのは、**用途の違うチャレンジを
-/// 出すため**である（ADR-0040 決定 4 の考え方を本人確認へ広げたもの）。ここで出したチャレンジで
-/// ログインは成立せず、その逆も通らない。
+/// It is separate from the login start (`/internal/passkey/login/begin`) **to issue challenges of a different
+/// purpose** (extending the idea of decision 4 of ADR-0040 to identity confirmation). A challenge issued here
+/// cannot complete a login, and the reverse does not pass either.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalStepUpPasskeyBeginRequest {
     #[serde(default)]
@@ -1989,20 +1989,20 @@ pub struct InternalStepUpPasskeyBeginRequest {
     pub sso_session_id: String,
 }
 
-/// パスキーでの本人確認の開始 API のレスポンス。
+/// Response of the API starting identity confirmation by passkey.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalStepUpPasskeyBeginResponse {
     Ok {
         challenge_id: String,
-        /// `navigator.credentials.get()` に渡す options（JSON）。
+        /// Options (JSON) passed to `navigator.credentials.get()`.
         options: serde_json::Value,
     },
     SessionExpired,
     Internal,
 }
 
-/// パスキーでの本人確認 API（`POST /internal/step-up/passkey/verify`）のリクエスト。
+/// Request of the identity confirmation by passkey API (`POST /internal/step-up/passkey/verify`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalStepUpPasskeyVerifyRequest {
     #[serde(default)]
@@ -2010,7 +2010,7 @@ pub struct InternalStepUpPasskeyVerifyRequest {
     pub sso_session_id: String,
     pub operation: String,
     pub challenge_id: String,
-    /// ブラウザが返した `PublicKeyCredential`（JSON）。
+    /// `PublicKeyCredential` (JSON) returned by the browser.
     pub credential: serde_json::Value,
     #[serde(default)]
     pub ip_address: Option<String>,
@@ -2018,16 +2018,16 @@ pub struct InternalStepUpPasskeyVerifyRequest {
     pub user_agent: Option<String>,
 }
 
-/// パスキーでの本人確認 API のレスポンス。
+/// Response of the identity confirmation by passkey API.
 ///
-/// パスワード経路（[`InternalStepUpVerifyResponse`]）と違い `SecondFactorRequired` を返さない ——
-/// パスキーは 1 回で多要素を満たすため、この先に足す要素が無い（ADR-0020 §3 / ADR-0040 決定 2）。
+/// Unlike the password path ([`InternalStepUpVerifyResponse`]), it never returns `SecondFactorRequired`:
+/// a passkey satisfies multiple factors at once, so there is no further factor to add (ADR-0020 §3 / decision 2 of ADR-0040).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalStepUpPasskeyVerifyResponse {
-    /// 確認できた。続けて操作してよい。
+    /// Confirmed. The operation may continue.
     Ok,
-    /// アサーションが無効・チャレンジが見つからない・本人のパスキーでない（理由は分けない）。
+    /// The assertion is invalid, the challenge was not found, or it is not the user's passkey (reasons not distinguished).
     InvalidCredential,
     RateLimited,
     SessionExpired,
@@ -2035,15 +2035,15 @@ pub enum InternalStepUpPasskeyVerifyResponse {
     Internal,
 }
 
-// ── 認証器の統合管理（AP9） ──────────────────────────────────────────────────
+// ── Unified authenticator management (AP9) ──────────────────────────────────────────────────
 
-/// 登録済み認証器 1 件の要約（セキュリティ画面）。
+/// Summary of one registered authenticator (security screen).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthenticatorSummaryResponse {
     pub id: String,
-    /// 種別（`totp` / `webauthn` / `email_otp`）。リカバリーコードは本数で別に返す。
+    /// Kind (`totp` / `webauthn` / `email_otp`). Recovery codes are returned separately as a count.
     pub authenticator_type: String,
-    /// 状態（`pending` / `active` / `suspended`）。失効済みは返さない。
+    /// State (`pending` / `active` / `suspended`). Revoked ones are not returned.
     pub status: String,
     pub label: String,
     pub created_at: String,
@@ -2051,7 +2051,7 @@ pub struct AuthenticatorSummaryResponse {
     pub last_used_at: Option<String>,
 }
 
-/// 認証器一覧 API（`POST /internal/account/authenticators`）のリクエスト。
+/// Request of the authenticator list API (`POST /internal/account/authenticators`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAuthenticatorsRequest {
     #[serde(default)]
@@ -2059,20 +2059,20 @@ pub struct InternalAuthenticatorsRequest {
     pub sso_session_id: String,
 }
 
-/// 認証器一覧 API のレスポンス。
+/// Response of the authenticator list API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAuthenticatorsResponse {
     Ok {
         authenticators: Vec<AuthenticatorSummaryResponse>,
-        /// 未使用のリカバリーコードの残数。
+        /// Number of unused recovery codes remaining.
         recovery_codes_remaining: usize,
-        /// 確認済みの電話番号が登録されているか（AP13）。番号そのものは返さない
-        /// （PII を web へ持ち出さない。画面は「登録済み」か「登録する」かだけを出し分ける）。
+        /// Whether a confirmed phone number is registered (AP13). The number itself is not returned
+        /// (PII is not carried out to web; the screen only varies between "registered" and "register").
         #[serde(default)]
         phone_registered: bool,
-        /// SMS ゲートウェイが設定されているか（AP13）。未設定なら登録導線を出さない
-        /// （登録できても送れない画面を並べない）。
+        /// Whether an SMS gateway is configured (AP13). If not, the registration path is not shown
+        /// (do not show a screen that can register but cannot send).
         #[serde(default)]
         sms_available: bool,
     },
@@ -2080,14 +2080,14 @@ pub enum InternalAuthenticatorsResponse {
     Internal,
 }
 
-/// 認証器の状態変更 API（`POST /internal/account/authenticators/status`）のリクエスト。
+/// Request of the authenticator state change API (`POST /internal/account/authenticators/status`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAuthenticatorStatusRequest {
     #[serde(default)]
     pub tenant_id: Option<String>,
     pub sso_session_id: String,
     pub authenticator_id: String,
-    /// 遷移先（`active` / `suspended` / `revoked`）。
+    /// Target state (`active` / `suspended` / `revoked`).
     pub status: String,
     #[serde(default)]
     pub ip_address: Option<String>,
@@ -2095,22 +2095,22 @@ pub struct InternalAuthenticatorStatusRequest {
     pub user_agent: Option<String>,
 }
 
-/// 認証器の状態変更 API のレスポンス。
+/// Response of the authenticator state change API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAuthenticatorStatusResponse {
     Ok,
-    /// 指定 ID が当人の認証器に無い。
+    /// The given ID is not among the user's authenticators.
     NotFound,
-    /// その状態へは遷移できない（失効済みを戻す等）。
+    /// Cannot transition to that state (e.g. restoring a revoked one).
     InvalidTransition,
-    /// 未知の状態名。
+    /// Unknown state name.
     UnknownStatus,
     SessionExpired,
     Internal,
 }
 
-/// リカバリーコード発行 API（`POST /internal/account/recovery-codes`）のリクエスト。
+/// Request of the recovery code issuance API (`POST /internal/account/recovery-codes`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalRecoveryCodesRequest {
     #[serde(default)]
@@ -2122,7 +2122,7 @@ pub struct InternalRecoveryCodesRequest {
     pub user_agent: Option<String>,
 }
 
-/// リカバリーコード発行 API のレスポンス。**平文はこの応答でのみ返る**（DB はハッシュのみ）。
+/// Response of the recovery code issuance API. **Plain text is returned only in this response** (the DB holds only hashes).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalRecoveryCodesResponse {
@@ -2131,19 +2131,19 @@ pub enum InternalRecoveryCodesResponse {
     Internal,
 }
 
-/// email OTP 送信 API（`POST /internal/account/email-otp`）のリクエスト。
+/// Request of the email OTP sending API (`POST /internal/account/email-otp`).
 ///
-/// ログイン中の第二要素として使うため、`sso_session_id` ではなく **MFA 待ちの利用者**を指す
-/// 必要がある。web はログインフローの `auth_session_id`（OIDC）または `mfa_ticket`（ポータル）を
-/// 持っているので、api 側でそこから利用者を解決する。
+/// Used as a second factor during login, so it must refer to **the user awaiting MFA**, not an `sso_session_id`.
+/// web holds the login flow's `auth_session_id` (OIDC) or `mfa_ticket` (portal),
+/// so api resolves the user from that.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalEmailOtpRequest {
     #[serde(default)]
     pub tenant_id: Option<String>,
-    /// OIDC ログインフローの `auth_session_id`（MFA 待ち状態）。
+    /// `auth_session_id` of the OIDC login flow (awaiting MFA).
     #[serde(default)]
     pub auth_session_id: Option<String>,
-    /// ポータルログインの `mfa_ticket`。
+    /// `mfa_ticket` of the portal login.
     #[serde(default)]
     pub mfa_ticket: Option<String>,
     #[serde(default)]
@@ -2152,32 +2152,32 @@ pub struct InternalEmailOtpRequest {
     pub user_agent: Option<String>,
 }
 
-/// email OTP 送信 API のレスポンス。
+/// Response of the email OTP sending API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalEmailOtpResponse {
-    /// 送信した（送信先アドレスは返さない）。
+    /// Sent (the destination address is not returned).
     Sent,
-    /// SMTP が未設定でメールを送れない。
+    /// SMTP is not configured, so no email can be sent.
     Unavailable,
-    /// 送り直しが早すぎる・多すぎる（前のコードは有効なまま）。
+    /// Resent too soon or too often (the previous code stays valid).
     RateLimited,
-    /// MFA 待ちの状態ではない（セッション・チケットが無効）。
+    /// Not in the awaiting-MFA state (the session or ticket is invalid).
     SessionExpired,
     Internal,
 }
 
-// ── SMS OTP と電話番号の登録（AP13） ─────────────────────────────────────────
+// ── SMS OTP and phone number registration (AP13) ─────────────────────────────────────────
 
-/// MFA 待ちの利用者へ SMS OTP を送る要求。解決経路は email OTP と同じ。
+/// Request to send an SMS OTP to a user awaiting MFA. Resolved the same way as email OTP.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalSmsOtpRequest {
     #[serde(default)]
     pub tenant_id: Option<String>,
-    /// OIDC ログインフローの `auth_session_id`（MFA 待ち状態）。
+    /// `auth_session_id` of the OIDC login flow (awaiting MFA).
     #[serde(default)]
     pub auth_session_id: Option<String>,
-    /// ポータルログインの `mfa_ticket`。
+    /// `mfa_ticket` of the portal login.
     #[serde(default)]
     pub mfa_ticket: Option<String>,
     #[serde(default)]
@@ -2186,31 +2186,31 @@ pub struct InternalSmsOtpRequest {
     pub user_agent: Option<String>,
 }
 
-/// SMS OTP 送信 API のレスポンス。
+/// Response of the SMS OTP sending API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalSmsOtpResponse {
-    /// 送信した（送信先の電話番号は返さない —— PII を web へ持ち出さない）。
+    /// Sent (the destination phone number is not returned: PII is not carried out to web).
     Sent,
-    /// SMS ゲートウェイが未設定で送れない。
+    /// No SMS gateway is configured, so it cannot be sent.
     Unavailable,
-    /// 送信先の電話番号が未登録・未確認。
+    /// The destination phone number is unregistered or unconfirmed.
     NotRegistered,
-    /// 送り直しが早すぎる・多すぎる（前のコードは有効なまま）。
+    /// Resent too soon or too often (the previous code stays valid).
     RateLimited,
-    /// MFA 待ちの状態ではない（セッション・チケットが無効）。
+    /// Not in the awaiting-MFA state (the session or ticket is invalid).
     SessionExpired,
     Internal,
 }
 
-/// 電話番号の登録開始（確認コードの送信）。ログイン済み利用者のセルフサービス操作のため、
-/// 対象は `sso_session_id` から解決する。
+/// Start of phone number registration (sending a confirmation code). A self-service operation by a logged-in user,
+/// so the target is resolved from `sso_session_id`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalPhoneRegistrationRequest {
     #[serde(default)]
     pub tenant_id: Option<String>,
     pub sso_session_id: String,
-    /// 入力どおりの電話番号（正規化は api 側が行う）。
+    /// The phone number as entered (api normalizes it).
     pub phone_number: String,
     #[serde(default)]
     pub ip_address: Option<String>,
@@ -2218,21 +2218,21 @@ pub struct InternalPhoneRegistrationRequest {
     pub user_agent: Option<String>,
 }
 
-/// 電話番号の登録開始のレスポンス。
+/// Response of starting phone number registration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalPhoneRegistrationResponse {
-    /// 確認コードを送った。
+    /// The confirmation code was sent.
     Sent,
-    /// 電話番号として読めない。
+    /// Cannot be read as a phone number.
     InvalidPhoneNumber,
-    /// SMS ゲートウェイが未設定で送れない。
+    /// No SMS gateway is configured, so it cannot be sent.
     Unavailable,
     Unauthenticated,
     Internal,
 }
 
-/// 電話番号の登録確認（送られたコードの提示）。
+/// Confirmation of phone number registration (presenting the sent code).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalPhoneConfirmationRequest {
     #[serde(default)]
@@ -2245,36 +2245,36 @@ pub struct InternalPhoneConfirmationRequest {
     pub user_agent: Option<String>,
 }
 
-/// 電話番号の登録確認のレスポンス。
+/// Response of confirming phone number registration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalPhoneConfirmationResponse {
-    /// 確認できた（以後 SMS OTP が使える）。
+    /// Confirmed (SMS OTP can be used from now on).
     Confirmed,
-    /// コードが合わない・期限切れ・確認待ちの登録が無い。
+    /// The code does not match, has expired, or there is no registration awaiting confirmation.
     InvalidCode,
     Unauthenticated,
     Internal,
 }
 
-// ── 外部 IdP ログイン（AP10） ────────────────────────────────────────────────
+// ── External IdP login (AP10) ────────────────────────────────────────────────
 
-/// ログイン画面に並べる外部 IdP 1 件（有効なもののみ）。
+/// One external IdP listed on the login screen (enabled ones only).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExternalIdpButton {
-    /// URL に載せる識別コード。
+    /// Identifier code put in the URL.
     pub provider_code: String,
     pub display_name: String,
 }
 
-/// 有効な外部 IdP の一覧 API（`POST /internal/external/providers`）のリクエスト。
+/// Request of the enabled external IdP list API (`POST /internal/external/providers`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalExternalProvidersRequest {
     #[serde(default)]
     pub tenant_id: Option<String>,
 }
 
-/// 有効な外部 IdP の一覧 API のレスポンス。
+/// Response of the enabled external IdP list API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalExternalProvidersResponse {
@@ -2282,42 +2282,42 @@ pub enum InternalExternalProvidersResponse {
     Internal,
 }
 
-/// 外部 IdP ログインの開始 API（`POST /internal/external/start`）のリクエスト。
+/// Request of the external IdP login start API (`POST /internal/external/start`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalExternalStartRequest {
     #[serde(default)]
     pub tenant_id: Option<String>,
     pub provider_code: String,
-    /// OIDC 認可フローの途中から呼ぶ場合の `auth_session_id`（ポータル経由なら `None`）。
+    /// `auth_session_id` when called mid OIDC authorization flow (`None` via the portal).
     #[serde(default)]
     pub auth_session_id: Option<String>,
 }
 
-/// 外部 IdP ログインの開始 API のレスポンス。
+/// Response of the external IdP login start API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalExternalStartResponse {
-    /// 外部 IdP の認可エンドポイントへ 302 する。
+    /// 302 to the external IdP's authorization endpoint.
     Redirect {
         location: String,
-        /// 開始したブラウザにだけ渡す値（task #581）。web が Cookie に置き、戻り口で
-        /// `browser_binding` として api へ返す。古い api は返さない（`None`）。
+        /// Value handed only to the browser that started it (task #581). web puts it in a cookie and returns it
+        /// to api as `browser_binding` at the return endpoint. Old api does not return it (`None`).
         #[serde(default)]
         browser_binding: Option<String>,
     },
-    /// プロバイダが無い・無効。
+    /// The provider is missing or disabled.
     ProviderUnavailable,
     Internal,
 }
 
-/// 外部 IdP からのコールバック API（`POST /internal/external/callback`）のリクエスト。
+/// Request of the callback API from an external IdP (`POST /internal/external/callback`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalExternalCallbackRequest {
     #[serde(default)]
     pub tenant_id: Option<String>,
     pub state: String,
     pub code: String,
-    /// 開始時に Cookie へ置いた値（task #581）。無い・違うと進行状態は使えない。
+    /// The value put in the cookie at start (task #581). If missing or different, the progress state cannot be used.
     #[serde(default)]
     pub browser_binding: Option<String>,
     #[serde(default)]
@@ -2326,19 +2326,19 @@ pub struct InternalExternalCallbackRequest {
     pub user_agent: Option<String>,
 }
 
-/// 外部 SAML IdP のアサーションを受け取る API のリクエスト（AP12。ADR-0027）。
+/// Request of the API receiving an external SAML IdP's assertion (AP12; ADR-0027).
 ///
-/// ブラウザが HTTP-POST binding で web の ACS へ運んできた値をそのまま api へ渡す。
-/// **どちらも未検証**である（署名を確かめるのは api 側）。
+/// Passes the values the browser carried to web's ACS via the HTTP-POST binding to api as is.
+/// **Both are unverified** (api checks the signature).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalExternalSamlAcsRequest {
     #[serde(default)]
     pub tenant_id: Option<String>,
-    /// `SAMLResponse`（base64(XML)）。
+    /// `SAMLResponse` (base64(XML)).
     pub saml_response: String,
-    /// `RelayState`（開始時に発行した値。進行状態を引く鍵）。
+    /// `RelayState` (the value issued at start; the key to look up the progress state).
     pub relay_state: String,
-    /// 開始時に Cookie へ置いた値（task #581）。無い・違うと進行状態は使えない。
+    /// The value put in the cookie at start (task #581). If missing or different, the progress state cannot be used.
     #[serde(default)]
     pub browser_binding: Option<String>,
     #[serde(default)]
@@ -2347,27 +2347,27 @@ pub struct InternalExternalSamlAcsRequest {
     pub user_agent: Option<String>,
 }
 
-/// 外部 IdP からのコールバック API のレスポンス。
+/// Response of the callback API from an external IdP.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalExternalCallbackResponse {
-    /// 認証成功。`sso_session_id` を Cookie 化して `redirect_to` へ送る。
+    /// Authenticated. Turn `sso_session_id` into a cookie and send to `redirect_to`.
     ///
-    /// `redirect_to` は OIDC 認可フローの途中から来ていれば code 付きの `redirect_uri`
-    /// （RP へ戻る絶対 URL）、そうでなければ `None`（web が自分のアカウント画面へ戻す）。
-    /// 認可要求のパラメータは api 側の auth_session にしか無いため、web には組み立てさせない。
+    /// `redirect_to` is the `redirect_uri` with code (absolute URL back to the RP) if it came mid OIDC authorization
+    /// flow, otherwise `None` (web returns to its own account screen).
+    /// The authorization request parameters exist only in api's auth_session, so web is not made to build it.
     Success {
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
         #[serde(default)]
         redirect_to: Option<String>,
-        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        /// Hidden fields POSTed for `form_post` (G12). `None` means `query`.
         #[serde(default)]
         form_post: Option<FormPostFields>,
         #[serde(default)]
         user_language: Option<String>,
     },
-    /// 認証は通ったが RP への同意がまだ。web は同意画面へ誘導する。
+    /// Authenticated, but consent to the RP is still pending. web leads to the consent screen.
     ConsentRequired {
         auth_session_id: String,
         sso_session_id: String,
@@ -2375,17 +2375,17 @@ pub enum InternalExternalCallbackResponse {
         #[serde(default)]
         user_language: Option<String>,
     },
-    /// `state` が無効・期限切れ・二重使用。
+    /// `state` is invalid, expired, or used twice.
     StateExpired,
-    /// 外部 IdP での認証は通ったが、対応する利用者が居ない。
+    /// Authenticated at the external IdP, but there is no corresponding user.
     NotLinked,
-    /// 対応する利用者は居るが無効・ロック中。
+    /// The corresponding user exists but is disabled or locked.
     UserUnavailable,
-    /// 認証ポリシーによる拒否。
+    /// Refused by an authentication policy.
     PolicyDenied,
-    /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
-    /// web は assay の画面で断る ——利用者から見れば「入れたのに弾かれた」ので、認証は通っている
-    /// という事実と、アプリ名と、管理者へ頼む導線を出す。
+    /// Authenticated, but use of this app is not permitted (ADR-0054). ⚠ **Not returned to the RP.**
+    /// web refuses on assay's screen: to the user it is "I got in and was then kicked out", so it shows the fact that
+    /// authentication passed, the app name, and a way to ask the admin.
     ApplicationNotPermitted {
         application_name: String,
         sso_session_id: String,
@@ -2393,25 +2393,25 @@ pub enum InternalExternalCallbackResponse {
         #[serde(default)]
         user_language: Option<String>,
     },
-    /// 外部 IdP との通信・トークン検証に失敗した。
+    /// Communication with the external IdP or token verification failed.
     ExternalFailure,
     Internal,
-    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916。ADR-0079）。
-    /// SSO Cookie は無い。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    /// Authenticated, but on an unregistered device in an organization limited to registered devices (task #916, ADR-0079).
+    /// No SSO cookie. web puts `ticket` in a cookie and sends the user to the device registration screen.
     DeviceEnrollmentRequired {
         ticket: String,
     },
 }
 
-/// ログイン履歴の取得 API（`POST /internal/account/sign-in-history`。task #879）のリクエスト。
+/// Request of the sign-in history API (`POST /internal/account/sign-in-history`; task #879).
 ///
-/// 利用者は SSO セッションの持ち主で決まる（利用者 id は受け取らない＝他人の履歴は引けない）。
+/// The user is determined by the SSO session's owner (no user id is accepted = no one else's history can be fetched).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAccountSignInHistoryRequest {
     #[serde(default)]
     pub tenant_id: Option<String>,
     pub sso_session_id: String,
-    /// これより古い行だけ（前のページの `next_before`）。
+    /// Only rows older than this (`next_before` of the previous page).
     #[serde(default)]
     pub before: Option<i64>,
     #[serde(default)]
@@ -2430,44 +2430,44 @@ pub enum InternalAccountSignInHistoryResponse {
     Internal,
 }
 
-/// ログイン履歴の 1 行。接続元・ブラウザはログインした本人のブラウザのもの。
+/// One sign-in history row. Client address and browser are those of the browser that signed in.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountSignInEntry {
     pub id: i64,
-    /// RFC 3339（UTC）。
+    /// RFC 3339 (UTC).
     pub occurred_at: String,
-    /// `succeeded` / `failed` / `locked` / `denied`。
+    /// `succeeded` / `failed` / `locked` / `denied`.
     pub outcome: String,
-    /// 断った理由の種類（`wrong_password` など。成功なら `None`）。
+    /// Kind of refusal reason (`wrong_password` etc.; `None` on success).
     #[serde(default)]
     pub failure_kind: Option<String>,
     #[serde(default)]
     pub ip_address: Option<String>,
     #[serde(default)]
     pub user_agent: Option<String>,
-    /// 国コード（分からない・信じられないときは `None`）。
+    /// Country code (`None` when unknown or untrusted).
     #[serde(default)]
     pub country: Option<String>,
-    /// 確かめた入り方（`password` / `totp` / `webauthn` / `recovery_code` / `external_idp` など）。
+    /// Methods verified (`password` / `totp` / `webauthn` / `recovery_code` / `external_idp` etc.).
     #[serde(default)]
     pub methods: Vec<String>,
-    /// 断ったログインを始めたアプリ（分かれば）。
+    /// The app that started the refused login (if known).
     #[serde(default)]
     pub app_name: Option<String>,
     #[serde(default)]
     pub client_id: Option<String>,
-    /// 登録した端末だったか（task #872。端末の印が無ければ `None`）。
+    /// Whether it was a registered device (task #872; `None` without a device mark).
     #[serde(default)]
     pub device_registered: Option<bool>,
-    /// 今見ているログイン状態そのものか。
+    /// Whether this is the very login state being viewed now.
     #[serde(default)]
     pub current: bool,
-    /// このログインで入ったアプリ（成功したログインだけ）。
+    /// Apps entered with this login (successful logins only).
     #[serde(default)]
     pub apps: Vec<AccountSignInApp>,
 }
 
-/// ログインで入ったアプリと、そのアプリのリフレッシュトークンの使われ方。
+/// An app entered with the login and how that app's refresh token was used.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountSignInApp {
     pub client_id: String,
@@ -2475,12 +2475,12 @@ pub struct AccountSignInApp {
     pub app_name: Option<String>,
     pub first_issued_at: String,
     pub last_issued_at: String,
-    /// リフレッシュトークンを出していなければ `None`。
+    /// `None` if no refresh token was issued.
     #[serde(default)]
     pub refresh: Option<AccountRefreshUsage>,
 }
 
-/// リフレッシュトークンの使われ方。接続元・名乗りは**更新を送ってきた相手**（アプリのサーバーなど）のもの。
+/// How a refresh token was used. Client address and identity are those of **whoever sent the refresh** (the app's server etc.).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountRefreshUsage {
     pub use_count: u32,
@@ -2492,31 +2492,31 @@ pub struct AccountRefreshUsage {
     pub last_user_agent: Option<String>,
     #[serde(default)]
     pub reuse_detected_at: Option<String>,
-    /// `active` / `revoked` / `expired`。
+    /// `active` / `revoked` / `expired`.
     pub state: String,
     #[serde(default)]
     pub revoked_at: Option<String>,
 }
 
-/// web が「信じると決めた国」（`CF-IPCountry`）を api への内部の呼び出しに添える見出し（task #895）。
+/// Header with which web adds the "country it decided to trust" (`CF-IPCountry`) to internal calls to api (task #895).
 ///
-/// api は `/internal/*`（サービストークンの内側）でだけこの見出しを読む。外から直接 api に来た要求の
-/// 同じ見出しは読まない（誰でも付けられるため）。
+/// api reads this header only on `/internal/*` (behind the service token). The same header on requests coming to api
+/// directly from outside is not read (anyone can set it).
 pub const CLIENT_COUNTRY_HEADER: &str = "x-assay-client-country";
 
-/// web が今のブラウザの端末の印（Cookie `assay_device` の平文）を api への内部の呼び出しに添える見出し
-/// （task #916。ADR-0079）。登録した端末に限る組織で、ログインを成立させてよいかを api が決めるのに使う。
+/// Header with which web adds the current browser's device mark (plain value of the `assay_device` cookie) to internal
+/// calls to api (task #916, ADR-0079). Used by api to decide whether a login may complete in organizations limited to registered devices.
 ///
-/// api は `/internal/*`（サービストークンの内側）でだけこの見出しを読む。
+/// api reads this header only on `/internal/*` (behind the service token).
 pub const CLIENT_DEVICE_HEADER: &str = "x-assay-client-device";
 
-/// SSO セッションを端末の鍵へ結び付ける（DBSC の登録。`POST /internal/sso/key-binding/register`。task #887・ADR-0074）。
+/// Binds the SSO session to the device key (DBSC registration; `POST /internal/sso/key-binding/register`; task #887, ADR-0074).
 ///
-/// web は Chrome から届いた署名（JWT）と、その要求に付いていた SSO セッションの Cookie をそのまま渡す。
+/// web passes the signature (JWT) received from Chrome and the SSO session cookie attached to that request as is.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalSessionKeyRegisterRequest {
     pub sso_session_id: String,
-    /// `Secure-Session-Response` の値（JWT）。
+    /// Value of `Secure-Session-Response` (JWT).
     pub proof: String,
     #[serde(default)]
     pub ip_address: Option<String>,
@@ -2524,13 +2524,13 @@ pub struct InternalSessionKeyRegisterRequest {
     pub user_agent: Option<String>,
 }
 
-/// 結び付けの更新（`POST /internal/sso/key-binding/refresh`）。
+/// Refreshing the binding (`POST /internal/sso/key-binding/refresh`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalSessionKeyRefreshRequest {
     pub sso_session_id: String,
-    /// `Sec-Secure-Session-Id` の値。
+    /// Value of `Sec-Secure-Session-Id`.
     pub session_identifier: String,
-    /// `Secure-Session-Response` の値（JWT）。
+    /// Value of `Secure-Session-Response` (JWT).
     pub proof: String,
     #[serde(default)]
     pub ip_address: Option<String>,
@@ -2538,26 +2538,26 @@ pub struct InternalSessionKeyRefreshRequest {
     pub user_agent: Option<String>,
 }
 
-/// 登録・更新の結果。
+/// Result of registration or refresh.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalSessionKeyResponse {
-    /// 結び付いた（更新できた）。web は短い Cookie を出し、長い Cookie の `Max-Age` を
-    /// `remaining_secs` に置き直す。
+    /// Bound (refreshed). web issues the short cookie and resets the long cookie's `Max-Age` to
+    /// `remaining_secs`.
     Bound {
         session_identifier: String,
         remaining_secs: u64,
     },
-    /// 署名・challenge・形が合わない（結び付けは変えない）。
+    /// The signature, challenge or shape does not match (the binding is not changed).
     Rejected,
-    /// 登録した鍵と違う鍵で署名された。ログイン状態は終わらせた。
+    /// Signed with a key different from the registered one. The login state was ended.
     KeyMismatch,
-    /// ログイン状態が無い・切れている・結び付けの識別子が違う。
+    /// No login state, it has expired, or the binding identifier differs.
     SessionGone,
     Internal,
 }
 
-/// SSO セッションが端末の鍵に結び付いているか（`POST /internal/sso/key-binding`）。
+/// Whether the SSO session is bound to a device key (`POST /internal/sso/key-binding`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalSessionKeyBindingRequest {
     pub sso_session_id: String,
@@ -2566,23 +2566,23 @@ pub struct InternalSessionKeyBindingRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalSessionKeyBindingResponse {
-    /// 結び付いている（`session_identifier` は更新の 403 で Chrome へ渡す）。
+    /// Bound (`session_identifier` is handed to Chrome in the refresh 403).
     Bound {
         session_identifier: String,
     },
-    /// 結び付いていない（無いセッションもここ）。
+    /// Not bound (a nonexistent session also lands here).
     Unbound,
     Internal,
 }
 
-// ─── 認証アプリで承認するログイン（task #892。ADR-0077） ───────────────────
+// ─── Logins approved with the authenticator app (task #892, ADR-0077) ───────────────────
 
-/// 「アプリで続ける」の依頼を始める（`POST /internal/app-approval/start`）。
+/// Starts a "continue with the app" request (`POST /internal/app-approval/start`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAppApprovalStartRequest {
     #[serde(default)]
     pub tenant_id: Option<String>,
-    /// 認可の途中から来たなら、そのブラウザの `auth_session_id`（Cookie の平文）。
+    /// If it came mid-authorization, that browser's `auth_session_id` (plain cookie value).
     #[serde(default)]
     pub auth_session_id: Option<String>,
     #[serde(default)]
@@ -2598,23 +2598,23 @@ pub struct InternalAppApprovalStartRequest {
 pub enum InternalAppApprovalStartResponse {
     Started {
         request_id: String,
-        /// 始めたブラウザにだけ渡す印。web が Cookie に置く（DB は SHA-256 だけ）。
+        /// Mark handed only to the starting browser. web puts it in a cookie (the DB holds only SHA-256).
         browser_binding: String,
     },
-    /// 認証アプリの口が閉じている。
+    /// The authenticator app routes are closed.
     Disabled,
     RateLimited,
     Internal,
 }
 
-/// アプリが開いたブラウザで完了する（`POST /internal/app-approval/complete`）。
+/// Completes in the browser the app opened (`POST /internal/app-approval/complete`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAppApprovalCompleteRequest {
     #[serde(default)]
     pub tenant_id: Option<String>,
     pub request_id: String,
     pub code: String,
-    /// そのブラウザが持っていた依頼の印（Cookie）。無ければ `None`。
+    /// The request mark (cookie) that browser had. `None` if absent.
     #[serde(default)]
     pub browser_binding: Option<String>,
     #[serde(default)]
@@ -2626,7 +2626,7 @@ pub struct InternalAppApprovalCompleteRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAppApprovalCompleteResponse {
-    /// ログインした。`redirect_to` が無ければ assay のアカウント画面へ。
+    /// Logged in. If there is no `redirect_to`, go to assay's account screen.
     Success {
         #[serde(default)]
         redirect_to: Option<String>,
@@ -2645,16 +2645,16 @@ pub enum InternalAppApprovalCompleteResponse {
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
     },
-    /// コードが違う・切れた・使用済み。
+    /// The code is wrong, expired or used.
     Invalid,
-    /// 依頼を始めたのとは別のブラウザ。ログインはさせていない。
+    /// A browser other than the one that started the request. No login was done.
     AnotherBrowser,
     PolicyDenied,
     UserUnavailable,
     Internal,
 }
 
-/// 認証アプリの登録の確認の画面（`POST /internal/account/app-approver/enrollment`）。
+/// Authenticator app registration confirmation screen (`POST /internal/account/app-approver/enrollment`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAccountApproverEnrollmentRequest {
     #[serde(default)]
@@ -2677,22 +2677,22 @@ pub enum InternalAccountApproverEnrollmentResponse {
     Internal,
 }
 
-/// 認証アプリの登録を確かめる（`POST /internal/account/app-approver/confirm`）。
+/// Confirms the authenticator app registration (`POST /internal/account/app-approver/confirm`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAccountApproverConfirmResponse {
-    /// アプリへ返すコード（Auth Tab の戻り先に載せる）。
+    /// Code returned to the app (put on the Auth Tab return target).
     Confirmed {
         code: String,
     },
-    /// パスキーで確かめてから 5 分を過ぎた（本人確認の画面へ回す）。
+    /// More than 5 minutes have passed since confirming with a passkey (sent to the identity confirmation screen).
     PasskeyRequired,
     NotFound,
     SessionExpired,
     Internal,
 }
 
-/// 「端末」の欄の「認証アプリ」の 1 行。時刻は RFC 3339。
+/// One "authenticator app" row of the "devices" section. Times are RFC 3339.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountApproverKeySummary {
     pub id: String,
@@ -2703,7 +2703,7 @@ pub struct AccountApproverKeySummary {
     pub last_used_at: Option<String>,
 }
 
-/// 「認証アプリ」の一覧（`POST /internal/account/app-approver/keys`）。
+/// The "authenticator app" list (`POST /internal/account/app-approver/keys`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAccountApproverKeysRequest {
     #[serde(default)]
@@ -2715,7 +2715,7 @@ pub struct InternalAccountApproverKeysRequest {
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAccountApproverKeysResponse {
     Listed {
-        /// 認証アプリの口が閉じていれば `false`（画面は欄ごと出さない）。
+        /// `false` if the authenticator app routes are closed (the screen hides the whole section).
         enabled: bool,
         keys: Vec<AccountApproverKeySummary>,
     },
@@ -2723,7 +2723,7 @@ pub enum InternalAccountApproverKeysResponse {
     Internal,
 }
 
-/// 認証アプリの鍵を取り消す（`POST /internal/account/app-approver/keys/revoke`）。
+/// Revokes an authenticator app key (`POST /internal/account/app-approver/keys/revoke`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAccountRevokeApproverKeyRequest {
     #[serde(default)]
@@ -2745,9 +2745,9 @@ pub enum InternalAccountRevokeApproverKeyResponse {
     Internal,
 }
 
-/// 「状況」の取得 API（`POST /internal/account/security/status`。task #896。ADR-0078）のリクエスト。
+/// Request of the "status" API (`POST /internal/account/security/status`; task #896, ADR-0078).
 ///
-/// 利用者は SSO セッションの持ち主で決まる（利用者 id は受け取らない＝他人の状況は引けない）。
+/// The user is determined by the SSO session's owner (no user id is accepted = no one else's status can be fetched).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalAccountSecurityStatusRequest {
     #[serde(default)]
@@ -2759,29 +2759,29 @@ pub struct InternalAccountSecurityStatusRequest {
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalAccountSecurityStatusResponse {
     Ok {
-        /// 今のログイン状態が先頭、あとは新しい順。
+        /// The current login state first, then newest first.
         sessions: Vec<AccountSessionStatus>,
         belongings: Vec<AccountBelonging>,
         apps: Vec<AccountAppTokens>,
         policy: AccountSecurityPolicy,
-        /// 箱に入れるのは enum の大きさを抑えるため（JSON の形は変わらない）。
+        /// Boxed to keep the enum size down (the JSON shape does not change).
         warnings: Box<AccountSecurityWarnings>,
     },
     SessionExpired,
     Internal,
 }
 
-/// ログイン状態 1 つの状況。時刻はどれも RFC 3339（UTC）。
+/// Status of one login state. All times are RFC 3339 (UTC).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountSessionStatus {
-    /// 既存の「ログイン状態」の行（`AccountSessionSummary::id`）と同じ値。
+    /// The same value as the existing "login state" row (`AccountSessionSummary::id`).
     pub id: String,
     pub current: bool,
     pub auth_time: String,
     pub created_at: String,
-    /// 切れる時刻（idle と absolute の早いほう）。
+    /// Expiry time (the earlier of idle and absolute).
     pub expires_at: String,
-    /// 確かめた入り方（`password` / `webauthn` / `totp` / `app_approval` …。確かめた順）。
+    /// Methods verified (`password` / `webauthn` / `totp` / `app_approval` …; in verification order).
     #[serde(default)]
     pub methods: Vec<String>,
     pub multi_factor: bool,
@@ -2791,21 +2791,21 @@ pub struct AccountSessionStatus {
     pub ip_address: Option<String>,
     #[serde(default)]
     pub country: Option<String>,
-    /// ログイン状態を作ったブラウザの端末の印が分かっているか。
+    /// Whether the device mark of the browser that created the login state is known.
     pub device_identified: bool,
-    /// 登録済みの端末なら、その名前と登録した時刻・最後に使った時刻。
+    /// If a registered device, its name, registration time and last used time.
     #[serde(default)]
     pub device_name: Option<String>,
     #[serde(default)]
     pub device_registered_at: Option<String>,
     #[serde(default)]
     pub device_last_used_at: Option<String>,
-    /// `unbound` / `device_key` / `app_approval`。
+    /// `unbound` / `device_key` / `app_approval`.
     pub binding: String,
-    /// 長さの根拠（`bound_on_registered_device` / `app_approval` / `bound_on_unregistered_device` /
-    /// `unbound` / `not_extended_by_setting`）。
+    /// Basis of the lifetime (`bound_on_registered_device` / `app_approval` / `bound_on_unregistered_device` /
+    /// `unbound` / `not_extended_by_setting`).
     pub lifetime_basis: String,
-    /// 端末の鍵（DBSC）。
+    /// Device key (DBSC).
     #[serde(default)]
     pub key_algorithm: Option<String>,
     #[serde(default)]
@@ -2814,34 +2814,34 @@ pub struct AccountSessionStatus {
     pub key_bound_at: Option<String>,
     #[serde(default)]
     pub key_refreshed_at: Option<String>,
-    /// 承認した認証アプリの機種名と鍵の置き場（`tee` / `strongbox` / `software`）。
+    /// Model name of the approving authenticator app and where its key is stored (`tee` / `strongbox` / `software`).
     #[serde(default)]
     pub approver_device_name: Option<String>,
     #[serde(default)]
     pub approver_security_level: Option<String>,
-    /// パスキーの本人確認が新しいうちの期限（過ぎていれば `None`）。
+    /// Expiry while the passkey identity confirmation is still fresh (`None` if past).
     #[serde(default)]
     pub passkey_fresh_until: Option<String>,
 }
 
-/// 信頼している持ち物 1 つ。
+/// One trusted possession.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountBelonging {
-    /// `passkey` / `totp` / `approver_key` / `device` / `ssh_key`。
+    /// `passkey` / `totp` / `approver_key` / `device` / `ssh_key`.
     pub kind: String,
     pub name: String,
-    /// 種類ごとの補足（認証アプリの鍵の置き場・端末の名乗り・SSH の鍵の型）。
+    /// Per-kind detail (authenticator app key storage, device name, SSH key type).
     #[serde(default)]
     pub detail: Option<String>,
     pub registered_at: String,
-    /// assay から使われたことが見えないもの（SSH の鍵）は常に `None`。
+    /// Always `None` for things whose use is not visible from assay (SSH keys).
     #[serde(default)]
     pub last_used_at: Option<String>,
     #[serde(default)]
     pub expires_at: Option<String>,
 }
 
-/// アプリ 1 つのトークンの種別。
+/// Token kind of one app.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountAppTokens {
     pub client_id: String,
@@ -2863,7 +2863,7 @@ pub struct AccountAppTokens {
     pub refresh_reuse_detected_at: Option<String>,
 }
 
-/// 自分に効いている組織の決まり。
+/// Organization rules in effect for oneself.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountSecurityPolicy {
     pub unregistered_device_alerts: bool,
@@ -2874,7 +2874,7 @@ pub struct AccountSecurityPolicy {
     pub device_expiry_days: i64,
 }
 
-/// 直近 30 日の注意。
+/// Warnings in the last 30 days.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AccountSecurityWarnings {
     pub window_days: i64,
@@ -2882,7 +2882,7 @@ pub struct AccountSecurityWarnings {
     pub session_key_mismatch: AccountOccurrences,
     pub dpop_key_mismatch: AccountOccurrences,
     pub unregistered_sign_ins: AccountOccurrences,
-    /// 断られたログインの多かった日（`YYYY-MM-DD`・UTC）と回数。
+    /// Days (`YYYY-MM-DD`, UTC) with many refused logins, and their counts.
     #[serde(default)]
     pub failure_days: Vec<AccountFailureDay>,
 }
@@ -2900,12 +2900,12 @@ pub struct AccountFailureDay {
     pub count: u32,
 }
 
-/// 端末の登録の札（task #916）の中身を見る（`POST /internal/device-enrollment/describe`）。
+/// Looks at the content of the device registration ticket (task #916) (`POST /internal/device-enrollment/describe`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalDeviceEnrollmentDescribeRequest {
     #[serde(default)]
     pub tenant_id: Option<String>,
-    /// Cookie `__Host-device_enrollment` の値。
+    /// Value of the `__Host-device_enrollment` cookie.
     pub ticket: String,
 }
 
@@ -2913,15 +2913,15 @@ pub struct InternalDeviceEnrollmentDescribeRequest {
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalDeviceEnrollmentDescribeResponse {
     Ok {
-        /// だれのログインか（画面に出す）。
+        /// Whose login it is (shown on screen).
         username: String,
     },
-    /// 札が無い・期限切れ・別のブラウザ。**言い分けない**（ログインからやり直す）。
+    /// No ticket, expired, or another browser. **Not distinguished** (start over from login).
     TicketInvalid,
     Internal,
 }
 
-/// 端末の登録のパスキーの確かめを始める（`POST /internal/device-enrollment/passkey/begin`）。
+/// Starts passkey verification for device registration (`POST /internal/device-enrollment/passkey/begin`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalDeviceEnrollmentBeginRequest {
     #[serde(default)]
@@ -2934,15 +2934,15 @@ pub struct InternalDeviceEnrollmentBeginRequest {
 pub enum InternalDeviceEnrollmentBeginResponse {
     Ok {
         challenge_id: String,
-        /// ブラウザの `navigator.credentials.get()` に渡す JSON。
+        /// JSON passed to the browser's `navigator.credentials.get()`.
         options: serde_json::Value,
     },
     TicketInvalid,
     Internal,
 }
 
-/// パスキーで確かめ、このブラウザを端末として登録してログインする
-/// （`POST /internal/device-enrollment/passkey/complete`）。
+/// Verifies with a passkey, registers this browser as a device and logs in
+/// (`POST /internal/device-enrollment/passkey/complete`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalDeviceEnrollmentCompleteRequest {
     #[serde(default)]
@@ -2950,7 +2950,7 @@ pub struct InternalDeviceEnrollmentCompleteRequest {
     pub ticket: String,
     pub challenge_id: String,
     pub credential: serde_json::Value,
-    /// 端末に付ける名前（画面で打てる）。
+    /// Name given to the device (typed on screen).
     pub device_name: String,
     #[serde(default)]
     pub ip_address: Option<String>,
@@ -2961,17 +2961,17 @@ pub struct InternalDeviceEnrollmentCompleteRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum InternalDeviceEnrollmentCompleteResponse {
-    /// 登録してログインした。web は `sso_session_id` を Cookie 化し、札の Cookie を消して元の画面へ戻す。
+    /// Registered and logged in. web turns `sso_session_id` into a cookie, deletes the ticket cookie and returns to the original screen.
     Enrolled {
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
     },
     TicketInvalid,
-    /// パスキーが通らない・札の人のパスキーではない。
+    /// The passkey did not pass, or it is not the passkey of the ticket's person.
     PasskeyRejected,
-    /// 端末の名前が空・長すぎ。
+    /// The device name is empty or too long.
     InvalidName,
-    /// アカウントが使えない（無効・ロック等）。
+    /// The account cannot be used (disabled, locked etc.).
     AccountUnavailable,
     Internal,
 }

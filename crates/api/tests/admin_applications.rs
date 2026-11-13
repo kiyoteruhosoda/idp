@@ -1,10 +1,10 @@
-//! アプリ管理 API の E2E 統合テスト（ADR-0054）。
+//! E2E integration tests for the app admin API (ADR-0054).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test admin_applications
 //!
-//! 認可は権限コード（`idp.applications:read` / `:write`。`idp.tenant.admin`・`idp.system.admin` は
-//! 含意により許可。ADR-0037）。
+//! Authorization is by permission code (`idp.applications:read` / `:write`; `idp.tenant.admin` and `idp.system.admin`
+//! are allowed by implication; ADR-0037).
 
 mod support;
 
@@ -22,13 +22,13 @@ async fn admin_can_manage_applications_but_others_cannot() {
     let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let uri = format!("/{}/admin/applications", env.root_tenant_id);
 
-    // 権限の無い利用者 → 403。
+    // User without permission → 403.
     let plain_user_id = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let plain_token = admin_token(&env.app, &env.pool, &env.root_tenant_id, &plain_user_id).await;
     let res = send(&env.app, get(&plain_token, &uri)).await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "no permission -> 403");
 
-    // 登録。⚠ 既定は「個別」で、作った本人が名簿に入る（決定 3）。
+    // Register. ⚠ The default is "Individual", and the creator is put in the roster (decision 3).
     let name = format!("app-{}", support::unique());
     let res = send(
         &env.app,
@@ -37,7 +37,10 @@ async fn admin_can_manage_applications_but_others_cannot() {
     .await;
     assert_eq!(res.status(), StatusCode::CREATED, "create -> 201");
     let created = body_json(res).await;
-    assert_eq!(created["assignment_mode"], "INDIVIDUAL", "default is 個別");
+    assert_eq!(
+        created["assignment_mode"], "INDIVIDUAL",
+        "default is Individual"
+    );
     assert_eq!(created["status"], "ACTIVE");
     assert_eq!(
         created["assigned_count"], 1,
@@ -45,13 +48,13 @@ async fn admin_can_manage_applications_but_others_cannot() {
     );
     let application_id = created["id"].as_str().expect("id").to_string();
 
-    // 詳細に名簿が載る。
+    // The roster appears in the details.
     let detail_uri = format!("{uri}/{application_id}");
     let detail = body_json(send(&env.app, get(&admin_tok, &detail_uri)).await).await;
     assert_eq!(detail["assigned"].as_array().unwrap().len(), 1);
     assert_eq!(detail["assigned"][0]["user_id"], json!(env.root_admin_id));
 
-    // 一覧に載り、いまの判定の段階が添えられる。
+    // It appears in the list, with the current decision stage attached.
     let listed = body_json(send(&env.app, get(&admin_tok, &uri)).await).await;
     assert_eq!(
         listed["enforcement"], "record_only",
@@ -63,7 +66,7 @@ async fn admin_can_manage_applications_but_others_cannot() {
         .iter()
         .any(|a| a["id"] == json!(application_id)));
 
-    // OIDC の連携先を繋ぐ。
+    // Connect an OIDC linked app.
     let client_id =
         support::insert_public_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
     let res = send(
@@ -81,7 +84,7 @@ async fn admin_can_manage_applications_but_others_cannot() {
     assert_eq!(bound["bindings"][0]["kind"], "oidc");
     assert_eq!(bound["bindings"][0]["identifier"], json!(client_id));
 
-    // ⚠ 1 つの連携先は 1 つのアプリにしか属さない。2 つ目のアプリへ繋ごうとすると 409。
+    // ⚠ One linked app belongs to only one app. Connecting it to a second app is 409.
     let other = body_json(
         send(
             &env.app,
@@ -118,7 +121,7 @@ async fn admin_can_manage_applications_but_others_cannot() {
         "the refusal names the application that owns it: {refusal}"
     );
 
-    // ⚠ 種類を指さない要求は 400（既定の種類を置かない）。
+    // ⚠ A request without a kind is 400 (no default kind).
     let res = send(
         &env.app,
         post(&admin_tok, &format!("{detail_uri}/bindings"), json!({})),
@@ -126,7 +129,7 @@ async fn admin_can_manage_applications_but_others_cannot() {
     .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST, "no target -> 400");
 
-    // 割り当ての追加・解除。
+    // Adding and removing assignments.
     let member_id = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let assigned = body_json(
         send(
@@ -151,7 +154,7 @@ async fn admin_can_manage_applications_but_others_cannot() {
     .await;
     assert_eq!(res.status(), StatusCode::NO_CONTENT, "unassign -> 204");
 
-    // 「全員」へ倒すと、いま入れている人（テナントのメンバー）が引ける。
+    // Switching to "Everyone" lets us fetch the people currently included (the tenant's members).
     let res = send(
         &env.app,
         put(
@@ -179,7 +182,7 @@ async fn admin_can_manage_applications_but_others_cannot() {
         "everyone mode lists the tenant's members: {current}"
     );
 
-    // 削除しても、繋がっていた連携先の登録は残る（アプリは括りであって繋ぎ方ではない）。
+    // Deleting it keeps the registration of the connected linked app (an app is a grouping, not a connection method).
     let res = send(&env.app, delete(&admin_tok, &detail_uri)).await;
     assert_eq!(res.status(), StatusCode::NO_CONTENT, "delete -> 204");
     let res = send(&env.app, get(&admin_tok, &detail_uri)).await;
@@ -205,8 +208,8 @@ async fn admin_can_manage_applications_but_others_cannot() {
     );
 }
 
-/// ⚠ 登録した連携先は、その場でアプリとして開かれる（ADR-0054 の決定 7）。
-/// 開かないと、登録しただけの RP が**全員に開いたまま**になり、それが画面のどこにも出ない。
+/// ⚠ A registered linked app is opened as an app on the spot (ADR-0054 decision 7).
+/// Otherwise a merely registered RP would stay **open to everyone**, and that would show nowhere on screen.
 #[tokio::test]
 async fn registering_a_relying_party_opens_it_as_an_application() {
     let Some(env) = support::setup("register opens an application").await else {
@@ -259,14 +262,14 @@ async fn registering_a_relying_party_opens_it_as_an_application() {
         .unwrap_or_else(|| panic!("the registered client must have an application: {listed}"))
         .clone();
     assert_eq!(opened["display_name"], json!(app_name));
-    // ⚠ 既定は「個別」。絞り忘れが全員に開いたままにならないようにする。
+    // ⚠ The default is "Individual", so forgetting to narrow it down does not leave it open to everyone.
     assert_eq!(opened["assignment_mode"], "INDIVIDUAL");
-    // ⚠ 登録した本人が名簿に入る（直後に誰も入れないアプリにしない）。
+    // ⚠ The registrant is put in the roster (so the app is not left with nobody able to enter right after).
     assert_eq!(opened["assigned_count"], 1);
 }
 
-/// サービスアカウント（`client_credentials`。ADR-0038）にはアプリを作らない
-/// ——入る利用者が居らず判定も走らないので、空の名簿を持つアプリが並ぶだけになる。
+/// No app is created for service accounts (`client_credentials`; ADR-0038)
+/// — no users enter and no decision runs, so it would just list apps with empty rosters.
 #[tokio::test]
 async fn a_service_account_does_not_get_an_application() {
     let Some(env) = support::setup("service account without an application").await else {
@@ -313,11 +316,11 @@ async fn a_service_account_does_not_get_an_application() {
     );
 }
 
-/// 名乗りの種類と相手の性質を突き合わせる（ADR-0059）。
+/// Matches the identity kind against the counterpart's nature (ADR-0059).
 ///
-/// - サービスアカウントとして結び付けられるのは `client_credentials` だけの client
-/// - ログイン用として結び付けられるのは `authorization_code` の client
-/// - 宛名は URI で指す。どれも 1 つのアプリにだけ属する
+/// - Only `client_credentials`-only clients can be bound as service accounts
+/// - Only `authorization_code` clients can be bound as login identities
+/// - Audiences are addressed by URI. Each belongs to only one app
 #[tokio::test]
 async fn binding_kinds_must_match_what_the_target_is() {
     let Some(env) = support::setup("application binding kinds").await else {
@@ -351,7 +354,7 @@ async fn binding_kinds_must_match_what_the_target_is() {
     let login_client =
         support::insert_public_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
 
-    // ⚠ ログイン用の client をサービスアカウントとして結び付けない（利用者のトークンで self が読める）。
+    // ⚠ Do not bind a login client as a service account (a user's token could read self).
     let res = send(
         &env.app,
         post(
@@ -367,7 +370,7 @@ async fn binding_kinds_must_match_what_the_target_is() {
         "login client as a service account"
     );
 
-    // ⚠ サービスアカウントをログイン用として結び付けない（ログインの判定から外れる）。
+    // ⚠ Do not bind a service account as a login identity (it would fall outside the login decision).
     let res = send(
         &env.app,
         post(
@@ -403,7 +406,7 @@ async fn binding_kinds_must_match_what_the_target_is() {
         "{bound}"
     );
 
-    // 同じアプリへもう一度は冪等。別のアプリへは 409。
+    // Binding to the same app again is idempotent. To another app it is 409.
     let res = send(
         &env.app,
         post(
@@ -434,7 +437,7 @@ async fn binding_kinds_must_match_what_the_target_is() {
         "a service account belongs to one application"
     );
 
-    // 宛名は URI で指す。
+    // Audiences are addressed by URI.
     let resource_uri = format!("https://api-{}.example.com", support::unique());
     let res = send(
         &env.app,
@@ -480,7 +483,7 @@ async fn binding_kinds_must_match_what_the_target_is() {
         "a resource belongs to one application"
     );
 
-    // 知らない種類・種類に合わない欄だけの要求は 400。
+    // Requests with an unknown kind or only fields that do not fit the kind are 400.
     let res = send(
         &env.app,
         post(
@@ -507,12 +510,12 @@ async fn binding_kinds_must_match_what_the_target_is() {
     );
 }
 
-/// 名乗りの候補と、別のアプリからの移し替え（ADR-0067）。
+/// Identity candidates and moving from another app (ADR-0067).
 ///
-/// - 候補は種類の性質に合うものだけで、**いまどのアプリの名乗りか**が添えてある
-/// - このアプリの名乗りになっているものは候補に出ない
-/// - 移す元のアプリを名指しすれば、外す＋結ぶが 1 回で済む。名指しが今の持ち主と違えば 409 のまま
-/// - 監査は `application_binding.moved` の 1 行に、移した元と先が載る
+/// - Candidates are only those fitting the kind, with **which app they currently identify** attached
+/// - Those already identities of this app do not appear as candidates
+/// - Naming the source app does unbind + bind in one go. If the named one differs from the current owner it stays 409
+/// - The audit is one `application_binding.moved` row with both the source and destination
 #[tokio::test]
 async fn candidates_name_their_current_application_and_a_binding_can_be_moved() {
     let Some(env) = support::setup("application binding candidates").await else {
@@ -558,7 +561,7 @@ async fn candidates_name_their_current_application_and_a_binding_can_be_moved() 
     .await;
     assert_eq!(res.status(), StatusCode::OK, "bind to the source");
 
-    // 権限の無い利用者には候補を見せない（アプリの詳細と同じ権限）。
+    // Users without permission are not shown candidates (same permission as app details).
     let candidates_uri = format!("{uri}/{target_id}/binding-candidates");
     let plain_user_id = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let plain_token = admin_token(&env.app, &env.pool, &env.root_tenant_id, &plain_user_id).await;
@@ -583,11 +586,11 @@ async fn candidates_name_their_current_application_and_a_binding_can_be_moved() 
         .iter()
         .find(|c| c["identifier"] == json!(service_account))
         .unwrap_or_else(|| panic!("the service account is a candidate: {listed}"));
-    // ⚠ サービスアカウントはログイン用として出さない（種類の突き合わせは結び付けと同じ）。
+    // ⚠ Service accounts are not offered as login identities (kind matching is the same as binding).
     assert_eq!(machine["kind"], "service_account");
     assert!(machine["application_id"].is_null(), "{listed}");
 
-    // 名指しなしは 409 のまま（黙って奪わない）。
+    // Without naming it stays 409 (no silent takeover).
     let bindings_uri = format!("{uri}/{target_id}/bindings");
     let res = send(
         &env.app,
@@ -600,7 +603,7 @@ async fn candidates_name_their_current_application_and_a_binding_can_be_moved() 
     .await;
     assert_eq!(res.status(), StatusCode::CONFLICT, "no move_from -> 409");
 
-    // ⚠ 名指しが今の持ち主と違えば 409（確かめていないアプリから奪わない）。
+    // ⚠ If the named one differs from the current owner, 409 (no taking from an unverified app).
     let res = send(
         &env.app,
         post(
@@ -624,7 +627,7 @@ async fn candidates_name_their_current_application_and_a_binding_can_be_moved() 
         "the refusal names the real owner: {refusal}"
     );
 
-    // 今の持ち主を名指しすれば、1 回で移る。
+    // Naming the current owner moves it in one go.
     let res = send(
         &env.app,
         post(
@@ -655,7 +658,7 @@ async fn candidates_name_their_current_application_and_a_binding_can_be_moved() 
         "the source lost the binding: {source}"
     );
 
-    // ログインの判定も移した先のアプリで引く（相手 → アプリの解決が新しい持ち主を返す）。
+    // The login decision is also looked up on the destination app (counterpart → app resolution returns the new owner).
     let owner: String = sqlx::query_scalar(
         "SELECT b.application_id FROM application_bindings b JOIN clients c ON c.id = b.client_id \
          WHERE c.client_id = ? AND b.kind = 'oidc'",
@@ -666,7 +669,7 @@ async fn candidates_name_their_current_application_and_a_binding_can_be_moved() 
     .expect("binding row");
     assert_eq!(owner, target_id);
 
-    // このアプリの名乗りになったものは、このアプリの候補から消える。
+    // What became this app's identity disappears from this app's candidates.
     let listed = body_json(send(&env.app, get(&admin_tok, &candidates_uri)).await).await;
     assert!(
         !listed["candidates"]
@@ -677,7 +680,7 @@ async fn candidates_name_their_current_application_and_a_binding_can_be_moved() 
         "already bound here: {listed}"
     );
 
-    // 監査は 1 行で、移した元と先の両方が分かる。
+    // The audit is one row showing both the source and the destination.
     let reasons: Vec<Option<String>> = sqlx::query_scalar(
         "SELECT reason FROM audit_log WHERE event_type = 'application_binding.moved' \
          AND reason LIKE ? ORDER BY id",
@@ -697,7 +700,7 @@ async fn candidates_name_their_current_application_and_a_binding_can_be_moved() 
         "{reason}"
     );
 
-    // 空になった元のアプリは消せる（名乗りの相手は消えない）。
+    // The emptied source app can be deleted (the identity's counterpart is not deleted).
     let res = send(&env.app, delete(&admin_tok, &format!("{uri}/{source_id}"))).await;
     assert_eq!(
         res.status(),

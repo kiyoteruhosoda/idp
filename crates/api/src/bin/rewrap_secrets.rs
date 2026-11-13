@@ -1,13 +1,13 @@
-//! `assay-rewrap-secrets`: DB に暗号化して保存している秘密を、`KEY_ENCRYPTION_KEY`（今の鍵）から
-//! `NEW_KEY_ENCRYPTION_KEY`（新しい鍵）へ包み直す。鍵を作り直すときに **api を止めて一度だけ** 流す。
+//! `assay-rewrap-secrets`: re-wraps the secrets stored encrypted in the DB from `KEY_ENCRYPTION_KEY`
+//! (current key) to `NEW_KEY_ENCRYPTION_KEY` (new key). Run **once, with the api stopped**, when rotating the key.
 //!
 //! ```text
-//! assay-rewrap-secrets --check   # 数えるだけ（何も書かない）
-//! assay-rewrap-secrets --apply   # 包み直して確定する
+//! assay-rewrap-secrets --check   # only count (writes nothing)
+//! assay-rewrap-secrets --apply   # re-wrap and commit
 //! ```
 //!
-//! 設定は api と同じ環境変数（`DATABASE_URL`・`KEY_ENCRYPTION_KEY` など）から読む。値は出さず、
-//! 欄ごとの件数だけを出す。手順は docs/OPERATIONS.md「KEY_ENCRYPTION_KEY を作り直したいとき」。
+//! Settings are read from the same environment variables as the api (`DATABASE_URL`, `KEY_ENCRYPTION_KEY`,
+//! etc.). Prints no values, only per-column counts. Procedure: docs/OPERATIONS.md "KEY_ENCRYPTION_KEY を作り直したいとき".
 
 use anyhow::{bail, Context};
 use assay_api::config::{self, Config};

@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
-# scripts/build.sh — ソース側でビルドする（デプロイ先とは別ホスト。ここでは起動しない）。
+# scripts/build.sh — builds on the source side (a host separate from the deployment target; nothing is started here).
 #
-# Docker イメージ（api / web / migrate）をビルドし、tar ＋デプロイに必要な一式を
-# 出力ディレクトリ（既定 dist/）へ書き出す。デプロイ先へは dist/ をディレクトリごと転送し、
-# 中の deploy.sh を実行するだけでよい（レジストリ不要）。
+# Builds the Docker images (api / web / migrate) and writes the tars plus everything needed for deployment
+# to an output directory (default dist/). Transfer dist/ as a whole to the deployment target and
+# just run the deploy.sh inside (no registry needed).
 #
-# 使い方:
-#   ./scripts/build.sh [出力DIR]        # 既定 dist/
-#   IMAGE_TAG=1.0.0 ./scripts/build.sh  # イメージタグ指定（既定 latest）
+# Usage:
+#   ./scripts/build.sh [OUTPUT_DIR]     # default dist/
+#   IMAGE_TAG=1.0.0 ./scripts/build.sh  # set the image tag (default latest)
 #
-# 出力（＝デプロイバンドル）:
-#   assay-api.tar assay-web.tar assay-migrate.tar   ビルド済みイメージ
-#   docker-compose.yml                        デプロイ用 Compose（image: 参照のみ）
-#   docker/nginx.conf                         リバースプロキシ設定
+# Output (= deployment bundle):
+#   assay-api.tar assay-web.tar assay-migrate.tar   prebuilt images
+#   docker-compose.yml                        deployment Compose (image: references only)
+#   docker/nginx.conf                         reverse proxy config
 #   .env.example .env.staging.example .env.production.example
-#                                               設定テンプレート（deploy.sh が .env を生成）
-#   deploy.sh                                 デプロイ入口（初回・更新・reset すべてこれ 1 本）
-#   manifest.env manifest.sha256              照合用メタデータ
+#                                               config templates (deploy.sh generates .env)
+#   deploy.sh                                 deployment entry point (initial setup, update and reset all use this one)
+#   manifest.env manifest.sha256              metadata for verification
 #
-# 前提: docker。
+# Requires: docker.
 set -euo pipefail
 
 log() { printf '[idp] %s\n' "$*" >&2; }
@@ -34,14 +34,14 @@ case "${1:-}" in
   *) out_dir="$1" ;;
 esac
 
-command -v docker >/dev/null 2>&1 || die "docker が見つかりません。"
+command -v docker >/dev/null 2>&1 || die "docker not found."
 
 git_commit="$(git rev-parse HEAD 2>/dev/null || printf unknown)"
 git_version="$(git describe --always --dirty --tags 2>/dev/null || printf unknown)"
-# ビルド番号は CI の通し番号を使う（GitHub Actions なら GITHUB_RUN_NUMBER）。手元ビルドでは空。
+# The build number uses CI's run number (GITHUB_RUN_NUMBER on GitHub Actions). Empty for local builds.
 build_number="${IDP_BUILD_NUMBER:-${GITHUB_RUN_NUMBER:-}}"
 version="${IMAGE_TAG:-latest}"
-# IMAGE_PREFIX/IMAGE_TAG は Compose（docker-compose.deploy.yml）と共通の名前解決。通常は既定のままでよい。
+# IMAGE_PREFIX/IMAGE_TAG share name resolution with Compose (docker-compose.deploy.yml). Normally keep the defaults.
 image_ref() { printf '%s/%s:%s' "${IMAGE_PREFIX:-idp}" "$1" "$version"; }
 
 write_manifest_kv() {
@@ -50,12 +50,12 @@ write_manifest_kv() {
   printf '%s=%s\n' "$key" "$quoted"
 }
 
-# --- イメージビルド --------------------------------------------------------------
-# サービス名 → Dockerfile ステージ の対応。
+# --- Image build ----------------------------------------------------------------
+# Service name -> Dockerfile stage mapping.
 declare -A stages=([api]=runtime-api [web]=runtime-web [migrate]=migrate)
 for svc in api web migrate; do
   ref="$(image_ref "$svc")"
-  log "イメージをビルドします: $ref（stage=${stages[$svc]}）..."
+  log "building image: $ref (stage=${stages[$svc]})..."
   docker build --target "${stages[$svc]}" \
     --build-arg "IDP_GIT_VERSION=${git_version}" \
     --build-arg "IDP_BUILD_NUMBER=${build_number}" \
@@ -64,7 +64,7 @@ for svc in api web migrate; do
     -t "$ref" -f Dockerfile .
 done
 
-# --- デプロイバンドル出力 --------------------------------------------------------
+# --- Deployment bundle output --------------------------------------------------------
 mkdir -p "$out_dir/docker"
 manifest="$out_dir/manifest.sha256"
 : >"$manifest"
@@ -79,7 +79,7 @@ for svc in api web migrate; do
   ref="$(image_ref "$svc")"
   out="$out_dir/assay-${svc}.tar"
   image_id="$(docker image inspect -f '{{.Id}}' "$ref")"
-  log "保存します: $ref → $out ..."
+  log "saving: $ref -> $out ..."
   docker save "$ref" -o "$out"
   sha256sum "$out" >>"$manifest"
   {
@@ -90,9 +90,9 @@ done
 
 cp "$repo_root/docker-compose.deploy.yml" "$out_dir/docker-compose.yml"
 cp "$repo_root/docker/nginx.conf" "$out_dir/docker/nginx.conf"
-# 別ドメイン公開（ADR-0015）用の override 一式。PUBLISH_TOPOLOGY が domain-split（既定。ADR-0016）
-# のとき deploy.sh がこれらを重ねるため、バンドルには必ず必要。両トポロジをバンドルだけで
-# デプロイできるよう常に同梱する。
+# The override set for domain-split publishing (ADR-0015). deploy.sh layers these when PUBLISH_TOPOLOGY is
+# domain-split (the default; ADR-0016), so the bundle always needs them. Always included so both topologies
+# can be deployed from the bundle alone.
 cp "$repo_root/docker-compose.domain-split.yml" "$out_dir/docker-compose.domain-split.yml"
 cp "$repo_root/docker/nginx.domain-split.conf" "$out_dir/docker/nginx.domain-split.conf"
 cp "$repo_root/.env.example" "$out_dir/.env.example"
@@ -101,4 +101,4 @@ cp "$repo_root/.env.production.example" "$out_dir/.env.production.example"
 cp "$repo_root/scripts/deploy.sh" "$out_dir/deploy.sh"
 chmod +x "$out_dir/deploy.sh"
 
-log "完了。$out_dir/ をデプロイ先へ転送し、デプロイ先で ./deploy.sh を実行してください。"
+log "done. Transfer $out_dir/ to the deployment target and run ./deploy.sh there."

@@ -1,34 +1,34 @@
-//! `tracing` による構造化ログ初期化。
+//! Structured log initialization with `tracing`.
 //!
-//! 既定は JSON 出力（本番想定）。`LOG_FORMAT=pretty` で開発向けの人間可読出力に切り替わる。
-//! フィルタは環境変数 `RUST_LOG` を優先し、未設定時は `info,assay=debug`。
+//! JSON output by default (for production). `LOG_FORMAT=pretty` switches to human-readable output for development.
+//! The filter prefers the `RUST_LOG` env var, defaulting to `info,assay=debug` when unset.
 //!
-//! 同時に、WARN / ERROR を `log` テーブルへ非同期に書き込むための取り込み層を差し込む
-//! （CLAUDE.md「ログ」）。ここでは受信端を返すだけで、DB への書き込みは呼び出し側がプールを
-//! 用意してからバックグラウンドタスクで行う（起動順の都合。ログ初期化は DB 接続より前に要る）。
+//! It also inserts an ingestion layer for asynchronously writing WARN / ERROR to the `log` table
+//! (CLAUDE.md "Logging"). This only returns the receiving end; DB writes are done by a background task once the caller
+//! has prepared a pool (due to startup order: log init is needed before the DB connection).
 //!
-//! **`RUST_LOG` は stdout 出力だけを絞り、DB 取り込みには効かせない**（層ごとのフィルタにする）。
-//! 全体フィルタにすると `RUST_LOG=warn` のときリクエストスパン（INFO）ごと落ちて、WARN / ERROR は
-//! 拾えても `correlation_id` が失われる。運用のためのフィルタ設定で、画面の追跡キーが黙って
-//! 欠けるのは避ける。
+//! **`RUST_LOG` narrows only stdout output and does not affect DB ingestion** (per-layer filters).
+//! A global filter would, with `RUST_LOG=warn`, drop the request spans (INFO) too, so WARN / ERROR
+//! would be captured but lose `correlation_id`. We avoid having an operational filter setting silently
+//! remove the tracking key shown on screen.
 
 use crate::config::{Config, LogFormat};
 use crate::infrastructure::log_capture::{self, ApplicationLogReceiver};
 use assay_contracts::application_log::{ApplicationLogCaptureLayer, CaptureFilter, SERVICE_API};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-/// DB 書き込み経路自身が出すログを取り込まないための除外 target。「書き込み失敗のログが
-/// また書き込みを誘発する」再帰を断つ。
+/// Excluded target so logs emitted by the DB write path itself are not ingested. Breaks the recursion of
+/// "a write-failure log triggering another write".
 const EXCLUDED_TARGETS: &[&str] = &[
     "assay_core::infrastructure::log_capture",
     "assay_core::infrastructure::repositories::application_log",
     "assay_core::application::application_log",
 ];
 
-/// ログを初期化し、`log` テーブルへ書き込むための受信端を返す。
+/// Initializes logging and returns the receiving end for writing to the `log` table.
 ///
-/// 受信端を捨てた場合、取り込み層の送信は詰まって黙って捨てられるだけで、stdout の構造化ログは
-/// 通常どおり出る（DB 書き込みは best-effort。CLAUDE.md「ログ」）。
+/// If the receiving end is dropped, the ingestion layer's sends just back up and are silently dropped, while the stdout
+/// structured log is emitted as usual (DB writes are best-effort; CLAUDE.md "Logging").
 pub fn init(config: &Config) -> ApplicationLogReceiver {
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,assay=debug"));
@@ -41,7 +41,7 @@ pub fn init(config: &Config) -> ApplicationLogReceiver {
 
     let registry = tracing_subscriber::registry().with(capture.with_filter(CaptureFilter));
 
-    // `RUST_LOG` は出力層にだけ効かせる（上記モジュールコメント参照）。
+    // `RUST_LOG` applies only to the output layer (see the module comment above).
     match config.log_format() {
         LogFormat::Json => registry
             .with(fmt::layer().json().flatten_event(true).with_filter(filter))
@@ -58,8 +58,8 @@ pub fn init(config: &Config) -> ApplicationLogReceiver {
 mod tests {
     use super::*;
 
-    /// `RUST_LOG=warn` で stdout を絞っても、リクエストスパン由来の `correlation_id` が
-    /// 取り込み側に残ること（全体フィルタにすると INFO スパンごと落ちて NULL になる）。
+    /// Even when stdout is narrowed with `RUST_LOG=warn`, the `correlation_id` from the request span
+    /// remains on the ingestion side (a global filter would drop the INFO span and make it NULL).
     #[tokio::test]
     async fn keeps_request_spans_when_stdout_filter_silences_info() {
         let (sink, mut receiver) = log_capture::channel();
@@ -81,7 +81,7 @@ mod tests {
         assert_eq!(batch[0].correlation_id.as_deref(), Some("corr-1"));
     }
 
-    /// stdout へ書いた内容を検証するための書き出し先。
+    /// Sink for verifying what was written to stdout.
     #[derive(Clone, Default)]
     struct SharedBuffer(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
 
@@ -108,12 +108,12 @@ mod tests {
         }
     }
 
-    /// **本番と同じ層の重ね方・同じ `RUST_LOG`** で、アプリのコードが出す ERROR が
-    /// stdout と DB 取り込みの両方へ届くこと。
+    /// With **the same layer stacking and the same `RUST_LOG` as production**, an ERROR emitted by app code
+    /// reaches both stdout and DB ingestion.
     ///
-    /// 層ごとのフィルタを重ねた構成は、片方のフィルタが callsite の `Interest` を
-    /// 決めてしまってもう片方を巻き込む形の取りこぼしが起きうる。既存の試験は層を 1 枚ずつ
-    /// しか見ておらず、`init()` と同じ形は誰も通していなかった。
+    /// In a configuration stacking per-layer filters, one filter may decide the callsite's `Interest`
+    /// and drag the other along, causing missed events. Existing tests only looked at one layer
+    /// at a time, and nobody exercised the same shape as `init()`.
     #[tokio::test]
     async fn an_application_error_reaches_both_stdout_and_the_capture_sink() {
         let (sink, mut receiver) = log_capture::channel();
@@ -126,7 +126,7 @@ mod tests {
                     .json()
                     .flatten_event(true)
                     .with_writer(buffer.clone())
-                    // 本番 (`idp-env` の `RUST_LOG_API`) と同じ値。
+                    // Same value as production (`RUST_LOG_API` in `idp-env`).
                     .with_filter(EnvFilter::new("info,assay=info")),
             );
 
@@ -144,18 +144,18 @@ mod tests {
         let stdout = buffer.contents();
         assert!(
             stdout.contains("IdP server started"),
-            "起動ログが出ていないなら試験の組み方が違う: {stdout}"
+            "if the startup log is missing, the test is set up wrong: {stdout}"
         );
         assert!(
             stdout.contains("totp setup internal error"),
-            "アプリのエラーが stdout に出ていない: {stdout}"
+            "the app error did not reach stdout: {stdout}"
         );
 
         let batch = receiver.recv_batch(10).await.expect("batch");
         let messages: Vec<_> = batch.iter().map(|r| r.message.as_str()).collect();
         assert!(
             messages.contains(&"totp setup internal error"),
-            "アプリのエラーが log テーブルへ渡っていない: {messages:?}"
+            "the app error did not reach the log table: {messages:?}"
         );
     }
 }

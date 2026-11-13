@@ -1,13 +1,13 @@
-//! `private_key_jwt` の client assertion の検証（ADR-0030 決定 2・5・6・7。RFC 7523・OIDC Core §9）。
+//! Verification of `private_key_jwt` client assertions (ADR-0030 decisions 2, 5, 6, 7. RFC 7523, OIDC Core §9).
 //!
-//! クライアントは自分の秘密鍵で署名した JWT を提示し、IdP は登録済みの公開鍵
-//! （[`crate::domain::client_jwks::ClientJwks`]）で検証する。ここが担うのは**署名とクレームの検証**
-//! までで、`jti` の記録（再生防止の永続化）は application 層が行う —— 記録は DB を要し、
-//! 「検証は通ったが記録に失敗した」ときの扱いはトランザクション境界の問題だからである。
+//! The client presents a JWT signed with its own private key, and the IdP verifies it with the registered public keys
+//! ([`crate::domain::client_jwks::ClientJwks`]). This handles **signature and claim verification**
+//! only; recording `jti` (persistence for replay prevention) is done by the application layer, because recording needs the DB,
+//! and how to handle "verification passed but recording failed" is a transaction-boundary question.
 //!
-//! 検証に使うアルゴリズムは**登録済み鍵の種別**から決める。assertion ヘッダの `alg` を信じて
-//! 検証方式を選ぶことはしない（`alg` 混同攻撃を成立させないため）。ヘッダが `none` や HMAC 系を
-//! 名乗っても、鍵と一致しないので検証は通らない。
+//! The verification algorithm is decided from **the type of the registered key**. The verification method is never chosen
+//! by trusting the assertion header's `alg` (to prevent `alg` confusion attacks). Even if the header claims `none` or an HMAC
+//! family, it does not match the key, so verification fails.
 
 use crate::domain::client_jwks::ClientJwks;
 use crate::domain::jwt::decoding_key_from_jwk;
@@ -15,64 +15,64 @@ use chrono::{DateTime, Duration, Utc};
 use jsonwebtoken::{Algorithm, Validation};
 use serde::Deserialize;
 
-/// `client_assertion_type` の唯一の許可値（RFC 7523 §2.2）。
+/// The only allowed value of `client_assertion_type` (RFC 7523 §2.2).
 pub const JWT_BEARER_ASSERTION_TYPE: &str =
     "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
 
-/// assertion の有効期間の上限（ADR-0030 決定 5）。
+/// Upper bound of an assertion's validity period (ADR-0030 decision 5).
 ///
-/// `exp` がこれより先を指す assertion は拒否する。再生の窓を短く保つためであると同時に、
-/// `jti` を記録しておく期間の上限でもある（記録を [`VerifiedClientAssertion::replay_guard_until`]
-/// まで持てば再生を防げる）。
+/// Assertions whose `exp` points beyond this are rejected. This keeps the replay window short, and is also
+/// the upper bound of how long `jti` is recorded (keeping the record until [`VerifiedClientAssertion::replay_guard_until`]
+/// prevents replay).
 pub const MAX_ASSERTION_LIFETIME: Duration = Duration::minutes(5);
 
-/// 時計ずれの許容幅。クライアントと IdP の時刻が完全に一致することは期待できない。
+/// Allowed clock skew. Client and IdP clocks cannot be expected to match exactly.
 const CLOCK_SKEW_LEEWAY: Duration = Duration::seconds(60);
 
-/// `jti` の長さの上限。`client_assertion_jtis.jti` の桁数に合わせる。
+/// Max length of `jti`. Matches the width of `client_assertion_jtis.jti`.
 ///
-/// 超えるものを検証の側で弾くのは、記録の INSERT を DB エラー（＝ 500）にしないためである。
-/// 長すぎる `jti` は要求の不正であって IdP の障害ではない。
+/// Longer ones are rejected on the verification side so the record INSERT does not become a DB error (= 500).
+/// An overly long `jti` is a bad request, not an IdP failure.
 const MAX_JTI_LENGTH: usize = 255;
 
-/// 検証を通った assertion から、再生防止に要る値だけを取り出したもの。
+/// Only the values needed for replay prevention, extracted from an assertion that passed verification.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedClientAssertion {
-    /// `jti` クレーム。`(tenant_id, client_id, jti)` で一意に記録する。
+    /// The `jti` claim. Recorded uniquely by `(tenant_id, client_id, jti)`.
     pub jti: String,
-    /// `exp` クレーム。
+    /// The `exp` claim.
     pub expires_at: DateTime<Utc>,
-    /// `jti` を再受理しない時刻。**`exp` そのものではなく時計ずれの許容幅を足した値**である。
+    /// The time until which `jti` is not re-accepted. **Not `exp` itself, but `exp` plus the allowed clock skew**.
     ///
-    /// 受理の側は `exp` を [`CLOCK_SKEW_LEEWAY`] だけ過ぎた assertion まで通すため、記録を `exp`
-    /// までしか持たないと、掃除で行が消えた後・受理が止まる前の隙間で同じ assertion をもう一度
-    /// 使えてしまう。記録は受理が止まる時刻まで残す。
+    /// Acceptance lets through assertions up to [`CLOCK_SKEW_LEEWAY`] past `exp`, so if the record were kept only until `exp`,
+    /// the same assertion could be used again in the gap after cleanup deletes the row and before acceptance stops.
+    /// The record is kept until acceptance stops.
     pub replay_guard_until: DateTime<Utc>,
 }
 
-/// assertion を受け付けられない理由。文字列は監査ログの `reason` にそのまま載せる
-/// （クライアントへは一律 `invalid_client` を返し、どれで落ちたかは明かさない）。
+/// Reasons an assertion cannot be accepted. The string goes into the audit log `reason` as is
+/// (the client always gets `invalid_client`, without revealing which check failed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientAssertionFailure {
-    /// `client_assertion_type` が `jwt-bearer` ではない。
+    /// `client_assertion_type` is not `jwt-bearer`.
     UnsupportedAssertionType,
-    /// JWT として読めない（ヘッダ・区切りの形式不正）。
+    /// Cannot be read as a JWT (malformed header or separators).
     Malformed,
-    /// ヘッダの `kid` に対応する鍵が登録されていない（`kid` 無しで鍵が複数ある場合を含む）。
+    /// No key is registered for the header's `kid` (including when there is no `kid` and several keys).
     UnknownKey,
-    /// 署名検証に失敗した。`exp` 切れ・`aud` 不一致もここではなく個別の理由で返す。
+    /// Signature verification failed. Expired `exp` and mismatched `aud` are returned as their own reasons, not here.
     InvalidSignature,
-    /// 期限切れ（`exp` が過去）。
+    /// Expired (`exp` is in the past).
     Expired,
-    /// `exp` が遠すぎる（[`MAX_ASSERTION_LIFETIME`] 超過）。
+    /// `exp` is too far ahead (exceeds [`MAX_ASSERTION_LIFETIME`]).
     LifetimeTooLong,
-    /// `aud` が assay のテナントを指していない。
+    /// `aud` does not point to an assay tenant.
     AudienceMismatch,
-    /// `iss` または `sub` がクライアント自身ではない。
+    /// `iss` or `sub` is not the client itself.
     SubjectMismatch,
-    /// `jti` が無い（ assay では必須）。
+    /// No `jti` (required in assay).
     MissingJti,
-    /// `jti` が長すぎる（[`MAX_JTI_LENGTH`] 超過）。
+    /// `jti` is too long (exceeds [`MAX_JTI_LENGTH`]).
     JtiTooLong,
 }
 
@@ -93,7 +93,7 @@ impl ClientAssertionFailure {
     }
 }
 
-/// `aud` は文字列 1 つでも配列でも書ける（RFC 7519 §4.1.3）。
+/// `aud` can be written as a single string or an array (RFC 7519 §4.1.3).
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum Audience {
@@ -119,18 +119,18 @@ struct AssertionClaims {
     jti: Option<String>,
 }
 
-/// 署名を検証せずに `sub`（＝クライアント自身）だけを覗く。
+/// Peeks only at `sub` (= the client itself) without verifying the signature.
 ///
-/// クライアント認証の前段で「どのクライアントの登録鍵で検証するか」を決めるためだけに使う。
-/// RFC 7521 §4.2 は assertion を使う場合の `client_id` の省略を認めており、その場合ここが
-/// 唯一の手がかりになる。値が偽られていても、選ばれた鍵で署名が検証できなければ落ちるだけなので
-/// 認証の判断には使わない —— **検証後に `iss`/`sub` が client_id と一致することを必ず確かめる**
-/// （[`verify_client_assertion`] が行う）。
+/// Used only to decide "which client's registered keys to verify with" before client authentication.
+/// RFC 7521 §4.2 allows omitting `client_id` when using an assertion, in which case this is
+/// the only clue. Even if the value is forged, it simply fails if the signature cannot be verified with the chosen key, so
+/// it is not used for the authentication decision: **after verification, always check that `iss`/`sub` match client_id**
+/// (done by [`verify_client_assertion`]).
 pub fn unverified_subject(assertion: &str) -> Option<String> {
-    // 署名検証をしないため `jsonwebtoken` の decode は通せない。ペイロード部だけを自前で開く。
+    // No signature verification, so `jsonwebtoken`'s decode cannot be used. Only the payload part is opened manually.
     let mut parts = assertion.split('.');
     let (_header, payload) = (parts.next()?, parts.next()?);
-    // 署名部が無いものは JWT ではない（`header.payload` だけを渡して素通りさせない）。
+    // Something without a signature part is not a JWT (do not let `header.payload` alone slip through).
     parts.next()?;
     let decoded = base64url_decode(payload)?;
     let claims: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
@@ -147,11 +147,11 @@ fn base64url_decode(value: &str) -> Option<Vec<u8>> {
     URL_SAFE_NO_PAD.decode(value).ok()
 }
 
-/// assertion を検証する。
+/// Verifies an assertion.
 ///
-/// `accepted_audiences` にはテナント issuer とトークンエンドポイント URL の両方を渡す
-/// （ADR-0030 決定 6。クライアント実装によってどちらを入れるかが分かれるため）。どちらも
-/// テナントを含む値なので、A テナント宛の assertion を B テナントへ持ち込むことはできない。
+/// Pass both the tenant issuer and the token endpoint URL in `accepted_audiences`
+/// (ADR-0030 decision 6. Client implementations differ in which one they put). Both
+/// include the tenant, so an assertion for tenant A cannot be carried to tenant B.
 pub fn verify_client_assertion(
     assertion_type: Option<&str>,
     assertion: &str,
@@ -170,19 +170,19 @@ pub fn verify_client_assertion(
         .select(header.kid.as_deref())
         .ok_or(ClientAssertionFailure::UnknownKey)?;
     let key = decoding_key_from_jwk(jwk).map_err(|_| ClientAssertionFailure::UnknownKey)?;
-    // 検証アルゴリズムは登録済み鍵の種別が決める（ヘッダの `alg` は見ない）。
+    // The verification algorithm is decided by the registered key's type (the header's `alg` is not looked at).
     let algorithm = match jwk.alg.as_str() {
         "RS256" => Algorithm::RS256,
         "ES256" => Algorithm::ES256,
-        // `ClientJwks` は RS256 / ES256 しか作らないため到達しないが、fail-closed にしておく。
+        // `ClientJwks` only produces RS256 / ES256 so this is unreachable, but keep it fail-closed.
         _ => return Err(ClientAssertionFailure::UnknownKey),
     };
 
     let mut validation = Validation::new(algorithm);
-    // クレームの検査は**すべて自前で**行い、`jsonwebtoken` には署名検証だけをさせる。
-    // `exp` の検査を任せると内部でシステム時刻を読むため、注入した `now`（`Clock`）が効かず、
-    // テストで時刻を固定できない（`CLAUDE.md`「テスト」）。`aud`・`iss` も、候補集合のいずれかとの
-    // 一致・「クライアント自身であること」という条件なので単純一致では書けない。
+    // **All** claim checks are done ourselves; `jsonwebtoken` only verifies the signature.
+    // Delegating the `exp` check would read system time internally, so the injected `now` (`Clock`) would not apply,
+    // and tests could not fix the time (`CLAUDE.md` "Tests"). `aud` and `iss` are also conditions of matching any
+    // of a candidate set and "being the client itself", so they cannot be expressed as a simple match.
     validation.validate_exp = false;
     validation.validate_aud = false;
     validation.set_required_spec_claims(&["exp", "iss", "sub", "aud"]);
@@ -199,7 +199,7 @@ pub fn verify_client_assertion(
     )?;
     let claims = token.claims;
 
-    // RFC 7523 §3: `iss` と `sub` はどちらもクライアント自身でなければならない。
+    // RFC 7523 §3: both `iss` and `sub` must be the client itself.
     if claims.iss != client_id || claims.sub != client_id {
         return Err(ClientAssertionFailure::SubjectMismatch);
     }
@@ -212,8 +212,8 @@ pub fn verify_client_assertion(
     if expires_at + CLOCK_SKEW_LEEWAY < now {
         return Err(ClientAssertionFailure::Expired);
     }
-    // 上限にも時計ずれを見込む。クライアントの時計が数秒進んでいるだけで、上限ちょうどの
-    // 有効期間を持つ assertion が「長すぎる」と落ちてしまうため（期限切れ判定と同じ幅を使う）。
+    // The upper bound also allows for clock skew. Otherwise, with the client's clock just a few seconds fast, an assertion
+    // with a validity of exactly the limit would fail as "too long" (uses the same leeway as the expiry check).
     if expires_at - now > MAX_ASSERTION_LIFETIME + CLOCK_SKEW_LEEWAY {
         return Err(ClientAssertionFailure::LifetimeTooLong);
     }
@@ -308,7 +308,7 @@ mod tests {
             let verified = verify(&f, &assertion(&f, valid_claims())).unwrap();
             assert_eq!(verified.jti, "jti-1");
             assert_eq!(verified.expires_at.timestamp(), now().timestamp() + 120);
-            // 再生を拒む期間は `exp` より時計ずれの許容幅ぶん長い（受理が止まる時刻まで残す）。
+            // The replay-refusal period is longer than `exp` by the clock skew leeway (kept until acceptance stops).
             assert_eq!(
                 verified.replay_guard_until,
                 verified.expires_at + CLOCK_SKEW_LEEWAY
@@ -344,7 +344,7 @@ mod tests {
         );
     }
 
-    /// 別の鍵で署名した assertion は通らない（＝登録鍵を差し替えれば失効する）。
+    /// An assertion signed with a different key does not pass (= replacing the registered key revokes it).
     #[test]
     fn a_signature_from_another_key_is_rejected() {
         let registered = fixture("RS256");
@@ -398,7 +398,7 @@ mod tests {
         );
     }
 
-    /// 別の宛先向けに署名させた JWT を assay の `/token` へ転送しても通らない。
+    /// A JWT signed for a different audience does not pass even if forwarded to assay's `/token`.
     #[test]
     fn an_assertion_for_another_audience_is_rejected() {
         let f = fixture("RS256");
@@ -415,7 +415,7 @@ mod tests {
         );
     }
 
-    /// 別テナントの issuer 宛の assertion は、こちらのテナントでは通らない（ADR-0030 決定 6）。
+    /// An assertion addressed to another tenant's issuer does not pass in this tenant (ADR-0030 decision 6).
     #[test]
     fn an_assertion_for_another_tenant_is_rejected() {
         let f = fixture("RS256");
@@ -432,15 +432,15 @@ mod tests {
         );
     }
 
-    /// 期限判定は**注入した `now`** で行う（システム時刻ではない）。固定した `now()` は実時刻より
-    /// 先を指しているので、`jsonwebtoken` の `exp` 検査に任せているとこの assertion は通ってしまう。
+    /// Expiry is checked with **the injected `now`** (not system time). The fixed `now()` points ahead of real time,
+    /// so if the `exp` check were left to `jsonwebtoken`, this assertion would pass.
     #[test]
     fn expired_assertions_are_rejected_against_the_injected_clock() {
         let f = fixture("RS256");
         let token = assertion(
             &f,
             TestClaims {
-                // 時計ずれの許容幅（60 秒）より確実に過去へ置く。
+                // Placed safely in the past, beyond the clock skew leeway (60 seconds).
                 exp: now().timestamp() - 300,
                 ..valid_claims()
             },
@@ -467,7 +467,7 @@ mod tests {
         );
     }
 
-    /// 上限ちょうどの有効期間は、クライアントの時計が少し進んでいても通る（時計ずれの許容幅）。
+    /// A validity of exactly the limit passes even if the client's clock is a little fast (clock skew leeway).
     #[test]
     fn a_cap_length_assertion_from_a_slightly_fast_clock_is_accepted() {
         let f = fixture("RS256");
@@ -481,7 +481,7 @@ mod tests {
         assert!(verify(&f, &token).is_ok());
     }
 
-    /// 長すぎる `jti` は検証で弾く（記録の INSERT を DB エラーにしない）。
+    /// An overly long `jti` is rejected at verification (so the record INSERT does not become a DB error).
     #[test]
     fn an_overlong_jti_is_rejected() {
         let f = fixture("RS256");
@@ -531,7 +531,7 @@ mod tests {
         let f = fixture("RS256");
         let token = assertion(&f, valid_claims());
         assert_eq!(unverified_subject(&token).as_deref(), Some(CLIENT_ID));
-        // JWT の形をしていないものからは何も取れない。
+        // Nothing can be extracted from something not shaped like a JWT.
         assert_eq!(unverified_subject("not-a-jwt"), None);
         assert_eq!(unverified_subject("a.b"), None);
     }
@@ -545,7 +545,7 @@ mod tests {
         );
     }
 
-    /// `aud` は配列でも書ける（RFC 7519 §4.1.3）。候補のいずれかを含めば通す。
+    /// `aud` can also be an array (RFC 7519 §4.1.3). Passes if it contains any of the candidates.
     #[test]
     fn an_audience_array_containing_the_tenant_is_accepted() {
         let f = fixture("RS256");

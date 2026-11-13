@@ -1,4 +1,4 @@
-//! `SigningKeyRepository` の sqlx 実装。
+//! sqlx implementation of `SigningKeyRepository`.
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::SigningKeyRepository;
@@ -68,9 +68,9 @@ impl SigningKeyRepository for SqlxSigningKeyRepository {
     }
 
     async fn insert_if_no_active(&self, key: &SigningKey) -> Result<bool> {
-        // MariaDB の advisory lock（GET_LOCK）で「存在確認 → 挿入」を直列化する（SEC5）。
-        // GET_LOCK は接続スコープのため、確認・挿入・解放まで同一接続で行う。
-        // 接続が切れた場合はサーバ側でロックが自動解放される。
+        // Serialize "check existence -> insert" with a MariaDB advisory lock (GET_LOCK) (SEC5).
+        // GET_LOCK is connection-scoped, so check, insert and release happen on the same connection.
+        // If the connection drops, the server releases the lock automatically.
         let mut conn = self.pool.acquire().await.map_err(repo_err)?;
         let locked: i64 = sqlx::query_scalar("SELECT GET_LOCK('idp.signing_key_bootstrap', 10)")
             .fetch_one(&mut *conn)
@@ -81,11 +81,11 @@ impl SigningKeyRepository for SqlxSigningKeyRepository {
                 "failed to acquire signing key bootstrap lock".to_string(),
             ));
         }
-        // ロック保持中に再確認 → 無ければ挿入。エラーでも必ず RELEASE_LOCK を試みる。
+        // Re-check while holding the lock -> insert if absent. Always attempt RELEASE_LOCK even on error.
         let result: Result<bool> = async {
-            // 条件は `find_active` と同じ（= いま署名できる鍵があるか）。単に ACTIVE 行の
-            // 有無を見ると、公開しただけの後継鍵（`not_before` が未来）や期限切れのまま
-            // ACTIVE で残った鍵が「鍵はある」と読まれ、署名できないまま起動してしまう。
+            // The condition is the same as `find_active` (= is there a key that can sign now). Merely checking for an
+            // ACTIVE row would read a published-only successor key (`not_before` in the future) or an expired key
+            // left ACTIVE as "a key exists", and start up unable to sign.
             let active: Option<i64> = sqlx::query_scalar(
                 "SELECT 1 FROM signing_keys \
                  WHERE status = 'ACTIVE' AND not_before <= UTC_TIMESTAMP(6) AND not_after > UTC_TIMESTAMP(6) \
@@ -138,7 +138,7 @@ impl SigningKeyRepository for SqlxSigningKeyRepository {
     }
 
     async fn list_published(&self) -> Result<Vec<SigningKey>> {
-        // ACTIVE + RETIRED のうち not_after が未来のものだけを公開する（期限切れ RETIRED は非公開）。
+        // Publish only ACTIVE + RETIRED keys whose not_after is in the future (expired RETIRED keys are not published).
         let sql = format!(
             "SELECT {SELECT_COLUMNS} FROM signing_keys \
              WHERE status IN ('ACTIVE', 'RETIRED') AND not_after > UTC_TIMESTAMP(6) \

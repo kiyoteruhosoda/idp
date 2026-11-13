@@ -1,4 +1,5 @@
-//! 試験データは `scripts/key-attestation-fixtures.py` で作った（自前の根。KeyDescription は KeyMint の定義どおり）。
+//! Test data was made with `scripts/key-attestation-fixtures.py` (our own root; KeyDescription
+//! follows the KeyMint definition).
 
 use super::*;
 use base64::Engine;
@@ -160,7 +161,8 @@ fn refuses_unlocked_devices_unless_software_is_allowed() {
 
 #[test]
 fn refuses_a_forged_certificate_signed_by_an_attested_key() {
-    // 本物の鍵の証明書の鍵（署名用）で、偽の「鍵の証明書」に署名して先頭へ足した鎖。
+    // A chain where a fake "key certificate" is signed with a real key certificate's key (for
+    // signing) and prepended.
     assert_eq!(
         verify("forged-below-attested-key", &policy()),
         Err(AttestationRejection::UntrustedChain)

@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# scripts/test_deploy.sh — deploy.sh の CLI/エラー処理をスタブ docker で検証する（CI 用）。
+# scripts/test_deploy.sh — verifies deploy.sh's CLI and error handling with a stub docker (for CI).
 set -Eeuo pipefail
 
-# アサーションの多くは素の `grep -q`（メッセージ無し）で、失敗すると set -e が何も出さずに終了する。
-# CI ログに手掛かりが残らず、ローカルで再現するまで原因が分からないため、最後に失敗した行と式を控えて
-# おき、異常終了したときだけ出す。デプロイの失敗そのものを検証するケース（set +e 区間の意図的な失敗）
-# でも ERR は発火するため、その場では出さず記録だけに留める。
+# Most assertions are bare `grep -q` (no message), and on failure set -e exits without printing anything.
+# No clue would remain in the CI log and the cause would be unknown until reproduced locally, so record the last failing line
+# and expression and print them only on abnormal exit. ERR also fires in cases that verify deployment failure itself
+# (intentional failures in set +e sections), so only record it there without printing.
 LAST_ERR=""
 trap 'LAST_ERR="line $LINENO: $BASH_COMMAND"' ERR
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# 実行ごとの作業場所。配置の写し・スタブ・deploy.sh の出力（*.out）・スタブの記録はすべてこの下に置く。
-# ⚠ 固定の /tmp/<名前> を使わない。同じ容れ物で 2 本同時に流すと、片方が出力を書き直している最中に
-#   もう片方がそれを grep し、毎回違う行で落ちる（https://task.nolumia.com/tasks/86）。
+# Per-run work area. Copies of the deployment, stubs, deploy.sh output (*.out) and stub records all live under here.
+# ⚠ Do not use a fixed /tmp/<name>. Running two at once in the same container, one greps the output while
+#   the other is rewriting it, failing on a different line every time (https://task.nolumia.com/tasks/86).
 TMP="$(mktemp -d)"
-# EXIT トラップは 1 つしか持てないため、後始末と失敗報告をまとめて行う。
-# 成功したら片付ける。失敗したら中間出力を調べられるよう残し、場所を出す（LAST_ERR に出る "$TMP/…" は
-# 展開前の字面なので、実際の場所はこちらで分かる）。実行ごとに別の場所なので、残しても次とぶつからない。
+# Only one EXIT trap can be held, so cleanup and failure reporting are done together.
+# On success, clean up. On failure, keep the intermediate output for inspection and print its location (the "$TMP/…" in LAST_ERR is
+# the unexpanded text, so the actual location is known from here). Each run uses a different location, so keeping it never collides with the next.
 on_exit() {
   local status=$?
   if [[ $status -eq 0 ]]; then
@@ -29,7 +29,7 @@ on_exit() {
 }
 trap on_exit EXIT
 
-# --- リポジトリ配置（scripts/deploy.sh ＋ ルートの docker-compose.deploy.yml） ---
+# --- Repository layout (scripts/deploy.sh + docker-compose.deploy.yml at the root) ---
 mkdir -p "$TMP/repo/scripts" "$TMP/repo/docker" "$TMP/bin"
 cp "$ROOT/scripts/deploy.sh" "$TMP/repo/scripts/"
 cp "$ROOT/.env.example" "$ROOT/docker-compose.deploy.yml" "$ROOT/docker-compose.domain-split.yml" "$TMP/repo/"
@@ -47,7 +47,7 @@ chmod +x "$TMP/bin/openssl"
 
 cat > "$TMP/bin/curl" <<'STUB'
 #!/usr/bin/env bash
-# readiness probe の宛先を検証できるよう、呼び出しを記録する（成否は常に成功）。
+# Record calls so the readiness probe targets can be verified (always succeeds).
 if [[ -n "${CURL_STUB_LOG:-}" ]]; then printf 'curl %s\n' "$*" >>"$CURL_STUB_LOG"; fi
 exit 0
 STUB
@@ -66,7 +66,7 @@ if [[ "${1:-}" == "compose" ]]; then
     up) if [[ "${DOCKER_STUB_FAIL_UP:-0}" == "1" ]]; then echo "up failed with ${MARIADB_PASSWORD:-secret}" >&2; exit 42; fi; exit 0 ;;
     run)
       if [[ "${DOCKER_STUB_MIGRATE_CHECKSUM_MISMATCH:-0}" == "1" && "$*" == *"migrate"* ]]; then
-        # sqlx は適用済みマイグレーションの改変を検出すると、この文言で適用を中止する。
+        # When sqlx detects a modified applied migration, it aborts applying with this text.
         echo "error: migration 2 was previously applied but has been modified" >&2
         exit 1
       fi
@@ -78,9 +78,9 @@ if [[ "${1:-}" == "compose" ]]; then
     down) exit 0 ;;
     ps) printf 'cid-%s\n' "${3:-svc}"; exit 0 ;;
     exec)
-      # コンテナの環境変数読み出し（deploy.sh は .env を自前で解釈せず Compose の解決結果を読む）。
-      # DOCKER_STUB_CONTAINER_ENV_FILE で「コンテナが持つ環境変数」を差し替えられるようにし、
-      # .env の字面と実効値が食い違うケース（引用符・インラインコメント）を検証できるようにする。
+      # Reading container environment variables (deploy.sh does not parse .env itself but reads Compose's resolution).
+      # DOCKER_STUB_CONTAINER_ENV_FILE lets "the environment variables the container has" be replaced,
+      # so cases where the .env text and the effective value differ (quotes, inline comments) can be verified.
       if [[ "$*" == *"printf %s"* ]]; then
         var="$(printf '%s' "$*" | grep -oE '\$\{[A-Za-z_]+' | tail -n1 | tr -d '${')"
         if [[ -n "${DOCKER_STUB_CONTAINER_ENV_FILE:-}" && -f "${DOCKER_STUB_CONTAINER_ENV_FILE}" && -n "$var" ]]; then
@@ -89,8 +89,8 @@ if [[ "${1:-}" == "compose" ]]; then
         fi
         exit 0
       fi
-      # パスワード同期（root で ALTER USER）。成功すると以後アプリ用ユーザーの認証も通るよう、
-      # マーカーファイルで「同期済み」を記録する（実 DB の挙動を模す）。
+      # Password sync (ALTER USER as root). On success, record "synced" in a marker file so that afterwards
+      # the app user's authentication also passes (mimics real DB behaviour).
       if [[ "$*" == *"ALTER USER"* ]]; then
         if [[ "${DOCKER_STUB_ROOT_AUTH_OK:-0}" == "1" ]]; then
           [[ -n "${DOCKER_STUB_SYNCED_MARKER:-}" ]] && : >"$DOCKER_STUB_SYNCED_MARKER"
@@ -114,8 +114,8 @@ if [[ "${1:-}" == "compose" ]]; then
           echo "ERROR 1049 (42000): Unknown database 'idp'" >&2
           exit 1
         fi
-        # 資格情報は正しいが DB へのアクセス権が無い場合。1045 と同じ "Access denied for user" で
-        # 始まるが、パスワード不一致ではない（エラーコードは 1044）。
+        # Credentials are correct but there is no access to the DB. Starts with the same "Access denied for user"
+        # as 1045, but it is not a password mismatch (error code 1044).
         if [[ "${DOCKER_STUB_FAIL_DB_PRIV:-0}" == "1" ]]; then
           echo "ERROR 1044 (42000): Access denied for user 'idp'@'%' to database 'idp'" >&2
           exit 1
@@ -124,8 +124,8 @@ if [[ "${1:-}" == "compose" ]]; then
       if [[ "$*" == *"SELECT id FROM tenants"* ]]; then printf '01970000-0000-7000-8000-000000000001\n'; fi
       exit 0 ;;
     logs) echo "stub docker logs for ${*: -1}: ${MARIADB_PASSWORD:-secret}"; exit 0 ;;
-    # deploy.sh は `config --services` で「定義に無いサービスを待ち続ける」事故を防いでいる。
-    # DOCKER_STUB_SERVICES で定義一覧を差し替えられるようにして、その分岐を検証できるようにする。
+    # deploy.sh uses `config --services` to prevent the accident of "waiting forever for a service not in the definition".
+    # DOCKER_STUB_SERVICES lets the definition list be replaced so that branch can be verified.
     config) tr ' ' '\n' <<<"${DOCKER_STUB_SERVICES:-api mariadb migrate proxy web}"; exit 0 ;;
   esac
 fi
@@ -157,83 +157,83 @@ fi
 shopt -s nullglob
 deploy_logs=(deploy-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].log)
 [[ ${#deploy_logs[@]} -ge 1 ]] || { echo "timestamped deploy log was not generated" >&2; exit 1; }
-grep -q 'ログファイル:' "${deploy_logs[0]}"
+grep -q 'log file:' "${deploy_logs[0]}"
 grep -q '^CSRF_SECRET=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=$' .env
 before="$(grep '^MARIADB_PASSWORD=' .env)"
 : >"$DOCKER_STUB_LOG"
 ./scripts/deploy.sh app >"$TMP/deploy-app.out" 2>&1
 after="$(grep '^MARIADB_PASSWORD=' .env)"
 [[ "$before" == "$after" ]] || { echo "existing .env was overwritten" >&2; exit 1; }
-grep -q 'ログイン URL:' "$TMP/deploy-app.out"
-# デプロイ末尾の root テナント URL まとめ（管理コンソール URL を含む）を表示する。
-grep -q 'Root テナント URL:' "$TMP/deploy-app.out"
-grep -q '管理コンソール: .*/admin' "$TMP/deploy-app.out"
+grep -q 'Login URL:' "$TMP/deploy-app.out"
+# The root tenant URL summary at the end of deployment (including the admin console URL) is shown.
+grep -q 'Root tenant URLs:' "$TMP/deploy-app.out"
+grep -q 'Admin console: .*/admin' "$TMP/deploy-app.out"
 grep -q -- '--project-name idp-repo -f docker-compose.deploy.yml' "$DOCKER_STUB_LOG"
 grep -q 'run --rm -T migrate' "$DOCKER_STUB_LOG"
 
 sed -i '/^COMPOSE_PROJECT_NAME=/d' .env
 : >"$DOCKER_STUB_LOG"
 ./scripts/deploy.sh app >"$TMP/deploy-legacy-project.out" 2>&1
-grep -q '既存 volume を保護するため従来の Compose project name (repo) を使用します' "$TMP/deploy-legacy-project.out"
+grep -q 'using the legacy Compose project name (repo) to protect existing volumes' "$TMP/deploy-legacy-project.out"
 grep -q -- '--project-name repo -f docker-compose.deploy.yml' "$DOCKER_STUB_LOG"
 if grep -q '^COMPOSE_PROJECT_NAME=' .env; then
   echo "existing legacy .env should not be backfilled automatically" >&2
   exit 1
 fi
 
-# バージョン更新で増えた「設定キー（非秘密）」は既存 .env へ自動追記される（秘密・既存値は不変）。
+# "Setting keys (non-secret)" added by version updates are appended to the existing .env automatically (secrets and existing values unchanged).
 sed -i '/^LOG_FORMAT=/d' .env
 : >"$DOCKER_STUB_LOG"
 ./scripts/deploy.sh app >"$TMP/deploy-merge.out" 2>&1
 grep -q '^LOG_FORMAT=pretty$' .env || { echo "missing non-secret key should be appended from .env.example" >&2; exit 1; }
-# プレースホルダ（CHANGE-ME）の秘密値が代入行として追記で混入しないこと（コメント中の語は無視）。
+# Placeholder (CHANGE-ME) secret values must not sneak in as assignment lines via append (words in comments are ignored).
 if grep -qE '^[A-Za-z_][A-Za-z0-9_]*=.*CHANGE-ME' .env; then
   echo "merge must not inject CHANGE-ME placeholder values into .env" >&2
   exit 1
 fi
 
-# 末尾改行の無い（手編集）.env でも、最終行の値を壊さず追記する（境界の正規化）。
+# Even with a (hand-edited) .env without a trailing newline, append without breaking the last line's value (boundary normalization).
 sed -i '/^LOG_FORMAT=/d' .env
-printf 'SENTINEL_KEEP=keepme' >>.env   # 末尾改行なしの最終行を作る
+printf 'SENTINEL_KEEP=keepme' >>.env   # make a last line without a trailing newline
 : >"$DOCKER_STUB_LOG"
 ./scripts/deploy.sh app >"$TMP/deploy-nonl.out" 2>&1
 grep -q '^SENTINEL_KEEP=keepme$' .env || { echo "last line without trailing newline was corrupted by append" >&2; exit 1; }
 grep -q '^LOG_FORMAT=pretty$' .env || { echo "key not appended after newline normalization" >&2; exit 1; }
 
-# 追記で既存配置の「公開先・公開トポロジ」を黙って変えないこと（ADR-0016 の既定変更の移行）。
-# 本番想定: ISSUER は公開ドメイン、PUBLIC_WEB_BASE_URL と PUBLISH_TOPOLOGY は当時の .env に無い。
+# Appending must not silently change an existing deployment's "public target / publish topology" (migration for ADR-0016's default change).
+# Production-like: ISSUER is the public domain; PUBLIC_WEB_BASE_URL and PUBLISH_TOPOLOGY are absent from the .env of that time.
 sed -i 's|^ISSUER=.*|ISSUER=https://idp.example.com|' .env
 sed -i '/^PUBLIC_WEB_BASE_URL=/d' .env
 sed -i '/^PUBLISH_TOPOLOGY=/d' .env
 : >"$DOCKER_STUB_LOG"; : >"${CURL_STUB_LOG:-/dev/null}"
 ./scripts/deploy.sh app >"$TMP/deploy-migrate-topology.out" 2>&1
-# PUBLIC_WEB_BASE_URL は追記しない（未設定＝ISSUER フォールバック＝従来挙動）。localhost を
-# 本番 .env へ書き込むと、ログイン・招待・リセットのリダイレクト先だけが localhost になる。
+# PUBLIC_WEB_BASE_URL is not appended (unset = ISSUER fallback = previous behaviour). Writing localhost into
+# a production .env would send only login, invitation and reset redirects to localhost.
 if grep -q '^PUBLIC_WEB_BASE_URL=' .env; then
   echo "PUBLIC_WEB_BASE_URL must not be backfilled into an existing .env" >&2
   grep '^PUBLIC_WEB_BASE_URL=' .env >&2
   exit 1
 fi
-grep -q 'ログイン URL: https://idp.example.com/' "$TMP/deploy-migrate-topology.out" ||
+grep -q 'Login URL: https://idp.example.com/' "$TMP/deploy-migrate-topology.out" ||
   { echo "existing deployment must keep redirecting to its own ISSUER origin" >&2; exit 1; }
-# PUBLISH_TOPOLOGY が無い .env は ADR-0016 以前の配置＝単一オリジンなので、その意味を維持する。
+# A .env without PUBLISH_TOPOLOGY is a pre-ADR-0016 deployment = single origin, so keep that meaning.
 grep -q '^PUBLISH_TOPOLOGY=single-origin$' .env ||
   { echo "missing PUBLISH_TOPOLOGY must be backfilled as single-origin, not the new default" >&2; exit 1; }
-grep -q '公開トポロジ: single-origin' "$TMP/deploy-migrate-topology.out" ||
+grep -q 'publish topology: single-origin' "$TMP/deploy-migrate-topology.out" ||
   { echo "existing deployment must keep the single-origin topology" >&2; exit 1; }
-# 移行検証で書き換えた値を .env.example の既定へ戻す（以降のトポロジ試験の前提）。
+# Revert the values rewritten for the migration check to .env.example's defaults (precondition for the topology tests below).
 sed -i 's|^ISSUER=.*|ISSUER=http://localhost:8070|' .env
 sed -i 's/^PUBLISH_TOPOLOGY=.*/PUBLISH_TOPOLOGY=domain-split/' .env
 printf 'PUBLIC_WEB_BASE_URL=http://localhost:8060\n' >>.env
 
-# --- 公開トポロジ（ADR-0015・ADR-0016。既定 domain-split / 明示指定の single-origin） ---
+# --- Publish topology (ADR-0015, ADR-0016; default domain-split / explicit single-origin) ---
 export CURL_STUB_LOG="$TMP/curl.log"
 
-# 既定（.env.example の PUBLISH_TOPOLOGY=domain-split。ADR-0016）では override を重ね、
-# web（WEB_PORT）と api（API_PORT）の両方の readiness を見る。
+# By default (.env.example's PUBLISH_TOPOLOGY=domain-split; ADR-0016) the override is layered and
+# readiness of both web (WEB_PORT) and api (API_PORT) is checked.
 : >"$DOCKER_STUB_LOG"; : >"$CURL_STUB_LOG"
 ./scripts/deploy.sh app >"$TMP/deploy-default-topology.out" 2>&1
-grep -q '公開トポロジ: domain-split' "$TMP/deploy-default-topology.out" ||
+grep -q 'publish topology: domain-split' "$TMP/deploy-default-topology.out" ||
   { echo "default topology must be domain-split" >&2; cat "$TMP/deploy-default-topology.out" >&2; exit 1; }
 grep -q -- '-f docker-compose.deploy.yml -f docker-compose.domain-split.yml' "$DOCKER_STUB_LOG" ||
   { echo "default topology must overlay docker-compose.domain-split.yml" >&2; cat "$DOCKER_STUB_LOG" >&2; exit 1; }
@@ -242,35 +242,35 @@ grep -q 'http://127.0.0.1:8060/readyz' "$CURL_STUB_LOG" ||
 grep -q 'http://127.0.0.1:8070/readyz' "$CURL_STUB_LOG" ||
   { echo "default topology must probe the api readiness endpoint" >&2; cat "$CURL_STUB_LOG" >&2; exit 1; }
 
-# PUBLISH_TOPOLOGY が空（値なし）でも既定の domain-split に落ちる。
+# Even an empty PUBLISH_TOPOLOGY (no value) falls back to the default domain-split.
 sed -i 's/^PUBLISH_TOPOLOGY=.*/PUBLISH_TOPOLOGY=/' .env
 : >"$DOCKER_STUB_LOG"; : >"$CURL_STUB_LOG"
 ./scripts/deploy.sh app >"$TMP/deploy-topology-empty.out" 2>&1
-grep -q '公開トポロジ: domain-split' "$TMP/deploy-topology-empty.out" ||
+grep -q 'publish topology: domain-split' "$TMP/deploy-topology-empty.out" ||
   { echo "empty PUBLISH_TOPOLOGY must fall back to domain-split" >&2; exit 1; }
 sed -i 's/^PUBLISH_TOPOLOGY=.*/PUBLISH_TOPOLOGY=domain-split/' .env
 
-# 実ドメインで公開する場合も同じ経路。まとめの URL だけが公開オリジン基点に変わる。
+# Publishing on a real domain takes the same path. Only the summary URLs switch to the public origin.
 sed -i 's|^ISSUER=.*|ISSUER=https://api.example.com|' .env
 sed -i 's|^PUBLIC_WEB_BASE_URL=.*|PUBLIC_WEB_BASE_URL=https://id.example.com|' .env
 : >"$DOCKER_STUB_LOG"; : >"$CURL_STUB_LOG"
 ./scripts/deploy.sh app >"$TMP/deploy-domain-split.out" 2>&1
-grep -q '公開トポロジ: domain-split' "$TMP/deploy-domain-split.out"
+grep -q 'publish topology: domain-split' "$TMP/deploy-domain-split.out"
 grep -q -- '-f docker-compose.deploy.yml -f docker-compose.domain-split.yml' "$DOCKER_STUB_LOG" ||
   { echo "domain-split must overlay docker-compose.domain-split.yml" >&2; cat "$DOCKER_STUB_LOG" >&2; exit 1; }
 grep -q 'http://127.0.0.1:8060/readyz' "$CURL_STUB_LOG" ||
   { echo "domain-split must probe the web readiness endpoint" >&2; cat "$CURL_STUB_LOG" >&2; exit 1; }
 grep -q 'http://127.0.0.1:8070/readyz' "$CURL_STUB_LOG" ||
   { echo "domain-split must probe the api readiness endpoint" >&2; cat "$CURL_STUB_LOG" >&2; exit 1; }
-# 画面（/login・/admin）を返すのは web なので、まとめの URL は PUBLIC_WEB_BASE_URL 基点にする。
-grep -q 'ログイン URL: https://id.example.com/' "$TMP/deploy-domain-split.out" ||
+# web returns the screens (/login, /admin), so the summary URLs are based on PUBLIC_WEB_BASE_URL.
+grep -q 'Login URL: https://id.example.com/' "$TMP/deploy-domain-split.out" ||
   { echo "login URL must be based on PUBLIC_WEB_BASE_URL, not ISSUER" >&2; cat "$TMP/deploy-domain-split.out" >&2; exit 1; }
-grep -q '管理コンソール: https://id.example.com/.*/admin' "$TMP/deploy-domain-split.out" ||
+grep -q 'Admin console: https://id.example.com/.*/admin' "$TMP/deploy-domain-split.out" ||
   { echo "admin URL must be based on PUBLIC_WEB_BASE_URL, not ISSUER" >&2; exit 1; }
 
-# IPv6 の bind では、URL のホスト部として使える形（角括弧付き）で probe する。
-# ワイルドカード（::）は IPv4 ループバックではなく IPv6 ループバックへ読み替える
-# （IPv6 のみで待ち受けているポートへ到達できず readiness がタイムアウトするため）。
+# With an IPv6 bind, probe in a form usable as a URL host (bracketed).
+# The wildcard (::) maps to the IPv6 loopback, not the IPv4 loopback
+# (otherwise ports listening on IPv6 only are unreachable and readiness times out).
 sed -i 's/^WEB_BIND_HOST=.*/WEB_BIND_HOST=::/' .env
 sed -i 's/^API_BIND_HOST=.*/API_BIND_HOST=::1/' .env
 : >"$DOCKER_STUB_LOG"; : >"$CURL_STUB_LOG"
@@ -282,33 +282,33 @@ grep -q 'http://\[::1\]:8070/readyz' "$CURL_STUB_LOG" ||
 sed -i 's/^WEB_BIND_HOST=.*/WEB_BIND_HOST=127.0.0.1/' .env
 sed -i 's/^API_BIND_HOST=.*/API_BIND_HOST=127.0.0.1/' .env
 
-# override ファイルが無い配置で domain-split を指定したら fail-fast する。
+# Specifying domain-split on a deployment without the override file fails fast.
 mv docker-compose.domain-split.yml "$TMP/domain-split.yml.bak"
 set +e
 ./scripts/deploy.sh app >"$TMP/deploy-domain-split-missing.out" 2>&1
 status=$?
 set -e
 [[ $status -ne 0 ]] || { echo "domain-split without the overlay file must fail" >&2; exit 1; }
-grep -q 'docker-compose.domain-split.yml がありません' "$TMP/deploy-domain-split-missing.out"
+grep -q 'docker-compose.domain-split.yml is missing' "$TMP/deploy-domain-split-missing.out"
 mv "$TMP/domain-split.yml.bak" docker-compose.domain-split.yml
 
-# 未知のトポロジ値は誤記のまま起動させず fail-fast する。
+# Unknown topology values fail fast instead of starting with a typo.
 sed -i 's/^PUBLISH_TOPOLOGY=.*/PUBLISH_TOPOLOGY=split-domain/' .env
 set +e
 ./scripts/deploy.sh app >"$TMP/deploy-topology-typo.out" 2>&1
 status=$?
 set -e
 [[ $status -ne 0 ]] || { echo "unknown PUBLISH_TOPOLOGY must fail" >&2; exit 1; }
-grep -q "PUBLISH_TOPOLOGY が不正です: 'split-domain'" "$TMP/deploy-topology-typo.out"
+grep -q "invalid PUBLISH_TOPOLOGY: 'split-domain'" "$TMP/deploy-topology-typo.out"
 
-# single-origin を明記したときだけ override を重ねず、readiness も WEB_PORT の 1 つだけを見る。
+# Only when single-origin is stated is the override not layered, and readiness checks just WEB_PORT.
 sed -i 's/^PUBLISH_TOPOLOGY=.*/PUBLISH_TOPOLOGY=single-origin/' .env
 sed -i 's|^ISSUER=.*|ISSUER=http://localhost:8060|' .env
-# 単一オリジンでは api・web とも同一オリジン（= WEB_PORT）に揃える。
+# In single-origin, api and web are aligned to the same origin (= WEB_PORT).
 sed -i 's|^PUBLIC_WEB_BASE_URL=.*|PUBLIC_WEB_BASE_URL=http://localhost:8060|' .env
 : >"$DOCKER_STUB_LOG"; : >"$CURL_STUB_LOG"
 ./scripts/deploy.sh app >"$TMP/deploy-single-origin.out" 2>&1
-grep -q '公開トポロジ: single-origin' "$TMP/deploy-single-origin.out"
+grep -q 'publish topology: single-origin' "$TMP/deploy-single-origin.out"
 if grep -q -- '-f docker-compose.domain-split.yml' "$DOCKER_STUB_LOG"; then
   echo "single-origin must not overlay the domain-split compose file" >&2
   exit 1
@@ -319,17 +319,17 @@ if grep -q 'http://127.0.0.1:8070/readyz' "$CURL_STUB_LOG"; then
   echo "single-origin must not probe the API_PORT readiness endpoint" >&2
   exit 1
 fi
-# 単一オリジン構成では ISSUER と PUBLIC_WEB_BASE_URL が同一オリジンなので、まとめの URL も同じ。
-grep -q 'ログイン URL: http://localhost:8060/' "$TMP/deploy-single-origin.out" ||
+# In single-origin setups ISSUER and PUBLIC_WEB_BASE_URL are the same origin, so the summary URL is the same too.
+grep -q 'Login URL: http://localhost:8060/' "$TMP/deploy-single-origin.out" ||
   { echo "single-origin login URL must stay on the WEB_PORT origin" >&2; exit 1; }
 
-# Compose 定義に無いサービスは、待機タイムアウトではなく即座に原因を示して落とす。
+# A service not in the Compose definition fails immediately with the cause, not with a wait timeout.
 set +e
 DOCKER_STUB_SERVICES="api mariadb migrate web" ./scripts/deploy.sh app >"$TMP/deploy-missing-service.out" 2>&1
 status=$?
 set -e
 [[ $status -ne 0 ]] || { echo "missing compose service must fail" >&2; exit 1; }
-grep -q 'proxy が Compose 定義にありません' "$TMP/deploy-missing-service.out"
+grep -q 'proxy is not in the Compose definition' "$TMP/deploy-missing-service.out"
 unset CURL_STUB_LOG
 
 set +e
@@ -337,7 +337,7 @@ DOCKER_STUB_FAIL_MIGRATE=1 ./scripts/deploy.sh migrate >"$TMP/deploy-migrate-fai
 status=$?
 set -e
 [[ $status -eq 1 ]] || { echo "deploy migrate failure should exit with diagnostics" >&2; cat "$TMP/deploy-migrate-fail.out" >&2; exit 1; }
-grep -q 'Docker logs を出力します' "$TMP/deploy-migrate-fail.out"
+grep -q 'dumping Docker logs' "$TMP/deploy-migrate-fail.out"
 grep -q '\[idp\]\[diagnostic\] logs tail: migrate' "$TMP/deploy-migrate-fail.out"
 grep -q '\[idp\]\[diagnostic\] logs tail: mariadb' "$TMP/deploy-migrate-fail.out"
 if grep -q "$(grep '^MARIADB_PASSWORD=' .env | cut -d= -f2-)" "$TMP/deploy-migrate-fail.out"; then
@@ -345,46 +345,46 @@ if grep -q "$(grep '^MARIADB_PASSWORD=' .env | cut -d= -f2-)" "$TMP/deploy-migra
   exit 1
 fi
 
-# 適用済みマイグレーションのチェックサム不一致（sqlx の "previously applied but has been modified"）は
-# 決定論的な失敗。リトライせず即停止し、原因（適用済みファイルの改変）と対処（reset 等）を提示する。
+# A checksum mismatch of an applied migration (sqlx's "previously applied but has been modified") is a
+# deterministic failure. Stop immediately without retrying and present the cause (modified applied file) and the fix (reset etc.).
 : >"$DOCKER_STUB_LOG"
 set +e
 DOCKER_STUB_MIGRATE_CHECKSUM_MISMATCH=1 ./scripts/deploy.sh migrate >"$TMP/deploy-checksum-fail.out" 2>&1
 status=$?
 set -e
 [[ $status -eq 1 ]] || { echo "deploy must fail fast on migration checksum mismatch" >&2; cat "$TMP/deploy-checksum-fail.out" >&2; exit 1; }
-grep -q 'チェックサム' "$TMP/deploy-checksum-fail.out" ||
+grep -q 'checksum' "$TMP/deploy-checksum-fail.out" ||
   { echo "checksum mismatch guidance must explain the checksum error" >&2; exit 1; }
 grep -q 'version 2' "$TMP/deploy-checksum-fail.out" ||
   { echo "checksum mismatch guidance must name the affected migration version" >&2; exit 1; }
 grep -q './deploy.sh reset' "$TMP/deploy-checksum-fail.out" ||
   { echo "checksum mismatch guidance must offer the reset remedy" >&2; exit 1; }
-# 結論（初期化が必要）を明示すること。
-grep -q '初期化' "$TMP/deploy-checksum-fail.out" ||
+# State the conclusion (initialization needed) explicitly.
+grep -q 'must be initialized' "$TMP/deploy-checksum-fail.out" ||
   { echo "checksum mismatch guidance must state that DB re-initialization is required" >&2; exit 1; }
-# バックアップコマンドは compose の service（mariadb）経由で解決すること（v1/v2 の命名差に耐える）。
+# The backup command resolves via compose's service (mariadb) (robust to v1/v2 naming differences).
 grep -q 'exec -T mariadb sh -c' "$TMP/deploy-checksum-fail.out" ||
   { echo "backup command must resolve the mariadb service via compose (v1/v2 safe)" >&2; exit 1; }
-# Compose v2 固定のコンテナ名（project-mariadb-1）を直書きしないこと（v1 では project_mariadb_1）。
+# Do not hard-code the Compose v2 container name (project-mariadb-1) (v1 uses project_mariadb_1).
 if grep -qE 'docker exec [^ ]*-mariadb-1' "$TMP/deploy-checksum-fail.out"; then
   echo "backup command must not hardcode a compose-v2 container name" >&2
   exit 1
 fi
-# 対処案内を MariaDB のコンテナログ（無関係なノイズ）で埋もれさせないこと。
+# Do not bury the guidance in MariaDB's container logs (unrelated noise).
 if grep -q '\[idp\]\[diagnostic\] logs tail: mariadb' "$TMP/deploy-checksum-fail.out"; then
   echo "checksum mismatch must not bury guidance under mariadb container logs" >&2
   exit 1
 fi
 
-# バックアップ対象 DB 名は ENV > .env の順で解決すること（MARIADB_DATABASE を環境で上書きしたら
-# 既定 idp ではなくその DB をダンプするコマンドを出す）。
+# The DB name to back up resolves in the order ENV > .env (if MARIADB_DATABASE is overridden in the environment,
+# the command dumps that DB rather than the default idp).
 : >"$DOCKER_STUB_LOG"
 set +e
 MARIADB_DATABASE=tenantdb DOCKER_STUB_MIGRATE_CHECKSUM_MISMATCH=1 ./scripts/deploy.sh migrate >"$TMP/deploy-checksum-dbname.out" 2>&1
 set -e
 grep -q -- '--single-transaction tenantdb' "$TMP/deploy-checksum-dbname.out" ||
   { echo "backup command must honor MARIADB_DATABASE env override (env > .env)" >&2; cat "$TMP/deploy-checksum-dbname.out" >&2; exit 1; }
-# 決定論的な失敗はリトライしない（migrate は 1 回だけ実行される）。
+# Deterministic failures are not retried (migrate runs only once).
 if [[ "$(grep -c 'run --rm -T migrate' "$DOCKER_STUB_LOG")" -ne 1 ]]; then
   echo "checksum mismatch must not be retried (migrate should run exactly once)" >&2
   cat "$DOCKER_STUB_LOG" >&2
@@ -395,8 +395,8 @@ if grep -q 'DB migration failed after 3 attempts' "$TMP/deploy-checksum-fail.out
   exit 1
 fi
 
-# 秘密値に sed のメタ文字（[ . * ^ $ | 等）が含まれても mask_secrets が壊れないこと。マスク処理は
-# migrate 成功時にも毎回走るため、ここが失敗すると成功デプロイまで pipefail で中断してしまう。
+# mask_secrets must not break even if secret values contain sed metacharacters ([ . * ^ $ | etc.). Masking runs
+# on every successful migrate too, so a failure here would abort even successful deployments via pipefail.
 orig_pw_line="$(grep '^MARIADB_PASSWORD=' .env)"
 : >"$DOCKER_STUB_LOG"
 sed -i 's|^MARIADB_PASSWORD=.*|MARIADB_PASSWORD=p[a.s*s^d$x|' .env
@@ -409,11 +409,11 @@ if grep -qF 'p[a.s*s^d$x' "$TMP/deploy-metachar-secret.out"; then
   echo "metacharacter secret must be masked (not leaked) in deploy output" >&2
   exit 1
 fi
-# .env を元のパスワードへ戻し、後続テストへ影響させない。
+# Restore .env to the original password so later tests are not affected.
 sed -i "s|^MARIADB_PASSWORD=.*|${orig_pw_line}|" .env
 
-# 短い値（開発・CI で使う MARIADB_PASSWORD=idp 等）をマスク対象にしてはならない。マスクはログ本文への
-# 単純な部分文字列置換なので、`idp` を潰すと `[idp][diagnostic]` まで消えて診断が読めなくなる。
+# Short values (MARIADB_PASSWORD=idp etc. used in development and CI) must not be masked. Masking is a simple
+# substring replacement on log text, so mangling `idp` would also erase `[idp][diagnostic]`, making diagnostics unreadable.
 : >"$DOCKER_STUB_LOG"
 set +e
 MARIADB_PASSWORD=idp MARIADB_ROOT_PASSWORD=root DOCKER_STUB_FAIL_UP=1 \
@@ -424,9 +424,9 @@ set -e
 grep -q '\[idp\]\[diagnostic\] compose ps' "$TMP/deploy-short-secret.out" ||
   { echo "short secret values must not be masked (diagnostics became unreadable)" >&2; cat "$TMP/deploy-short-secret.out" >&2; exit 1; }
 
-# DB 資格情報は .env の字面ではなく Compose が解決した実効値（mariadb コンテナの環境変数）を使うこと。
-# `.env` の dotenv 構文（引用符・インラインコメント・変数展開）を deploy.sh 側で再実装すると必ず
-# 食い違い、パスワード同期が誤った値を DB へ書き込んでしまう。
+# DB credentials use the effective value resolved by Compose (the mariadb container's environment), not the .env text.
+# Reimplementing `.env`'s dotenv syntax (quotes, inline comments, variable expansion) in deploy.sh always
+# diverges, and password sync would write a wrong value into the DB.
 : >"$DOCKER_STUB_LOG"
 export DOCKER_STUB_CONTAINER_ENV_FILE="$TMP/container-env"
 cat > "$DOCKER_STUB_CONTAINER_ENV_FILE" <<'ENVEOF'
@@ -435,7 +435,7 @@ MARIADB_DATABASE=idp
 MARIADB_PASSWORD=resolved-secret
 MARIADB_ROOT_PASSWORD=resolved-root-secret
 ENVEOF
-# .env には Compose なら `resolved-secret` に解決される書き方（引用符＋インラインコメント）を置く。
+# Put in .env a form (quotes + inline comment) that Compose resolves to `resolved-secret`.
 sed -i 's|^MARIADB_PASSWORD=.*|MARIADB_PASSWORD="resolved-secret" # rotated|' .env
 ./scripts/deploy.sh migrate >"$TMP/deploy-resolved-secret.out" 2>&1
 grep -qF -- '-presolved-secret' "$DOCKER_STUB_LOG" ||
@@ -444,7 +444,7 @@ if grep -qF -- '-p"resolved-secret"' "$DOCKER_STUB_LOG"; then
   echo "raw .env text must not be passed through to the DB client" >&2
   exit 1
 fi
-# 実効値は .env の字面と一致しなくてもマスクされること（診断出力からの漏洩防止）。
+# The effective value is masked even if it does not match the .env text (prevents leaks via diagnostic output).
 if grep -qF 'resolved-secret' "$TMP/deploy-resolved-secret.out"; then
   echo "Compose-resolved secret must be masked in deploy output" >&2
   exit 1
@@ -453,8 +453,8 @@ sed -i "s|^MARIADB_PASSWORD=.*|${orig_pw_line}|" .env
 rm -f "$DOCKER_STUB_CONTAINER_ENV_FILE"
 unset DOCKER_STUB_CONTAINER_ENV_FILE
 
-# 資格情報は正しいが DB へのアクセス権が無い場合（1044）は、パスワード不一致（1045）ではない。
-# 権限を勝手に GRANT で広げず、破壊的な reset も勧めない汎用エラーとして報告する。
+# Correct credentials without access to the DB (1044) are not a password mismatch (1045).
+# Report it as a generic error that neither widens privileges via GRANT nor recommends the destructive reset.
 : >"$DOCKER_STUB_LOG"
 set +e
 DOCKER_STUB_FAIL_DB_PRIV=1 DOCKER_STUB_ROOT_AUTH_OK=1 \
@@ -474,8 +474,8 @@ if grep -q './deploy.sh reset' "$TMP/deploy-db-priv-fail.out"; then
   exit 1
 fi
 
-# アプリ用ユーザーの認証が失敗しても root が有効なら、DB 側のパスワードを .env へ揃えて復旧し、
-# デプロイを続行する（既存データを保持したまま drift を解消する）。
+# If the app user's authentication fails but root is valid, align the DB-side password with .env to recover
+# and continue deploying (resolving drift while keeping existing data).
 : >"$DOCKER_STUB_LOG"
 export DOCKER_STUB_SYNCED_MARKER="$TMP/db-password-synced"
 rm -f "$DOCKER_STUB_SYNCED_MARKER"
@@ -499,8 +499,8 @@ fi
 rm -f "$DOCKER_STUB_SYNCED_MARKER"
 unset DOCKER_STUB_SYNCED_MARKER
 
-# アプリ用ユーザーでも root でも認証できない場合（= .env ごと別物）は、意味のない migrate リトライでは
-# なくプリフライトで即座に停止し、原因と対処を提示する。
+# When neither the app user nor root can authenticate (= the .env as a whole differs), stop immediately in the preflight
+# instead of pointless migrate retries, and present the cause and fix.
 : >"$DOCKER_STUB_LOG"
 set +e
 DOCKER_STUB_FAIL_DB_AUTH=1 ./scripts/deploy.sh migrate >"$TMP/deploy-db-auth-fail.out" 2>&1
@@ -526,8 +526,8 @@ if grep -q "$(grep '^MARIADB_PASSWORD=' .env | cut -d= -f2-)" "$TMP/deploy-db-au
   exit 1
 fi
 
-# 認証以外（例: DB 不在）でプリフライトが失敗する場合は、破壊的な reset を勧める password-drift
-# 診断ではなく、汎用の接続/クエリ失敗として報告する（誤ってデータ削除へ誘導しない）。
+# When the preflight fails for non-authentication reasons (e.g. missing DB), report it as a generic connection/query failure,
+# not the password-drift diagnosis recommending the destructive reset (do not lead to data deletion by mistake).
 : >"$DOCKER_STUB_LOG"
 set +e
 DOCKER_STUB_FAIL_DB_CONN=1 ./scripts/deploy.sh migrate >"$TMP/deploy-db-conn-fail.out" 2>&1
@@ -559,13 +559,13 @@ if grep -q "$(grep '^MARIADB_PASSWORD=' .env | cut -d= -f2-)" "$TMP/deploy-fail.
   exit 1
 fi
 
-# --- バンドル配置（build.sh が出力する dist/ 相当。deploy.sh の隣に compose と tar） ---
+# --- Bundle layout (equivalent to build.sh's dist/ output; compose and tars next to deploy.sh) ---
 mkdir -p "$TMP/bundle/docker"
 cp "$ROOT/scripts/deploy.sh" "$TMP/bundle/"
 cp "$ROOT/docker-compose.deploy.yml" "$TMP/bundle/docker-compose.yml"
 cp "$ROOT/.env.example" "$TMP/bundle/"
 cp "$ROOT/docker/nginx.conf" "$TMP/bundle/docker/"
-# build.sh は既定トポロジ（domain-split）の override 一式も必ず同梱する。
+# build.sh always bundles the override set for the default topology (domain-split) too.
 cp "$ROOT/docker-compose.domain-split.yml" "$TMP/bundle/"
 cp "$ROOT/docker/nginx.domain-split.conf" "$TMP/bundle/docker/"
 for svc in api web migrate; do
@@ -576,10 +576,10 @@ cd "$TMP/bundle"
 
 : >"$DOCKER_STUB_LOG"
 ./deploy.sh app >"$TMP/deploy-bundle.out" 2>&1
-grep -q 'ログイン URL:' "$TMP/deploy-bundle.out"
+grep -q 'Login URL:' "$TMP/deploy-bundle.out"
 grep -q -- '--project-name idp-bundle -f docker-compose.yml' "$DOCKER_STUB_LOG"
 
-# manifest と image ID が食い違う場合は tar を読み込み、なお不一致なら失敗する。
+# When the manifest and the image ID disagree, load the tar, and fail if they still disagree.
 sed -i 's/^api_image_id=.*/api_image_id=sha256:expected-other-id/' manifest.env
 : >"$DOCKER_STUB_LOG"
 if ./deploy.sh app >"$TMP/deploy-bundle-mismatch.out" 2>&1; then
@@ -587,9 +587,9 @@ if ./deploy.sh app >"$TMP/deploy-bundle-mismatch.out" 2>&1; then
   exit 1
 fi
 grep -q 'load -i' "$DOCKER_STUB_LOG"
-grep -q 'image ID が manifest と不一致' "$TMP/deploy-bundle-mismatch.out"
+grep -q 'does not match the manifest' "$TMP/deploy-bundle-mismatch.out"
 
-# --- stg ディレクトリでは初回 .env を .env.staging.example から生成する（ディレクトリ名で環境判定） ---
+# --- In a stg directory the first .env is generated from .env.staging.example (environment decided by directory name) ---
 mkdir -p "$TMP/stg/docker"
 cp "$ROOT/scripts/deploy.sh" "$TMP/stg/"
 cp "$ROOT/docker-compose.deploy.yml" "$TMP/stg/docker-compose.yml"
@@ -605,12 +605,12 @@ cd "$TMP/stg"
 
 : >"$DOCKER_STUB_LOG"
 ./deploy.sh migrate >"$TMP/deploy-stg.out" 2>&1
-grep -q '生成元: .env.staging.example' "$TMP/deploy-stg.out" ||
+grep -q 'source: .env.staging.example' "$TMP/deploy-stg.out" ||
   { echo "stg dir must seed .env from .env.staging.example" >&2; cat "$TMP/deploy-stg.out" >&2; exit 1; }
 grep -q '^WEB_PORT=10010$' .env || { echo "stg .env must use staging WEB_PORT (10010)" >&2; exit 1; }
 grep -q '^IMAGE_TAG=stg$' .env || { echo "stg .env must use staging IMAGE_TAG (stg)" >&2; exit 1; }
 grep -q '^COMPOSE_PROJECT_NAME=idp-stg$' .env || { echo "stg .env must use idp-stg project name" >&2; exit 1; }
-# DATABASE_URL はテンプレートの :3307 を保持しつつ CHANGE-ME を実パスワードへ置換する。
+# DATABASE_URL keeps the template's :3307 while replacing CHANGE-ME with the real password.
 grep -qE '^DATABASE_URL=mysql://idp:[0-9a-f]+@127\.0\.0\.1:3307/idp$' .env ||
   { echo "stg DATABASE_URL must keep :3307 and fill the password" >&2; cat .env >&2; exit 1; }
 if grep -qE '^[A-Za-z_][A-Za-z0-9_]*=.*CHANGE-ME' .env; then
@@ -619,15 +619,15 @@ if grep -qE '^[A-Za-z_][A-Za-z0-9_]*=.*CHANGE-ME' .env; then
 fi
 grep -q -- '--project-name idp-stg -f docker-compose.yml' "$DOCKER_STUB_LOG"
 grep -q '^API_PORT=10011$' .env || { echo "stg .env must use staging API_PORT (10011)" >&2; exit 1; }
-# ADR-0018 決定 4: セッション Cookie は host-only。COOKIE_DOMAIN は既定で設定しない
-# （旧構成からの移行掃除でのみ一時的に有効化する）。
+# ADR-0018 decision 4: the session Cookie is host-only. COOKIE_DOMAIN is not set by default
+# (enabled only temporarily for migration cleanup from the old setup).
 if grep -qE '^COOKIE_DOMAIN=' .env; then
   echo "stg .env must not set COOKIE_DOMAIN by default (ADR-0018)" >&2; exit 1
 fi
 
-# --- 既存 .env にプレースホルダ CHANGE-ME が残っている場合はコンテナ起動前に fail-fast する ---
-# （.env.*.example を手動コピーして置換し忘れると、api が KEY_ENCRYPTION_KEY を base64 として
-#   解釈できず crash-loop する。deploy.sh が原因のキー名と生成コマンドを明示して止めること。）
+# --- If placeholder CHANGE-ME remains in an existing .env, fail fast before starting containers ---
+# (If `.env.*.example` is copied by hand and not replaced, the api cannot decode KEY_ENCRYPTION_KEY as base64
+#   and crash-loops. deploy.sh must stop, naming the offending key and the generation command.)
 sed -i 's|^KEY_ENCRYPTION_KEY=.*|KEY_ENCRYPTION_KEY=CHANGE-ME|' .env
 : >"$DOCKER_STUB_LOG"
 set +e
@@ -635,7 +635,7 @@ set +e
 status=$?
 set -e
 [[ $status -eq 1 ]] || { echo "deploy must fail fast when CHANGE-ME remains in .env" >&2; cat "$TMP/deploy-placeholder.out" >&2; exit 1; }
-grep -q 'CHANGE-ME が残っています: KEY_ENCRYPTION_KEY' "$TMP/deploy-placeholder.out" ||
+grep -q 'CHANGE-ME remains in .env: KEY_ENCRYPTION_KEY' "$TMP/deploy-placeholder.out" ||
   { echo "placeholder diagnostic must name the offending key" >&2; cat "$TMP/deploy-placeholder.out" >&2; exit 1; }
 grep -q 'openssl rand -base64 32' "$TMP/deploy-placeholder.out" ||
   { echo "placeholder diagnostic must include the generation command" >&2; exit 1; }

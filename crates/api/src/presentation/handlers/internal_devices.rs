@@ -1,8 +1,8 @@
-//! 利用者の端末の一覧と、ログインした端末の結び付け（`/internal/devices/*`・`/internal/account/devices*`。
-//! task #872。ADR-0071）。
+//! The user's device list and binding signed-in devices (`/internal/devices/*`, `/internal/account/devices*`,
+//! task #872, ADR-0071).
 //!
-//! どれも web だけが呼ぶ内部の口（サービストークンの内側）。判定は Application 層
-//! （`DeviceRegistryService`）にあり、ここは DTO の詰め替えだけを行う。
+//! All are internal endpoints called only by web (behind the service token). Decisions are in the application layer
+//! (`DeviceRegistryService`); this only repacks DTOs.
 
 use crate::application::audit::RequestContext;
 use crate::application::device_registry::{
@@ -23,7 +23,7 @@ use axum::response::Response;
 use axum::Json;
 use uuid::Uuid;
 
-/// ログインしたばかりの SSO セッションへ端末を結び付ける（`POST /internal/devices/observe`）。
+/// Binds a device to the just-signed-in SSO session (`POST /internal/devices/observe`).
 pub async fn observe(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -45,8 +45,8 @@ pub async fn observe(
             &ctx,
         )
         .await;
-    // ログイン履歴（task #879）。端末の判定と同じ所で写す（国はここでしか分からない）。
-    // 端末の判定が失敗しても履歴は残す（登録の有無は分からない扱い）。
+    // Sign-in history (task #879). Recorded at the same place as the device decision (the country is only known here).
+    // Even if the device decision fails, the history is kept (registration status treated as unknown).
     let device_registered = match &outcome {
         Ok(ObserveOutcome::Registered) => Some(true),
         Ok(ObserveOutcome::Unregistered) if req.device_token.is_some() => Some(false),
@@ -74,12 +74,12 @@ pub async fn observe(
     })
 }
 
-/// 「端末」の欄（`POST /internal/account/devices`）。
+/// The "devices" section (`POST /internal/account/devices`).
 pub async fn account_devices(
     State(state): State<AppState>,
     Json(req): Json<InternalAccountDevicesRequest>,
 ) -> Result<Json<InternalAccountDevicesResponse>, Response> {
-    // テナントは必須（他の `/internal/account/*` と同じ fail-closed）。
+    // Tenant is required (fail-closed like the other `/internal/account/*`).
     let _tenant =
         require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let outcome = state
@@ -115,7 +115,7 @@ pub async fn account_devices(
     }))
 }
 
-/// 今のブラウザを端末として登録する（`POST /internal/account/devices/register`）。
+/// Registers the current browser as a device (`POST /internal/account/devices/register`).
 pub async fn account_register_device(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -161,7 +161,7 @@ pub async fn account_register_device(
     }))
 }
 
-/// 端末の登録を取り消す（`POST /internal/account/devices/revoke`）。
+/// Revokes a device registration (`POST /internal/account/devices/revoke`).
 pub async fn account_revoke_device(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,

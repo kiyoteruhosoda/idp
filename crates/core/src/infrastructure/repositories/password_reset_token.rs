@@ -1,7 +1,7 @@
-//! `PasswordResetTokenRepository` の sqlx 実装（MT18）。
+//! sqlx implementation of `PasswordResetTokenRepository` (MT18).
 //!
-//! 消費は「UPDATE（未使用・期限内のみ）→ SELECT」の 2 段で行い、`rows_affected == 0` を
-//! 使用済み・期限切れ・不存在として扱う（authorization code と同じ one-time パターン）。
+//! Consumption is done in two steps, "UPDATE (unused and unexpired only) -> SELECT", and `rows_affected == 0`
+//! is treated as used, expired or nonexistent (the same one-time pattern as authorization codes).
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::password_reset::{PasswordResetToken, ResetPurpose};
@@ -22,7 +22,7 @@ impl SqlxPasswordResetTokenRepository {
         Self { pool }
     }
 
-    /// 期限切れ行の掃除（`expired_records` の `ExpiringRecordStore` 実装）が使う。
+    /// Used by expired-row cleanup (the `ExpiringRecordStore` implementation in `expired_records`).
     pub(super) fn pool(&self) -> &Db {
         &self.pool
     }
@@ -46,7 +46,7 @@ fn map_row(row: &MySqlRow) -> Result<PasswordResetToken> {
         token_hash: row.try_get("token_hash").map_err(repo_err)?,
         user_id: Uuid::parse_str(&user_id)
             .map_err(|e| DomainError::Repository(format!("invalid UUID `{user_id}`: {e}")))?,
-        // ⚠ 知らない用途を既定へ丸めない（丸めると、その用途でだけ許した操作が黙って通る）。
+        // ⚠ Don't round unknown purposes to a default (rounding would silently allow operations permitted only for that purpose).
         purpose: ResetPurpose::parse(&purpose).ok_or_else(|| {
             DomainError::Repository(format!("unknown password reset purpose `{purpose}`"))
         })?,
@@ -104,7 +104,7 @@ impl PasswordResetTokenRepository for SqlxPasswordResetTokenRepository {
         row.as_ref().map(map_row).transpose()
     }
 
-    /// 消費せずに引く（未使用・期限内のみ）。リンクを開いた画面が中身を出すために使う。
+    /// Looks up without consuming (unused and unexpired only). Used by the screen opened from the link to show its contents.
     async fn find_active(
         &self,
         token_hash: &str,

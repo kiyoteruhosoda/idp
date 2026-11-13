@@ -1,18 +1,18 @@
-//! パスワード変更ユースケース（ADR-0009 §5）。
+//! Password change use case (ADR-0009 §5).
 //!
-//! `LoginService` が検出した `must_change_password`（`LoginOutcome::PasswordChangeRequired`）を受けて、
-//! ログイン中の `auth_session_id`（パスワード検証済み状態）を用いて新パスワードを設定する。
-//! 「ログイン済みユーザーが現行パスワードで認証したうえで新パスワードを設定する」フローに限定する
-//! （ADR-0009 §5）ため、現行パスワードの再入力を要求する。
+//! Receives the `must_change_password` detected by `LoginService` (`LoginOutcome::PasswordChangeRequired`)
+//! and sets a new password using the in-progress login's `auth_session_id` (password already verified).
+//! Limited to the flow "a logged-in user authenticates with the current password and then sets a new one"
+//! (ADR-0009 §5), so the current password must be entered again.
 //!
-//! 成功後の SSO 発行 → 同意チェック → code 発行は `LoginService`／`MfaLoginService` と共通のフロー
-//! （`CodeIssuanceService` を再利用）。
+//! After success, SSO issuance -> consent check -> code issuance is the same flow as `LoginService` / `MfaLoginService`
+//! (reusing `CodeIssuanceService`).
 //!
-//! 本サービスは SSO セッション・code を**発行する側**のため、発行前に認証ポリシー
-//! （ユーザー認証・認証ポリシー仕様書 §9）を再評価する。`must_change_password` は自動生成
-//! パスワードでの新規作成だけでなく**管理者による既存ユーザーのパスワード再発行**でも立つため、
-//! 「変更後に MFA 判定は不要」とは限らない。`require_mfa` 一致時は TOTP 設定済みなら MFA ステップへ
-//! 誘導し、未設定なら単一要素での成立を拒否する（LoginService と同じ規則。仕様 §24.4）。
+//! This service is **the issuer** of the SSO session and code, so it re-evaluates the authentication policy
+//! (user authentication & authentication policy spec §9) before issuing. `must_change_password` is set not only
+//! when creating a user with a generated password but also when **an admin reissues an existing user's password**,
+//! so "no MFA check needed after the change" does not hold. On a `require_mfa` match, a user with TOTP set up is
+//! sent to the MFA step, and one without is refused single-factor completion (same rule as LoginService; spec §24.4).
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authentication_policy_gate::{
@@ -42,52 +42,52 @@ pub struct ChangePasswordCommand {
 }
 
 pub enum ChangePasswordOutcome {
-    /// 変更成功かつ同意済み。code 付き redirect_to へ 302 する。
+    /// Change succeeded and consent exists. 302 to redirect_to with the code.
     Success {
         location: String,
-        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        /// Hidden fields to POST for `form_post` (G12). `None` means `query`.
         form_post: Option<Vec<(String, String)>>,
         sso_session_id: String,
-        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        /// `Max-Age` of the SSO cookie (seconds until the established session's absolute expiry. ADR-0058).
         sso_absolute_ttl_secs: u64,
     },
-    /// 変更成功だが同意が必要。同意画面へ誘導する。
+    /// Change succeeded but consent is needed. Send to the consent screen.
     ConsentRequired {
         auth_session_id: String,
         sso_session_id: String,
-        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        /// `Max-Age` of the SSO cookie (seconds until the established session's absolute expiry. ADR-0058).
         sso_absolute_ttl_secs: u64,
     },
-    /// 変更成功だが認証ポリシーが MFA を必須とし、TOTP 設定済み。TOTP 入力画面へ誘導する
-    /// （`auth_session_id` Cookie は維持。SSO はまだ発行しない）。
+    /// Change succeeded, the authentication policy requires MFA, and TOTP is set up. Send to the TOTP input screen
+    /// (the `auth_session_id` cookie is kept; SSO is not issued yet).
     MfaRequired {
         auth_session_id: String,
     },
-    /// 変更は成功したが認証ポリシーによりログインを拒否（仕様 §7.4 `deny`）。SSO は発行しない。
-    /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
-    /// SSO セッションは発行する（assay には入れている）ので、他のアプリへはそのまま進める。
+    /// Change succeeded but the authentication policy denies login (spec §7.4 `deny`). SSO is not issued.
+    /// Authentication passed, but use of this application is not permitted (ADR-0054). ⚠ **Do not return to the RP.**
+    /// The SSO session is issued (the user is signed in to assay), so other applications proceed as usual.
     ApplicationNotPermitted {
-        /// 画面に出すアプリ名。どのアプリで断られたかが分からないと、次に誰へ頼めばよいかを
-        /// 利用者が決められない。
+        /// Application name shown on screen. Without knowing which application refused them, the user
+        /// cannot decide whom to ask next.
         application_name: String,
         sso_session_id: String,
-        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        /// `Max-Age` of the SSO cookie (seconds until the established session's absolute expiry. ADR-0058).
         sso_absolute_ttl_secs: u64,
     },
     PolicyDenied,
-    /// 変更は成功したが認証ポリシーが MFA を必須とし、使用可能な認証器（確認済み TOTP）が無い。
-    /// ポータルから MFA を設定するよう案内する。SSO は発行しない。
+    /// Change succeeded but the authentication policy requires MFA and there is no usable authenticator (verified TOTP).
+    /// Guide the user to set up MFA from the portal. SSO is not issued.
     MfaEnrollmentRequired,
-    /// AuthSession が無い・期限切れ・パスワード変更待ち状態でない（`/authorize` からやり直し）。
+    /// No AuthSession, expired, or not awaiting a password change (start over from `/authorize`).
     SessionExpired,
-    /// CSRF トークン不一致。
+    /// CSRF token mismatch.
     CsrfMismatch,
-    /// 現行パスワードが不一致。
+    /// Current password does not match.
     InvalidCurrentPassword,
-    /// 新パスワードがポリシーを満たさない（長さ・漏えい済み・再利用。AP7）。
+    /// The new password does not satisfy the policy (length, breached, reused. AP7).
     WeakPassword(PasswordRejection),
-    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916）。SSO セッションは
-    /// 作っていない。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    /// Authentication passed, but in an organization limited to registered devices this device is not registered (task #916).
+    /// No SSO session was created. web puts `ticket` in a cookie and sends the user to the device registration screen.
     DeviceEnrollmentRequired {
         ticket: String,
     },
@@ -98,9 +98,9 @@ pub struct ChangePasswordService {
     auth_sessions: Arc<dyn AuthSessionRepository>,
     users: Arc<dyn UserRepository>,
     totp_secrets: Arc<dyn TotpSecretRepository>,
-    /// 認証ポリシーの評価（材料の引き当てと評価。`authentication_policy_gate`）。
+    /// Authentication policy evaluation (looking up inputs and evaluating. `authentication_policy_gate`).
     policy_gate: Arc<AuthenticationPolicyGate>,
-    /// 認証が成立した後の共通の後段（SSO の確立・認可フローの続き）。
+    /// Shared tail after authentication succeeds (establishing SSO, continuing the authorization flow).
     sign_in: Arc<SignInCompletion>,
     hasher: Arc<dyn PasswordHasher>,
     password_policy: Arc<PasswordPolicyService>,
@@ -146,7 +146,7 @@ impl ChangePasswordService {
         let now = self.clock.now();
         let tenant_id = tenant.tenant_id();
 
-        // 1. auth_session_id から AuthSession を取得する（フローのテナントに限る）。
+        // 1. Fetch the AuthSession from auth_session_id (limited to the flow's tenant).
         let Some(session_id) = cmd.auth_session_id.as_deref().filter(|s| !s.is_empty()) else {
             return ChangePasswordOutcome::SessionExpired;
         };
@@ -164,12 +164,12 @@ impl ChangePasswordService {
             return ChangePasswordOutcome::SessionExpired;
         }
 
-        // 2. パスワード変更待ち状態か確認する（password_verified_at が設定されている必要がある）。
+        // 2. Check it is awaiting a password change (password_verified_at must be set).
         let Some(user_id) = session.password_verified_user() else {
             return ChangePasswordOutcome::SessionExpired;
         };
 
-        // 3. CSRF トークン検証（login_csrf_token と同じ導出を使う）。
+        // 3. Verify the CSRF token (same derivation as login_csrf_token).
         if !assay_contracts::csrf::verify(
             &assay_contracts::csrf::login_csrf_token(session_id, &self.csrf_secret),
             &cmd.csrf_token,
@@ -190,20 +190,20 @@ impl ChangePasswordService {
 
         let client_id = session.client_id().to_string();
 
-        // 4. ユーザーを取得して有効・変更待ちであることを確認する。
+        // 4. Fetch the user and check it is active and awaiting a change.
         let user = match self.users.find_by_id(user_id).await {
             Ok(Some(u)) => u,
             Ok(None) => return ChangePasswordOutcome::SessionExpired,
             Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
         };
-        // 変更を要求されている状態か（強制フラグ、または有効期限切れ。AP7）。有効期限は利用者の
-        // 所属元テナントのポリシーで測る（ADR-0058）。
+        // Whether a change is required (forced flag, or expired. AP7). Expiry is measured by the policy
+        // of the user's home tenant (ADR-0058).
         let password_policy = match self.password_policy.policy(user.tenant_id).await {
             Ok(policy) => policy,
             Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
         };
         if !user.is_active() || !password_change_required(&user, &password_policy, now) {
-            // 変更不要な状態でこのエンドポイントに来るのは想定外（多重送信等）。fail-closed。
+            // Reaching this endpoint when no change is needed is unexpected (double submit etc.). Fail closed.
             tracing::warn!(
                 correlation_id = %ctx.correlation_id,
                 "password change rejected: user not in must-change state (duplicate submit?)"
@@ -211,7 +211,7 @@ impl ChangePasswordService {
             return ChangePasswordOutcome::SessionExpired;
         }
 
-        // 5. 現行パスワードを検証する。
+        // 5. Verify the current password.
         let verified = match self
             .hasher
             .verify(&cmd.current_password, &user.password_hash)
@@ -234,8 +234,8 @@ impl ChangePasswordService {
             return ChangePasswordOutcome::InvalidCurrentPassword;
         }
 
-        // 6. 新パスワードがポリシーを満たすか検証し（長さ・漏えい済み・再利用。AP7）、
-        //    ハッシュ化して保存する。
+        // 6. Check the new password satisfies the policy (length, breached, reused. AP7),
+        //    then hash and store it.
         match self
             .password_policy
             .validate(
@@ -254,7 +254,7 @@ impl ChangePasswordService {
             Ok(h) => h,
             Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
         };
-        // 現行ハッシュを条件にした置き換え（AP7。`account_password` と同じ理由）。
+        // Replace conditioned on the current hash (AP7; same reason as `account_password`).
         match self
             .users
             .update_password(user.id, &user.password_hash, &new_hash)
@@ -285,11 +285,11 @@ impl ChangePasswordService {
             )
             .await;
 
-        // 6.5. 認証ポリシー評価（仕様 §9）。本サービスは SSO・code を発行する側のため、発行前に
-        //      LoginService と同じ規則を適用する（`must_change_password` は管理者による既存ユーザーの
-        //      パスワード再発行でも立つため、TOTP 設定済みユーザーもこの経路を通り得る）。
-        //      パスワード変更自体は本人のセルフサービスとして完了させ、セッション発行のみをゲートする。
-        // 認可要求の `acr_values`（AP3 の `requested_acr` 条件が参照する）。
+        // 6.5. Evaluate the authentication policy (spec §9). This service issues SSO and codes, so apply
+        //      the same rules as LoginService before issuing (`must_change_password` is also set when an admin
+        //      reissues an existing user's password, so users with TOTP set up can take this path too).
+        //      The password change itself completes as self-service; only session issuance is gated.
+        // `acr_values` of the authorization request (used by AP3's `requested_acr` condition).
         let requested_acr = session.request().requested_acr();
         let decision = match self
             .policy_gate
@@ -328,8 +328,8 @@ impl ChangePasswordService {
                         Err(e) => return ChangePasswordOutcome::Internal(e.to_string()),
                     };
                 if has_totp {
-                    // AuthSession は `authenticated_user_id` と `password_verified_at` が設定済み
-                    //（MFA pending 相当）のため、そのまま TOTP 検証ステップへ引き継げる。
+                    // The AuthSession has `authenticated_user_id` and `password_verified_at` set
+                    // (equivalent to MFA pending), so it can be handed to the TOTP verification step as-is.
                     return ChangePasswordOutcome::MfaRequired {
                         auth_session_id: session_id.to_string(),
                     };
@@ -347,14 +347,14 @@ impl ChangePasswordService {
                     .await;
                 return ChangePasswordOutcome::MfaEnrollmentRequired;
             }
-            // `require_specific_method`（AP3）。この経路が完了した時点で使った方式はパスワードだけ。
+            // `require_specific_method` (AP3). When this path completes, the only method used is the password.
             PolicyDecision::RequireMethods { .. } => {
                 let used = [AuthenticationMethod::Password];
                 if let Some(unmet) = decision.unmet_method_requirement(&used, false) {
-                    // 第二要素を足せば満たせる利用者は MFA ステップへ送る（`require_mfa` と同じ扱い）。
-                    // AuthSession は `authenticated_user_id` と `password_verified_at` が設定済み
-                    // （MFA pending 相当）なので、そのまま `MfaLoginService` へ引き継げる。そちらが
-                    // 最終的な方式集合で判定し直すため、満たせない第二要素で通ることはない。
+                    // Users who can satisfy it by adding a second factor go to the MFA step (same as `require_mfa`).
+                    // The AuthSession has `authenticated_user_id` and `password_verified_at` set
+                    // (equivalent to MFA pending), so it can be handed to `MfaLoginService` as-is. That service
+                    // re-checks with the final set of methods, so an unsatisfying second factor cannot pass.
                     let has_totp =
                         match user_has_confirmed_totp(self.totp_secrets.as_ref(), user.id).await {
                             Ok(v) => v,
@@ -388,7 +388,7 @@ impl ChangePasswordService {
             PolicyDecision::Allow { .. } => {}
         }
 
-        // 7. SSO セッションを確立し、認可フローを続ける（同意の確認 → code 発行）。
+        // 7. Establish the SSO session and continue the authorization flow (consent check -> code issuance).
         let sso = match self
             .sign_in
             .establish_sso(

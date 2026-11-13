@@ -1,10 +1,10 @@
-//! 認証器の自己管理（AP9）を実 DB で通す統合テスト。
+//! Integration tests running authenticator self-management (AP9) against a real DB.
 //!
-//! 画面（web）は step-up のゲートを抜けてから api を呼ぶ。ここを通していなかったため、
-//! **TOTP の登録が本番で一度も成功していなかった**ことに画面からしか気付けなかった
-//! （api が `internal` を返し、web がログを残さずに 500 を出す）。
+//! The screen (web) calls api after passing the step-up gate. Because this was not tested,
+//! **that TOTP registration had never once succeeded in production** could only be noticed from the screen
+//! (api returned `internal`, and web returned 500 without logging).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test mfa_totp_self_registration
 
 mod support;
@@ -13,7 +13,7 @@ use axum::http::StatusCode;
 use serde_json::json;
 use support::{body_json, post_internal, send, SERVICE_TOKEN};
 
-/// step-up のゲート（画面が最初に通す）。
+/// The step-up gate (the screen passes it first).
 async fn step_up_check(app: &axum::Router, tenant: &str, sso: &str) -> serde_json::Value {
     let response = send(
         app,
@@ -32,11 +32,11 @@ async fn step_up_check(app: &axum::Router, tenant: &str, sso: &str) -> serde_jso
     body_json(response).await
 }
 
-/// ログイン直後の利用者は TOTP の登録を始められる。
+/// A user who just signed in can start TOTP registration.
 ///
-/// **QR の中身まで見る。** `otpauth://` URI は `{issuer}:{account}` を `:` で区切るため、
-/// issuer に OIDC の issuer URL（`https://…`）が混ざると URI が組めず、登録が丸ごと失敗する。
-/// 「200 が返った」だけでは、この失敗は捕まえられない。
+/// **Looks into the QR content.** The `otpauth://` URI separates `{issuer}:{account}` with `:`, so if the
+/// issuer contains the OIDC issuer URL (`https://…`) the URI cannot be built and registration fails entirely.
+/// "200 was returned" alone does not catch this failure.
 #[tokio::test]
 async fn a_signed_in_user_can_start_a_totp_registration() {
     let Some(env) = support::setup("totp self registration").await else {
@@ -48,7 +48,10 @@ async fn a_signed_in_user_can_start_a_totp_registration() {
     let sso = support::create_sso_session(&pool, &user_id).await;
 
     let check = step_up_check(&app, &tenant, &sso).await;
-    assert_eq!(check["result"], "satisfied", "ログイン直後は満たされている");
+    assert_eq!(
+        check["result"], "satisfied",
+        "satisfied right after sign-in"
+    );
 
     let response = send(
         &app,
@@ -63,17 +66,17 @@ async fn a_signed_in_user_can_start_a_totp_registration() {
     let setup = body_json(response).await;
     assert_eq!(
         setup["result"], "ok",
-        "TOTP の仮登録が始められること: {setup}"
+        "TOTP provisional registration can start: {setup}"
     );
 
     let uri = setup["totp_uri"].as_str().expect("totp_uri");
     assert!(uri.starts_with("otpauth://totp/"), "{uri}");
-    // 見出しは URL ではなくホスト名。スキームの `:` が残っていたら totp-rs が弾いている。
+    // The label is the host name, not the URL. If the scheme's `:` remained, totp-rs would reject it.
     assert!(
         !uri.contains("https%3A") && !uri.contains("http%3A"),
         "{uri}"
     );
-    // 宛名は api が利用者から引く（空だと認証アプリの一覧で見分けられない）。
+    // The account name is looked up from the user by api (empty would be indistinguishable in authenticator app lists).
     let account: String = sqlx::query_scalar("SELECT email FROM users WHERE id = ?")
         .bind(&user_id)
         .fetch_one(&pool)
@@ -82,14 +85,17 @@ async fn a_signed_in_user_can_start_a_totp_registration() {
     let encoded_account = account.replace('@', "%40");
     assert!(
         uri.contains(&encoded_account) || uri.contains(&account),
-        "QR に宛名が載ること: uri={uri} account={account}"
+        "the QR carries the account name: uri={uri} account={account}"
     );
 
     let secret = setup["secret_base32"].as_str().expect("secret_base32");
-    assert!(!secret.is_empty(), "QR が使えない利用者向けの生コード");
+    assert!(
+        !secret.is_empty(),
+        "raw code for users who cannot use the QR"
+    );
 }
 
-/// リカバリーコードの発行（AP9）。TOTP と同じ「認証器の自己管理」の並びにあり、同じく試験が無かった。
+/// Recovery code issuance (AP9). Sits next to TOTP in "authenticator self-management" and likewise had no test.
 #[tokio::test]
 async fn a_signed_in_user_can_issue_recovery_codes() {
     let Some(env) = support::setup("recovery codes").await else {
@@ -111,11 +117,11 @@ async fn a_signed_in_user_can_issue_recovery_codes() {
     .await;
     assert_eq!(response.status(), StatusCode::OK, "recovery codes status");
     let issued = body_json(response).await;
-    assert_eq!(issued["result"], "ok", "発行できること: {issued}");
+    assert_eq!(issued["result"], "ok", "can be issued: {issued}");
     let codes = issued["codes"].as_array().expect("codes");
-    assert!(!codes.is_empty(), "束が空でないこと: {issued}");
+    assert!(!codes.is_empty(), "the batch is not empty: {issued}");
 
-    // 画面が出す「残り n 本」に反映されること。
+    // Reflected in the "n remaining" the screen shows.
     let response = send(
         &app,
         post_internal(
@@ -127,10 +133,13 @@ async fn a_signed_in_user_can_issue_recovery_codes() {
     .await;
     assert_eq!(response.status(), StatusCode::OK, "authenticators status");
     let list = body_json(response).await;
-    assert_eq!(list["result"], "ok", "認証器一覧が引けること: {list}");
+    assert_eq!(
+        list["result"], "ok",
+        "the authenticator list can be fetched: {list}"
+    );
     assert_eq!(
         list["recovery_codes_remaining"],
         codes.len() as u64,
-        "残数が発行した本数と一致すること: {list}"
+        "the remaining count equals the number issued: {list}"
     );
 }

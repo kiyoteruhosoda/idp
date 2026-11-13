@@ -1,19 +1,19 @@
-//! 認証が成立した後の共通の後段（SSO の確立 → 認可フローの続き）。
+//! The common tail after authentication succeeds (establish SSO -> continue the authorization flow).
 //!
-//! ログイン・MFA・パスキー・パスワード変更・外部 IdP の 5 経路は、それぞれの方法で利用者を確かめた
-//! あと、同じ手順で終わる:
+//! The 5 paths (sign-in, MFA, passkey, password change, external IdP) each verify the user in their own way
+//! and then finish with the same steps:
 //!
-//! 1. [`SignInCompletion::establish_sso`] —— SSO セッションを作って保存し、監査に残す
-//! 2. [`SignInCompletion::continue_authorization`] —— 認可フローの途中から来ていれば、その
-//!    AuthSession に認証を記録し（id を付け替える。SEC7）、同意を確かめ、code を発行して
-//!    AuthSession を消す
+//! 1. [`SignInCompletion::establish_sso`]: create and save the SSO session and audit it
+//! 2. [`SignInCompletion::continue_authorization`]: if coming from the middle of an authorization flow, record
+//!    the authentication in that AuthSession (re-keying its id. SEC7), check consent, issue a code, and
+//!    delete the AuthSession
 //!
-//! # SSO セッションを先に保存する
+//! # Save the SSO session first
 //!
-//! 認証の記録（`sid` を AuthSession へ預ける）より先に SSO セッションを保存する。逆にすると、
-//! SSO の保存に失敗したときに「認証済みで、存在しない SSO セッションの `sid` を持つ AuthSession」が
-//! 残り、同意の承諾がそれで code を出せてしまう。この順なら、失敗して残るのは Cookie を誰にも
-//! 渡していない SSO の行だけである（期限で消える）。
+//! The SSO session is saved before recording the authentication (handing the `sid` to the AuthSession). In the reverse order,
+//! if saving the SSO failed, "an authenticated AuthSession holding the `sid` of a nonexistent SSO session" would
+//! remain, and accepting consent could issue a code with it. In this order, what remains on failure is only an SSO row
+//! whose Cookie was given to no one (it disappears on expiry).
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authorize::AuthorizationDispatch;
@@ -37,36 +37,36 @@ use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// 成立した認証（誰が・どの方式で・どこで）。
+/// A successful authentication (who, by which method, where).
 pub struct SignIn<'a> {
-    /// 認証したテナント（フローのテナント。監査の宛先）。
+    /// The tenant authenticated at (the flow's tenant. Audit destination).
     pub tenant_id: TenantId,
     pub user_id: Uuid,
-    /// 利用者の所属元テナント。SSO セッションの寿命はこちらの値（SSO セッションは全テナントで
-    /// 共有されるため。ADR-0058）。
+    /// The user's home tenant. The SSO session lifetime uses this tenant's value (since SSO sessions are
+    /// shared across all tenants. ADR-0058).
     pub home_tenant_id: TenantId,
-    /// 実際に検証された方式（ADR-0043。ID Token の `acr` / `amr` の出所）。
+    /// The methods actually verified (ADR-0043. Source of the ID Token's `acr` / `amr`).
     pub methods: Vec<AuthenticationMethod>,
-    /// 監査に載せるクライアント（認可フローの外なら `None`）。
+    /// The client recorded in the audit (`None` outside an authorization flow).
     pub client_id: Option<&'a str>,
-    /// 成功として監査に残すイベントと、その詳細。
+    /// The event to record as success in the audit, and its details.
     pub success_event: AuditEventType,
     pub success_detail: Option<String>,
 }
 
-/// 確立した SSO セッション（web へ渡す Cookie の平文を含む）。
+/// An established SSO session (including the plaintext Cookie passed to the web).
 pub struct EstablishedSso {
     session: SsoSession,
     session_id: String,
 }
 
 impl EstablishedSso {
-    /// web が host-only Cookie に置く値（平文）。
+    /// The value the web puts in a host-only Cookie (plaintext).
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
 
-    /// Cookie の `Max-Age`（絶対期限までの秒数。ADR-0058）。
+    /// The Cookie's `Max-Age` (seconds until the absolute expiry. ADR-0058).
     pub fn absolute_ttl_secs(&self) -> u64 {
         self.session.absolute_ttl_secs()
     }
@@ -76,19 +76,19 @@ impl EstablishedSso {
     }
 }
 
-/// SSO セッションを作ろうとした結論。
+/// Outcome of trying to create an SSO session.
 pub enum Establishment {
-    /// 作った。
+    /// Created.
     Established(EstablishedSso),
-    /// 登録した端末に限る組織で、登録していない端末だった（task #916。ADR-0079）。SSO セッションは
-    /// 作っていない。web は `ticket` を Cookie に置き、端末の登録の画面へ回す。
+    /// In an organization restricted to registered devices, the device was not registered (task #916. ADR-0079). No SSO session
+    /// was created. The web puts the `ticket` in a Cookie and redirects to the device registration screen.
     ///
-    /// ⚠ 経路ごとの outcome はこれを「ログインできた」に写してはならない。
+    /// ⚠ Per-path outcomes must not map this to "signed in".
     DeviceEnrollmentRequired { ticket: String },
 }
 
 impl Establishment {
-    /// 試験・登録の直後など、関門を通ると分かっている所で使う。
+    /// Used where the gate is known to pass, such as tests or right after registration.
     #[cfg(test)]
     pub fn expect_established(self) -> EstablishedSso {
         match self {
@@ -98,13 +98,13 @@ impl Establishment {
     }
 }
 
-/// 認可フローの続きの結論。
+/// Outcome of continuing the authorization flow.
 pub enum AuthorizationContinuation {
-    /// 同意が要る。web は新しい `auth_session_id` で同意画面へ進む。
+    /// Consent is needed. The web proceeds to the consent screen with the new `auth_session_id`.
     ConsentRequired { auth_session_id: String },
-    /// このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
+    /// Use of this app is not permitted (ADR-0054). ⚠ **Do not return to the RP.**
     ApplicationNotPermitted { application_name: String },
-    /// code を発行した。RP へ戻す。
+    /// A code was issued. Return to the RP.
     Authorized(AuthorizationDispatch),
 }
 
@@ -115,7 +115,7 @@ pub struct SignInCompletion {
     code_issuance: Arc<CodeIssuanceService>,
     audit: Arc<AuditService>,
     settings: Arc<dyn EffectiveTenantSettings>,
-    /// 登録した端末の関門（task #916）。`None` は関門なし（試験だけ。api は必ず付ける）。
+    /// The registered-device gate (task #916). `None` means no gate (tests only. The api always sets it).
     device_gate: Option<Arc<DeviceGate>>,
 }
 
@@ -139,13 +139,13 @@ impl SignInCompletion {
         }
     }
 
-    /// 登録した端末の関門を付ける（task #916。⚠ api の組み立てでは必ず呼ぶ）。
+    /// Attaches the registered-device gate (task #916. ⚠ always call this when assembling the api).
     pub fn with_device_gate(mut self, gate: Arc<DeviceGate>) -> Self {
         self.device_gate = Some(gate);
         self
     }
 
-    /// 関門を通るかを決める（関門が無ければ通す）。
+    /// Decides whether the gate passes (passes if there is no gate).
     async fn admit(
         &self,
         sign_in: &SignIn<'_>,
@@ -171,10 +171,10 @@ impl SignInCompletion {
         .await
     }
 
-    /// SSO セッションを作って保存し、監査に残す（`SsoSessionCreated` と成功のイベント）。
+    /// Creates and saves the SSO session and audits it (`SsoSessionCreated` and the success event).
     ///
-    /// 登録した端末に限る組織で登録していない端末なら、作らずに
-    /// [`Establishment::DeviceEnrollmentRequired`] を返す（task #916）。
+    /// In an organization restricted to registered devices, if the device is not registered, does not create one and
+    /// returns [`Establishment::DeviceEnrollmentRequired`] (task #916).
     pub async fn establish_sso(
         &self,
         sign_in: SignIn<'_>,
@@ -185,10 +185,10 @@ impl SignInCompletion {
             .await
     }
 
-    /// 結び付けの種類を決めて SSO セッションを作る（長さは `session_key::lifetime_for`）。
+    /// Decides the binding kind and creates the SSO session (the lifetime is `session_key::lifetime_for`).
     ///
-    /// 確立のときに結び付けが決まっているのは「アプリで承認」だけ（task #892。ADR-0077）。DBSC は確立の
-    /// 後に結び付くので、ここでは `Unbound` で作り、結び付けたときに延ばす（ADR-0074）。
+    /// The only binding decided at establishment is "approve in the app" (task #892. ADR-0077). DBSC binds after
+    /// establishment, so it is created as `Unbound` here and extended when bound (ADR-0074).
     pub async fn establish_sso_with_binding(
         &self,
         sign_in: SignIn<'_>,
@@ -253,9 +253,9 @@ impl SignInCompletion {
         }))
     }
 
-    /// 認可フローを続ける: 認証を記録し（id を付け替える）、同意を確かめ、code を発行する。
+    /// Continues the authorization flow: records the authentication (re-keying the id), checks consent, issues a code.
     ///
-    /// 認証時刻は `now`、`sid` と方式は確立した SSO セッションのもの。
+    /// The authentication time is `now`; `sid` and methods come from the established SSO session.
     pub async fn continue_authorization(
         &self,
         tenant: TenantContext,
@@ -281,7 +281,7 @@ impl SignInCompletion {
         )
         .await?;
         if !consented {
-            // 同意未完: AuthSession は認証済みのまま残す。
+            // Consent not complete: keep the AuthSession authenticated.
             return Ok(AuthorizationContinuation::ConsentRequired {
                 auth_session_id: completion.into_issued().into_string(),
             });
@@ -300,13 +300,13 @@ impl SignInCompletion {
             .await?;
         let code = match issuance {
             CodeIssuance::Issued(code) => code,
-            // 認証は通っているが、このアプリの利用が許可されていない（ADR-0054）。RP へは戻さない。
+            // Authenticated, but use of this app is not permitted (ADR-0054). Do not return to the RP.
             CodeIssuance::ApplicationDenied { application_name } => {
                 return Ok(AuthorizationContinuation::ApplicationNotPermitted { application_name });
             }
         };
 
-        // code を出したので AuthSession は役目を終えた（Cookie の失効は web が行う）。
+        // A code was issued, so the AuthSession has done its job (the web expires the Cookie).
         if let Err(e) = self.auth_sessions.delete(session.id_hash()).await {
             tracing::warn!(error = %e, "failed to delete auth session after code issuance");
         }

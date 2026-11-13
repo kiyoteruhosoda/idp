@@ -1,5 +1,5 @@
-//! 本番の web はソースマップ（`app.js.map`）を配らない（task #593）。画面の元のソースを丸ごと
-//! 渡す理由が無い。バンドル（`app.js`）は今までどおり配る。
+//! Production web does not serve the source map (`app.js.map`) (task #593). There is no reason to hand out
+//! the screen's original source wholesale. The bundle (`app.js`) is served as before.
 
 mod support;
 

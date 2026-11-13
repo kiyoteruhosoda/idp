@@ -1,8 +1,8 @@
-//! TOTP（Time-based One-Time Password）シークレットエンティティ。
+//! TOTP (Time-based One-Time Password) secret entity.
 //!
-//! MFA は任意。ユーザーが自分で登録・確認・削除する。
-//! `confirmed_at IS NULL` なら仮登録中（QR 確認未完了）。
-//! `confirmed_at IS NOT NULL` なら有効な MFA 設定。
+//! MFA is optional. Users register, confirm, and delete it themselves.
+//! `confirmed_at IS NULL` means provisionally registered (QR confirmation not completed).
+//! `confirmed_at IS NOT NULL` means an active MFA setting.
 
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -10,16 +10,16 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct TotpSecret {
     pub user_id: Uuid,
-    /// AES-256-GCM で暗号化したシークレットバイト列（`crypto::encrypt` 方式）。
+    /// Secret bytes encrypted with AES-256-GCM (the `crypto::encrypt` scheme).
     pub secret_encrypted: String,
-    /// NULL = 仮登録中、非 NULL = 有効化済み。
+    /// NULL = provisionally registered, non-NULL = activated.
     pub confirmed_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
 impl TotpSecret {
-    /// TOTP が有効（ユーザーがセットアップを完了している）か。
+    /// Whether TOTP is active (the user has completed setup).
     pub fn is_confirmed(&self) -> bool {
         self.confirmed_at.is_some()
     }

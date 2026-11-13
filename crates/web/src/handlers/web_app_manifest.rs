@@ -1,23 +1,23 @@
-//! 管理コンソールをホーム画面へ入れるためのマニフェスト（`GET /{tenant_id}/admin/manifest.webmanifest`）。
+//! Manifest for adding the admin console to the home screen (`GET /{tenant_id}/admin/manifest.webmanifest`).
 //!
-//! # テナントごとに 1 つ
+//! # One per tenant
 //!
-//! 管理コンソールの URL はテナント ID から始まるので、`start_url` と `scope` もテナントごとに
-//! 変わる。オリジン全体で 1 枚にすると、どのテナントの画面を開くかが決められない。`id` も
-//! テナントごとに分け、複数テナントの管理コンソールを別のアプリとして並べられるようにする。
+//! The admin console URL starts with the tenant ID, so `start_url` and `scope` differ per tenant too.
+//! A single one for the whole origin could not decide which tenant's screen to open. `id` is also
+//! split per tenant so that admin consoles of multiple tenants can sit side by side as separate apps.
 //!
-//! # 認証の外に置く
+//! # Kept outside authentication
 //!
-//! ⚠ **ここで管理者を確かめない。** ブラウザはマニフェストを Cookie 無しで取りに来る
-//! （`<link rel="manifest">` の既定は `crossorigin` 無し ＝ 資格情報を送らない）。ログイン画面へ
-//! 302 すると、HTML をマニフェストとして読んで「インストールできません」になる。中身はどの
-//! テナントでも同じ定型文で、テナントの名前も載せない（名前は認証の内側でしか引けない）。
+//! ⚠ **Do not check for an admin here.** Browsers fetch the manifest without cookies
+//! (`<link rel="manifest">` defaults to no `crossorigin` = no credentials sent). A 302 to the login
+//! screen would make the browser read HTML as the manifest and say "cannot be installed". The content is the
+//! same boilerplate for every tenant and does not include the tenant name (names are only available inside auth).
 //!
-//! # service worker は置かない
+//! # No service worker
 //!
-//! Chrome のインストール条件はマニフェストとアイコンだけで満たせる。service worker は
-//! 認証の後ろの画面を持つアプリでは壊れやすい（スクリプトの取得がログインへ飛ばされると
-//! 登録ごと失われる）うえ、この画面にオフラインで見せられるものは無い。
+//! Chrome's install criteria are met by the manifest and icons alone. A service worker is fragile
+//! in apps whose screens sit behind authentication (if fetching the script gets redirected to login,
+//! the registration is lost entirely), and this screen has nothing to show offline.
 
 use super::locale;
 use crate::i18n::Messages;
@@ -27,10 +27,10 @@ use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 
-/// 背景とテーマの色。アイコンの地（`assets/assay.svg` の試金石）と同じ。
+/// Background and theme color. Same as the icon's background (the touchstone in `assets/assay.svg`).
 const BACKGROUND: &str = "#0F1417";
 
-/// マニフェスト本体。
+/// The manifest body.
 pub async fn manifest(
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
@@ -38,13 +38,13 @@ pub async fn manifest(
     let messages = Messages::new(locale(&headers));
     let admin = format!("{}/admin", tenant.prefix());
     let body = serde_json::json!({
-        // `id` はインストール済みのアプリを見分ける鍵。テナントごとに別のアプリにする。
+        // `id` is the key that identifies an installed app. Make each tenant a separate app.
         "id": format!("{admin}/"),
         "name": format!("assay {}", messages.get("admin-console-title")),
         "short_name": "assay",
         "lang": messages.lang(),
         "start_url": admin,
-        // ⚠ 末尾の `/` を付けない。付けると `start_url`（`/admin`）自身が範囲の外になる。
+        // ⚠ No trailing `/`. With it, `start_url` (`/admin`) itself would fall outside the scope.
         "scope": admin,
         "display": "standalone",
         "background_color": BACKGROUND,
@@ -58,14 +58,14 @@ pub async fn manifest(
     (
         [
             (CONTENT_TYPE, "application/manifest+json; charset=utf-8"),
-            // 言語で中身が変わるので長く持たせない。
+            // The content varies by language, so do not keep it long.
             (CACHE_CONTROL, "public, max-age=86400"),
         ],
         body.to_string(),
     )
 }
 
-/// アイコン 1 つ。画面の他の資産と同じく `?v=` を付け、差し替えがデプロイで行き渡るようにする。
+/// One icon. Like other screen assets it gets `?v=` so replacements propagate on deploy.
 fn icon(file: &str, sizes: &str, purpose: &str) -> serde_json::Value {
     serde_json::json!({
         "src": format!("/assets/icons/{file}?v={}", crate::templates::asset_version()),
@@ -97,7 +97,7 @@ mod tests {
         serde_json::from_slice(&bytes).unwrap()
     }
 
-    /// 開く先・範囲・見分けの鍵がすべてそのテナントの管理コンソールを指す。
+    /// Start URL, scope and identity key all point to that tenant's admin console.
     #[tokio::test]
     async fn the_manifest_is_scoped_to_the_tenant_console() {
         let json = manifest_json("ja").await;
@@ -112,7 +112,7 @@ mod tests {
         assert_eq!(json["display"], "standalone");
     }
 
-    /// Chrome のインストール条件（192px と 512px の PNG）を満たす。
+    /// Meets Chrome's install criteria (192px and 512px PNGs).
     #[tokio::test]
     async fn the_manifest_carries_the_icons_chrome_requires() {
         let json = manifest_json("en").await;

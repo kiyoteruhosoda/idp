@@ -1,26 +1,26 @@
-//! 外部 IdP ログインのユースケース（AP10。ユーザー認証・認証ポリシー仕様書 §13）。
+//! External IdP login use case (AP10. User authentication & authentication policy spec §13).
 //!
-//! 2 段構え:
+//! Two stages:
 //!
-//! 1. [`start`](ExternalLoginService::start) — 外部 IdP の認可エンドポイントへ送る URL を組み立て、
-//!    `state` / `nonce` / PKCE の `code_verifier` を進行状態として保存する。
-//! 2. [`callback`](ExternalLoginService::callback) — 戻ってきた `state` で進行状態を**単回消費**し、
-//!    認可コードを ID Token へ交換、検証済みクレームの `iss` + `sub` で利用者を解決して
-//!    SSO セッションを発行する。
+//! 1. [`start`](ExternalLoginService::start) — builds the URL sent to the external IdP's authorization endpoint
+//!    and stores `state` / `nonce` / the PKCE `code_verifier` as in-progress state.
+//! 2. [`callback`](ExternalLoginService::callback) — **consumes the in-progress state once** using the returned `state`,
+//!    exchanges the authorization code for an ID Token, resolves the user by the verified claims' `iss` + `sub`, and
+//!    issues the SSO session.
 //!
-//! # 利用者の解決（§13.2）
+//! # Resolving the user (§13.2)
 //!
-//! `iss` + `sub` の連携が既にあればその利用者。無ければ:
+//! If an `iss` + `sub` link already exists, that user. Otherwise:
 //!
-//! - プロバイダが `allow_auto_link` を有効にしていて、外部 IdP が**検証済みと主張する**メールが
-//!   テナント内の既存利用者と一致すれば、その利用者へ連携を作る。
-//! - それ以外は拒否する（`NotLinked`）。**利用者を勝手に作らない** — 外部 IdP で認証できる人を
-//!   そのままテナントの利用者にすると、招待・権限付与という管理の入口が意味を失うため。
+//! - If the provider has `allow_auto_link` enabled and the email the external IdP **claims is verified**
+//!   matches an existing user in the tenant, a link to that user is created.
+//! - Otherwise it is refused (`NotLinked`). **Users are never created on the fly** — turning anyone who can
+//!   authenticate at the external IdP into a tenant user would make the admin entry points (invitation, permission grants) meaningless.
 //!
-//! # 認証ポリシー
+//! # Authentication policy
 //!
-//! 外部 IdP で本人確認できても、テナントの認証ポリシー（AP2/AP4）は同じように適用する。
-//! 「外部で認証した」ことは `deny` を免れる理由にならない。
+//! Even when identity is verified by the external IdP, the tenant's authentication policies (AP2/AP4) apply the same way.
+//! "Authenticated externally" is no reason to escape `deny`.
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authentication_policy_gate::{
@@ -49,105 +49,105 @@ use chrono::{DateTime, Duration, Utc};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use std::sync::Arc;
 
-/// 進行状態の寿命。外部 IdP でのログイン操作（同意・MFA を含む）に十分な長さ。
+/// Lifetime of the in-progress state. Long enough for login at the external IdP (including consent and MFA).
 const REQUEST_TTL_SECS: i64 = 600;
-/// `state` / `nonce` の乱数バイト数（いずれも 256bit）。
+/// Random bytes for `state` / `nonce` (256 bits each).
 const STATE_BYTES: usize = 32;
 
-/// 外部 IdP ログインの開始結果。
+/// Result of starting an external IdP login.
 pub enum StartOutcome {
-    /// 外部 IdP の認可エンドポイントへ 302 する。
+    /// 302 to the external IdP's authorization endpoint.
     Redirect {
         location: String,
-        /// 開始したブラウザにだけ渡す値（web が Cookie に置く。task #581）。戻り口でこれを
-        /// 示さないと進めない。DB にはハッシュだけを残す。
+        /// A value given only to the browser that started (web puts it in a cookie. task #581). Without presenting it
+        /// at the return endpoint, the flow can't proceed. Only its hash is kept in the DB.
         browser_binding: String,
     },
-    /// プロバイダが無い・無効。
+    /// Provider missing or disabled.
     ProviderUnavailable,
     Internal(String),
 }
 
 pub struct CallbackCommand {
-    /// 外部 IdP から戻ってきた `state`。
+    /// The `state` returned from the external IdP.
     pub state: String,
-    /// 認可コード。
+    /// Authorization code.
     pub code: String,
-    /// 戻ってきたブラウザが持っていた、開始時の値（Cookie。task #581）。
+    /// The value from the start held by the returning browser (cookie. task #581).
     pub browser_binding: Option<String>,
 }
 
-/// SAML の ACS（`AssertionConsumerService`）が受け取る値。ブラウザが HTTP-POST で運んでくる。
+/// Values received by the SAML ACS (`AssertionConsumerService`). The browser carries them via HTTP-POST.
 pub struct SamlAcsCommand {
-    /// `SAMLResponse`（base64(XML)）。**未検証**の値である。
+    /// `SAMLResponse` (base64(XML)). An **unverified** value.
     pub saml_response: String,
-    /// `RelayState`（開始時に発行した `state`）。進行状態を引く鍵。
+    /// `RelayState` (the `state` issued at start). The key to look up the in-progress state.
     pub relay_state: String,
-    /// 戻ってきたブラウザが持っていた、開始時の値（Cookie。task #581）。
+    /// The value from the start held by the returning browser (cookie. task #581).
     pub browser_binding: Option<String>,
 }
 
-/// 外部 IdP ログインの完了結果。
+/// Result of completing an external IdP login.
 pub enum CallbackOutcome {
-    /// 認証成功。SSO Cookie を発行する。
+    /// Authentication succeeded. Issue the SSO cookie.
     ///
-    /// `location` は認証後に送る先。OIDC 認可フローの途中から来ていれば **code 付きの
-    /// `redirect_uri`**（＝ RP へ戻す）、そうでなければ本サービス内の戻り先。ここを web 側に
-    /// 組み立てさせない（認可要求のパラメータは auth_session にしか無い）。
+    /// `location` is where to go after authentication. If it came from the middle of an OIDC authorization flow, it is
+    /// **the `redirect_uri` with the code** (= back to the RP); otherwise a return destination within this service. Don't let
+    /// web build this (the authorization request parameters exist only in auth_session).
     Success {
         location: SuccessLocation,
         sso_session_id: String,
-        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        /// `Max-Age` of the SSO cookie (seconds until the established session's absolute expiry. ADR-0058).
         sso_absolute_ttl_secs: u64,
         user_language: Option<String>,
     },
-    /// 外部 IdP での認証は通ったが、RP への同意がまだ。同意画面へ誘導する
-    /// （他のログイン経路と同じ扱い。外部で認証したことは同意の代わりにならない）。
+    /// Authentication at the external IdP passed, but consent for the RP is still missing. Send to the consent screen
+    /// (same as other login paths; authenticating externally doesn't replace consent).
     ConsentRequired {
         auth_session_id: String,
         sso_session_id: String,
-        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        /// `Max-Age` of the SSO cookie (seconds until the established session's absolute expiry. ADR-0058).
         sso_absolute_ttl_secs: u64,
         user_language: Option<String>,
     },
-    /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
-    /// SSO セッションは発行する（assay には入れている）ので、他のアプリへはそのまま進める。
+    /// Authentication passed, but use of this application is not permitted (ADR-0054). ⚠ **Do not return to the RP.**
+    /// The SSO session is issued (the user is signed in to assay), so other applications proceed as usual.
     ApplicationNotPermitted {
-        /// 画面に出すアプリ名。どのアプリで断られたかが分からないと、次に誰へ頼めばよいかを
-        /// 利用者が決められない。
+        /// Application name shown on screen. Without knowing which application refused them, the user
+        /// cannot decide whom to ask next.
         application_name: String,
         sso_session_id: String,
-        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        /// `Max-Age` of the SSO cookie (seconds until the established session's absolute expiry. ADR-0058).
         sso_absolute_ttl_secs: u64,
         user_language: Option<String>,
     },
-    /// `state` が無効・期限切れ・二重使用（外部 IdP からやり直し）。
+    /// `state` invalid, expired, or reused (start over from the external IdP).
     StateExpired,
-    /// 外部 IdP での認証は通ったが、assay に対応する利用者が居ない（連携も自動連携も不成立）。
+    /// Authentication at the external IdP passed, but there is no matching user in assay (neither a link nor auto-link).
     NotLinked,
-    /// 対応する利用者は居るが無効・ロック中。
+    /// A matching user exists but is disabled or locked.
     UserUnavailable,
-    /// 認証ポリシーによる拒否。
+    /// Denied by the authentication policy.
     PolicyDenied,
-    /// 外部 IdP との通信・トークン検証に失敗した。
+    /// Communication with the external IdP or token verification failed.
     ExternalFailure,
-    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916）。SSO セッションは
-    /// 作っていない。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    /// Authentication passed, but in an organization limited to registered devices this device is not registered (task #916).
+    /// No SSO session was created. web puts `ticket` in a cookie and sends the user to the device registration screen.
     DeviceEnrollmentRequired {
         ticket: String,
     },
     Internal(String),
 }
 
-/// 認証成功後の戻り先。
+/// Where to go after successful authentication.
 pub enum SuccessLocation {
-    /// OIDC 認可フローの続き。`location` は `query` なら code 付きの `redirect_uri`、
-    /// `form_post` ならフォームの送信先（G12。`form_post` が `Some` のとき自動送信フォームを描く）。
+    /// Continuation of the OIDC authorization flow. `location` is the `redirect_uri` with the code for `query`,
+    /// or the form target for `form_post` (G12; when `form_post` is `Some`, an auto-submitting form is rendered).
     Redirect {
         location: String,
         form_post: Option<Vec<(String, String)>>,
     },
-    /// 認可フローの外から来た。web が自分の画面（アカウント設定）へ戻す。
+    /// Came from outside the authorization flow. web returns to its own screen (account settings).
     Account,
 }
 
@@ -156,18 +156,18 @@ pub struct ExternalLoginService {
     identities: Arc<dyn ExternalIdentityRepository>,
     requests: Arc<dyn ExternalLoginRequestRepository>,
     users: Arc<dyn UserRepository>,
-    /// OIDC 認可フローの途中から来た場合に続きを進めるための依存（他のログイン経路と共通）。
+    /// Dependency for continuing when coming from the middle of an OIDC authorization flow (shared with other login paths).
     auth_sessions: Arc<dyn AuthSessionRepository>,
-    /// 認証が成立した後の共通の後段（SSO の確立・認可フローの続き）。
+    /// Shared tail after authentication succeeds (establishing SSO, continuing the authorization flow).
     sign_in: Arc<SignInCompletion>,
-    /// 認証ポリシーの評価（材料の引き当てと評価。`authentication_policy_gate`）。
+    /// Authentication policy evaluation (looking up inputs and evaluating. `authentication_policy_gate`).
     policy_gate: Arc<AuthenticationPolicyGate>,
     oidc: Arc<dyn ExternalOidcClient>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
     ids: Arc<dyn IdGenerator>,
     key_encryption_key: [u8; 32],
-    /// コールバックを受ける web の公開ベース URL（`{base}/{tenant}/external/{code}/callback`）。
+    /// Public base URL of web that receives the callback (`{base}/{tenant}/external/{code}/callback`).
     public_web_base_url: String,
 }
 
@@ -205,7 +205,7 @@ impl ExternalLoginService {
         }
     }
 
-    /// 外部 IdP への認可要求を組み立てる。
+    /// Builds the authorization request to the external IdP.
     pub async fn start(
         &self,
         tenant: TenantContext,
@@ -223,18 +223,18 @@ impl ExternalLoginService {
         };
 
         let now = self.clock.now();
-        // `state`（SAML では `RelayState`）は両プロトコル共通。進行状態を引く鍵になる。
+        // `state` (`RelayState` in SAML) is common to both protocols. It is the key to look up the in-progress state.
         let state = crypto::random_token(STATE_BYTES);
-        // 開始したブラウザにだけ渡す値。`state` と違って外部 IdP を通らない（task #581）。
+        // A value given only to the browser that started. Unlike `state`, it doesn't pass through the external IdP (task #581).
         let browser_binding = crypto::random_token(STATE_BYTES);
 
-        // プロトコルごとに「相手へ送る URL」と「相手が返してくる値」を決める。進行状態の作り方
-        // （単回消費・TTL・呼び出し元 auth_session）は共通なので、分けるのはここだけにする。
+        // Per protocol, decide "the URL sent to the peer" and "the value the peer returns". How the in-progress state is
+        // made (single use, TTL, caller's auth_session) is shared, so only this part differs.
         let (location, echoed_value, code_verifier_encrypted) = match &provider.config {
             ExternalIdpConfig::Oidc(oidc) => {
                 let nonce = crypto::random_token(STATE_BYTES);
-                // PKCE は外部 IdP が public クライアント登録でも安全に交換できるようにするため
-                // 常に付ける（S256 のみ。assay 自身が `/authorize` で強制しているのと同じ方針）。
+                // PKCE is always added so the exchange is safe even if the external IdP registered us as a public client
+                // (S256 only; same policy as assay itself enforces at `/authorize`).
                 let code_verifier = crypto::random_token(STATE_BYTES);
                 let code_challenge = pkce::s256_challenge(&code_verifier);
                 let encrypted =
@@ -264,8 +264,8 @@ impl ExternalLoginService {
                 (location, nonce, Some(encrypted))
             }
             ExternalIdpConfig::Saml(saml) => {
-                // SAML には PKCE も `nonce` も無い。相手が返してくるのは `AuthnRequest` の `ID`
-                // （応答の `InResponseTo`）なので、それを進行状態へ保存する。
+                // SAML has neither PKCE nor `nonce`. What the peer returns is the `ID` of the `AuthnRequest`
+                // (the response's `InResponseTo`), so that is stored in the in-progress state.
                 let request_id = saml_response::generate_saml_id();
                 let xml = saml_external_idp::build_authn_request_xml(
                     &saml_external_idp::AuthnRequestInput {
@@ -311,7 +311,7 @@ impl ExternalLoginService {
         }
     }
 
-    /// 外部 IdP からのコールバックを処理する。
+    /// Handles the callback from the external IdP.
     pub async fn callback(
         &self,
         tenant: TenantContext,
@@ -321,7 +321,7 @@ impl ExternalLoginService {
         let now = self.clock.now();
         let tenant_id = tenant.tenant_id();
 
-        // 1. `state` で進行状態を引き、**削除できた側だけ**が続行する（単回使用）。
+        // 1. Look up the in-progress state by `state`; **only the side that managed to delete it** continues (single use).
         let state_hash = crypto::sha256_hex(&cmd.state);
         let request = match self.requests.find_by_state(tenant_id, &state_hash).await {
             Ok(Some(r)) => r,
@@ -336,14 +336,14 @@ impl ExternalLoginService {
         if request.is_expired_at(now) {
             return CallbackOutcome::StateExpired;
         }
-        // 開始したブラウザか（task #581）。違えば、他人が途中まで進めた戻り URL を踏まされている。
-        // ⚠ 進行状態は消費済みにしておく（照合に失敗した値を使い回させない）。
+        // Is this the browser that started (task #581)? If not, it was made to follow a return URL someone else had advanced partway.
+        // ⚠ Leave the in-progress state consumed (don't let a value that failed matching be reused).
         if !request.is_bound_to(cmd.browser_binding.as_deref()) {
             self.record_browser_mismatch(tenant, &request, ctx).await;
             return CallbackOutcome::StateExpired;
         }
 
-        // 2. プロバイダ設定を読み直す（進行中に無効化された可能性がある）。
+        // 2. Reload the provider settings (it may have been disabled meanwhile).
         let provider = match self
             .providers
             .find_by_id(tenant_id, request.provider_id)
@@ -354,13 +354,13 @@ impl ExternalLoginService {
             Err(e) => return CallbackOutcome::Internal(e.to_string()),
         };
 
-        // 3. この経路は OIDC 専用である。SAML のプロバイダで来たら受け付けない（進行状態を
-        //    取り違えた要求で、正しい経路は ACS（[`Self::saml_acs`]）にある）。
+        // 3. This path is OIDC-only. A SAML provider is not accepted here (a request that mixed up the in-progress
+        //    state; the correct path is the ACS ([`Self::saml_acs`])).
         let Some(oidc) = provider.config.as_oidc() else {
             return CallbackOutcome::StateExpired;
         };
 
-        // 4. 秘密を復号する。
+        // 4. Decrypt the secret.
         let Some(encrypted_verifier) = request.code_verifier_encrypted.as_deref() else {
             return CallbackOutcome::StateExpired;
         };
@@ -382,7 +382,7 @@ impl ExternalLoginService {
             None => None,
         };
 
-        // 5. コードを交換し、ID Token を検証する（検証はポートの実装に閉じている）。
+        // 5. Exchange the code and verify the ID Token (verification is enclosed in the port's implementation).
         let redirect_uri = self.redirect_uri(tenant, &provider.provider_code);
         let claims = match self
             .oidc
@@ -401,8 +401,8 @@ impl ExternalLoginService {
         {
             Ok(c) => c,
             Err(e) => {
-                // 外部 IdP 側の事情（証明書・鍵・設定ミス）も含むため、利用者へは詳細を返さず
-                // 運用ログにだけ残す。
+                // This includes external-IdP-side issues (certificates, keys, misconfiguration), so no details go to the user;
+                // they are only kept in the operations log.
                 tracing::warn!(
                     error = %e,
                     provider = %provider.provider_code,
@@ -418,12 +418,12 @@ impl ExternalLoginService {
             .await
     }
 
-    /// 外部 IdP からの SAML 応答（HTTP-POST binding の ACS）を処理する。
+    /// Handles a SAML response from the external IdP (ACS with HTTP-POST binding).
     ///
-    /// `RelayState` で進行状態を単回消費し、アサーションを検証して主張を取り出したあとは、
-    /// **OIDC と同じ後半**（利用者の解決・状態確認・認証ポリシー・SSO 発行・認可フローの再開）を
-    /// 通る。プロトコルが違うのは「誰が認証されたかをどう確かめるか」までで、そこから先の
-    /// 判断は同じであるべきだからである。
+    /// After consuming the in-progress state once by `RelayState`, verifying the assertion and extracting the claims, it goes
+    /// through **the same second half as OIDC** (resolving the user, checking state, authentication policy, SSO issuance,
+    /// resuming the authorization flow). The protocols differ only up to "how to confirm who was authenticated"; the
+    /// decisions after that should be the same.
     pub async fn saml_acs(
         &self,
         tenant: TenantContext,
@@ -433,7 +433,7 @@ impl ExternalLoginService {
         let now = self.clock.now();
         let tenant_id = tenant.tenant_id();
 
-        // 1. `RelayState` で進行状態を引き、**削除できた側だけ**が続行する（単回使用）。
+        // 1. Look up the in-progress state by `RelayState`; **only the side that managed to delete it** continues (single use).
         let state_hash = crypto::sha256_hex(&cmd.relay_state);
         let request = match self.requests.find_by_state(tenant_id, &state_hash).await {
             Ok(Some(r)) => r,
@@ -448,8 +448,8 @@ impl ExternalLoginService {
         if request.is_expired_at(now) {
             return CallbackOutcome::StateExpired;
         }
-        // 開始したブラウザか（task #581）。違えば、他人が途中まで進めた戻り URL を踏まされている。
-        // ⚠ 進行状態は消費済みにしておく（照合に失敗した値を使い回させない）。
+        // Is this the browser that started (task #581)? If not, it was made to follow a return URL someone else had advanced partway.
+        // ⚠ Leave the in-progress state consumed (don't let a value that failed matching be reused).
         if !request.is_bound_to(cmd.browser_binding.as_deref()) {
             self.record_browser_mismatch(tenant, &request, ctx).await;
             return CallbackOutcome::StateExpired;
@@ -464,12 +464,12 @@ impl ExternalLoginService {
             Ok(_) => return CallbackOutcome::StateExpired,
             Err(e) => return CallbackOutcome::Internal(e.to_string()),
         };
-        // この経路は SAML 専用（OIDC の進行状態を持ち込ませない）。
+        // This path is SAML-only (don't let OIDC in-progress state be brought in).
         let Some(saml) = provider.config.as_saml() else {
             return CallbackOutcome::StateExpired;
         };
 
-        // 2. 署名を検証してから主張を読む。ここを通らない値は攻撃者が書いたものと区別できない。
+        // 2. Verify the signature before reading the claims. Values that don't pass here are indistinguishable from attacker-written ones.
         let assertion = match saml_external_idp::consume_response(
             &cmd.saml_response,
             &saml_external_idp::ResponseVerification {
@@ -482,8 +482,8 @@ impl ExternalLoginService {
         ) {
             Ok(v) => v,
             Err(e) => {
-                // 外部 IdP 側の事情（証明書の更新漏れ・設定ミス）も含むため、利用者へは詳細を
-                // 返さず運用ログにだけ残す。値そのもの（NameID・メール）は PII なので出さない。
+                // This includes external-IdP-side issues (missed certificate renewal, misconfiguration), so no details
+                // go to the user; they are only kept in the operations log. The values themselves (NameID, email) are PII and not output.
                 tracing::warn!(
                     error = %e,
                     provider = %provider.provider_code,
@@ -500,12 +500,12 @@ impl ExternalLoginService {
             }
         };
 
-        // 3. 以降は OIDC と同じ。`iss` + `sub` に当たるのが `Issuer` + `NameID` である。
+        // 3. From here on it's the same as OIDC. `Issuer` + `NameID` correspond to `iss` + `sub`.
         //
-        //    `email_verified` は **false** にする。SAML のアサーションにはメールの所有確認を
-        //    表す標準の主張が無く、属性として運ばれてくるだけである。true にすると
-        //    `allow_auto_link` が「検証済みメール一致」の条件を満たしたことになり、メールを
-        //    名乗るだけで既存アカウントへ入れてしまう（ADR-0023）。
+        //    `email_verified` is set to **false**. SAML assertions have no standard claim expressing email ownership
+        //    verification; it just arrives as an attribute. Setting true would make
+        //    `allow_auto_link` treat the "verified email match" condition as met, letting anyone who merely claims an
+        //    email get into an existing account (ADR-0023).
         let claims = crate::domain::external_idp::ExternalClaims {
             issuer: assertion.issuer,
             subject: assertion.name_id,
@@ -518,7 +518,7 @@ impl ExternalLoginService {
             .await
     }
 
-    /// 外部 IdP で本人確認できたあとの共通処理（プロトコルに依らない）。
+    /// Shared processing after identity is verified at the external IdP (protocol-independent).
     async fn complete(
         &self,
         tenant: TenantContext,
@@ -529,7 +529,7 @@ impl ExternalLoginService {
     ) -> CallbackOutcome {
         let now = self.clock.now();
         let tenant_id = tenant.tenant_id();
-        // 5. `iss` + `sub` で利用者を解決する。
+        // 5. Resolve the user by `iss` + `sub`.
         let identity = match self
             .identities
             .find_by_subject(provider.id, &claims.issuer, &claims.subject)
@@ -551,7 +551,7 @@ impl ExternalLoginService {
             },
         };
 
-        // 6. 利用者の状態を確認する。
+        // 6. Check the user's state.
         let user = match self.users.find_by_id(user_id).await {
             Ok(Some(u)) if u.is_active() && !u.is_locked_at(now) => u,
             Ok(_) => {
@@ -562,13 +562,13 @@ impl ExternalLoginService {
             Err(e) => return CallbackOutcome::Internal(e.to_string()),
         };
 
-        // 7. 認証ポリシー（AP2/AP3）。外部で認証したことは `deny` を免れる理由にならない。
+        // 7. Authentication policy (AP2/AP3). Authenticating externally is no reason to escape `deny`.
         //
-        //    OIDC 認可フローの途中から来た場合は、その auth_session を**評価より先に**引いて
-        //    アプリと `acr_values` を文脈に載せる。空文脈で評価すると `application_ids` や
-        //    `requested_acr` を条件に持つポリシーが一致せず、外部 IdP 経由なら条件付きの拒否・
-        //    方式指定を回避できてしまう（後段でこの auth_session を使って code を発行するので、
-        //    「クライアント文脈を持たない」わけではない）。ポータル起点なら空のままでよい。
+        //    If it came from the middle of an OIDC authorization flow, look up that auth_session **before evaluating**
+        //    and put the application and `acr_values` into the context. Evaluating with an empty context would let policies
+        //    conditioned on `application_ids` or `requested_acr` fail to match, so conditional denials and method requirements
+        //    could be bypassed via an external IdP (this auth_session is used to issue the code later, so it's not true that
+        //    "there is no client context"). If started from the portal, leaving it empty is fine.
         let originating_session = match request.auth_session_id_hash.as_deref() {
             Some(id_hash) => match self
                 .auth_sessions
@@ -587,8 +587,8 @@ impl ExternalLoginService {
             .as_ref()
             .map(|s| s.request().requested_acr())
             .unwrap_or_default();
-        // 認証ポリシーの宛先はアプリ（ADR-0054 の決定 5）。認可フローの外（アカウント設定から
-        // 始めた連携）には client が無い。
+        // The target of the authentication policy is the application (ADR-0054 decision 5). Outside the authorization flow
+        // (linking started from account settings) there is no client.
         let audience = match originating_session.as_ref() {
             Some(session) => PolicyAudience::OidcClient(session.client_id()),
             None => PolicyAudience::Unaddressed,
@@ -616,8 +616,8 @@ impl ExternalLoginService {
                 return CallbackOutcome::PolicyDenied;
             }
             PolicyDecision::RequireMfa { policy_code } => {
-                // 外部 IdP での認証は assay から見ると単一要素（外部側の MFA は観測できない。
-                // §13.3）。MFA 必須のポリシーが掛かる利用者は、この経路では通さない。
+                // From assay's point of view, external IdP authentication is single-factor (MFA on the external side isn't observable.
+                // §13.3). Users subject to an MFA-required policy are not let through on this path.
                 self.record_policy_denied(
                     tenant,
                     user.id,
@@ -628,8 +628,8 @@ impl ExternalLoginService {
                 return CallbackOutcome::PolicyDenied;
             }
             PolicyDecision::RequireMethods { .. } => {
-                // 外部 IdP 経由で記録される方式は `external_idp` のみ。要求と食い違えば通さない
-                // （外部側でどの認証器が使われたかは観測できないため、要求を満たしたとみなせない）。
+                // The only method recorded via an external IdP is `external_idp`. If it disagrees with the requirement, it doesn't pass
+                // (which authenticator was used on the external side can't be observed, so the requirement can't be considered met).
                 if let Some(unmet) =
                     decision.unmet_method_requirement(&[AuthenticationMethod::ExternalIdp], false)
                 {
@@ -649,14 +649,14 @@ impl ExternalLoginService {
             }
         }
 
-        // 8. 連携の利用時刻を更新する（初回連携は `auto_link` が作成済み）。
+        // 8. Update the link's last-used time (on first link, `auto_link` already created it).
         if let Some(existing) = identity {
             if let Err(e) = self.identities.touch_last_used(existing.id, now).await {
                 tracing::warn!(error = %e, "failed to record external identity usage");
             }
         }
 
-        // 9. SSO セッションを発行する（認可フローの外から来た場合もここで終わる）。
+        // 9. Issue the SSO session (it ends here too when coming from outside the authorization flow).
         let sso = match self
             .sign_in
             .establish_sso(
@@ -681,9 +681,9 @@ impl ExternalLoginService {
             Err(e) => return CallbackOutcome::Internal(e.to_string()),
         };
 
-        // 10. OIDC 認可フローの途中から来ていれば、その続きを進める（同意確認 → code 発行）。
-        //     ここで進めないと、認可要求のパラメータ（client_id・redirect_uri・PKCE・nonce）は
-        //     auth_session にしか無いため RP へ戻れない。
+        // 10. If it came from the middle of an OIDC authorization flow, proceed with the rest (consent check -> code issuance).
+        //     Without proceeding here, the authorization request parameters (client_id, redirect_uri, PKCE, nonce) exist
+        //     only in auth_session, so it couldn't get back to the RP.
         let Some(auth_session_id_hash) = request.auth_session_id_hash.clone() else {
             return CallbackOutcome::Success {
                 location: SuccessLocation::Account,
@@ -696,12 +696,12 @@ impl ExternalLoginService {
             .await
     }
 
-    /// 外部 IdP で認証した利用者について、中断していた OIDC 認可フローを再開する。
+    /// Resumes the interrupted OIDC authorization flow for a user authenticated at the external IdP.
     ///
-    /// 手順は他のログイン経路と同じ（`SignInCompletion::continue_authorization`）。ここが持つのは、
-    /// 外部 IdP の往復のあいだに auth_session が期限切れになった場合の扱いだけ: 外部 IdP での認証
-    /// 自体は成立しているので SSO は発行したまま、アカウント画面へ戻す（RP へは戻れないが、
-    /// ログインし直しは要らない）。
+    /// The steps are the same as other login paths (`SignInCompletion::continue_authorization`). All this owns is
+    /// handling the auth_session expiring during the round trip to the external IdP: authentication at the external IdP
+    /// itself succeeded, so the SSO stays issued and the user is returned to the account screen (they can't get back to
+    /// the RP, but don't need to log in again).
     async fn resume_authorization(
         &self,
         tenant: TenantContext,
@@ -724,7 +724,7 @@ impl ExternalLoginService {
         {
             Ok(Some(session)) if !session.is_expired_at(now) => session,
             Ok(_) => {
-                // 認可の再開はできないが、ログイン自体は成立している。
+                // Authorization can't be resumed, but the login itself succeeded.
                 tracing::info!("external login finished after its auth session had expired");
                 return CallbackOutcome::Success {
                     location: SuccessLocation::Account,
@@ -770,10 +770,10 @@ impl ExternalLoginService {
         }
     }
 
-    /// 検証済みメールの一致で既存利用者へ連携する（プロバイダが許可している場合のみ）。
+    /// Links to an existing user by a verified email match (only if the provider allows it).
     ///
-    /// 一致した利用者が居ても、外部 IdP が `email_verified` を主張していなければ連携しない。
-    /// 主張の無いメールで結び付けると、外部 IdP に登録できる誰でも他人のアカウントへ入れる。
+    /// Even if a user matches, no link is made unless the external IdP claims `email_verified`.
+    /// Linking by an unclaimed email would let anyone who can register at the external IdP into someone else's account.
     async fn auto_link(
         &self,
         tenant: TenantContext,
@@ -812,7 +812,7 @@ impl ExternalLoginService {
         };
         match self.identities.create(&identity).await {
             Ok(()) => Ok(Some(user.id)),
-            // 並行して同じ連携が作られた場合は、勝った側の連携を使う（作り直さない）。
+            // If the same link was created concurrently, use the winner's link (don't recreate).
             Err(crate::domain::error::DomainError::Conflict(_)) => {
                 let existing = self
                     .identities
@@ -825,10 +825,10 @@ impl ExternalLoginService {
         }
     }
 
-    /// コールバック URL（外部 IdP へ登録する `redirect_uri` と完全一致すること）。
-    /// assay の SP としての entityID（SAML の `Issuer` / `Audience`）。テナントごとに分ける
-    /// ——同じ entityID を全テナントで使うと、あるテナント向けのアサーションを別テナントの
-    /// ログインへ持ち込める。
+    /// Callback URL (must exactly match the `redirect_uri` registered at the external IdP).
+    /// assay's entityID as an SP (SAML `Issuer` / `Audience`). Separate per tenant
+    /// ——using the same entityID for all tenants would let an assertion meant for one tenant be carried into
+    /// another tenant's login.
     fn saml_sp_entity_id(&self, tenant: TenantContext) -> String {
         format!(
             "{}/{}/saml/sp",
@@ -837,7 +837,7 @@ impl ExternalLoginService {
         )
     }
 
-    /// アサーションを受け取る URL（ACS）。ブラウザが POST する先なので web 側に置く。
+    /// URL that receives assertions (ACS). It's where the browser POSTs, so it lives on the web side.
     fn saml_acs_url(&self, tenant: TenantContext, provider_code: &str) -> String {
         format!(
             "{}/{}/external/{provider_code}/saml/acs",
@@ -854,7 +854,7 @@ impl ExternalLoginService {
         )
     }
 
-    /// 戻ってきたブラウザが開始したブラウザでなかったことを監査に残す（task #581）。
+    /// Records in the audit that the returning browser was not the one that started (task #581).
     async fn record_browser_mismatch(
         &self,
         tenant: TenantContext,

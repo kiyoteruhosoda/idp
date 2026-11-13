@@ -1,14 +1,14 @@
-//! DPoP（RFC 9449）の証明を読む・確かめる（ADR-0075）。
+//! Reading and verifying DPoP (RFC 9449) proofs (ADR-0075).
 //!
-//! ここは時刻と要求（メソッド・URL・アクセストークン）だけから決まる確かめを受け持つ。
-//! 「同じ証明が 2 回来ていないか」は記録が要るので、application 層
-//! （`application::dpop_proof_verification`）が [`VerifiedDpopProof::replay_key`] で記録に当たる。
+//! This handles the checks determined only by time and the request (method, URL, access token).
+//! "Has the same proof come twice?" needs a record, so the application layer
+//! (`application::dpop_proof_verification`) checks the record using [`VerifiedDpopProof::replay_key`].
 //!
-//! - `typ` は `dpop+jwt`、`alg` は ES256 だけ（Android Keystore の P-256 の鍵。決定 2）
-//! - `jwk` は P-256 の公開鍵だけ。秘密の値（`d`）を含むものは断る
-//! - `htm` は大文字のメソッドと完全一致、`htu` は問い合わせと断片を外して比べる（決定 5）
-//! - `iat` は「今より [`MAX_PROOF_AGE_SECS`] 秒前」から「今より [`MAX_CLOCK_AHEAD_SECS`] 秒後」まで（決定 6）
-//! - リソースの口では `ath`（アクセストークンの SHA-256 の base64url）が合うこと
+//! - `typ` is `dpop+jwt`, `alg` is ES256 only (a P-256 key in Android Keystore. Decision 2)
+//! - `jwk` is a P-256 public key only. Anything containing the secret value (`d`) is refused
+//! - `htm` must exactly match the uppercase method; `htu` is compared with query and fragment removed (decision 5)
+//! - `iat` from "[`MAX_PROOF_AGE_SECS`] seconds before now" to "[`MAX_CLOCK_AHEAD_SECS`] seconds after now" (decision 6)
+//! - At resource endpoints, `ath` (base64url of the access token's SHA-256) must match
 
 use crate::domain::crypto::{base64url, sha256_hex};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -18,51 +18,51 @@ use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-/// `iat` が今よりどれだけ前まで受けるか（秒）。ADR-0075 決定 6。
+/// How far before now `iat` is accepted (seconds). ADR-0075 decision 6.
 pub const MAX_PROOF_AGE_SECS: i64 = 120;
-/// `iat` が今よりどれだけ先まで受けるか（秒）。端末の時計が進んでいる分。ADR-0075 決定 6。
+/// How far after now `iat` is accepted (seconds), for device clocks running fast. ADR-0075 decision 6.
 pub const MAX_CLOCK_AHEAD_SECS: i64 = 60;
-/// 受ける署名の方式（discovery の `dpop_signing_alg_values_supported`）。
+/// Accepted signing algorithms (discovery's `dpop_signing_alg_values_supported`).
 pub const SUPPORTED_ALGORITHMS: &[&str] = &["ES256"];
-/// 証明の JWT の `typ`。
+/// `typ` of the proof JWT.
 pub const PROOF_TYPE: &str = "dpop+jwt";
-/// `jti` の長さの上限。記録はハッシュで持つが、際限なく長い値は読まない。
+/// Max length of `jti`. Records hold a hash, but unboundedly long values are not read.
 const MAX_JTI_LEN: usize = 256;
 
-/// 証明に求めること（どの口に、どのメソッドで、どのトークンと一緒に来たか）。
+/// What is required of the proof (which endpoint, which method, and which token it came with).
 #[derive(Debug, Clone, Copy)]
 pub struct DpopProofRequirements<'a> {
-    /// 大文字の HTTP メソッド（`POST` / `GET`）。
+    /// Uppercase HTTP method (`POST` / `GET`).
     pub method: &'a str,
-    /// assay が discovery で名乗る、この口の URL（`{issuer}/token` など）。
+    /// The URL of this endpoint as advertised by assay in discovery (`{issuer}/token`, etc.).
     pub uri: &'a str,
-    /// リソースの口（`/userinfo`）で一緒に来たアクセストークン。トークンの口では `None`。
+    /// The access token that came with it at a resource endpoint (`/userinfo`). `None` at the token endpoint.
     pub access_token: Option<&'a str>,
     pub now: DateTime<Utc>,
 }
 
-/// 確かめ終えた証明。
+/// A verified proof.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedDpopProof {
-    /// 鍵の指紋（RFC 7638 の JWK Thumbprint。SHA-256 の base64url）。`cnf.jkt` に入る値。
+    /// Key fingerprint (RFC 7638 JWK Thumbprint. base64url of SHA-256). The value placed in `cnf.jkt`.
     pub jkt: String,
     pub jti: String,
     pub issued_at: DateTime<Utc>,
 }
 
 impl VerifiedDpopProof {
-    /// 使い回しを見る記録の鍵（`sha256(jkt ":" jti)` の 16 進）。`jti` の一意性は鍵ごと（決定 4）。
+    /// Key of the replay record (hex of `sha256(jkt ":" jti)`). Uniqueness of `jti` is per key (decision 4).
     pub fn replay_key(&self) -> String {
         sha256_hex(&format!("{}:{}", self.jkt, self.jti))
     }
 
-    /// この証明が時刻で断られるようになる時刻。記録はここまで残せば足りる。
+    /// The time after which this proof would be refused by time. The record only needs to be kept until then.
     pub fn retain_until(&self) -> DateTime<Utc> {
         self.issued_at + Duration::seconds(MAX_PROOF_AGE_SECS)
     }
 }
 
-/// 証明を断った理由。ログと試験のために分けるが、相手へは `invalid_dpop_proof` 1 つで返す。
+/// Reason the proof was refused. Split for logs and tests, but returned to the caller as a single `invalid_dpop_proof`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DpopProofRejection {
     Malformed,
@@ -76,7 +76,7 @@ pub enum DpopProofRejection {
     TooOld,
     FromTheFuture,
     AccessTokenHashMismatch,
-    /// 同じ鍵・同じ `jti` の証明が、受ける幅の中で既に使われた（application 層が判定する）。
+    /// A proof with the same key and `jti` was already used within the accepted window (decided by the application layer).
     Replayed,
 }
 
@@ -115,7 +115,7 @@ struct ProofClaims {
     ath: Option<String>,
 }
 
-/// P-256 の公開鍵（JWK の `x`・`y`。どちらも base64url の 32 バイト）。
+/// P-256 public key (JWK `x`, `y`. Both base64url of 32 bytes).
 struct PublicP256 {
     x: String,
     y: String,
@@ -123,7 +123,7 @@ struct PublicP256 {
 
 impl PublicP256 {
     fn from_jwk(jwk: &serde_json::Map<String, serde_json::Value>) -> Option<Self> {
-        // 秘密の値が入った鍵は断る（RFC 9449 §4.3 の 6: 秘密鍵を含めてはならない）。
+        // Refuse keys containing a secret value (RFC 9449 §4.3 item 6: must not include a private key).
         if jwk.contains_key("d") {
             return None;
         }
@@ -133,8 +133,8 @@ impl PublicP256 {
         }
         let coordinate = |name: &str| {
             let value = text(name)?;
-            // 32 バイトに戻ることまで見る。指紋の JSON に値をそのまま差し込むので、
-            // base64url 以外の文字（引用符など）を通さない。
+            // Check that it decodes back to 32 bytes. The value is inserted into the thumbprint JSON as is,
+            // so characters other than base64url (such as quotes) must not pass.
             let bytes = URL_SAFE_NO_PAD.decode(value).ok()?;
             (bytes.len() == 32).then(|| value.to_string())
         };
@@ -144,24 +144,24 @@ impl PublicP256 {
         })
     }
 
-    /// RFC 7638 の JWK Thumbprint（必須の欄を辞書順に、空白なしで並べた JSON の SHA-256）。
+    /// RFC 7638 JWK Thumbprint (SHA-256 of JSON with the required members in lexicographic order, no whitespace).
     fn thumbprint(&self) -> String {
         jwk_thumbprint_p256(&self.x, &self.y)
     }
 }
 
-/// P-256 の公開鍵（`x`・`y` は base64url）の JWK Thumbprint（RFC 7638）。
+/// JWK Thumbprint (RFC 7638) of a P-256 public key (`x`, `y` in base64url).
 pub fn jwk_thumbprint_p256(x: &str, y: &str) -> String {
     let canonical = format!(r#"{{"crv":"P-256","kty":"EC","x":"{x}","y":"{y}"}}"#);
     base64url(&Sha256::digest(canonical.as_bytes()))
 }
 
-/// アクセストークンの `ath`（SHA-256 の base64url。RFC 9449 §4.2）。
+/// The access token's `ath` (base64url of SHA-256. RFC 9449 §4.2).
 pub fn access_token_hash(access_token: &str) -> String {
     base64url(&Sha256::digest(access_token.as_bytes()))
 }
 
-/// `htu` を比べる形にそろえる（問い合わせと断片を外す。スキームとホストは `url` が小文字にする）。
+/// Normalizes `htu` into a comparable form (removes query and fragment. `url` lowercases scheme and host).
 fn comparable_uri(uri: &str) -> Option<String> {
     let mut parsed = url::Url::parse(uri).ok()?;
     if !matches!(parsed.scheme(), "https" | "http") {
@@ -172,7 +172,7 @@ fn comparable_uri(uri: &str) -> Option<String> {
     Some(parsed.to_string())
 }
 
-/// 証明を確かめる。使い回しの判定（記録）は呼び出し側が [`VerifiedDpopProof::replay_key`] で行う。
+/// Verifies a proof. Replay checks (records) are done by the caller with [`VerifiedDpopProof::replay_key`].
 pub fn verify_proof(
     proof: &str,
     expected: &DpopProofRequirements<'_>,
@@ -254,7 +254,7 @@ pub fn verify_proof(
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    //! 試験で証明を作る道具（アプリの代わり）。
+    //! Tools for making proofs in tests (standing in for the app).
     use super::*;
     use p256::ecdsa::signature::Signer as _;
     use p256::ecdsa::{Signature, SigningKey};
@@ -287,7 +287,7 @@ pub(crate) mod test_support {
             jwk_thumbprint_p256(jwk["x"].as_str().unwrap(), jwk["y"].as_str().unwrap())
         }
 
-        /// 任意のヘッダーと中身で署名する（壊れた証明を作る試験のため）。
+        /// Signs with arbitrary header and payload (for tests that make broken proofs).
         pub fn sign_raw(&self, header: &serde_json::Value, claims: &serde_json::Value) -> String {
             let signing_input = format!(
                 "{}.{}",
@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn the_thumbprint_matches_rfc_7638_example_shape() {
-        // RFC 7638 の手順: 必須の欄を辞書順・空白なしで並べた JSON の SHA-256。
+        // RFC 7638 procedure: SHA-256 of JSON with the required members in lexicographic order, no whitespace.
         let x = "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU";
         let y = "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0";
         let expected = base64url(&Sha256::digest(
@@ -445,7 +445,7 @@ mod tests {
     fn a_proof_signed_by_another_key_is_rejected() {
         let device = DeviceKey::generate();
         let thief = DeviceKey::generate();
-        // ヘッダーには持ち主の公開鍵を書き、盗んだ側の鍵で署名する。
+        // Put the owner's public key in the header and sign with the thief's key.
         let header =
             serde_json::json!({"typ": "dpop+jwt", "alg": "ES256", "jwk": device.public_jwk()});
         let claims = serde_json::json!({"jti": "j", "htm": "POST", "htu": TOKEN_URI, "iat": now().timestamp()});

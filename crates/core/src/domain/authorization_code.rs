@@ -1,17 +1,17 @@
-//! AuthorizationCode 集約（設計仕様 §3.5）。
+//! AuthorizationCode aggregate (design spec §3.5).
 //!
-//! 認可要求に対して、完了した認証の結果として発行する単回使用の code。DB には平文ではなく
-//! `code_hash = SHA-256(code)` を保存する。
+//! A single-use code issued for an authorization request as the result of a completed authentication. The DB stores
+//! `code_hash = SHA-256(code)`, not the plaintext.
 //!
-//! # 作り方と使い方
+//! # Creating and using it
 //!
-//! - 発行は [`AuthorizationCode::issue`] だけ（認可要求と認証から作り、平文の code も生成する）
-//! - `/token` での交換は、リポジトリが原子的に消費した code に対して
-//!   [`AuthorizationCode::redeem`] で「出してきた相手・`redirect_uri`・PKCE」を照合する
+//! - Issued only by [`AuthorizationCode::issue`] (built from the authorization request and authentication; also generates the plaintext code)
+//! - Exchange at `/token` checks "the presenting party, `redirect_uri`, PKCE" with
+//!   [`AuthorizationCode::redeem`] against the code the repository consumed atomically
 //!
-//! code が覚えておくのは、トークンを組み立てるのに要るものだけである: 誰に（`client_id`）、
-//! どこへ返したか（`redirect_uri`）、何を（`scope`・`nonce`）、どの PKCE で（`code_challenge`）、
-//! そして誰がどう認証したか（[`Authentication`]）。
+//! A code remembers only what is needed to build tokens: to whom (`client_id`),
+//! where it was returned (`redirect_uri`), what (`scope`, `nonce`), with which PKCE (`code_challenge`),
+//! and who authenticated and how ([`Authentication`]).
 
 use crate::domain::auth_session::Authentication;
 use crate::domain::authorization_request::{AuthorizationRequest, PkceChallenge};
@@ -21,7 +21,7 @@ use crate::domain::tenant::TenantId;
 use crate::domain::values::Scope;
 use chrono::{DateTime, Duration, Utc};
 
-/// code の平文（RP が `/token` へ持ってくる値）。bearer credential なので `Debug` に出さない。
+/// Plaintext of a code (the value the RP brings to `/token`). It is a bearer credential, so it is not shown in `Debug`.
 #[derive(Clone, PartialEq, Eq)]
 pub struct AuthorizationCodeValue(String);
 
@@ -30,7 +30,7 @@ impl AuthorizationCodeValue {
         Self(crypto::random_token(32))
     }
 
-    /// RP から提示された値を受け取る。空は「持っていない」と同じ。
+    /// Accepts the value presented by the RP. Empty is the same as "not having one".
     pub fn from_presented(raw: &str) -> Option<Self> {
         (!raw.is_empty()).then(|| Self(raw.to_string()))
     }
@@ -39,7 +39,7 @@ impl AuthorizationCodeValue {
         AuthorizationCodeHash(crypto::sha256_hex(&self.0))
     }
 
-    /// RP へ返す平文（認可応答に載る）。
+    /// The plaintext returned to the RP (carried in the authorization response).
     pub fn into_string(self) -> String {
         self.0
     }
@@ -51,7 +51,7 @@ impl std::fmt::Debug for AuthorizationCodeValue {
     }
 }
 
-/// code の SHA-256。DB の主キーであり、この code から始まるトークンファミリの鍵（SEC8）でもある。
+/// SHA-256 of a code. The DB primary key, and also the key of the token family starting from this code (SEC8).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AuthorizationCodeHash(String);
 
@@ -65,13 +65,13 @@ impl AuthorizationCodeHash {
     }
 }
 
-/// code が認めた認可の中身（認可要求のうち、トークン交換で要るもの）。
+/// The content of the authorization the code granted (the parts of the authorization request needed for token exchange).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodeGrant {
     client_id: String,
     redirect_uri: String,
     scope: Vec<String>,
-    /// 空文字 = 認可要求に `nonce` が無かった（ID Token にクレームごと載せない。ADR-0049）。
+    /// Empty string = the authorization request had no `nonce` (the claim is omitted from the ID Token entirely. ADR-0049).
     nonce: String,
     pkce: PkceChallenge,
 }
@@ -107,33 +107,33 @@ impl CodeGrant {
         &self.pkce
     }
 
-    /// その scope が認められているか。
+    /// Whether that scope is granted.
     pub fn includes(&self, scope: Scope) -> bool {
         self.scope.iter().any(|s| s == scope.as_str())
     }
 
-    /// 空白区切りの scope（トークン応答・アクセストークンの `scope`）。
+    /// Space-separated scopes (the `scope` of the token response and access token).
     pub fn scope_string(&self) -> String {
         self.scope.join(" ")
     }
 }
 
-/// 交換を断る理由（照合の順に並べてある）。
+/// Reasons to refuse the exchange (listed in the order of checking).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodeRedemptionRejection {
-    /// code は別のクライアントに発行された。
+    /// The code was issued to a different client.
     IssuedToAnotherClient,
-    /// `redirect_uri` が認可要求のものと一致しない（未指定を含む）。
+    /// `redirect_uri` does not match that of the authorization request (including when omitted).
     RedirectUriMismatch,
-    /// `code_verifier` が `code_challenge` に合わない。
+    /// `code_verifier` does not match `code_challenge`.
     PkceMismatch,
 }
 
-/// AuthorizationCode 集約。
+/// AuthorizationCode aggregate.
 #[derive(Debug, Clone)]
 pub struct AuthorizationCode {
     hash: AuthorizationCodeHash,
-    /// code を発行したテナント（ADR-0009 §8。トークン交換は同一テナントに限る）。
+    /// The tenant that issued the code (ADR-0009 §8. Token exchange is limited to the same tenant).
     tenant_id: TenantId,
     grant: CodeGrant,
     authentication: Authentication,
@@ -143,9 +143,9 @@ pub struct AuthorizationCode {
     updated_at: DateTime<Utc>,
 }
 
-/// 永続化から [`AuthorizationCode`] を組み立て直すための部品（列の並びそのまま）。
+/// Parts for rebuilding an [`AuthorizationCode`] from persistence (in column order).
 ///
-/// ⚠ **Infrastructure 層（リポジトリ実装）と試験のためだけ**にある。
+/// ⚠ Exists **only for the Infrastructure layer (repository implementations) and tests**.
 #[derive(Debug, Clone)]
 pub struct AuthorizationCodeParts {
     pub hash: AuthorizationCodeHash,
@@ -163,7 +163,7 @@ pub struct AuthorizationCodeParts {
 }
 
 impl AuthorizationCode {
-    /// 認可要求に、完了した認証の結果として code を発行する。平文は RP へ返すためだけに返す。
+    /// Issues a code for an authorization request as the result of a completed authentication. The plaintext is returned only to be returned to the RP.
     pub fn issue(
         tenant_id: TenantId,
         request: &AuthorizationRequest,
@@ -216,7 +216,7 @@ impl AuthorizationCode {
         &self.grant
     }
 
-    /// この code を与えた認証（ID Token の `sub` / `auth_time` / `sid` / `acr` / `amr` の出所）。
+    /// The authentication that granted this code (the source of the ID Token's `sub` / `auth_time` / `sid` / `acr` / `amr`).
     pub fn authentication(&self) -> &Authentication {
         &self.authentication
     }
@@ -245,8 +245,8 @@ impl AuthorizationCode {
         self.expires_at <= now
     }
 
-    /// 交換の照合（RFC 6749 §4.1.3・RFC 7636 §4.6）。消費（単回使用・期限・テナント）はリポジトリが
-    /// 済ませた後に呼ぶ。照合の順はクライアント → `redirect_uri` → PKCE。
+    /// Exchange checks (RFC 6749 §4.1.3, RFC 7636 §4.6). Called after the repository has handled consumption
+    /// (single use, expiry, tenant). Checks run in the order client -> `redirect_uri` -> PKCE.
     pub fn redeem(
         &self,
         client_id: &str,
@@ -273,7 +273,7 @@ mod tests {
     use crate::domain::values::AuthenticationMethod;
     use uuid::Uuid;
 
-    /// RFC 7636 付録 B の組（`test_support::request` の challenge とは別に、照合が通る組を使う）。
+    /// The pair from RFC 7636 Appendix B (a pair that passes the check, separate from the challenge in `test_support::request`).
     const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
     const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 
@@ -290,7 +290,7 @@ mod tests {
             now,
             Duration::seconds(60),
         );
-        // challenge を照合が通る値に差し替える（発行の口はそのまま使う）。
+        // Replace the challenge with one that passes the check (the issuing path is used as is).
         let (code, value) = code;
         let mut parts = to_parts(&code);
         parts.pkce = PkceChallenge::reconstitute(
@@ -339,7 +339,7 @@ mod tests {
         let (code, _) = issued(Utc::now());
         let cb = Some("https://client.example.com/cb");
         assert_eq!(code.redeem("app", cb, VERIFIER), Ok(()));
-        // 順序: 相手が違えば、他の項目が合っていなくても「別の相手」と答える。
+        // Order: if the party differs, answer "different party" even if other items also mismatch.
         assert_eq!(
             code.redeem("other", None, "x"),
             Err(CodeRedemptionRejection::IssuedToAnotherClient)

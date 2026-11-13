@@ -1,9 +1,9 @@
-//! SAML SSO の継続画面（`GET /{tenant_id}/saml/continue`）が、アプリの割り当てで断られたときの
-//! 振る舞い（ADR-0054。task #66）。
+//! Behaviour of the SAML SSO continue screen (`GET /{tenant_id}/saml/continue`) when refused by app
+//! assignment (ADR-0054; task #66).
 //!
-//! api が `application_not_permitted` を返したら、web は **ACS へ自動 POST するフォームを描かず**、
-//! OIDC の経路と同じ「このアプリの利用は許可されていません」の画面で断る。進行状態は api 側で
-//! 消費済みなので、`saml_request_id` Cookie も失効させる。
+//! When the api returns `application_not_permitted`, web **does not render the form auto-POSTing to the ACS**
+//! and refuses with the same "use of this app is not permitted" screen as the OIDC route. The progress state is
+//! already consumed on the api side, so the `saml_request_id` Cookie is also expired.
 
 mod support;
 
@@ -32,7 +32,7 @@ async fn a_denied_saml_sign_in_is_told_on_the_assay_screen_not_posted_to_the_sp(
     )
     .await;
 
-    // 403: 誰であるかは分かっているが、このアプリは使えない（OIDC の経路と同じ）。
+    // 403: we know who it is, but this app cannot be used (same as the OIDC route).
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     let saml_cookie = response
         .headers()

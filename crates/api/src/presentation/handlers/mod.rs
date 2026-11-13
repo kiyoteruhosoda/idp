@@ -1,4 +1,4 @@
-//! 各エンドポイントのハンドラ。
+//! Handlers for each endpoint.
 
 pub mod account_setup;
 pub mod admin;
@@ -60,7 +60,7 @@ use axum::http::header::{HeaderValue, LOCATION, USER_AGENT};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 
-/// `302 Found` リダイレクト（設計仕様 §4.2。axum の `Redirect::to` は 303 のため使わない）。
+/// `302 Found` redirect (design spec §4.2; axum's `Redirect::to` is 303, so it is not used).
 pub(crate) fn found(location: &str) -> Response {
     match HeaderValue::from_str(location) {
         Ok(value) => (StatusCode::FOUND, [(LOCATION, value)]).into_response(),
@@ -71,20 +71,20 @@ pub(crate) fn found(location: &str) -> Response {
     }
 }
 
-/// リクエストヘッダから監査コンテキストを組み立てる。
+/// Builds the audit context from request headers.
 ///
-/// `trust_forwarded` が `true` のときのみ `X-Forwarded-For` を信頼して実 IP を採用する。
-/// `false` のときはフォワードヘッダを無視する（ヘッダ偽装対策; S1）。
-/// 接続元ソケット IP を直接取得するには `ConnectInfo` extractor が必要なため、ここでは
-/// 信頼設定が無効の場合 `ip_address = None` となる（監査ログに IP が記録されない）。
+/// Only when `trust_forwarded` is `true` is `X-Forwarded-For` trusted to take the real IP.
+/// When `false`, forwarded headers are ignored (against header spoofing; S1).
+/// Getting the peer socket IP directly needs the `ConnectInfo` extractor, so here
+/// `ip_address = None` when trust is disabled (no IP is recorded in the audit log).
 pub(crate) fn request_context(
     headers: &HeaderMap,
     correlation: &CorrelationId,
     trust_forwarded: bool,
 ) -> RequestContext {
     let ip_address = if trust_forwarded {
-        // 採るのは**最右**の値（信頼するプロキシが追記した接続元）。先頭はクライアントが名乗った
-        // 値でありうるため、そこを見ると偽装がそのまま通る（SEC1。導出は web と共有する）。
+        // Take the **rightmost** value (the peer appended by the trusted proxy). The first may be what the client
+        // claimed, so looking there lets spoofing straight through (SEC1; the derivation is shared with web).
         assay_contracts::forwarded::client_ip(
             headers
                 .get_all("x-forwarded-for")
@@ -105,7 +105,7 @@ pub(crate) fn request_context(
     }
 }
 
-/// `AdminAccountGuardError` を `ApiError` に変換する（口座の操作・権限の付与の各口で共有。task #579）。
+/// Converts `AdminAccountGuardError` to `ApiError` (shared by the account operation and permission grant endpoints, task #579).
 pub(crate) fn map_admin_account_guard_error(
     e: AdminAccountGuardError,
     locale: ApiLocale,
@@ -118,7 +118,7 @@ pub(crate) fn map_admin_account_guard_error(
     }
 }
 
-/// `PermissionManagementError` を `ApiError` に変換する（`admin_permissions` と `admin_users` で共有）。
+/// Converts `PermissionManagementError` to `ApiError` (shared by `admin_permissions` and `admin_users`).
 pub(crate) fn map_permission_management_error(
     e: PermissionManagementError,
     locale: ApiLocale,

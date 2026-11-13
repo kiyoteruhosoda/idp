@@ -1,20 +1,20 @@
-//! 認証器の統合管理（AP9。ユーザー認証・認証ポリシー仕様書 §5）。
+//! Unified management of authenticators (AP9; user authentication / authentication policy spec §5).
 //!
-//! 種別（TOTP・WebAuthn・リカバリーコード・email OTP）によらない**登録簿**の 1 行を表す。
-//! 「この利用者が今使える認証器はどれか」を 1 箇所で答えられるようにするためのもので、
-//! 種別固有の秘密（TOTP のシークレット・WebAuthn の passkey）は従来のテーブルが持ち続ける
-//! （expand フェーズ。移送はしない。理由は migration 0023 のコメント）。
+//! Represents one row of the **registry**, independent of type (TOTP, WebAuthn, recovery code, email OTP).
+//! It exists so that "which authenticators can this user use now" is answered in one place;
+//! type-specific secrets (TOTP secret, WebAuthn passkey) stay in the existing tables
+//! (expand phase; no data move; see the comment in migration 0023 for why).
 //!
-//! 状態遷移（§5.3）:
+//! State transitions (§5.3):
 //!
 //! ```text
 //!   pending ──confirm──► active ──suspend──► suspended ──resume──► active
 //!      │                   │                     │
-//!      └──────revoke───────┴─────────revoke──────┴──────────────► revoked（終端）
+//!      └──────revoke───────┴─────────revoke──────┴──────────────► revoked (terminal)
 //! ```
 //!
-//! `suspended` があるのは、**端末を失くしたが手元に戻るかもしれない**という現実の状況に、
-//! 削除以外の答えを用意するため。削除しかないと、戻ってきても登録し直しになる。
+//! `suspended` exists to give an answer other than deletion to the real situation where **a device was
+//! lost but may come back**. With only deletion, it would have to be re-registered when it turns up.
 #![allow(dead_code)]
 
 use crate::domain::values::{string_enum, AuthenticationMethod};
@@ -22,11 +22,11 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 string_enum!(
-    /// 認証器の種別（仕様 §5.1）。
+    /// Authenticator type (spec §5.1).
     ///
-    /// `SmsOtp` は assay が送信手段（SMS ゲートウェイ）を持たないため**発行経路が無い**。
-    /// 値だけ用意してあるのは、後から送信手段を足したときに DB の CHECK 制約と Rust 側 enum を
-    /// 同時に変えずに済ませるため（既存行の互換を壊さない）。
+    /// `SmsOtp` has **no issuance path** because assay has no means of sending (SMS gateway).
+    /// The value exists so that adding a sending means later does not require changing the DB CHECK constraint
+    /// and the Rust enum at the same time (keeps existing rows compatible).
     AuthenticatorType {
         Totp => "totp",
         WebAuthn => "webauthn",
@@ -37,7 +37,7 @@ string_enum!(
 );
 
 impl AuthenticatorType {
-    /// この認証器で本人確認したときに記録する認証方式（AP4）。
+    /// Authentication method recorded when identity is verified with this authenticator (AP4).
     pub fn authentication_method(&self) -> AuthenticationMethod {
         match self {
             Self::Totp => AuthenticationMethod::Totp,
@@ -48,54 +48,54 @@ impl AuthenticatorType {
         }
     }
 
-    /// 1 利用者につき複数登録できる種別か。
+    /// Whether a user may register more than one of this type.
     ///
-    /// TOTP は既存テーブルが `user_id` を主キーに持つため 1 本まで。WebAuthn は端末ごとに
-    /// 登録するので複数。リカバリーコードは 1 コード 1 行で複数（束で発行する）。
+    /// TOTP is limited to one because the existing table uses `user_id` as primary key. WebAuthn is registered
+    /// per device, so multiple. Recovery codes are one row per code, so multiple (issued as a batch).
     pub fn allows_multiple(&self) -> bool {
         !matches!(self, Self::Totp)
     }
 
-    /// 使い捨て（1 回使ったら失効する）か。
+    /// Whether it is single-use (expires after one use).
     pub fn is_single_use(&self) -> bool {
         matches!(self, Self::RecoveryCode | Self::EmailOtp | Self::SmsOtp)
     }
 }
 
 string_enum!(
-    /// 認証器の状態（仕様 §5.3）。
+    /// Authenticator state (spec §5.3).
     AuthenticatorStatus {
-        /// 登録手続きの途中（TOTP の QR を出したが確認コード未入力、など）。認証には使えない。
+        /// Registration in progress (e.g. TOTP QR shown but confirmation code not entered). Not usable for authentication.
         Pending => "pending",
-        /// 有効。認証に使える。
+        /// Active. Usable for authentication.
         Active => "active",
-        /// 一時停止。行は残すが認証には使えない（端末紛失時の暫定措置）。`Active` へ戻せる。
+        /// Suspended. The row is kept but not usable for authentication (interim measure for a lost device). Can return to `Active`.
         Suspended => "suspended",
-        /// 失効（終端）。以後どの状態にも戻さない。
+        /// Revoked (terminal). Never returns to any other state.
         Revoked => "revoked",
     }
 );
 
 impl AuthenticatorStatus {
-    /// 認証に使えるか。
+    /// Whether usable for authentication.
     pub fn is_usable(&self) -> bool {
         *self == Self::Active
     }
 
-    /// 終端状態か（これ以上遷移しない）。
+    /// Whether this is a terminal state (no further transitions).
     pub fn is_terminal(&self) -> bool {
         *self == Self::Revoked
     }
 
-    /// `self` から `next` への遷移が許されるか（仕様 §5.3）。
+    /// Whether the transition from `self` to `next` is allowed (spec §5.3).
     ///
-    /// 失効は終端。`Revoked` から戻す遷移を許すと、「失効させた認証器が復活する」経路ができる
-    /// （管理者が誤って戻すことも、実装のバグで戻ることも防げなくなる）。
+    /// Revocation is terminal. Allowing a transition back from `Revoked` would create a path for "a revoked
+    /// authenticator comes back" (neither an admin mistake nor an implementation bug could be prevented).
     pub fn can_transition_to(&self, next: Self) -> bool {
         use AuthenticatorStatus::*;
         match (self, next) {
-            // 同じ状態への遷移は冪等な操作として許す（二重クリック・再送）。失効済みへの再失効も
-            // ここで通す（先に `(Revoked, _) => false` を置くと、冪等なはずの再失効まで弾かれる）。
+            // Transitions to the same state are allowed as idempotent (double click, resend). Re-revoking an already
+            // revoked one also passes here (putting `(Revoked, _) => false` first would reject the idempotent re-revoke).
             (a, b) if *a == b => true,
             (Revoked, _) => false,
             (_, Revoked) => true,
@@ -107,26 +107,26 @@ impl AuthenticatorStatus {
     }
 }
 
-/// OTP を送った数を数える窓（秒）。発行したコードの行は、期限が切れてもこの間は消さない（task #749）。
+/// Window (seconds) for counting sent OTPs. Rows of issued codes are kept for this long even after expiry (task #749).
 pub const OTP_SEND_WINDOW_SECS: i64 = 3_600;
 
-/// 認証器の登録簿 1 行。
+/// One row of the authenticator registry.
 #[derive(Debug, Clone)]
 pub struct UserAuthenticator {
     pub id: Uuid,
     pub user_id: Uuid,
     pub authenticator_type: AuthenticatorType,
     pub status: AuthenticatorStatus,
-    /// 利用者が付ける表示名（未設定は空文字）。
+    /// Display name set by the user (empty string if unset).
     pub label: String,
-    /// 種別固有の秘密。TOTP は共有鍵（暗号文）、WebAuthn は `passkey_json`、
-    /// リカバリーコード・email OTP は SHA-256。AP11b で登録簿が唯一の置き場所になった。
+    /// Type-specific secret. TOTP: shared key (ciphertext); WebAuthn: `passkey_json`;
+    /// recovery code / email OTP: SHA-256. Since AP11b the registry is the only place it is stored.
     pub secret_encrypted: Option<String>,
-    /// email OTP の送信先。
+    /// Destination for email OTP.
     pub target: Option<String>,
     pub confirmed_at: Option<DateTime<Utc>>,
     pub last_used_at: Option<DateTime<Utc>>,
-    /// この認証器（コード）の有効期限。無期限なら `None`。
+    /// Expiry of this authenticator (code). `None` if it never expires.
     pub expires_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -134,11 +134,11 @@ pub struct UserAuthenticator {
 }
 
 impl UserAuthenticator {
-    /// 指定時刻に認証へ使えるか（状態が `Active` かつ期限内）。
-    /// 利用者（または管理者）の操作で**止められている**か。
+    /// Whether usable for authentication at the given time (state is `Active` and not expired).
+    /// Whether it has been **blocked** by a user (or admin) action.
     ///
-    /// `pending` は「まだ確認が済んでいない」であって止められてはいない。止めた・失効させたの
-    /// 2 状態だけが、既存の認証経路を塞ぐ根拠になる。
+    /// `pending` means "not yet confirmed", not blocked. Only the two states suspended and revoked
+    /// are grounds for closing existing authentication paths.
     pub fn is_blocked(&self) -> bool {
         matches!(
             self.status,
@@ -150,7 +150,7 @@ impl UserAuthenticator {
         self.status.is_usable() && self.expires_at.is_none_or(|exp| exp > now)
     }
 
-    /// 第二要素として数えられるか（AP4 の強度導出と同じ基準）。
+    /// Whether it counts as a second factor (same criterion as AP4's strength derivation).
     pub fn counts_as_second_factor(&self) -> bool {
         self.authenticator_type
             .authentication_method()
@@ -199,7 +199,7 @@ mod tests {
                 "{status} must not be usable"
             );
         }
-        // 期限切れの使い捨てコードは Active でも使えない。
+        // An expired single-use code is unusable even when Active.
         assert!(!authenticator(
             AuthenticatorType::EmailOtp,
             Active,
@@ -214,14 +214,14 @@ mod tests {
         .is_usable_at(now()));
     }
 
-    /// 失効は終端。戻す遷移は一切許さない。
+    /// Revocation is terminal. No transition back is allowed.
     #[test]
     fn revoked_is_terminal() {
         use AuthenticatorStatus::*;
         for next in [Pending, Active, Suspended] {
             assert!(!Revoked.can_transition_to(next), "revoked -> {next}");
         }
-        // 冪等な revoke は許す。
+        // Idempotent revoke is allowed.
         assert!(Revoked.can_transition_to(Revoked));
     }
 
@@ -230,9 +230,9 @@ mod tests {
         use AuthenticatorStatus::*;
         assert!(Active.can_transition_to(Suspended));
         assert!(Suspended.can_transition_to(Active));
-        // 確認前の認証器を「一時停止」する意味は無い（使えない状態が 2 つできるだけ）。
+        // "Suspending" an unconfirmed authenticator is meaningless (it only creates two unusable states).
         assert!(!Pending.can_transition_to(Suspended));
-        // どの状態からでも失効はできる。
+        // Revocation is possible from any state.
         for from in [Pending, Active, Suspended] {
             assert!(from.can_transition_to(Revoked));
         }
@@ -248,7 +248,7 @@ mod tests {
             AuthenticatorType::RecoveryCode.authentication_method(),
             AuthenticationMethod::RecoveryCode
         );
-        // すべての種別が第二要素として数えられる（知識要素はパスワードのみ）。
+        // All types count as a second factor (the only knowledge factor is the password).
         for t in [
             AuthenticatorType::Totp,
             AuthenticatorType::WebAuthn,

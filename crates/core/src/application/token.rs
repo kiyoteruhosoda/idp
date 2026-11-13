@@ -1,15 +1,15 @@
-//! トークン発行のユースケース（`POST /token`、設計仕様 §4.4・§5・§9.1）。
+//! Token issuance use case (`POST /token`, design spec §4.4, §5, §9.1).
 //!
-//! - `authorization_code` grant: client 認証 → code の原子的 one-time 消費 →
-//!   各種一致検証 → PKCE S256 検証 → ID Token / Access Token（RS256）発行。
-//!   scope に `offline_access` が含まれる場合は Refresh Token も発行する。
-//! - `refresh_token` grant: client 認証 → Refresh Token の検証 → rotation →
-//!   reuse detection → 新 Access Token / ID Token 発行。
-//! - `client_credentials` grant（G4）: client 認証 → grant 許可の確認 → scope 検証 →
-//!   Access Token のみ発行。利用者が居ないフローなので **ID Token も Refresh Token も出さない**
-//!   （OIDC Core は ID Token を「エンドユーザーの認証結果」と定めており、認証していない主体に
-//!   発行してはならない）。`sub` はクライアント自身（`client_id`）で、利用者主体のトークンと
-//!   取り違えないよう `sub_type` クレームで明示する。
+//! - `authorization_code` grant: client authentication -> atomic one-time consumption of the code ->
+//!   various match checks -> PKCE S256 verification -> issue ID Token / Access Token (RS256).
+//!   If the scope includes `offline_access`, a Refresh Token is issued too.
+//! - `refresh_token` grant: client authentication -> Refresh Token verification -> rotation ->
+//!   reuse detection -> issue new Access Token / ID Token.
+//! - `client_credentials` grant (G4): client authentication -> grant permission check -> scope validation ->
+//!   issue only an Access Token. It is a flow without a user, so **neither ID Token nor Refresh Token is issued**
+//!   (OIDC Core defines the ID Token as "the result of end-user authentication", and it must not be issued to a principal
+//!   that did not authenticate). `sub` is the client itself (`client_id`), and the `sub_type` claim makes this explicit
+//!   so it is not confused with user-principal tokens.
 
 use crate::application::application_access::{ApplicationAccessService, ApplicationGate};
 use crate::application::audit::{AuditService, RequestContext};
@@ -43,7 +43,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// ID Token のクレーム（設計仕様 §5.1）。任意クレームは scope に応じて付与する。
+/// ID Token claims (design spec §5.1). Optional claims are added according to scope.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IdTokenClaims {
     pub iss: String,
@@ -52,27 +52,27 @@ pub struct IdTokenClaims {
     pub exp: i64,
     pub iat: i64,
     pub auth_time: i64,
-    /// 認可要求に `nonce` があったときだけ載せる（OIDC Core 2「無ければ載せるべきでない」）。
-    /// ⚠ **空文字を載せない** ——`nonce` を送っていない相手に `""` を返すと、
-    /// 厳しく検証する実装が「一致しない」と読む。
+    /// Included only when the authorization request had a `nonce` (OIDC Core 2 "should not be included if absent").
+    /// ⚠ **Never include an empty string**: returning `""` to a party that did not send `nonce`
+    /// makes strictly verifying implementations read it as "mismatch".
     #[serde(skip_serializing_if = "String::is_empty", default)]
     pub nonce: String,
     pub jti: String,
-    /// SSO セッション識別子（OIDC Back-Channel Logout 1.0 §2.1。G5）。RP はこの値で
-    /// 「どのセッションのログアウト通知か」を突き合わせ、セッション単位で失効できる。
+    /// SSO session identifier (OIDC Back-Channel Logout 1.0 §2.1. G5). RPs match this value against
+    /// "which session the logout notification is for", and can revoke per session.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sid: Option<String>,
-    /// 認証の強度（ADR-0043）。予約語 2 つのいずれか。RP は `acr_values` で要求した値と
-    /// 突き合わせて、要求が効いたかを確かめられる。
+    /// Authentication strength (ADR-0043). One of the 2 reserved words. RPs can compare it with the value requested in `acr_values`
+    /// to check whether the request took effect.
     ///
-    /// **`None` は「分からない」であって「単一要素」ではない。** 本クレーム導入前に発行された
-    /// code / refresh token を交換した場合だけ起きる。推測して名乗らない。
+    /// **`None` means "unknown", not "single factor".** It happens only when exchanging a code / refresh token
+    /// issued before this claim was introduced. Do not claim by guessing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub acr: Option<String>,
-    /// 実際に使われた認証方式（RFC 8176。ADR-0043 決定 4）。
+    /// Authentication methods actually used (RFC 8176. ADR-0043 decision 4).
     ///
-    /// **強度の判断に使わせない。** 外部 IdP 経由（`fed`）はその先で何が使われたかを assay も
-    /// 知らないため、値の並びから多要素かどうかを読み取ることはできない。判断は `acr`。
+    /// **Do not let it be used to judge strength.** Via an external IdP (`fed`), assay does not know what was used
+    /// beyond it, so whether it was multi-factor cannot be read from the list of values. Judge by `acr`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub amr: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -85,12 +85,12 @@ pub struct IdTokenClaims {
     pub name: Option<String>,
 }
 
-/// 記録された認証方式から ID Token の `acr` / `amr` を導く（ADR-0043）。
+/// Derives the ID Token's `acr` / `amr` from the recorded authentication methods (ADR-0043).
 ///
-/// **記録が無ければどちらも載せない。** 空の記録を「単一要素で認証した」と読み替えると、
-/// 分からないものを名乗ることになる。RP は要求した `acr` が返ってこないことで気付ける。
+/// **If nothing is recorded, neither is included.** Reading an empty record as "authenticated with a single factor" would
+/// claim something unknown. RPs can notice by the requested `acr` not coming back.
 ///
-/// `amr` は重複を畳む（`email_otp` と `sms_otp` は RFC 8176 ではどちらも `otp`）。
+/// `amr` collapses duplicates (`email_otp` and `sms_otp` are both `otp` in RFC 8176).
 fn authentication_claims(
     methods: Option<&Vec<AuthenticationMethod>>,
 ) -> (Option<String>, Option<Vec<String>>) {
@@ -109,13 +109,13 @@ fn authentication_claims(
     (Some(acr), Some(amr))
 }
 
-/// `sub_type` クレームの値: 主体がクライアント自身（`client_credentials` grant。G4）。
+/// Value of the `sub_type` claim: the principal is the client itself (`client_credentials` grant. G4).
 ///
-/// クレーム自体が無い場合はエンドユーザー主体（従来のトークン）。値ではなく**有無**で区別すること
-/// で、本クレーム導入前に発行済みのトークンも従来どおり利用者主体として扱える。
+/// When the claim is absent, it is an end-user principal (conventional tokens). Distinguishing by **presence** rather than value
+/// lets tokens issued before this claim was introduced continue to be treated as user principals.
 pub const SUBJECT_TYPE_CLIENT: &str = "client";
 
-/// Access Token のクレーム（設計仕様 §5.2）。`aud` は `/userinfo` に固定する。
+/// Access Token claims (design spec §5.2). `aud` is fixed to `/userinfo`.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AccessTokenClaims {
     pub iss: String,
@@ -126,55 +126,55 @@ pub struct AccessTokenClaims {
     pub exp: i64,
     pub iat: i64,
     pub jti: String,
-    /// 主体の種別（G4）。`client_credentials` で発行したトークンだけが
-    /// [`SUBJECT_TYPE_CLIENT`] を持つ。省略 = エンドユーザー主体。
+    /// Principal kind (G4). Only tokens issued via `client_credentials` have
+    /// [`SUBJECT_TYPE_CLIENT`]. Omitted = end-user principal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sub_type: Option<String>,
-    /// assay 自身の管理 API に対する権限コード（空白区切り。ADR-0037）。
+    /// Permission codes for assay's own admin API (space-separated. ADR-0037).
     ///
-    /// **`aud` が [`management_audience`] のトークンにしか載せない。** 権限コードは assay の
-    /// API を守るためのものであって、他のリソースサーバの権限体系ではない（ADR-0033）。`aud` を
-    /// 管理 API に固定することで、外部アプリ向けのトークンへ権限コードが流れ込む経路が無くなる。
+    /// **Included only in tokens whose `aud` is [`management_audience`].** Permission codes are for protecting assay's
+    /// API, not other resource servers' permission systems (ADR-0033). Fixing `aud` to
+    /// the admin API removes any path for permission codes to flow into tokens for external apps.
     ///
-    /// OIDC の `scope` と分けるのも同じ理由である。`scope` は ID クレームの制御に使う値で、
-    /// RP がその内容に依存し得る。混ぜると管理権限が RP の認可判断へ漏れる。
+    /// It is separated from the OIDC `scope` for the same reason. `scope` is a value used to control ID claims, and
+    /// RPs may depend on its content. Mixing them would leak admin permissions into RPs' authorization decisions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub perms: Option<String>,
-    /// DPoP で結び付けた鍵（RFC 9449 §6.1 の `cnf.jkt`。ADR-0075）。あるトークンは、その鍵の証明と
-    /// 一緒でなければ使えない。省略 = 結び付けなし（Bearer）。
+    /// The key bound via DPoP (`cnf.jkt` of RFC 9449 §6.1. ADR-0075). A token with it can only be used together with
+    /// a proof from that key. Omitted = not bound (Bearer).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cnf: Option<KeyConfirmation>,
 }
 
-/// アクセストークンの `cnf`（RFC 7800 の確認方法）。assay が入れるのは DPoP の `jkt` だけ。
+/// The access token's `cnf` (confirmation method of RFC 7800). assay only puts DPoP's `jkt` in it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyConfirmation {
-    /// 鍵の JWK Thumbprint（RFC 7638。SHA-256 の base64url）。
+    /// The key's JWK Thumbprint (RFC 7638. base64url of SHA-256).
     pub jkt: String,
 }
 
 impl AccessTokenClaims {
-    /// DPoP で結び付けた鍵の指紋（`cnf.jkt`）。無ければ Bearer のトークン。
+    /// Fingerprint of the DPoP-bound key (`cnf.jkt`). A Bearer token if absent.
     pub fn dpop_jkt(&self) -> Option<&str> {
         self.cnf.as_ref().map(|c| c.jkt.as_str())
     }
 
-    /// 主体がクライアント自身か（`client_credentials` で発行されたトークンか）。
+    /// Whether the principal is the client itself (whether the token was issued via `client_credentials`).
     pub fn subject_is_client(&self) -> bool {
         self.sub_type.as_deref() == Some(SUBJECT_TYPE_CLIENT)
     }
 }
 
-/// `/userinfo` 用 Access Token の `aud` を構築する（issuer は末尾スラッシュ無し）。
+/// Builds the `aud` of an Access Token for `/userinfo` (issuer without trailing slash).
 pub fn userinfo_audience(issuer: &str) -> String {
     format!("{issuer}/userinfo")
 }
 
-/// assay 自身の管理 API 用 Access Token の `aud` を構築する（ADR-0037）。
+/// Builds the `aud` of an Access Token for assay's own admin API (ADR-0037).
 ///
-/// `/userinfo` 向けと別の値にすることが要である。同じ `aud` にすると、RP が利用者ログインで
-/// 受け取ったトークンをそのまま管理 API へ持ち込めてしまう（`perms` が空なので通らないとはいえ、
-/// 「audience が合っている」という前提を管理面と共有すべきではない）。
+/// The key point is making it a different value from the one for `/userinfo`. With the same `aud`, an RP could carry a token
+/// received at user sign-in straight into the admin API (even though it would not pass with empty `perms`,
+/// the premise "the audience matches" should not be shared with the admin side).
 pub fn management_audience(issuer: &str) -> String {
     format!("{issuer}/admin")
 }
@@ -182,29 +182,29 @@ pub fn management_audience(issuer: &str) -> String {
 #[derive(Debug, Default)]
 pub struct TokenCommand {
     pub grant_type: Option<String>,
-    /// `authorization_code` grant 専用。
+    /// For the `authorization_code` grant only.
     pub code: Option<String>,
     pub redirect_uri: Option<String>,
     pub code_verifier: Option<String>,
-    /// 提示されたクライアント資格情報（`Authorization: Basic` / body の `client_id`・`client_secret`）。
+    /// The presented client credentials (`Authorization: Basic` / body `client_id`, `client_secret`).
     pub credentials: PresentedClientCredentials,
-    /// `refresh_token` grant 専用。
+    /// For the `refresh_token` grant only.
     pub refresh_token: Option<String>,
-    /// `client_credentials` grant で要求する scope（空白区切り）。省略時はクライアントの登録 scope
-    /// から既定集合を導く（G4）。
+    /// Scopes requested in the `client_credentials` grant (space-separated). When omitted, the default set is derived from the client's
+    /// registered scopes (G4).
     pub scope: Option<String>,
-    /// 要求するリソース指標（RFC 8707 `resource`。ADR-0037）。
+    /// The requested resource indicator (RFC 8707 `resource`. ADR-0037).
     ///
-    /// assay の管理 API を呼ぶシステム用クライアントは、`{issuer}/admin` を指定して
-    /// 管理トークンを受け取る。省略時は従来どおり `/userinfo` 向けのトークンを発行する。
-    /// **どちらを欲しいのかを呼び出し側に書かせる**のは、クライアントの登録権限から発行内容を
-    /// 暗黙に切り替えると、権限を 1 つ付けた途端にトークンの `aud` が変わってしまうためである。
+    /// System clients calling assay's admin API specify `{issuer}/admin` to
+    /// receive an admin token. When omitted, a token for `/userinfo` is issued as before.
+    /// **The caller is made to write which one it wants** because implicitly switching what is issued based on the client's registered
+    /// permissions would change the token's `aud` the moment a single permission is granted.
     pub resource: Option<String>,
-    /// `DPoP` ヘッダーの証明（RFC 9449。ADR-0075）。`authorization_code` と `refresh_token` でだけ見る。
+    /// The proof from the `DPoP` header (RFC 9449. ADR-0075). Looked at only for `authorization_code` and `refresh_token`.
     pub dpop_proof: Option<String>,
 }
 
-/// トークンエンドポイントのエラー（RFC 6749 §5.2 形式で返す）。
+/// Errors of the token endpoint (returned in RFC 6749 §5.2 format).
 #[derive(Debug)]
 pub struct TokenError {
     pub code: OAuthErrorCode,
@@ -222,55 +222,55 @@ impl TokenError {
 
 pub struct IssuedTokens {
     pub access_token: String,
-    /// 利用者を認証した grant（`authorization_code` / `refresh_token`）でのみ発行する。
-    /// `client_credentials` は利用者が居ないため `None`（G4）。
+    /// Issued only for grants that authenticated a user (`authorization_code` / `refresh_token`).
+    /// `None` for `client_credentials` since there is no user (G4).
     pub id_token: Option<String>,
     pub expires_in: u64,
     pub scope: String,
-    /// `offline_access` scope が含まれる場合のみ発行する。
+    /// Issued only when the `offline_access` scope is included.
     pub refresh_token: Option<String>,
-    /// DPoP で鍵に結び付けたか（`token_type` を `DPoP` で返す。RFC 9449 §5）。
+    /// Whether it was bound to a key via DPoP (`token_type` is returned as `DPoP`. RFC 9449 §5).
     pub bound_to_key: bool,
 }
 
 pub struct TokenService {
     clients: Arc<dyn ClientRepository>,
     users: Arc<dyn UserRepository>,
-    /// 利用者の**所属元**テナントの状態を見るために持つ（ADR-0009 §8）。要求テナントの解決は
-    /// presentation（`TenantResolver`）が済ませているので、ここで見るのは所属元だけ。
+    /// Held to look at the state of the user's **home** tenant (ADR-0009 §8). Resolution of the requested tenant
+    /// is already done by presentation (`TenantResolver`), so only the home tenant is looked at here.
     tenants: Arc<dyn TenantRepository>,
     codes: Arc<dyn AuthorizationCodeRepository>,
     refresh_tokens: Arc<dyn RefreshTokenRepository>,
-    /// システム用クライアントが保有する管理 API の権限コード（ADR-0037）。`resource` に管理 API を
-    /// 指定された `client_credentials` でのみ引く。
+    /// Admin API permission codes held by system clients (ADR-0037). Looked up only for `client_credentials`
+    /// with the admin API specified in `resource`.
     client_permissions: Arc<dyn ClientPermissionRepository>,
-    /// 登録済みの宛名（`aud` に入る値。ADR-0042）。`resource` に assay 自身以外を指定された
-    /// `client_credentials` でのみ引く。
+    /// Registered audiences (values placed in `aud`. ADR-0042). Looked up only for `client_credentials`
+    /// with something other than assay itself specified in `resource`.
     resources: Arc<dyn ProtectedResourceRepository>,
-    /// アプリとその名乗り・割り当て（ADR-0059）。管理 API のトークンを権限コードを持たない
-    /// サービスアカウントへも出してよいか（＝あるアプリの名乗りか）と、宛名のトークンを出してよいか
-    /// （＝宛名のアプリに割り当てられているか）を引く。
+    /// Apps and their identities/assignments (ADR-0059). Looks up whether an admin API token may be issued to a
+    /// service account without permission codes (= whether it is some app's identity), and whether an audience token may be issued
+    /// (= whether it is assigned to the audience's app).
     applications: Arc<dyn ApplicationRepository>,
-    /// 利用者がアプリを使ってよいか（ADR-0054）。code を出すときだけでなく、**リフレッシュのたびに**
-    /// 見直す（task #582）。外された人・止めたアプリに、持っているリフレッシュトークンで新しい
-    /// トークンを出し続けないため。
+    /// Whether the user may use the app (ADR-0054). Rechecked not only when issuing a code but **on every refresh**
+    /// (task #582), so that removed people or stopped apps do not keep getting new tokens
+    /// with the refresh tokens they hold.
     application_access: Arc<ApplicationAccessService>,
     keys: Arc<KeyService>,
-    /// クライアント認証（secret 照合・assertion 検証）。方式ごとの分岐は
-    /// `client_authentication` に集約してある（ADR-0030）。
+    /// Client authentication (secret matching, assertion verification). Per-method branching is
+    /// consolidated in `client_authentication` (ADR-0030).
     client_auth: Arc<ClientAuthenticator>,
-    /// DPoP の証明（ADR-0075）。`authorization_code` と `refresh_token` でだけ使う。
+    /// DPoP proofs (ADR-0075). Used only for `authorization_code` and `refresh_token`.
     dpop: Arc<DpopProofVerifier>,
     audit: Arc<AuditService>,
-    /// 本人が見るログイン履歴（task #879）。どのアプリへトークンを出し、リフレッシュがどう使われたか。
+    /// Sign-in history the user sees (task #879). Which apps tokens were issued to, and how refresh was used.
     sign_in_history: Arc<dyn SignInHistoryRepository>,
     clock: Arc<dyn Clock>,
-    /// 基底 issuer（`https://<host>`）。`iss` はテナント毎に `<基底>/<tenant_id>` を合成する
-    /// （ADR-0009 §6。`domain::issuer::tenant_issuer`）。
+    /// Base issuer (`https://<host>`). `iss` is composed per tenant as `<base>/<tenant_id>`
+    /// (ADR-0009 §6. `domain::issuer::tenant_issuer`).
     base_issuer: String,
     access_token_ttl: std::time::Duration,
-    /// 管理 API 向けアクセストークン（`resource={issuer}/admin`）の寿命（ADR-0037）。
-    /// 通常のアクセストークンより短く保つ。
+    /// Lifetime of access tokens for the admin API (`resource={issuer}/admin`) (ADR-0037).
+    /// Kept shorter than normal access tokens.
     management_token_ttl: std::time::Duration,
     id_token_ttl: std::time::Duration,
     refresh_token_ttl: std::time::Duration,
@@ -324,7 +324,7 @@ impl TokenService {
         }
     }
 
-    /// ログイン履歴: 使い終えたリフレッシュトークンがもう一度来た（task #879）。
+    /// Sign-in history: a used-up refresh token came again (task #879).
     async fn note_refresh_reuse(
         &self,
         stored: &RefreshToken,
@@ -347,10 +347,10 @@ impl TokenService {
         cmd: TokenCommand,
         ctx: &RequestContext,
     ) -> Result<IssuedTokens, TokenError> {
-        // `resource`（RFC 8707）を解釈するのは `client_credentials` だけである（ADR-0037）。
-        // 利用者を認証した grant で管理トークンを出すことは無いので、黙って無視すると
-        // 「管理トークンを頼んだのに `/userinfo` 用が返り、管理 API で 401 になる」という、
-        // 原因が要求側から見えない失敗になる。要求の時点で断る。
+        // Only `client_credentials` interprets `resource` (RFC 8707) (ADR-0037).
+        // Grants that authenticated a user never issue admin tokens, so silently ignoring it would cause
+        // a failure whose cause is invisible from the requesting side: "asked for an admin token, got one for `/userinfo`, and got 401 at the admin API".
+        // Refuse at request time.
         if cmd
             .resource
             .as_deref()
@@ -379,10 +379,10 @@ impl TokenService {
         }
     }
 
-    /// `DPoP` ヘッダーの証明を確かめる（ADR-0075）。無ければ `None`（今までどおり Bearer で出す）。
+    /// Verifies the proof in the `DPoP` header (ADR-0075). `None` if absent (issued as Bearer, as before).
     ///
-    /// grant を処理する前に見る。証明が壊れている（端末の時計のずれなど）だけで認可コードを
-    /// 使い切らせない ——アプリは作り直して送り直せる。
+    /// Looked at before processing the grant. A broken proof (e.g. device clock skew) alone should not use up the authorization
+    /// code: the app can rebuild and resend it.
     async fn verify_dpop_proof(
         &self,
         tenant: TenantContext,
@@ -405,7 +405,7 @@ impl TokenService {
         }
     }
 
-    /// `authorization_code` grant の処理。
+    /// Processing of the `authorization_code` grant.
     async fn exchange_code(
         &self,
         tenant: TenantContext,
@@ -414,14 +414,14 @@ impl TokenService {
         ctx: &RequestContext,
     ) -> Result<IssuedTokens, TokenError> {
         let tenant_id = tenant.tenant_id();
-        // 1. client_id の決定（Basic ヘッダ優先）。
+        // 1. Determine client_id (Basic header takes precedence).
         let client_id = resolve_client_id(&cmd)?;
 
-        // 2. client の存在・状態・認証（フローのテナントに属する client のみ解決する）。
+        // 2. Client existence, status and authentication (resolves only clients belonging to the flow's tenant).
         let client = self.load_active_client(tenant, &client_id, ctx).await?;
         self.authenticate_client(tenant, &client, &cmd, ctx).await?;
 
-        // 3. code_verifier の形式検証（RFC 7636 §4.1）。
+        // 3. Format validation of code_verifier (RFC 7636 §4.1).
         let Some(code_verifier) = cmd.code_verifier.as_deref().filter(|v| !v.is_empty()) else {
             return Err(TokenError::new(
                 OAuthErrorCode::InvalidRequest,
@@ -435,7 +435,7 @@ impl TokenService {
             ));
         }
 
-        // 4. code の原子的 one-time 消費。
+        // 4. Atomic one-time consumption of the code.
         let Some(code) = cmd
             .code
             .as_deref()
@@ -447,26 +447,26 @@ impl TokenService {
             ));
         };
         let now = self.clock.now();
-        // code の hash は消費とファミリ鍵（`grant_hash`。SEC8）の両方で使うので 1 度だけ計算する。
+        // The code hash is used for both consumption and the family key (`grant_hash`. SEC8), so it is computed only once.
         let code_hash = code.hash();
         let consumed = match self.codes.consume(tenant_id, &code_hash, now).await {
             Ok(c) => c,
             Err(e) => return Err(internal(&e)),
         };
         let Some(auth_code) = consumed else {
-            // 消費できなかった理由を切り分ける（SEC8）。「期限切れ」「そもそも存在しない」と
-            // **本当の再利用**（1 度交換済みの code をもう一度出してきた）は意味が違い、
-            // 前者は RP の実装ミスや遅延、後者は code の漏えいを示す。1 文字列に丸めていると
-            // 監査から攻撃を拾えない。
+            // Distinguish why it could not be consumed (SEC8). "Expired" or "never existed" differ in meaning from
+            // **a real reuse** (presenting a code already exchanged once again):
+            // the former indicates RP implementation mistakes or delays, the latter a leaked code. Collapsing them into one string
+            // would make attacks impossible to pick up from the audit.
             let used_code = match self.codes.find_used(tenant_id, &code_hash).await {
                 Ok(v) => v,
                 Err(e) => return Err(internal(&e)),
             };
             let (reason, used_code) = match used_code {
                 Some(used) => {
-                    // 本当の再利用。1 回目の交換で発行済みのトークンファミリを失効させる。
-                    // 攻撃者と正規 RP のどちらが先に交換したか区別できない以上、両方を止めて
-                    // 再認証させるのが RFC 6819 §5.2.1.1 の求めるところ。
+                    // A real reuse. Revoke the token family issued by the first exchange.
+                    // Since we cannot tell whether the attacker or the legitimate RP exchanged first, stopping both and
+                    // forcing re-authentication is what RFC 6819 §5.2.1.1 requires.
                     let revoked = match self
                         .refresh_tokens
                         .revoke_family(tenant_id, code_hash.as_str(), now)
@@ -510,7 +510,7 @@ impl TokenService {
             )
             .await;
 
-        // 5-6. 出してきた相手・redirect_uri・PKCE S256 の照合（集約が順に確かめる）。
+        // 5-6. Check the presenting party, redirect_uri, and PKCE S256 (the aggregate checks them in order).
         if let Err(rejection) =
             auth_code.redeem(&client_id, cmd.redirect_uri.as_deref(), code_verifier)
         {
@@ -528,15 +528,15 @@ impl TokenService {
         let grant = auth_code.grant();
         let authentication = auth_code.authentication();
 
-        // 7. ユーザーの状態確認。
+        // 7. Check the user's status.
         let user = self.load_active_user(authentication.user_id(), ctx).await?;
 
-        // 8. トークン発行（scope は AuthorizationCodes.scope を引き継ぐ）。
+        // 8. Issue tokens (the scope carries over AuthorizationCodes.scope).
         let has_offline = grant.includes(Scope::OfflineAccess);
         let has = |s: Scope| grant.includes(s);
         let scope_str = grant.scope_string();
         let iat = now.timestamp();
-        // `iss` はテナント毎に合成する（ADR-0009 §6）。発行テナント（= フローのテナント）に束縛する。
+        // `iss` is composed per tenant (ADR-0009 §6). Bound to the issuing tenant (= the flow's tenant).
         let issuer = tenant_issuer(&self.base_issuer, tenant_id);
 
         let (code_acr, code_amr) =
@@ -570,9 +570,9 @@ impl TokenService {
             iat,
             jti: Uuid::new_v4().to_string(),
             sub_type: None,
-            // 利用者ログインのトークンは管理 API 向けではない（ADR-0037）。
+            // User sign-in tokens are not for the admin API (ADR-0037).
             perms: None,
-            // 証明が付いていれば、その鍵に結び付ける（ADR-0075 決定 1）。
+            // If a proof is attached, bind to that key (ADR-0075 decision 1).
             cnf: proof
                 .as_ref()
                 .map(|p| KeyConfirmation { jkt: p.jkt.clone() }),
@@ -580,28 +580,28 @@ impl TokenService {
         let id_token = self.sign_id_token(&id_claims).await?;
         let access_token = self.sign_access_token(&access_claims).await?;
 
-        // 9. Refresh Token 発行（offline_access scope のときのみ）。
+        // 9. Issue a Refresh Token (only with the offline_access scope).
         let refresh_token_plain = if has_offline {
             let plain = crypto::random_token(32);
             let rt = RefreshToken {
                 token_hash: crypto::sha256_hex(&plain),
                 parent_hash: None,
-                // このグラント（authorization code）由来のトークンファミリの起点（SEC8）。
-                // rotation で子孫へ引き継がれ、code / refresh のどちらの再利用検知からも
-                // 同じ鍵で一括失効できる。
+                // The root of the token family derived from this grant (authorization code) (SEC8).
+                // It is carried over to descendants by rotation, and can be revoked all at once with the same key from
+                // reuse detection of either code or refresh.
                 grant_hash: Some(code_hash.as_str().to_string()),
                 tenant_id,
                 user_id: authentication.user_id(),
                 client_id: client_id.clone(),
                 scope: grant.scope().to_vec(),
-                // ID Token の `sid`（G5）。rotation でも引き継ぎ、logout_token と同じセッションを指す。
+                // The ID Token's `sid` (G5). Carried over by rotation too, pointing to the same session as the logout_token.
                 sid: authentication.sso_sid().map(str::to_string),
-                // ID Token の `acr` / `amr`（ADR-0043）。refresh では認証をやり直さないので、
-                // 名乗る強度も変わらない。`sid` と同じく rotation で引き継ぐ。
+                // The ID Token's `acr` / `amr` (ADR-0043). Refresh does not redo authentication, so
+                // the claimed strength does not change either. Carried over by rotation, like `sid`.
                 authentication_methods: authentication.methods().map(<[_]>::to_vec),
-                // ID Token の `auth_time`。refresh でも「最後にログインした時刻」を名乗り続ける（task #584）。
+                // The ID Token's `auth_time`. Refresh keeps claiming "the time of the last sign-in" (task #584).
                 auth_time: Some(authentication.auth_time()),
-                // アクセストークンと同じ鍵に結び付ける（ADR-0075 決定 1）。
+                // Bind to the same key as the access token (ADR-0075 decision 1).
                 dpop_jkt: proof.as_ref().map(|p| p.jkt.clone()),
                 expires_at: now + chrono::Duration::from_std(self.refresh_token_ttl).unwrap(),
                 revoked_at: None,
@@ -626,7 +626,7 @@ impl TokenService {
             None
         };
 
-        // ログイン履歴: このログインでこのアプリへ入った（task #879）。
+        // Sign-in history: entered this app with this sign-in (task #879).
         if let Some(sid) = authentication.sso_sid() {
             log_history_error(
                 self.sign_in_history
@@ -665,7 +665,7 @@ impl TokenService {
         })
     }
 
-    /// `refresh_token` grant の処理（rotation + reuse detection）。
+    /// Processing of the `refresh_token` grant (rotation + reuse detection).
     async fn exchange_refresh_token(
         &self,
         tenant: TenantContext,
@@ -674,12 +674,12 @@ impl TokenService {
         ctx: &RequestContext,
     ) -> Result<IssuedTokens, TokenError> {
         let tenant_id = tenant.tenant_id();
-        // 1. client_id の決定・認証。
+        // 1. Determine and authenticate client_id.
         let client_id = resolve_client_id(&cmd)?;
         let client = self.load_active_client(tenant, &client_id, ctx).await?;
         self.authenticate_client(tenant, &client, &cmd, ctx).await?;
 
-        // 2. refresh_token パラメータの取り出し。
+        // 2. Extract the refresh_token parameter.
         let Some(rt_plain) = cmd.refresh_token.as_deref().filter(|v| !v.is_empty()) else {
             return Err(TokenError::new(
                 OAuthErrorCode::InvalidRequest,
@@ -689,7 +689,7 @@ impl TokenService {
         let rt_hash = crypto::sha256_hex(rt_plain);
         let now = self.clock.now();
 
-        // 3. トークン検索（発行テナントの一致を含む。他テナント発行のトークンは解決しない）。
+        // 3. Token lookup (including the issuing tenant match. Tokens issued by other tenants are not resolved).
         let stored = match self.refresh_tokens.find_by_hash(tenant_id, &rt_hash).await {
             Ok(Some(t)) => t,
             Ok(None) => {
@@ -701,7 +701,7 @@ impl TokenService {
             Err(e) => return Err(internal(&e)),
         };
 
-        // 4. client_id 一致確認。
+        // 4. Check client_id match.
         if stored.client_id != client_id {
             return Err(TokenError::new(
                 OAuthErrorCode::InvalidGrant,
@@ -709,10 +709,10 @@ impl TokenService {
             ));
         }
 
-        // 4b. DPoP の結び付け（ADR-0075 決定 7）。⚠ **使い回しの検出より先に見る** ——鍵を持たない者が
-        //     盗んだトークンを出しても、家族ごと失効させて持ち主のアプリを止めることはさせない。
-        //     結び付けていないトークンに証明が付いていれば、新しいトークンからその鍵に結び付ける
-        //     （DPoP を入れた版へ更新したアプリが、ログインし直さずに移れるように）。
+        // 4b. DPoP binding (ADR-0075 decision 7). ⚠ **Check before reuse detection**: even if someone without the key
+        //     presents a stolen token, do not let them revoke the whole family and stop the owner's app.
+        //     If an unbound token comes with a proof, bind to that key from the new token on
+        //     (so apps updated to a DPoP-enabled version can migrate without signing in again).
         let bound_jkt = match (stored.dpop_jkt.as_deref(), proof.as_ref()) {
             (Some(_), None) => {
                 return Err(TokenError::new(
@@ -742,18 +742,18 @@ impl TokenService {
             (None, None) => None,
         };
 
-        // 5. reuse detection: すでに同じトークンから新トークンが発行済みなら全チェーン失効。
+        // 5. Reuse detection: if a new token was already issued from the same token, revoke the whole chain.
         let already_rotated = match self.refresh_tokens.exists_by_parent_hash(&rt_hash).await {
             Ok(v) => v,
             Err(e) => return Err(internal(&e)),
         };
         if already_rotated {
-            // このトークンはすでに rotation 済み → 再利用攻撃の可能性。
-            // 提示されたトークンだけを失効させると、そこから rotation 済みの**子孫が生き残る**
-            // （攻撃者が先に交換していれば攻撃者側が残る）。同一グラント由来のファミリごと失効させ、
-            // 正規の RP にも再認証させる（SEC8。RFC 6819 §5.2.2.3 / OAuth 2.1）。
-            // 失効に失敗したら 500 を返して落とす（従来は best-effort で握り潰していたが、
-            // 「再利用を検知したのに何も失効していない」状態を成功扱いで返してはいけない）。
+            // This token was already rotated -> possible reuse attack.
+            // Revoking only the presented token would let **descendants** rotated from it survive
+            // (if the attacker exchanged first, the attacker's side remains). Revoke the whole family derived from the same grant,
+            // and make the legitimate RP re-authenticate too (SEC8. RFC 6819 §5.2.2.3 / OAuth 2.1).
+            // If revocation fails, return 500 and fail (previously this was swallowed as best-effort, but
+            // the state "reuse detected but nothing revoked" must not be returned as success).
             let revoked = match self
                 .refresh_tokens
                 .revoke_family(tenant_id, &stored.family_hash(), now)
@@ -782,7 +782,7 @@ impl TokenService {
             ));
         }
 
-        // 6. 有効性確認（失効・期限切れ）。
+        // 6. Validity check (revoked, expired).
         if !stored.is_valid_at(now) {
             return Err(TokenError::new(
                 OAuthErrorCode::InvalidGrant,
@@ -790,13 +790,13 @@ impl TokenService {
             ));
         }
 
-        // 7. ユーザーの状態確認。
+        // 7. Check the user's status.
         let user = self.load_active_user(stored.user_id, ctx).await?;
 
-        // 7b. このアプリをまだ使ってよいか（ADR-0054。task #582）。割り当てを外された・アプリを
-        //     止めた後も、持っているリフレッシュトークンで寿命まで新しいトークンが出ていた。
-        //     断るときは、その許可で発行したトークンを家族ごと止める（次に来ても同じ答えなので）。
-        //     段階導入（`record_only`）の間は `check` が通すので、code の発行と同じ答えになる。
+        // 7b. May this app still be used (ADR-0054. task #582)? After being unassigned or after the app was
+        //     stopped, new tokens kept being issued until expiry with the refresh tokens held.
+        //     When refusing, stop the tokens issued under that permission along with the family (the next attempt gets the same answer).
+        //     During staged rollout (`record_only`) `check` lets it through, giving the same answer as code issuance.
         if let ApplicationGate::Denied { .. } = self
             .application_access
             .check(tenant_id, &client_id, stored.user_id, ctx)
@@ -815,10 +815,10 @@ impl TokenService {
             ));
         }
 
-        // 8. 旧トークンを失効させる（rotation）。⚠ **失効させられた側だけが続ける**（task #586）。
-        //    同じトークンで同時に 2 本来ると、どちらも上の再利用検知（子が在るか）を通る。失効の件数が
-        //    0 なら、もう一方が先に使っている ——再利用として家族ごと止める（盗んだトークンで正規の
-        //    RP と競らせても、並行の生きたチェーンを作らせない）。
+        // 8. Revoke the old token (rotation). ⚠ **Only the side that revoked it continues** (task #586).
+        //    If 2 requests come concurrently with the same token, both pass the reuse detection above (whether a child exists). If the revocation count
+        //    is 0, the other one used it first: stop the whole family as reuse (even if a stolen token races the legitimate
+        //    RP, do not let it create a parallel live chain).
         match self.refresh_tokens.revoke(&rt_hash, now).await {
             Ok(1..) => {}
             Ok(0) => {
@@ -852,7 +852,7 @@ impl TokenService {
             Err(e) => return Err(internal(&e)),
         }
 
-        // 9. 新トークン発行。
+        // 9. Issue new tokens.
         let has = |s: Scope| stored.scope.iter().any(|v| v == s.as_str());
         let scope_str = stored.scope.join(" ");
         let iat = now.timestamp();
@@ -866,14 +866,14 @@ impl TokenService {
             aud: client_id.clone(),
             exp: iat + self.id_token_ttl.as_secs() as i64,
             iat,
-            // 認証はやり直していないので、元のログインの時刻のまま（task #584）。「今」にすると、
-            // RP が `auth_time` で課す「N 分以内に再認証」を、更新を繰り返すだけですり抜けられる。
+            // Authentication was not redone, so the time of the original sign-in is kept (task #584). Using "now" would let
+            // RPs' "re-authenticate within N minutes" imposed via `auth_time` be bypassed just by repeating refreshes.
             auth_time: stored.auth_time_or_issued().timestamp(),
-            nonce: String::new(), // refresh grant では nonce は不要
+            nonce: String::new(), // nonce is not needed in the refresh grant
             jti: Uuid::new_v4().to_string(),
-            // 元の認可で確立したセッションを指し続ける（rotation で引き継いだ値。G5）。
+            // Keeps pointing to the session established by the original authorization (the value carried over by rotation. G5).
             sid: stored.sid.clone(),
-            // 認証はやり直していないので、元の認可で名乗った強度をそのまま引き継ぐ。
+            // Authentication was not redone, so the strength claimed by the original authorization is carried over as is.
             acr: refreshed_acr,
             amr: refreshed_amr,
             email: has(Scope::Email).then(|| user.email.clone()),
@@ -893,22 +893,22 @@ impl TokenService {
             iat,
             jti: Uuid::new_v4().to_string(),
             sub_type: None,
-            // 利用者ログインのトークンは管理 API 向けではない（ADR-0037）。
+            // User sign-in tokens are not for the admin API (ADR-0037).
             perms: None,
-            // 結び付けたリフレッシュトークンなら同じ鍵、結び付けていないものに証明が付いていれば
-            // その鍵（決定 7。上で確かめ済み）。
+            // For a bound refresh token, the same key; for an unbound one with a proof attached,
+            // that key (decision 7. Checked above).
             cnf: bound_jkt.clone().map(|jkt| KeyConfirmation { jkt }),
         };
         let id_token = self.sign_id_token(&id_claims).await?;
         let access_token = self.sign_access_token(&access_claims).await?;
 
-        // 10. 新 Refresh Token 発行（rotation）。
+        // 10. Issue a new Refresh Token (rotation).
         let new_rt_plain = crypto::random_token(32);
         let new_rt = RefreshToken {
             token_hash: crypto::sha256_hex(&new_rt_plain),
             parent_hash: Some(rt_hash.clone()),
-            // ファミリ識別子を引き継ぐ（SEC8）。移行前の行（`grant_hash` が NULL）なら
-            // 提示されたトークンの hash が新しいファミリの起点になる。
+            // Carry over the family identifier (SEC8). For pre-migration rows (`grant_hash` is NULL),
+            // the hash of the presented token becomes the root of the new family.
             grant_hash: Some(stored.family_hash()),
             tenant_id,
             user_id: stored.user_id,
@@ -918,7 +918,7 @@ impl TokenService {
             authentication_methods: stored.authentication_methods.clone(),
             auth_time: Some(stored.auth_time_or_issued()),
             dpop_jkt: bound_jkt.clone(),
-            expires_at: stored.expires_at, // TTL は引き継ぐ（スライドさせない）
+            expires_at: stored.expires_at, // TTL is carried over (not slid)
             revoked_at: None,
             created_at: now,
         };
@@ -926,7 +926,7 @@ impl TokenService {
             return Err(internal(&e));
         }
 
-        // ログイン履歴: 更新を送ってきた相手（アプリのサーバーなら、そのサーバー）を残す（task #879）。
+        // Sign-in history: record the party that sent the refresh (for an app's server, that server) (task #879).
         if let Some(sid) = stored.sid.as_deref() {
             log_history_error(
                 self.sign_in_history
@@ -985,11 +985,11 @@ impl TokenService {
         })
     }
 
-    /// `client_credentials` grant の処理（G4。RFC 6749 §4.4）。
+    /// Processing of the `client_credentials` grant (G4. RFC 6749 §4.4).
     ///
-    /// 利用者が居ないフローのため、発行するのは Access Token だけで ID Token も Refresh Token も
-    /// 出さない。`sub` はクライアント自身とし、`sub_type` で利用者主体のトークンと区別できるように
-    /// する（`/userinfo` はこのトークンを拒否し、`/introspect` はクライアントの状態を見る）。
+    /// It is a flow without a user, so only an Access Token is issued, with neither ID Token nor Refresh Token.
+    /// `sub` is the client itself, and `sub_type` makes it distinguishable from user-principal tokens
+    /// (`/userinfo` rejects this token, and `/introspect` looks at the client's status).
     async fn issue_client_credentials(
         &self,
         tenant: TenantContext,
@@ -997,13 +997,13 @@ impl TokenService {
         ctx: &RequestContext,
     ) -> Result<IssuedTokens, TokenError> {
         let tenant_id = tenant.tenant_id();
-        // 1. client の存在・状態・認証。public client は `authenticate_client` が素通しするため、
-        //    ここでは grant 許可の判定（`allows_client_credentials`）が confidential も強制する。
+        // 1. Client existence, status and authentication. `authenticate_client` lets public clients through, so
+        //    here the grant permission check (`allows_client_credentials`) also enforces confidential.
         let client_id = resolve_client_id(&cmd)?;
         let client = self.load_active_client(tenant, &client_id, ctx).await?;
         self.authenticate_client(tenant, &client, &cmd, ctx).await?;
 
-        // 2. grant 許可の確認。confidential かつ `client_credentials` を登録済みのクライアントのみ。
+        // 2. Check grant permission. Only confidential clients that registered `client_credentials`.
         if !client.allows_client_credentials() {
             self.audit
                 .record(
@@ -1022,15 +1022,15 @@ impl TokenService {
             ));
         }
 
-        // 3. scope の決定と検証。省略時はクライアントの登録 scope から既定集合を導く。
+        // 3. Determine and validate the scope. When omitted, the default set is derived from the client's registered scopes.
         let scopes = resolve_client_credentials_scopes(&client, cmd.scope.as_deref())?;
         let scope_str = scopes.join(" ");
 
-        // 4. このサービスアカウントが名乗りになっているアプリ（ADR-0059 の決定 1）。
-        //    ⚠ **アプリを止めたら、その名乗りのサービスアカウントも止まる**（ADR-0060）。止めたアプリの
-        //    サーバが、他のアプリの API や assay を自分の名前で叩き続けないようにする。
-        //    ⚠ ただし**自分の名簿（self）を読む管理トークンだけは出す。** 名簿は止めたアプリに
-        //    「全員 `blocked`」と答える口で、ここを塞ぐと RP は止まったことを定期照合で知れない。
+        // 4. The app for which this service account is the identity (ADR-0059 decision 1).
+        //    ⚠ **Stopping an app also stops the service account that is its identity** (ADR-0060). So that a stopped app's
+        //    server does not keep hitting other apps' APIs or assay under its own name.
+        //    ⚠ However, **an admin token for reading its own directory (self) is still issued.** The directory is the endpoint that answers a stopped app
+        //    "everyone `blocked`"; blocking it would keep RPs from learning about the stop through periodic reconciliation.
         let own_application = self
             .applications
             .find_by_binding_target(
@@ -1045,16 +1045,16 @@ impl TokenService {
             .as_ref()
             .is_some_and(|application| !application.is_active());
 
-        // 5. 宛先（`resource`）の決定（RFC 8707。ADR-0037 / ADR-0042）。assay 自身の管理 API を
-        //    要求された場合だけ、クライアントが保有する権限コードを `perms` に載せた管理トークンを
-        //    出す。それ以外は登録済みの宛名（`resources`）を引き、許可されていれば `aud` に載せる。
-        //    どちらでもなければ `invalid_target`——**この認可サーバが知らない宛先へは出さない**。
+        // 5. Determine the destination (`resource`) (RFC 8707. ADR-0037 / ADR-0042). Only when assay's own admin API
+        //    is requested is an admin token issued with the client's permission codes in `perms`.
+        //    Otherwise the registered audiences (`resources`) are looked up, and if allowed it goes into `aud`.
+        //    If neither, `invalid_target`: **tokens are not issued to destinations this authorization server does not know**.
         let now = self.clock.now();
         let iat = now.timestamp();
         let issuer = tenant_issuer(&self.base_issuer, tenant_id);
         let management_aud = management_audience(&issuer);
-        // 管理トークンは通常のアクセストークンより短命にする（ADR-0037 決定 2）。`perms` は
-        // トークンから読むため、この寿命が「権限を剥奪してから実際に効くまで」の上限になる。
+        // Admin tokens are shorter-lived than normal access tokens (ADR-0037 decision 2). `perms` is read
+        // from the token, so this lifetime is the upper bound of "from revoking a permission until it actually takes effect".
         let requested_resource = cmd.resource.as_deref().map(str::trim);
         if own_application_disabled && requested_resource != Some(management_aud.as_str()) {
             self.audit
@@ -1076,7 +1076,7 @@ impl TokenService {
         let (audience, perms, ttl) = match requested_resource {
             None | Some("") => (userinfo_audience(&issuer), None, self.access_token_ttl),
             Some(requested) if requested == management_aud => {
-                // 止めたアプリの名乗りには、権限コードを持っていても載せない。通るのは名簿（self）だけ。
+                // For the identity of a stopped app, nothing is included even with permission codes. Only the directory (self) passes.
                 let codes = if own_application_disabled {
                     Vec::new()
                 } else {
@@ -1085,13 +1085,13 @@ impl TokenService {
                         .await
                         .map_err(|e| internal(&e))?
                 };
-                // 管理トークンを出してよいのは、(1) 権限コードを 1 つ以上持つ client か、
-                // (2) **あるアプリの名乗り（サービスアカウント）として結び付いた** client である
-                // （ADR-0059）。(2) の `perms` は空のままで、通るのは名乗りで決まる口
-                // （`/admin/applications/self/users`）だけ ——テナント全体の権限は増えない。
+                // Admin tokens may be issued only to (1) clients holding at least one permission code, or
+                // (2) clients **bound as some app's identity (service account)**
+                // (ADR-0059). For (2) `perms` stays empty, and only endpoints decided by the identity pass
+                // (`/admin/applications/self/users`): tenant-wide permissions do not increase.
                 //
-                // どちらでもない client へは出さない。出しても全部 403 になるトークンであり、
-                // 「取れたのに何も通らない」という最も追いにくい失敗を生む。
+                // Not issued to clients that are neither. It would be a token for which everything is 403,
+                // creating the hardest-to-trace failure, "obtained but nothing passes".
                 if codes.is_empty() && own_application.is_none() {
                     self.audit
                         .record(
@@ -1115,22 +1115,22 @@ impl TokenService {
                     self.management_token_ttl,
                 )
             }
-            // 登録済みの宛名（ADR-0042）。ここで `aud` に載るのは**呼ばれる側の名前**で、
-            // assay が接続する先ではない。`perms` は載せない——そこで何をしてよいかは
-            // リソースサーバが `client_id` で決める（ADR-0033）。
+            // Registered audiences (ADR-0042). What goes into `aud` here is **the name of the called side**,
+            // not where assay connects. `perms` is not included: what may be done there
+            // is decided by the resource server using `client_id` (ADR-0033).
             Some(requested) => {
                 let found = self
                     .resources
                     .find_by_uri(tenant_id, requested)
                     .await
                     .map_err(|e| internal(&e))?;
-                // 「登録が無い」「停止中」「許可されていない」を**応答では区別しない**。
-                // 区別すると、総当たりで「どの宛名が登録されているか」を探れる。切り分けは監査で行う。
+                // "Not registered", "disabled" and "not permitted" are **not distinguished in the response**.
+                // Distinguishing would let brute force discover "which audiences are registered". Diagnosis is done via the audit.
                 //
-                // 出してよいのは、宛名が有効で、**あるアプリの `resource` の名乗り**であり、そのアプリが
-                // 有効で、要求元のサービスアカウントが**そのアプリに割り当てられている**ときだけ
-                // （ADR-0059 の決定 6）。「どのサービスアカウントがこの API を使ってよいか」は、
-                // アプリの「使う主体」に並ぶ。
+                // It may be issued only when the audience is active, is **some app's `resource` identity**, that app is
+                // active, and the requesting service account is **assigned to that app**
+                // (ADR-0059 decision 6). "Which service accounts may use this API" is listed among
+                // the app's "using principals".
                 let issuable = match found {
                     None => Err("unknown_resource"),
                     Some(resource) if !resource.is_active() => Err("resource_disabled"),
@@ -1146,8 +1146,8 @@ impl TokenService {
                         .map_err(|e| internal(&e))?
                     {
                         None => Err("resource_not_bound_to_an_application"),
-                        // 可否の規則はアカウントの画面と同じ `admits_service_account`（ADR-0065）。
-                        // 止まっているアプリでは割り当てを引かない。
+                        // The allow/deny rule is `admits_service_account`, the same as the account screen (ADR-0065).
+                        // For a stopped app, assignments are not looked up.
                         Some(application) if !application.is_active() => {
                             Err(application.admits_service_account(false).reason())
                         }
@@ -1159,7 +1159,7 @@ impl TokenService {
                                 .map_err(|e| internal(&e))?;
                             match application.admits_service_account(assigned) {
                                 ApplicationAccess::Allowed => Ok(resource),
-                                // 監査の理由は今までの語のまま（`service_account_not_assigned`）。
+                                // The audit reason keeps the existing wording (`service_account_not_assigned`).
                                 ApplicationAccess::NotAssigned => {
                                     Err("service_account_not_assigned")
                                 }
@@ -1188,17 +1188,17 @@ impl TokenService {
                         ));
                     }
                 };
-                // `aud` には**登録された文字列**を載せる（要求された綴りではない）。表の照合順序は
-                // 大小を区別しないため、`API://x` の要求でも `api://x` の行が引ける。要求をそのまま
-                // 返すと、登録値と完全一致で比べるリソースサーバ側で外れる（ADR-0042「正規化しない」）。
+                // Put **the registered string** in `aud` (not the requested spelling). The table's collation
+                // is case-insensitive, so a request for `API://x` finds the `api://x` row. Returning the request as is
+                // would miss on resource servers that compare by exact match with the registered value (ADR-0042 "do not normalize").
                 (resource.resource_uri, None, self.access_token_ttl)
             }
         };
 
-        // 6. Access Token を発行する（ID Token・Refresh Token は出さない）。
+        // 6. Issue the Access Token (no ID Token or Refresh Token).
         let access_claims = AccessTokenClaims {
             iss: issuer.clone(),
-            // 利用者不在のため主体はクライアント自身（RFC 6749 §4.4 の運用慣行）。
+            // No user, so the principal is the client itself (operational convention of RFC 6749 §4.4).
             sub: client.client_id.clone(),
             aud: audience,
             client_id: client.client_id.clone(),
@@ -1208,7 +1208,7 @@ impl TokenService {
             jti: Uuid::new_v4().to_string(),
             sub_type: Some(SUBJECT_TYPE_CLIENT.to_string()),
             perms,
-            // 機械（サーバー）のトークンは DPoP で結び付けない（ADR-0075 決定 1）。
+            // Machine (server) tokens are not bound via DPoP (ADR-0075 decision 1).
             cnf: None,
         };
         let access_token = self.sign_access_token(&access_claims).await?;
@@ -1218,7 +1218,7 @@ impl TokenService {
                 AuditEventType::TokenIssued,
                 AuditResult::Success,
                 Some(tenant_id),
-                // 利用者が居ないので user_id は残さない（クライアント自身が主体）。
+                // No user, so no user_id is kept (the client itself is the principal).
                 None,
                 Some(&client.client_id),
                 Some("grant=client_credentials"),
@@ -1256,10 +1256,10 @@ impl TokenService {
             .map_err(|e| internal(&e))
     }
 
-    /// クライアント認証（設計仕様 §4.4、RFC 6749 §2.3.1）。
+    /// Client authentication (design spec §4.4, RFC 6749 §2.3.1).
     ///
-    /// 照合する資格情報の選択（Basic / body / assertion）も照合そのものも
-    /// `client_authentication` へ集約してある（G3・ADR-0030）。ここが担うのは監査記録だけ。
+    /// Both the choice of credentials to check (Basic / body / assertion) and the check itself are
+    /// consolidated in `client_authentication` (G3, ADR-0030). This only handles audit recording.
     async fn authenticate_client(
         &self,
         tenant: TenantContext,
@@ -1272,7 +1272,7 @@ impl TokenService {
             .authenticate(tenant, client, &cmd.credentials)
             .await
         {
-            // public client（`none`）は認証なしで通す。
+            // Public clients (`none`) pass without authentication.
             Ok(ClientAuthOutcome::NotRequired | ClientAuthOutcome::Authenticated) => Ok(()),
             Err(ClientAuthError::Failed(failure)) => Err(self
                 .client_auth_failed(tenant, &client.client_id, failure.as_str(), ctx)
@@ -1303,17 +1303,17 @@ impl TokenService {
         }
     }
 
-    /// トークンを発行してよい利用者か（両 grant 共通。認可コード交換とリフレッシュの双方が通る）。
+    /// Whether the user may be issued tokens (common to both grants. Both code exchange and refresh go through this).
     ///
-    /// 利用者自身の状態に加えて、**所属元テナントが `ACTIVE`** であることも確かめる（ADR-0009 §8）。
-    /// テナントの無効化はその組織の利用を止める操作であり、発行済みのリフレッシュトークンで
-    /// 更新し続けられては止めたことにならない。無効化したテナント自身の `/{tenant_id}/token` は
-    /// `TenantResolver` が 404 で止めるが、その利用者がゲストとして参加している**他テナントの**
-    /// `/{tenant_id}/token` は生きているため、そこを塞ぐのはこの判定だけである。
+    /// In addition to the user's own status, also checks that **the home tenant is `ACTIVE`** (ADR-0009 §8).
+    /// Disabling a tenant is an operation that stops that organization's use, and it would not count as stopped if refreshing
+    /// with issued refresh tokens kept working. The disabled tenant's own `/{tenant_id}/token` is
+    /// stopped with 404 by `TenantResolver`, but `/{tenant_id}/token` of **other tenants** where that user participates as a guest
+    /// is alive, and only this check blocks it.
     ///
-    /// **キャッシュを通さず毎回 DB を見る。** ここは失効に相当する判定で、無効化を即座に効かせたい
-    /// （テナント解決の TTL キャッシュに載せると、最大 TTL 分だけ更新が通ってしまう）。トークン
-    /// 発行はもともとクライアント・コード／トークン・利用者・署名鍵を読むので、主キー 1 本の追加で済む。
+    /// **Looks at the DB every time without a cache.** This is a revocation-like check, and disabling should take effect immediately
+    /// (putting it in the tenant resolution TTL cache would let refreshes pass for up to the TTL). Token
+    /// issuance already reads client, code/token, user and signing key, so one more primary-key lookup is enough.
     async fn load_active_user(
         &self,
         user_id: uuid::Uuid,
@@ -1337,8 +1337,8 @@ impl TokenService {
         };
         match self.tenants.find_by_id(user.tenant_id).await {
             Ok(Some(home)) if home.is_active() => Ok(user),
-            // 不存在（テナントごと削除された）と `DISABLED` を区別しない。RP から見ればどちらも
-            // 「この利用者ではもう発行できない」で、扱いは同じ。
+            // Missing (deleted with the tenant) and `DISABLED` are not distinguished. From the RP's view both are
+            // "can no longer issue for this user", handled the same.
             Ok(_) => Err(TokenError::new(
                 OAuthErrorCode::InvalidGrant,
                 "the user's home tenant is not active",
@@ -1372,9 +1372,9 @@ impl TokenService {
     }
 }
 
-/// client_id を Basic ヘッダ優先で解決する。
+/// Resolves client_id with the Basic header taking precedence.
 fn resolve_client_id(cmd: &TokenCommand) -> Result<String, TokenError> {
-    // RFC 6749 §2.3.1: 1 リクエストで複数の認証方式を使ってはならない（G3）。client を引く前に弾く。
+    // RFC 6749 §2.3.1: multiple authentication methods must not be used in one request (G3). Rejected before looking up the client.
     cmd.credentials.ensure_single_method().map_err(|_| {
         TokenError::new(
             OAuthErrorCode::InvalidRequest,
@@ -1394,13 +1394,13 @@ fn resolve_client_id(cmd: &TokenCommand) -> Result<String, TokenError> {
     }
 }
 
-/// `client_credentials` の scope を決める（G4）。
+/// Decides the scope of `client_credentials` (G4).
 ///
-/// - 要求あり: すべてがクライアントの登録 scope の部分集合であること（`/authorize` と同じ完全一致判定）。
-/// - 要求なし: 登録 scope から**利用者前提の scope を除いた**集合を既定とする。`openid` は
-///   「エンドユーザーの認証」を要求する scope、`profile` / `email` は利用者のクレームを指すもので、
-///   利用者の居ないトークンに載せる意味がない。`offline_access` は Refresh Token の要求であり、
-///   本 grant は資格情報を出し直せる（＝更新の必要がない）ため常に拒否する。
+/// - With a request: all must be a subset of the client's registered scopes (same exact-match check as `/authorize`).
+/// - Without a request: the default is the registered scopes **minus user-oriented scopes**. `openid` is
+///   a scope requesting "end-user authentication", and `profile` / `email` refer to user claims,
+///   meaningless in tokens without a user. `offline_access` is a Refresh Token request, and
+///   this grant can re-present credentials (= no need to refresh), so it is always rejected.
 fn resolve_client_credentials_scopes(
     client: &Client,
     requested: Option<&str>,
@@ -1419,8 +1419,8 @@ fn resolve_client_credentials_scopes(
                     "offline_access is not available for the client_credentials grant",
                 ));
             }
-            // 利用者前提の scope は、要求されても拒む。省略時は落としているのに明示要求だけ
-            // 通すと、**利用者が居ないのに利用者のクレームを名乗るトークン**が出せてしまう。
+            // User-oriented scopes are rejected even if requested. Dropping them when omitted but letting explicit requests
+            // through would allow issuing **tokens that claim user claims without a user**.
             if scopes.iter().any(|s| user_bound.contains(&s.as_str())) {
                 return Err(TokenError::new(
                     OAuthErrorCode::InvalidScope,
@@ -1460,11 +1460,11 @@ mod tests {
     use crate::domain::tenant::TenantId;
     use crate::domain::values::{ClientStatus, ClientType, TokenEndpointAuthMethod};
 
-    /// ADR-0043 決定 3。記録が無いときは推測して名乗らない。
+    /// ADR-0043 decision 3. When nothing is recorded, nothing is claimed by guessing.
     #[test]
     fn no_record_means_no_acr() {
         assert_eq!(authentication_claims(None), (None, None));
-        // 空の記録も同じ扱い（「何も検証していない」認証は無い）。
+        // An empty record is treated the same (there is no authentication that "verified nothing").
         assert_eq!(authentication_claims(Some(&vec![])), (None, None));
     }
 
@@ -1488,7 +1488,7 @@ mod tests {
         assert_eq!(amr, Some(vec!["pwd".to_string()]));
     }
 
-    /// `email_otp` と `sms_otp` は RFC 8176 ではどちらも `otp`。同じ値を 2 つ並べない。
+    /// `email_otp` and `sms_otp` are both `otp` in RFC 8176. The same value is not listed twice.
     #[test]
     fn amr_folds_duplicates() {
         let (_, amr) = authentication_claims(Some(&vec![
@@ -1498,8 +1498,8 @@ mod tests {
         assert_eq!(amr, Some(vec!["otp".to_string()]));
     }
 
-    /// 外部 IdP は第二要素として数えない（ADR-0008）。`amr` に `fed` は出るが `acr` は上がらない
-    /// ——`amr` を強度の判断に使わせない理由がここに出る。
+    /// External IdPs do not count as a second factor (ADR-0008). `fed` appears in `amr`, but `acr` does not rise:
+    /// this is where the reason `amr` must not be used to judge strength shows.
     #[test]
     fn an_external_idp_login_is_not_multi_factor() {
         let (acr, amr) = authentication_claims(Some(&vec![AuthenticationMethod::ExternalIdp]));
@@ -1535,46 +1535,46 @@ mod tests {
         }
     }
 
-    /// 登録できる scope は OIDC の 4 値だけ（`validate_scopes`）で、そのすべてが利用者前提か
-    /// `offline_access` である。したがって **`client_credentials` のトークンは scope が空**になる。
-    /// 業務上の権限はアプリが `sub`（= `client_id`）を見て判断する（ADR-0033）。
+    /// The only registrable scopes are the 4 OIDC values (`validate_scopes`), all of which are user-oriented or
+    /// `offline_access`. So **`client_credentials` tokens have an empty scope**.
+    /// Business permissions are decided by apps by looking at `sub` (= `client_id`) (ADR-0033).
     #[test]
     fn client_credentials_tokens_carry_no_scope() {
-        // システム用クライアントとして登録できる最小の姿。
+        // The minimal form registrable as a system client.
         let client = client_with_scopes(&["openid"]);
         assert!(resolve_client_credentials_scopes(&client, None)
             .unwrap()
             .is_empty());
 
-        // 利用者向けにも使うクライアントで登録され得る全 4 値でも同じ。
+        // Same with all 4 values that a client also used for users may register.
         let client = client_with_scopes(&["openid", "profile", "email", "offline_access"]);
         assert!(resolve_client_credentials_scopes(&client, None)
             .unwrap()
             .is_empty());
     }
 
-    /// 未登録の scope は拒否する（`/authorize` と同じ完全一致判定）。
+    /// Unregistered scopes are rejected (same exact-match check as `/authorize`).
     ///
-    /// 登録できる scope は OIDC の 4 値だけになった（ADR-0033）ので、この判定へ届くのは
-    /// 制限より前に登録された行だけである。門番は残してあるため、その姿の行が来ても弾く。
-    /// **利用者前提の scope で書くと 1 つ上の門番が先に弾き、この判定を通らない。**
+    /// The only registrable scopes are now the 4 OIDC values (ADR-0033), so only rows registered
+    /// before the restriction reach this check. The gatekeeper is kept, so rows of that form are rejected too.
+    /// **Writing it with user-oriented scopes makes the gatekeeper one level up reject first, and this check is not reached.**
     #[test]
     fn requested_scope_must_be_a_subset_of_the_registered_scopes() {
-        // ADR-0033 より前に登録された姿（いまは登録できない）。
+        // The form registered before ADR-0033 (cannot be registered now).
         let client = client_with_scopes(&["openid", "reports.read"]);
         let err = resolve_client_credentials_scopes(&client, Some("reports.write"))
-            .expect_err("未登録 scope は拒否する");
+            .expect_err("unregistered scope is rejected");
         assert_eq!(err.code, OAuthErrorCode::InvalidScope);
     }
 
-    /// 利用者前提の scope は、要求されても拒む。省略時は落としているのに明示要求だけ通すと、
-    /// **利用者が居ないのに利用者のクレームを名乗るトークン**が出せてしまう。
+    /// User-oriented scopes are rejected even if requested. Dropping them when omitted but letting explicit requests through
+    /// would allow issuing **tokens that claim user claims without a user**.
     #[test]
     fn user_bound_scopes_are_rejected_even_when_registered() {
         let client = client_with_scopes(&["openid", "profile", "email"]);
         for requested in ["openid", "profile", "email", "openid profile"] {
             let err = resolve_client_credentials_scopes(&client, Some(requested))
-                .expect_err("利用者前提の scope は拒否する");
+                .expect_err("user-oriented scope is rejected");
             assert_eq!(
                 err.code,
                 OAuthErrorCode::InvalidScope,
@@ -1583,16 +1583,16 @@ mod tests {
         }
     }
 
-    /// `offline_access` は本 grant では常に拒否する（資格情報を出し直せるため更新の必要がない）。
+    /// `offline_access` is always rejected in this grant (credentials can be re-presented, so no need to refresh).
     #[test]
     fn offline_access_is_rejected_even_when_registered() {
         let client = client_with_scopes(&["openid", "offline_access"]);
         let err = resolve_client_credentials_scopes(&client, Some("offline_access"))
-            .expect_err("offline_access は拒否する");
+            .expect_err("offline_access is rejected");
         assert_eq!(err.code, OAuthErrorCode::InvalidScope);
     }
 
-    /// 空文字・空白のみの scope は「省略」と同じに扱う（フォームの空欄で 400 にしない）。
+    /// A scope of only empty string / whitespace is treated the same as "omitted" (no 400 for an empty form field).
     #[test]
     fn blank_scope_is_treated_as_omitted() {
         let client = client_with_scopes(&["openid"]);
@@ -1601,8 +1601,8 @@ mod tests {
             .is_empty());
     }
 
-    /// `sub_type` は `client_credentials` のトークンだけが持ち、省略時は利用者主体として読む
-    /// （本クレーム導入前に発行したトークンとの互換）。
+    /// Only `client_credentials` tokens have `sub_type`; when omitted it is read as a user principal
+    /// (compatibility with tokens issued before this claim was introduced).
     #[test]
     fn subject_type_distinguishes_client_tokens_from_end_user_tokens() {
         let mut claims = AccessTokenClaims {

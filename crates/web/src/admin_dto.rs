@@ -1,12 +1,12 @@
-//! web が api の JSON 管理 API（`/admin/*`）から受け取るビューモデル（ADR-0007 §4）。
+//! View models web receives from the api's JSON admin API (`/admin/*`) (ADR-0007 §4).
 //!
-//! これらは api の OpenAPI DTO（`ClientResponse` 等）と同じ JSON 形状を web 側で受けるための
-//! 読み取り用構造体。api の管理 API は OpenAPI で公開される契約であり、web はその一消費者として
-//! 自前のビューモデルで受ける（内部認証の真の契約は `assay-contracts` に置く）。整合は E2E で検証する。
+//! These are read-only structs for receiving, on the web side, the same JSON shapes as the api's OpenAPI DTOs (`ClientResponse` etc.).
+//! The api's admin API is a contract published via OpenAPI, and web, as one of its consumers,
+//! receives it with its own view models (the true contract for internal authentication lives in `assay-contracts`). Consistency is verified by E2E.
 
 use serde::Deserialize;
 
-/// クライアント（RP）の公開表現（`GET /admin/clients`・`/admin/clients/{id}` の応答要素）。
+/// Public representation of a client (RP) (response element of `GET /admin/clients` and `/admin/clients/{id}`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ClientView {
     pub id: String,
@@ -20,26 +20,26 @@ pub struct ClientView {
     pub response_types: Vec<String>,
     pub scopes: Vec<String>,
     pub token_endpoint_auth_method: String,
-    /// `private_key_jwt` の検証鍵（JWK Set の JSON。ADR-0030）。公開鍵のみ。
+    /// Verification keys for `private_key_jwt` (JWK Set JSON; ADR-0030). Public keys only.
     #[serde(default)]
     pub jwks: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
 
-/// クライアント一覧の 1 ページ分（`GET /admin/clients`。G7）。
+/// One page of the client list (`GET /admin/clients`; G7).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ClientListView {
     pub clients: Vec<ClientView>,
-    /// ページング前の総件数。「全 N 件」の表示と次ページの有無に使う。
+    /// Total count before paging. Used for the "N in total" display and whether there is a next page.
     pub total: i64,
-    /// api が実際に適用した 1 ページの件数（クランプ後）。ページ送りの刻み幅として使う。
+    /// Page size the api actually applied (after clamping). Used as the paging step.
     pub limit: i64,
     #[allow(dead_code)]
     pub offset: i64,
 }
 
-/// 作成応答（`POST /admin/clients`）。`client_secret` は confidential のときのみ含まれる。
+/// Creation response (`POST /admin/clients`). `client_secret` is included only for confidential clients.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ClientCreatedView {
     #[serde(flatten)]
@@ -48,7 +48,7 @@ pub struct ClientCreatedView {
     pub client_secret: Option<String>,
 }
 
-/// secret 再発行応答（`POST /admin/clients/{id}/secret`）。
+/// Secret reissue response (`POST /admin/clients/{id}/secret`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ClientSecretView {
     #[allow(dead_code)]
@@ -56,7 +56,7 @@ pub struct ClientSecretView {
     pub client_secret: String,
 }
 
-/// 監査ログ 1 行（`GET /admin/audit-logs` の応答要素。設計仕様 §7）。
+/// One audit log row (response element of `GET /admin/audit-logs`; design spec §7).
 #[derive(Debug, Clone, Deserialize)]
 pub struct AuditLogView {
     #[allow(dead_code)]
@@ -79,7 +79,7 @@ pub struct AuditLogView {
     pub correlation_id: String,
 }
 
-/// api のエラー応答本文（`{ "error": code, "message": msg }`）。
+/// The api's error response body (`{ "error": code, "message": msg }`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ApiErrorBody {
     #[allow(dead_code)]
@@ -87,7 +87,7 @@ pub struct ApiErrorBody {
     pub message: String,
 }
 
-/// 署名鍵の公開表現（`GET /admin/signing-keys` の応答要素）。
+/// Public representation of a signing key (response element of `GET /admin/signing-keys`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct SigningKeyView {
     pub kid: String,
@@ -96,24 +96,24 @@ pub struct SigningKeyView {
     pub not_before: String,
     pub not_after: String,
     pub created_at: String,
-    /// いま署名に使われている鍵か。**`status` からは読めない** —— ACTIVE は複数あり得て、署名するのは
-    /// 1 本だけである。どれかを決める規則は core にあり、web からは引けないので api が判定して返す。
-    /// 古い api（この項目を返さない）でも画面を壊さないよう、既定は `false`。
+    /// Whether this key is currently used for signing. **It can't be read from `status`** -- there can be several ACTIVE keys, and only
+    /// one signs. The rule deciding which lives in core and is not available to web, so the api decides and returns it.
+    /// Defaults to `false` so screens don't break with an old api (that doesn't return this field).
     #[serde(default)]
     pub is_current_signer: bool,
-    /// 公開済みだが、まだ署名には使われていない鍵か（`not_before` が未来）。
+    /// Whether the key is published but not yet used for signing (`not_before` is in the future).
     #[serde(default)]
     pub is_pending: bool,
 }
 
-/// アプリの公開表現（`GET /admin/applications` の応答要素。ADR-0054）。
+/// Public representation of an app (response element of `GET /admin/applications`; ADR-0054).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ApplicationView {
     pub id: String,
     pub display_name: String,
-    /// `ACTIVE` / `DISABLED`。
+    /// `ACTIVE` / `DISABLED`.
     pub status: String,
-    /// `EVERYONE` / `INDIVIDUAL`。
+    /// `EVERYONE` / `INDIVIDUAL`.
     pub assignment_mode: String,
     #[serde(default)]
     pub bindings: Vec<ApplicationBindingView>,
@@ -124,33 +124,33 @@ pub struct ApplicationView {
 }
 
 impl ApplicationView {
-    /// 使える状態か（テンプレートから状態を文字列比較させないための述語）。
+    /// Whether it is usable (a predicate so templates don't compare status strings).
     pub fn is_active(&self) -> bool {
         self.status == "ACTIVE"
     }
 
-    /// 割り当てられた利用者だけが使えるか。
+    /// Whether only assigned users can use it.
     pub fn is_individual(&self) -> bool {
         self.assignment_mode == "INDIVIDUAL"
     }
 
-    /// ログインの名乗り（OIDC・SAML）を持つか。⚠ 消すと、その連携先は判定の外（誰でも入れる）に
-    /// 出る（ADR-0054 の帰結）ので、消す前に言う。
+    /// Whether it has login bindings (OIDC, SAML). ⚠ Removing them takes that integration outside the decision (anyone can get in)
+    /// (a consequence of ADR-0054), so warn before removing.
     pub fn has_login_binding(&self) -> bool {
         self.bindings
             .iter()
             .any(|b| b.kind == "oidc" || b.kind == "saml")
     }
 
-    /// ⚠ **誰も入れない状態**（「個別」なのに名簿が空）。
-    /// 「全員」と取り違えると全断になるので、一覧で目立たせる。
+    /// ⚠ **The state where nobody can get in** ("individual" with an empty roster).
+    /// Mixing it up with "everyone" cuts everyone off, so it is highlighted in the list.
     pub fn admits_nobody(&self) -> bool {
         self.is_active() && self.is_individual() && self.assigned_count == 0
     }
 }
 
-/// 名乗りの種類の表示名の翻訳キー（テンプレートから種類を文字列比較させないため）。
-/// 知らない種類は綴りのまま出す（新しい api と古い web の組み合わせでも画面を壊さない）。
+/// Translation key for the binding kind's display name (so templates don't compare kind strings).
+/// Unknown kinds are shown as spelled (screens don't break even with a new api and an old web).
 pub fn binding_kind_label_key(kind: &str) -> &str {
     match kind {
         "oidc" => "admin-applications-kind-oidc",
@@ -161,14 +161,14 @@ pub fn binding_kind_label_key(kind: &str) -> &str {
     }
 }
 
-/// 名乗り 1 本の公開表現（ADR-0059）。
+/// Public representation of one binding (ADR-0059).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ApplicationBindingView {
     pub id: String,
-    /// `oidc` / `saml` / `service_account` / `resource`。
+    /// `oidc` / `saml` / `service_account` / `resource`.
     pub kind: String,
-    /// ログイン用・サービスアカウントなら `client_id`、SAML なら `entity_id`、宛名なら
-    /// `resource_uri`。相手が消えていれば `None`。
+    /// `client_id` for login and service accounts, `entity_id` for SAML, and
+    /// `resource_uri` for audiences. `None` if the counterpart is gone.
     #[serde(default)]
     pub identifier: Option<String>,
     #[serde(default)]
@@ -176,36 +176,36 @@ pub struct ApplicationBindingView {
 }
 
 impl ApplicationBindingView {
-    /// 種類の表示名の翻訳キー（テンプレートから種類を文字列比較させないため）。
-    /// 知らない種類は綴りのまま出す（新しい api と古い web の組み合わせでも画面を壊さない）。
+    /// Translation key for the kind's display name (so templates don't compare kind strings).
+    /// Unknown kinds are shown as spelled (screens don't break even with a new api and an old web).
     pub fn kind_label_key(&self) -> &str {
         binding_kind_label_key(&self.kind)
     }
 
-    /// サービスアカウントの名乗りか（サーバーのアイコンを出す）。
+    /// Whether it is a service account binding (shows the server icon).
     pub fn is_service_account(&self) -> bool {
         self.kind == "service_account"
     }
 }
 
-/// 名乗りの候補の応答（`GET /admin/applications/{id}/binding-candidates`。ADR-0067）。
+/// Response with binding candidates (`GET /admin/applications/{id}/binding-candidates`; ADR-0067).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ApplicationBindingCandidateListView {
     #[serde(default)]
     pub candidates: Vec<ApplicationBindingCandidateView>,
 }
 
-/// 名乗りの候補 1 件。
+/// One binding candidate.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ApplicationBindingCandidateView {
-    /// `oidc` / `saml` / `service_account` / `resource`。
+    /// `oidc` / `saml` / `service_account` / `resource`.
     pub kind: String,
-    /// 結び付けるときに送る値（`client_id`・SP の内部 ID・宛名の URI）。
+    /// Value sent when binding (`client_id`, the SP's internal ID, the audience URI).
     pub reference: String,
-    /// 人が見分ける値（`client_id`・`entity_id`・宛名の URI）。
+    /// Value humans tell apart (`client_id`, `entity_id`, the audience URI).
     pub identifier: String,
     pub display_name: String,
-    /// いまこの相手を名乗りに持っているアプリ。
+    /// The app that currently has this counterpart as a binding.
     #[serde(default)]
     pub application_id: Option<String>,
     #[serde(default)]
@@ -213,20 +213,20 @@ pub struct ApplicationBindingCandidateView {
 }
 
 impl ApplicationBindingCandidateView {
-    /// 選択肢の値（`<種類>:<相手>`）。種類に `:` は無いので、最初の `:` で切れば戻る
-    /// （宛名の URI・SAML の entityID は `:` を含むが、相手の側にしか現れない）。
+    /// The choice value (`<kind>:<counterpart>`). Kinds contain no `:`, so splitting at the first `:` restores it
+    /// (audience URIs and SAML entityIDs contain `:`, but only on the counterpart side).
     pub fn choice_value(&self) -> String {
         format!("{}:{}", self.kind, self.reference)
     }
 
-    /// 種類の表示名の翻訳キー。
+    /// Translation key for the kind's display name.
     pub fn kind_label_key(&self) -> &str {
         binding_kind_label_key(&self.kind)
     }
 }
 
-/// 選択肢の値（[`ApplicationBindingCandidateView::choice_value`]）を種類と相手へ戻す。
-/// 形が合わなければ `None`。
+/// Turns a choice value ([`ApplicationBindingCandidateView::choice_value`]) back into kind and counterpart.
+/// `None` if the shape doesn't match.
 pub fn parse_binding_choice(value: &str) -> Option<(&str, &str)> {
     let (kind, reference) = value.trim().split_once(':')?;
     let reference = reference.trim();
@@ -236,16 +236,16 @@ pub fn parse_binding_choice(value: &str) -> Option<(&str, &str)> {
     Some((kind, reference))
 }
 
-/// 種類ごとに束ねた候補（画面の `<optgroup>` 1 つ）。
+/// Candidates grouped by kind (one `<optgroup>` on screen).
 #[derive(Debug, Clone)]
 pub struct BindingCandidateGroup {
-    /// 種類の表示名の翻訳キー。
+    /// Translation key for the kind's display name.
     pub label_key: &'static str,
     pub candidates: Vec<ApplicationBindingCandidateView>,
 }
 
-/// 候補を種類（ログイン OIDC・SAML・サービスアカウント・宛名）の順に束ねる。空の種類は出さない。
-/// 知らない種類（新しい api と古い web）は捨てる ——選んでも、この web は送り方を知らない。
+/// Groups candidates in kind order (login OIDC, SAML, service account, audience). Empty kinds are omitted.
+/// Unknown kinds (new api, old web) are discarded -- even if chosen, this web wouldn't know how to send them.
 pub fn group_binding_candidates(
     candidates: Vec<ApplicationBindingCandidateView>,
 ) -> Vec<BindingCandidateGroup> {
@@ -271,45 +271,45 @@ pub fn group_binding_candidates(
         .collect()
 }
 
-/// アプリの一覧応答。
+/// App list response.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ApplicationListView {
     pub applications: Vec<ApplicationView>,
-    /// `record_only` / `enforce`。
+    /// `record_only` / `enforce`.
     #[serde(default)]
     pub enforcement: String,
 }
 
 impl ApplicationListView {
-    /// 判定がまだ断るところまで来ていないか（＝割り当てが効いていない）。
+    /// Whether the decision has not yet reached the point of refusing (= assignments not in effect).
     pub fn is_record_only(&self) -> bool {
         self.enforcement != "enforce"
     }
 }
 
-/// アプリの詳細応答（一覧の 1 件 ＋ 名簿）。
+/// App detail response (one list item + roster).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ApplicationDetailView {
     #[serde(flatten)]
     pub application: ApplicationView,
     #[serde(default)]
     pub assigned: Vec<ApplicationAssignmentView>,
-    /// 割り当てられたサービスアカウント（ADR-0059）。古い api は返さないので既定は空。
+    /// Assigned service accounts (ADR-0059). Old apis don't return it, so it defaults to empty.
     #[serde(default)]
     pub assigned_service_accounts: Vec<ApplicationServiceAccountAssignmentView>,
-    /// `record_only` / `enforce`。
+    /// `record_only` / `enforce`.
     #[serde(default)]
     pub enforcement: String,
 }
 
 impl ApplicationDetailView {
-    /// 判定がまだ断るところまで来ていないか（＝割り当てが効いていない）。
+    /// Whether the decision has not yet reached the point of refusing (= assignments not in effect).
     pub fn is_record_only(&self) -> bool {
         self.enforcement != "enforce"
     }
 }
 
-/// 割り当てられた利用者 1 行。
+/// One assigned user row.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ApplicationAssignmentView {
     pub user_id: String,
@@ -317,43 +317,43 @@ pub struct ApplicationAssignmentView {
     pub email: String,
     #[serde(default)]
     pub name: Option<String>,
-    /// 利用者アカウント自体の状態（`ACTIVE` / `DISABLED` / `LOCKED`）。
+    /// Status of the user account itself (`ACTIVE` / `DISABLED` / `LOCKED`).
     pub status: String,
     pub assigned_at: String,
 }
 
 impl ApplicationAssignmentView {
-    /// 利用者アカウント自体が止まっているか。⚠ 割り当ては残るので、名簿では別に示す。
+    /// Whether the user account itself is stopped. ⚠ The assignment remains, so the roster shows it separately.
     pub fn is_user_active(&self) -> bool {
         self.status == "ACTIVE"
     }
 }
 
-/// 割り当てられたサービスアカウント 1 行。
+/// One assigned service account row.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ApplicationServiceAccountAssignmentView {
     pub client_id: String,
     pub app_name: String,
-    /// クライアントの状態（`ACTIVE` / `DISABLED` / `DELETED`）。
+    /// Client status (`ACTIVE` / `DISABLED` / `DELETED`).
     pub status: String,
     pub assigned_at: String,
 }
 
 impl ApplicationServiceAccountAssignmentView {
-    /// クライアントが動いているか。⚠ 割り当ては残るので、一覧では別に示す。
+    /// Whether the client is running. ⚠ The assignment remains, so the list shows it separately.
     pub fn is_client_active(&self) -> bool {
         self.status == "ACTIVE"
     }
 }
 
-/// 「いま入れている人」の応答（「全員」→「個別」へ倒す前の写し元）。
+/// Response with "people who can get in now" (the copy source before switching from "everyone" to "individual").
 #[derive(Debug, Clone, Deserialize)]
 pub struct ApplicationCurrentUsersView {
     #[serde(default)]
     pub users: Vec<ApplicationCurrentUserView>,
     #[serde(default)]
     pub total: i64,
-    /// ⚠ 真なら「全員は出せていない」。画面がそのまま言うこと。
+    /// ⚠ If true, "not everyone could be listed". The screen says exactly that.
     #[serde(default)]
     pub truncated: bool,
 }
@@ -367,33 +367,33 @@ pub struct ApplicationCurrentUserView {
     pub name: Option<String>,
 }
 
-/// 保護リソース（`aud` に入る宛名）の公開表現（`GET /admin/resources` の応答要素。ADR-0042）。
+/// Public representation of a protected resource (the audience in `aud`) (response element of `GET /admin/resources`; ADR-0042).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ResourceView {
     pub id: String,
-    /// トークンの `aud` に入る値そのもの。
+    /// The exact value put in a token's `aud`.
     pub resource_uri: String,
     pub display_name: String,
-    /// `ACTIVE` / `DISABLED`。
+    /// `ACTIVE` / `DISABLED`.
     pub status: String,
     pub created_at: String,
     pub updated_at: String,
 }
 
 impl ResourceView {
-    /// 新しいトークンの宛先に使えるか（テンプレートから状態を文字列比較させないための述語）。
+    /// Whether it can be used as the audience of new tokens (a predicate so templates don't compare status strings).
     pub fn is_active(&self) -> bool {
         self.status == "ACTIVE"
     }
 }
 
-/// 保護リソースの一覧応答。
+/// Protected resource list response.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ResourceListView {
     pub resources: Vec<ResourceView>,
 }
 
-/// SAML SP（クライアント）の公開表現（`GET /admin/saml-service-providers` の応答要素）。
+/// Public representation of a SAML SP (client) (response element of `GET /admin/saml-service-providers`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct SamlServiceProviderView {
     pub id: String,
@@ -401,13 +401,13 @@ pub struct SamlServiceProviderView {
     pub entity_id: String,
     pub acs_url: String,
     pub name_id_format: String,
-    /// 署名/暗号証明書（任意）。編集フォームの初期値に使う。
+    /// Signing/encryption certificate (optional). Used as the edit form's initial value.
     #[serde(default)]
     pub x509_certificate: Option<String>,
     pub enabled: bool,
 }
 
-/// 利用者作成応答（`POST /admin/users`）。本人へ渡すワンタイムリンクが一度限り返る（ADR-0062）。
+/// User creation response (`POST /admin/users`). A one-time link to hand to the user is returned only once (ADR-0062).
 #[derive(Debug, Clone, Deserialize)]
 pub struct UserCreatedView {
     #[allow(dead_code)]
@@ -418,45 +418,45 @@ pub struct UserCreatedView {
     pub setup_expires_at: String,
 }
 
-/// メンバー一覧の 1 件（`GET /admin/members`。HOME / GUEST を問わない。ADR-0009 §3）。
+/// One member list item (`GET /admin/members`; HOME or GUEST; ADR-0009 §3).
 #[derive(Debug, Clone, Deserialize)]
 pub struct MemberView {
     pub user_id: String,
     #[serde(default)]
     pub email: Option<String>,
-    /// 主たるログイン識別子（ユーザー名）。api が省略したときは `None`。
+    /// Primary login identifier (username). `None` when the api omits it.
     #[serde(default)]
     pub preferred_username: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
-    /// `HOME` または `GUEST`。
+    /// `HOME` or `GUEST`.
     pub membership_type: String,
-    /// `INVITED` または `ACTIVE`。
+    /// `INVITED` or `ACTIVE`.
     pub status: String,
-    /// 利用者アカウント自体の状態（`ACTIVE` / `DISABLED` / `LOCKED`）。不存在ユーザーは `None`。
+    /// Status of the user account itself (`ACTIVE` / `DISABLED` / `LOCKED`). `None` for nonexistent users.
     #[serde(default)]
     pub user_status: Option<String>,
-    /// ログイン失敗によるロックが今掛かっているか（AP6）。api が期限を判定済みの真偽値で返す
-    /// （web は時計を持たないため、期限の比較を web 側でやり直さない）。
+    /// Whether a lock due to login failures is currently in place (AP6). The api returns a boolean with expiry already judged
+    /// (web has no clock, so the expiry comparison is not redone on the web side).
     #[serde(default)]
     pub locked: bool,
-    /// 仮登録（ADR-0064）。本人がまだ設定リンクで資格情報を決めていない。
+    /// Provisional registration (ADR-0064). The user has not yet set credentials via the setup link.
     #[serde(default)]
     pub pending_setup: bool,
-    /// 仮登録の人の、いまの設定リンクの期限（RFC 3339・UTC）。
+    /// Expiry of the provisional user's current setup link (RFC 3339, UTC).
     #[serde(default)]
     pub setup_link_expires_at: Option<String>,
-    /// 仮登録で、使える設定リンクが無い（期限切れ）。api が読んだ時点で判定した値
-    /// （web は時計を持たないので、期限の比較をやり直さない。`locked` と同じ）。
+    /// Provisional with no usable setup link (expired). A value judged at the time the api read it
+    /// (web has no clock, so the expiry comparison is not redone; same as `locked`).
     #[serde(default)]
     pub setup_link_expired: bool,
-    /// 管理者メモ（ADR-0063）。書かれていなければ `None`。
+    /// Admin note (ADR-0063). `None` if none is written.
     #[serde(default)]
     pub note: Option<AccountNoteView>,
 }
 
 impl MemberView {
-    /// 一覧の見出しに出す名前（メール → ユーザー名の順に拾う）。
+    /// Name shown as the list heading (taken in the order email -> username).
     pub fn headline(&self) -> &str {
         self.email
             .as_deref()
@@ -464,7 +464,7 @@ impl MemberView {
             .unwrap_or("-")
     }
 
-    /// 見出しの下に添える名前。見出しと同じ値は繰り返さない（同じ文字列が 2 段並ぶと読みにくい）。
+    /// Name added below the heading. Not repeated if equal to the heading (the same string twice is hard to read).
     pub fn secondary_names(&self) -> Vec<&str> {
         let headline = self.headline();
         let mut out: Vec<&str> = Vec::new();
@@ -480,16 +480,16 @@ impl MemberView {
     }
 }
 
-/// アカウント（人・サービスアカウント）の管理者メモ（ADR-0063 / ADR-0065）。
+/// Admin note on an account (person or service account) (ADR-0063 / ADR-0065).
 #[derive(Debug, Clone, Deserialize)]
 pub struct AccountNoteView {
     pub text: String,
-    /// RFC 3339（UTC）。画面では `local-time.js` が閲覧者の時刻へ直す。
+    /// RFC 3339 (UTC). On screen, `local-time.js` converts it to the viewer's time.
     pub updated_at: String,
 }
 
 impl AccountNoteView {
-    /// 一覧に出す 1 行目（長ければ切る）。一覧は探す場所なので、全文は 1 件の画面で読む。
+    /// First line shown in the list (truncated if long). The list is for finding things; the full text is read on the item's screen.
     pub fn excerpt(&self) -> Option<String> {
         const MAX_CHARS: usize = 60;
         let first = self.text.lines().next()?.trim();
@@ -504,33 +504,33 @@ impl AccountNoteView {
     }
 }
 
-/// サービスアカウント 1 件（`GET /admin/service-accounts/{client_id}`・一覧の 1 行。ADR-0065）。
+/// One service account (`GET /admin/service-accounts/{client_id}`, one list row; ADR-0065).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServiceAccountView {
     pub client_id: String,
     pub app_name: String,
-    /// `ACTIVE` / `DISABLED`。
+    /// `ACTIVE` / `DISABLED`.
     pub status: String,
-    /// RFC 3339（UTC）。
+    /// RFC 3339 (UTC).
     pub created_at: String,
-    /// このサービスアカウントを名乗り（binding）に持つアプリ。
+    /// Apps that have this service account as a binding.
     #[serde(default)]
     pub identity_of: Option<IdentityApplicationView>,
     #[serde(default)]
     pub note: Option<AccountNoteView>,
 }
 
-/// サービスアカウントを名乗りに持つアプリ。
+/// An app that has the service account as a binding.
 #[derive(Debug, Clone, Deserialize)]
 pub struct IdentityApplicationView {
     pub application_id: String,
     pub display_name: String,
 }
 
-/// アカウント一覧の 1 行（`kind` に応じて `user` / `service_account` のどちらかが載る。ADR-0065）。
+/// One account list row (either `user` or `service_account` is present depending on `kind`; ADR-0065).
 #[derive(Debug, Clone, Deserialize)]
 pub struct AccountView {
-    /// `user` / `service_account`。
+    /// `user` / `service_account`.
     pub kind: String,
     #[serde(default)]
     pub user: Option<MemberView>,
@@ -539,7 +539,7 @@ pub struct AccountView {
 }
 
 impl AccountView {
-    /// 1 件の画面へのパス（テナントの前置きを除く）。種別ごとに経路が違う。
+    /// Path to the item's screen (without the tenant prefix). The route differs per kind.
     pub fn path(&self) -> String {
         match (&self.user, &self.service_account) {
             (Some(m), _) => format!("/admin/members/{}", m.user_id),
@@ -548,7 +548,7 @@ impl AccountView {
         }
     }
 
-    /// 見出し（人はメール → ユーザー名、サービスアカウントは登録名）。
+    /// Heading (people: email -> username; service accounts: registered name).
     pub fn headline(&self) -> &str {
         match (&self.user, &self.service_account) {
             (Some(m), _) => m.headline(),
@@ -557,7 +557,7 @@ impl AccountView {
         }
     }
 
-    /// 見出しの下に添える名前（人はユーザー名・氏名、サービスアカウントは `client_id`）。
+    /// Name added below the heading (people: username or full name; service accounts: `client_id`).
     pub fn secondary_names(&self) -> Vec<&str> {
         match (&self.user, &self.service_account) {
             (Some(m), _) => m.secondary_names(),
@@ -566,7 +566,7 @@ impl AccountView {
         }
     }
 
-    /// 一覧に出すメモの 1 行目。
+    /// First line of the note shown in the list.
     pub fn note_excerpt(&self) -> Option<String> {
         match (&self.user, &self.service_account) {
             (Some(m), _) => m.note.as_ref()?.excerpt(),
@@ -576,34 +576,34 @@ impl AccountView {
     }
 }
 
-/// アカウント一覧の 1 ページ分（`GET /admin/accounts`。ADR-0065）。
+/// One page of the account list (`GET /admin/accounts`; ADR-0065).
 #[derive(Debug, Clone, Deserialize)]
 pub struct AccountListView {
     pub accounts: Vec<AccountView>,
-    /// 実際に並べた種別。
+    /// Kinds actually listed.
     #[allow(dead_code)]
     pub kinds: Vec<String>,
-    /// 読める種別（絞り込みの選択肢）。
+    /// Readable kinds (filter choices).
     pub readable_kinds: Vec<String>,
-    /// 絞り込み後の総件数（ページング前）。
+    /// Total count after filtering (before paging).
     pub total: i64,
-    /// api が実際に適用した 1 ページの件数（クランプ後）。
+    /// Page size the api actually applied (after clamping).
     pub limit: i64,
     #[allow(dead_code)]
     pub offset: i64,
 }
 
-/// アカウント 1 つが使えるアプリ（`GET /admin/members/{user_id}/applications`・
-/// `GET /admin/service-accounts/{client_id}/applications`。ADR-0063 / ADR-0065）。
+/// Apps an account can use (`GET /admin/members/{user_id}/applications`,
+/// `GET /admin/service-accounts/{client_id}/applications`; ADR-0063 / ADR-0065).
 #[derive(Debug, Clone, Deserialize)]
 pub struct AccountApplicationListView {
     pub applications: Vec<AccountApplicationView>,
-    /// `record_only` / `enforce`。
+    /// `record_only` / `enforce`.
     pub enforcement: String,
 }
 
 impl AccountApplicationListView {
-    /// 可否ごとの件数（絞り込みの札に添える）。
+    /// Count per availability (shown on the filter tags).
     pub fn count(&self, access: &str) -> usize {
         self.applications
             .iter()
@@ -612,23 +612,23 @@ impl AccountApplicationListView {
     }
 }
 
-/// アカウントから見たアプリ 1 件。
+/// One app as seen from an account.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AccountApplicationView {
     pub application_id: String,
     pub display_name: String,
-    /// `ACTIVE` / `DISABLED`。
+    /// `ACTIVE` / `DISABLED`.
     pub status: String,
-    /// `EVERYONE` / `INDIVIDUAL`。
+    /// `EVERYONE` / `INDIVIDUAL`.
     pub assignment_mode: String,
-    /// `allowed` / `not_assigned` / `application_disabled`。
+    /// `allowed` / `not_assigned` / `application_disabled`.
     pub access: String,
     #[serde(default)]
     pub assigned_at: Option<String>,
 }
 
-/// 管理者によるパスワード再発行応答（`POST /admin/users/{id}/password-reset` ほか）。
-/// 本人へ渡すワンタイムリンクが一度限り返る（ADR-0062）。
+/// Response of a password reissue by an admin (`POST /admin/users/{id}/password-reset` and others).
+/// A one-time link to hand to the user is returned only once (ADR-0062).
 ///
 #[derive(Debug, Clone, Deserialize)]
 pub struct UserPasswordResetView {
@@ -638,8 +638,8 @@ pub struct UserPasswordResetView {
     pub setup_expires_at: String,
 }
 
-/// 管理者による MFA 解除の結果（`POST /admin/users/{id}/mfa-reset`。MT21）。
-/// 何を外したかだけが返る（シークレット・クレデンシャルは含まれない）。
+/// Result of an MFA reset by an admin (`POST /admin/users/{id}/mfa-reset`; MT21).
+/// Only what was removed is returned (no secrets or credentials).
 #[derive(Debug, Clone, Deserialize)]
 pub struct UserMfaResetView {
     #[allow(dead_code)]
@@ -648,8 +648,8 @@ pub struct UserMfaResetView {
     pub passkeys_removed: u64,
 }
 
-/// 管理者によるトークン再発行の結果（`POST /admin/users/{id}/token-reissue`。ADR-0047）。
-/// `revoked` で「落とした」と「対象が無かった」を出し分ける。
+/// Result of a token reissue by an admin (`POST /admin/users/{id}/token-reissue`; ADR-0047).
+/// `revoked` distinguishes "dropped" from "there was nothing to drop".
 #[derive(Debug, Clone, Deserialize)]
 pub struct UserTokenReissueView {
     #[allow(dead_code)]
@@ -657,8 +657,8 @@ pub struct UserTokenReissueView {
     pub revoked: u64,
 }
 
-/// 利用者のいま有効なトークンの本数（`GET /admin/users/{id}/active-tokens`。task #83）。
-/// 数えられるのは refresh token だけ（アクセストークンは DB に行が無い）。
+/// Number of the user's currently valid tokens (`GET /admin/users/{id}/active-tokens`; task #83).
+/// Only refresh tokens can be counted (access tokens have no DB rows).
 #[derive(Debug, Clone, Deserialize)]
 pub struct UserActiveTokensView {
     #[allow(dead_code)]
@@ -666,8 +666,8 @@ pub struct UserActiveTokensView {
     pub active_refresh_tokens: u64,
 }
 
-/// 管理者によるアカウントロック解除の結果（`POST /admin/users/{id}/unlock`。AP6）。
-/// `was_locked` で「解除した」と「元からロックされていない」を出し分ける。
+/// Result of an account unlock by an admin (`POST /admin/users/{id}/unlock`; AP6).
+/// `was_locked` distinguishes "unlocked" from "was not locked in the first place".
 #[derive(Debug, Clone, Deserialize)]
 pub struct UserUnlockView {
     #[allow(dead_code)]
@@ -675,47 +675,47 @@ pub struct UserUnlockView {
     pub was_locked: bool,
 }
 
-/// 招待作成応答（`POST /admin/invitations`）。`token` は一度限り平文で返る（ADR-0009 §3）。
+/// Invitation creation response (`POST /admin/invitations`). `token` is returned in plaintext only once (ADR-0009 §3).
 #[derive(Debug, Clone, Deserialize)]
 pub struct InvitationCreatedView {
     pub token: String,
     pub expires_at: String,
-    /// 招待メール（承諾リンク）を送信できたか（MT17）。false なら手動でトークンを伝達する。
+    /// Whether the invitation email (acceptance link) could be sent (MT17). If false, the token is conveyed manually.
     pub email_sent: bool,
-    /// 被招待者のメールアドレス（送信先の確認表示用）。メールアドレスで招いたときだけ載る（task #591）。
+    /// Invitee's email address (for confirming the destination). Present only when invited by email address (task #591).
     #[serde(default)]
     pub invitee_email: Option<String>,
 }
 
-/// テナントの公開表現（`GET/PATCH /admin/settings/tenant` の応答。MT14）。
+/// Public representation of a tenant (response of `GET/PATCH /admin/settings/tenant`; MT14).
 #[derive(Debug, Clone, Deserialize)]
 pub struct TenantView {
     pub id: String,
     pub name: String,
-    /// 自己登録（`/auth/register`）を許可するか（SEC6。既定は無効）。
+    /// Whether self-registration (`/auth/register`) is allowed (SEC6; disabled by default).
     #[serde(default)]
     pub self_registration_enabled: bool,
-    /// メールアドレスでのログインを許可するか（ADR-0050。既定は無効）。
+    /// Whether login by email address is allowed (ADR-0050; disabled by default).
     #[serde(default)]
     pub email_login_enabled: bool,
-    /// `ACTIVE` または `DISABLED`。
+    /// `ACTIVE` or `DISABLED`.
     pub status: String,
 }
 
-/// 子テナント一覧の 1 ページ分（`GET /admin/tenants`。G7）。
+/// One page of the child tenant list (`GET /admin/tenants`; G7).
 #[derive(Debug, Clone, Deserialize)]
 pub struct TenantListView {
     pub tenants: Vec<TenantView>,
-    /// ページング前の総件数。
+    /// Total count before paging.
     pub total: i64,
-    /// api が実際に適用した 1 ページの件数（クランプ後）。
+    /// Page size the api actually applied (after clamping).
     pub limit: i64,
     #[allow(dead_code)]
     pub offset: i64,
 }
 
-/// テナント作成応答（`POST /admin/tenants`）。作成者自身がブートストラップ管理者になるため、
-/// 初期管理者 ID・平文パスワードは含まない（作成したテナントそのものを返す。ADR-0009 §4）。
+/// Tenant creation response (`POST /admin/tenants`). The creator becomes the bootstrap admin,
+/// so no initial admin ID or plaintext password is included (the created tenant itself is returned; ADR-0009 §4).
 #[derive(Debug, Clone, Deserialize)]
 pub struct TenantCreatedView {
     pub id: String,
@@ -731,8 +731,8 @@ pub struct TenantCreatedView {
     pub updated_at: String,
 }
 
-/// システム設定の公開表現（`GET/PUT /admin/system-settings` の応答。MT14）。
-/// SMTP パスワードは平文を含まず、設定済みか否か（`smtp_password_set`）のみ。
+/// Public representation of system settings (response of `GET/PUT /admin/system-settings`; MT14).
+/// The SMTP password is not included in plaintext; only whether it is set (`smtp_password_set`).
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct RuntimeSettingView {
     #[serde(default)]
@@ -751,39 +751,39 @@ pub struct RuntimeSettingView {
     pub status: String,
     #[serde(default)]
     pub reason: String,
-    /// この設定が何に使われるかの説明（運用者向け）。
+    /// Description of what this setting is used for (for operators).
     #[serde(default)]
     pub description: String,
-    /// 起動時に解決された有効値（非 secret のみ）。DB 更新後も再起動までは変わらない。
+    /// Effective value resolved at startup (non-secret only). Doesn't change after a DB update until restart.
     #[serde(default)]
     pub value: Option<String>,
-    /// 組み込み既定値（非 secret のみ）。
+    /// Built-in default (non-secret only).
     #[serde(default)]
     pub default_value: Option<String>,
-    /// 現在 DB に保存されている上書き値（非 secret のみ）。
+    /// Override value currently stored in the DB (non-secret only).
     #[serde(default)]
     pub db_value: Option<String>,
-    /// この画面（DB）から上書きできるか（`DB_MANAGED` かつ非 secret）。
+    /// Whether it can be overridden from this screen (DB) (`DB_MANAGED` and non-secret).
     #[serde(default)]
     pub editable: bool,
-    /// 保存済みだが実行中の api へ未反映か（MT27）。上書きの解除が未反映の場合も `true`。
+    /// Whether saved but not yet applied to the running api (MT27). Also `true` when removing an override is not yet applied.
     #[serde(default)]
     pub pending_restart: bool,
-    /// web も消費するキーか（ADR-0013）。反映に api と web の両方の再起動が要る。
+    /// Whether web consumes the key too (ADR-0013). Applying it requires restarting both the api and web.
     #[serde(default)]
     pub shared_with_web: bool,
-    /// テナントが上書きできるキーか（ADR-0058）。
+    /// Whether tenants can override the key (ADR-0058).
     #[serde(default)]
     pub tenant_overridable: bool,
-    /// 全体の値に従っているテナントの件数（テナントが上書きできるキーのみ）。
+    /// Number of tenants following the global value (only for tenant-overridable keys).
     #[serde(default)]
     pub tenants_following: Option<u64>,
-    /// 既定から外れているテナント（テナントが上書きできるキーのみ）。
+    /// Tenants deviating from the default (only for tenant-overridable keys).
     #[serde(default)]
     pub tenants_overriding: Vec<TenantOverrideView>,
 }
 
-/// 全体の設定画面に出す「既定から外れているテナント」1 件（ADR-0058 §6）。
+/// One "tenant deviating from the default" shown on the global settings screen (ADR-0058 §6).
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct TenantOverrideView {
     pub tenant_id: String,
@@ -791,10 +791,10 @@ pub struct TenantOverrideView {
     pub value: String,
 }
 
-/// テナント自身のメールの経路（`GET/PUT/DELETE /admin/settings/smtp`。ADR-0058 §8）。
+/// The tenant's own mail route (`GET/PUT/DELETE /admin/settings/smtp`; ADR-0058 §8).
 ///
-/// `inherited` が true のときは全体の経路で送られている。⚠ そのとき api は項目を空で返す
-/// （全体の宛先・利用者名はテナントへ見せない）。パスワードは設定の有無だけ。
+/// When `inherited` is true, mail goes via the global route. ⚠ In that case the api returns the fields empty
+/// (the global destination and username are not shown to tenants). For the password, only whether it is set.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct TenantSmtpView {
     #[serde(default)]
@@ -813,42 +813,42 @@ pub struct TenantSmtpView {
     pub smtp_use_tls: bool,
 }
 
-/// テナントの設定値の一覧（`GET /admin/settings/tenant/keys`。ADR-0058）。
+/// List of the tenant's setting values (`GET /admin/settings/tenant/keys`; ADR-0058).
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct TenantSettingsListView {
     #[serde(default)]
     pub settings: Vec<TenantSettingView>,
 }
 
-/// テナントの設定 1 項目。項目の並びも入力欄の形も api が返す定義から決める（web は項目を知らない）。
+/// One tenant setting item. The order of items and the shape of inputs are decided from the definitions the api returns (web doesn't know the items).
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct TenantSettingView {
     pub key: String,
     #[serde(default)]
     pub description: String,
-    /// `UNSIGNED_INTEGER` / `BOOLEAN` / `TEXT` / `PUBLIC_BASE_URL` / `CHOICE`。
+    /// `UNSIGNED_INTEGER` / `BOOLEAN` / `TEXT` / `PUBLIC_BASE_URL` / `CHOICE`.
     #[serde(default)]
     pub kind: String,
     #[serde(default)]
     pub choices: Vec<SettingChoiceView>,
     #[serde(default)]
     pub value: String,
-    /// `TENANT_OVERRIDE`（このテナントで決めた）/ `INHERITED`（全体に従っている）。
+    /// `TENANT_OVERRIDE` (decided in this tenant) / `INHERITED` (following the global value).
     #[serde(default)]
     pub origin: String,
-    /// 全体の値（上書きを消すとこの値に戻る）。
+    /// The global value (removing the override returns to this value).
     #[serde(default)]
     pub whole_idp_value: String,
 }
 
 impl TenantSettingView {
-    /// このテナントで決めた値か（`false` = 全体に従っている）。
+    /// Whether the value was decided in this tenant (`false` = following the global value).
     pub fn is_tenant_override(&self) -> bool {
         self.origin == "TENANT_OVERRIDE"
     }
 }
 
-/// 選択肢 1 つ。`locks_out` の値へ変えるときは保存の前に確認を挟む。
+/// One choice. Changing to a `locks_out` value inserts a confirmation before saving.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SettingChoiceView {
     pub value: String,
@@ -870,7 +870,7 @@ pub struct SystemSettingsView {
     pub smtp_from_address: String,
     #[serde(default)]
     pub smtp_use_tls: bool,
-    /// SMS ゲートウェイ（AP13）。トークンは平文を含まず、設定済みか否か（`sms_auth_token_set`）のみ。
+    /// SMS gateway (AP13). The token is not included in plaintext; only whether it is set (`sms_auth_token_set`).
     #[serde(default)]
     pub sms_gateway_url: String,
     #[serde(default)]
@@ -883,23 +883,23 @@ pub struct SystemSettingsView {
     pub runtime_settings: Vec<RuntimeSettingView>,
 }
 
-// ── 外部 IdP 設定（AP10 の API を AP16 で画面化する）─────────────────────────────
+// ── External IdP settings (AP10's API turned into screens in AP16) ─────────────────────────────
 
-/// 外部 IdP 設定の 1 件（`GET /admin/external-idps`）。
+/// One external IdP setting (`GET /admin/external-idps`).
 ///
-/// `client_secret` は api が返さない（保存は暗号化、復号は外部 IdP へトークン要求を出す瞬間だけ）。
-/// 画面は「設定済みかどうか」（`has_client_secret`）だけを出す。
+/// The api doesn't return `client_secret` (stored encrypted; decrypted only at the moment of a token request to the external IdP).
+/// The screen shows only "whether it is set" (`has_client_secret`).
 ///
-/// プロトコル固有の項目（OIDC のエンドポイント・SAML の SSO URL）は api では**使わない側が
-/// `null`** になる（ADR-0027）。`Option` で受けないと、SAML のプロバイダが 1 件でも登録された
-/// 時点で一覧の解析ごと失敗し、画面が開かなくなる。
+/// Protocol-specific fields (OIDC endpoints, SAML SSO URL) are **`null` on the unused side** in the api
+/// (ADR-0027). Without receiving them as `Option`, parsing the whole list would fail as soon as a single SAML provider
+/// is registered, and the screen would not open.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExternalIdpView {
     pub id: String,
     pub provider_code: String,
     pub display_name: String,
     pub issuer: String,
-    /// `oidc` / `saml`。
+    /// `oidc` / `saml`.
     #[serde(default = "oidc_protocol")]
     pub protocol: String,
     #[serde(default)]
@@ -913,21 +913,21 @@ pub struct ExternalIdpView {
     pub has_client_secret: bool,
     #[serde(default)]
     pub scopes: Vec<String>,
-    /// SAML のみ。
+    /// SAML only.
     #[serde(default)]
     pub saml_sso_url: Option<String>,
     #[serde(default)]
     pub saml_certificates: Vec<String>,
     #[serde(default)]
     pub saml_name_id_format: Option<String>,
-    /// SAML のみ。外部 IdP 側へ登録すべき assay の entityID と ACS URL。
+    /// SAML only. assay's entityID and ACS URL to register with the external IdP.
     #[serde(default)]
     pub saml_sp_entity_id: Option<String>,
     #[serde(default)]
     pub saml_acs_url: Option<String>,
     pub enabled: bool,
     pub allow_auto_link: bool,
-    /// 外部 IdP 側へ登録すべきコールバック URL（設定作業の手掛かり）。
+    /// Callback URL to register with the external IdP (a clue for the setup work).
     pub redirect_uri: String,
     #[allow(dead_code)]
     pub created_at: String,
@@ -944,8 +944,8 @@ impl ExternalIdpView {
         self.protocol == "saml"
     }
 
-    /// 外部 IdP 側へ登録してもらう受け口の URL。OIDC は `redirect_uri`、SAML は ACS URL で、
-    /// 一覧では同じ列に出す（管理者にとっては「相手に貼る URL」という同じ役割）。
+    /// URL of the endpoint to have registered with the external IdP. `redirect_uri` for OIDC, ACS URL for SAML;
+    /// shown in the same list column (for admins they play the same role, "the URL to paste on the other side").
     pub fn callback_url(&self) -> &str {
         match self.saml_acs_url.as_deref() {
             Some(acs) if self.is_saml() => acs,
@@ -954,24 +954,24 @@ impl ExternalIdpView {
     }
 }
 
-// ── ログイン識別子（AP8 の API を AP16 で画面化する）───────────────────────────
+// ── Login identifiers (AP8's API turned into screens in AP16) ───────────────────────────
 
-/// 利用者のログイン識別子 1 件（`GET /admin/users/{id}/login-identifiers`）。
+/// One login identifier of a user (`GET /admin/users/{id}/login-identifiers`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct LoginIdentifierView {
-    /// 登録簿の行 id。`None` は主たる識別子（`users.preferred_username`）を合成した行で、
-    /// 保存されていないため識別子単位の操作ができない。
+    /// Registry row id. `None` is a row synthesized from the primary identifier (`users.preferred_username`),
+    /// which is not stored, so per-identifier operations are not possible.
     pub id: Option<String>,
     pub identifier_type: String,
-    /// 登録されたままの値（表示用）。
+    /// The value as registered (for display).
     pub display_value: String,
-    /// 照合キー（種別ごとの正規化を適用した値）。**両方出す**のが要点で、管理者が
-    /// 「登録した値」と「実際に一致する値」を突き合わせられないと、電話番号のように
-    /// 書き方が揺れる識別子の設定ミスに気づけない。
+    /// Match key (the value with per-type normalization applied). **Showing both** is the point: unless admins
+    /// can compare "the registered value" with "the value that actually matches", they can't notice misconfigurations of
+    /// identifiers whose notation varies, such as phone numbers.
     pub normalized_value: String,
     pub is_active: bool,
     pub is_primary: bool,
-    /// 主メールアドレスの行か（ADR-0050）。個別の有効/無効・削除の対象にならない。
+    /// Whether it is the primary email address row (ADR-0050). Not subject to individual enable/disable or deletion.
     #[serde(default)]
     pub is_primary_email: bool,
     #[allow(dead_code)]

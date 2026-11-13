@@ -1,4 +1,4 @@
-//! `BackchannelLogoutDeliveryRepository` の sqlx 実装（G5）。
+//! sqlx implementation of `BackchannelLogoutDeliveryRepository` (G5).
 
 use crate::domain::backchannel_logout::BackchannelLogoutDelivery;
 use crate::domain::error::{DomainError, Result};
@@ -60,7 +60,7 @@ fn map_row(row: &MySqlRow) -> Result<BackchannelLogoutDelivery> {
     })
 }
 
-/// `last_error` の格納先カラム上限（`VARCHAR(1000)`）。超過分は切り詰める。
+/// Column limit for `last_error` (`VARCHAR(1000)`). Anything beyond is truncated.
 const LAST_ERROR_MAX_LEN: usize = 1_000;
 
 fn truncate_error(error: &str) -> String {
@@ -73,8 +73,8 @@ impl BackchannelLogoutDeliveryRepository for SqlxBackchannelLogoutDeliveryReposi
         if deliveries.is_empty() {
             return Ok(());
         }
-        // ログアウトは 1 回で複数 RP へ通知する。1 行ずつではなく 1 文で積む
-        //（ログアウト応答の同期区間に入るため往復を増やさない）。
+        // One logout notifies multiple RPs. Push them in one statement rather than row by row
+        // (it is within the synchronous part of the logout response, so don't add round trips).
         let placeholders = std::iter::repeat_n("(?, ?, ?, ?, ?, ?, ?, 0, ?)", deliveries.len())
             .collect::<Vec<_>>()
             .join(", ");
@@ -105,9 +105,9 @@ impl BackchannelLogoutDeliveryRepository for SqlxBackchannelLogoutDeliveryReposi
         max_attempts: i32,
         limit: u32,
     ) -> Result<Vec<BackchannelLogoutDelivery>> {
-        // 候補を読んでから 1 行ずつ compare-and-swap でクレームする。`attempts` を条件に含めるため、
-        // 同じ行を 2 つの走者が読んでも更新に成功するのは片方だけで、二重配送にならない
-        //（`ORDER BY ... LIMIT` 付き UPDATE で一括に印を付ける方式は、印の値が他の行と衝突し得る）。
+        // Read candidates, then claim them one by one with compare-and-swap. Since `attempts` is part of the condition,
+        // even if two runners read the same row only one succeeds in updating, so there is no double delivery
+        // (marking in bulk with an UPDATE with `ORDER BY ... LIMIT` risks the mark value colliding with other rows).
         let sql = format!(
             "SELECT {SELECT_COLUMNS} FROM backchannel_logout_deliveries \
              WHERE delivered_at IS NULL AND next_attempt_at <= ? AND attempts < ? \
@@ -121,8 +121,8 @@ impl BackchannelLogoutDeliveryRepository for SqlxBackchannelLogoutDeliveryReposi
             .await
             .map_err(repo_err)?;
 
-        // クレームに成功した行は「次の試行が終わるまで他から取られない」よう、次回時刻を先送りする。
-        // 送信結果は `mark_delivered` / `mark_failed` が上書きする。
+        // Push back the next attempt time of claimed rows so "others don't take them until the next attempt finishes".
+        // The send result is overwritten by `mark_delivered` / `mark_failed`.
         let hold_until = now + crate::domain::backchannel_logout::retry_backoff(1);
         let mut claimed = Vec::new();
         for row in rows.iter() {
@@ -197,7 +197,7 @@ impl BackchannelLogoutDeliveryRepository for SqlxBackchannelLogoutDeliveryReposi
 mod tests {
     use super::*;
 
-    /// `last_error` はカラム長で切り詰める（RP が長大なエラーを返しても永続化で落ちない）。
+    /// `last_error` is truncated to the column length (persistence doesn't fail even if the RP returns a huge error).
     #[test]
     fn last_error_is_truncated_to_the_column_limit() {
         let long = "e".repeat(LAST_ERROR_MAX_LEN + 500);

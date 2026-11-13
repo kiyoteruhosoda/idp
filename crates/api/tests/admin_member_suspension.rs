@@ -1,18 +1,18 @@
-//! ゲストメンバーシップの一時停止・再開（`PATCH /{tenant_id}/admin/members/{user_id}`。MT24）の
-//! 統合テスト（DB あり）。
+//! Integration tests (with DB) for suspending / resuming guest memberships
+//! (`PATCH /{tenant_id}/admin/members/{user_id}`; MT24).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test admin_member_suspension
 //!
-//! 解除（`DELETE`）はメンバーシップ行も当該テナント scope の権限行も消すため、戻すには招待から
-//! やり直しになる。一時停止は**元に戻せる**ことが要件で、検証するのは:
+//! Removal (`DELETE`) deletes both the membership row and the permission rows scoped to the tenant, so undoing it
+//! means starting over from an invitation. Suspension is required to be **reversible**; what is checked:
 //!
-//! 1. 認可（未認証 401 / 権限なし 403）と入力検証（不正な status は 400）。
-//! 2. 停止で `SUSPENDED` になり、**メンバーシップ行と権限行が残る**こと（＝再開で元に戻る）。
-//! 3. 停止で当該テナント分の refresh token が失効し、**他テナント分は残る**こと。
-//!    ゲストの停止は 1 テナントへの措置であり、所属元での利用を巻き込んではいけない。
-//! 4. 遷移の制約（HOME は停止不可・二重停止不可・未停止の再開不可はいずれも 403）。
-//! 5. 監査に停止・再開が残ること。
+//! 1. Authorization (unauthenticated 401 / no permission 403) and input validation (invalid status is 400).
+//! 2. Suspending sets `SUSPENDED` and **keeps the membership and permission rows** (= resuming restores it).
+//! 3. Suspending revokes refresh tokens for that tenant and **keeps those for other tenants**.
+//!    Suspending a guest is a measure for one tenant and must not affect use in the home tenant.
+//! 4. Transition constraints (HOME cannot be suspended, double suspension and resuming a non-suspended one are all 403).
+//! 5. Suspension and resumption are left in the audit log.
 
 mod support;
 
@@ -21,7 +21,7 @@ use serde_json::json;
 use sqlx::{MySqlPool, Row};
 use support::{admin_token, create_plain_user, patch, send};
 
-/// 当該テナントの GUEST メンバーシップ（`ACTIVE`）を直接作る（招待フローは別テストの関心事）。
+/// Creates a GUEST membership (`ACTIVE`) in the tenant directly (the invitation flow is another test's concern).
 async fn insert_active_guest(pool: &MySqlPool, tenant_id: &str, user_id: &str) {
     sqlx::query(
         "INSERT INTO tenant_memberships (tenant_id, user_id, membership_type, status) \
@@ -34,8 +34,8 @@ async fn insert_active_guest(pool: &MySqlPool, tenant_id: &str, user_id: &str) {
     .expect("insert guest membership");
 }
 
-/// `refresh_tokens` は `(tenant_id, client_id)` の複合外部キーで `clients` を参照するため、
-/// 発行元クライアントは実在させる必要がある（`client_id` は呼び出し側が用意する）。
+/// `refresh_tokens` references `clients` via the composite foreign key `(tenant_id, client_id)`, so
+/// the issuing client must exist (the caller provides `client_id`).
 async fn insert_refresh_token(
     pool: &MySqlPool,
     tenant_id: &str,
@@ -118,9 +118,9 @@ async fn admin_suspends_and_resumes_a_guest_without_losing_membership_or_permiss
         return;
     };
     let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
-    // ゲストは**別テナント所属**（所属元 = home_tenant）で root に GUEST 参加している、という
-    // 実運用の形にする。`create_plain_user` は指定テナントに HOME メンバーシップを作るため、
-    // 所属元を別テナントにしないと root の GUEST 行と主キー衝突する。
+    // Use the real-world shape: the guest **belongs to another tenant** (home = home_tenant) and joins root as a
+    // GUEST. `create_plain_user` creates a HOME membership in the given tenant, so unless the home is another
+    // tenant it would collide on the primary key with the root GUEST row.
     let home_tenant = uuid::Uuid::now_v7().to_string();
     sqlx::query("INSERT INTO tenants (id, parent_tenant_id, name) VALUES (?, ?, ?)")
         .bind(&home_tenant)
@@ -133,7 +133,7 @@ async fn admin_suspends_and_resumes_a_guest_without_losing_membership_or_permiss
 
     let uri = format!("/{}/admin/members/{guest}", env.root_tenant_id);
 
-    // ── 認可: トークン無しは 401、権限の無い利用者は 403。
+    // ── Authorization: no token is 401, a user without permission is 403.
     let res = send(
         &env.app,
         support::anonymous(Method::PATCH, &uri, Some(json!({"status": "SUSPENDED"}))),
@@ -150,7 +150,7 @@ async fn admin_suspends_and_resumes_a_guest_without_losing_membership_or_permiss
     .await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "no admin perm -> 403");
 
-    // ── 準備: ACTIVE な GUEST、当該テナント scope の権限、両テナントの refresh token。
+    // ── Setup: an ACTIVE GUEST, permissions scoped to the tenant, refresh tokens for both tenants.
     insert_active_guest(&env.pool, &env.root_tenant_id, &guest).await;
     grant_permission(&env.pool, &env.root_tenant_id, &guest, "idp.tenant.admin").await;
     let host_client =
@@ -158,16 +158,16 @@ async fn admin_suspends_and_resumes_a_guest_without_losing_membership_or_permiss
     let home_client = support::insert_public_client(&env.pool, &home_tenant, &["openid"]).await;
     let host_token =
         insert_refresh_token(&env.pool, &env.root_tenant_id, &guest, &host_client).await;
-    // 所属元テナントで発行済みのトークン。停止は host テナントへの措置なので巻き込んではいけない。
+    // A token issued in the home tenant. Suspension is a measure on the host tenant and must not affect it.
     let home_token = insert_refresh_token(&env.pool, &home_tenant, &guest, &home_client).await;
 
-    // ── 不正な status は 400（INVITED は招待フローが管理する状態のため直接は設定させない）。
+    // ── Invalid status is 400 (INVITED is managed by the invitation flow and cannot be set directly).
     for bad in ["INVITED", "nonsense", ""] {
         let res = send(&env.app, patch(&admin_tok, &uri, json!({"status": bad}))).await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST, "status={bad}");
     }
 
-    // ── 停止。
+    // ── Suspend.
     let res = send(
         &env.app,
         patch(&admin_tok, &uri, json!({"status": "SUSPENDED"})),
@@ -178,12 +178,12 @@ async fn admin_suspends_and_resumes_a_guest_without_losing_membership_or_permiss
         membership_status(&env.pool, &env.root_tenant_id, &guest).await,
         Some("SUSPENDED".to_string())
     );
-    // 解除と違い、メンバーシップも権限も残る（再開で元に戻せる）。
+    // Unlike removal, both membership and permissions remain (resuming restores them).
     assert_eq!(
         count_permissions(&env.pool, &env.root_tenant_id, &guest).await,
         1
     );
-    // 当該テナント分の refresh token だけ失効する。
+    // Only that tenant's refresh tokens are revoked.
     assert!(
         is_revoked(&env.pool, &host_token).await,
         "host token revoked"
@@ -197,7 +197,7 @@ async fn admin_suspends_and_resumes_a_guest_without_losing_membership_or_permiss
         1
     );
 
-    // ── 二重停止は 403（遷移できない状態）。
+    // ── Double suspension is 403 (not a valid transition).
     let res = send(
         &env.app,
         patch(&admin_tok, &uri, json!({"status": "SUSPENDED"})),
@@ -205,7 +205,7 @@ async fn admin_suspends_and_resumes_a_guest_without_losing_membership_or_permiss
     .await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "double suspend");
 
-    // ── 再開。権限はそのままなので停止前の状態へ戻る。
+    // ── Resume. Permissions are unchanged, so it returns to the pre-suspension state.
     let res = send(
         &env.app,
         patch(&admin_tok, &uri, json!({"status": "ACTIVE"})),
@@ -225,7 +225,7 @@ async fn admin_suspends_and_resumes_a_guest_without_losing_membership_or_permiss
         1
     );
 
-    // ── 未停止の再開は 403。
+    // ── Resuming a non-suspended one is 403.
     let res = send(
         &env.app,
         patch(&admin_tok, &uri, json!({"status": "ACTIVE"})),
@@ -240,11 +240,11 @@ async fn home_membership_cannot_be_suspended() {
         return;
     };
     let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
-    // create_plain_user は HOME メンバーシップ付きで作られる。
+    // create_plain_user creates it with a HOME membership.
     let home_user = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let uri = format!("/{}/admin/members/{home_user}", env.root_tenant_id);
 
-    // HOME は所属元そのもので、停止するとログインする先が無くなる（アカウント無効化を使う）。
+    // HOME is the home tenant itself; suspending it would leave nowhere to sign in (use account disabling instead).
     let res = send(
         &env.app,
         patch(&admin_tok, &uri, json!({"status": "SUSPENDED"})),
@@ -257,7 +257,7 @@ async fn home_membership_cannot_be_suspended() {
         "home membership must stay active"
     );
 
-    // メンバーシップが無ければ 404（存在推測を防ぐ）。
+    // No membership means 404 (prevents existence guessing).
     let unknown = uuid::Uuid::now_v7();
     let res = send(
         &env.app,

@@ -1,10 +1,10 @@
-//! Token イントロスペクションエンドポイントのユースケース（F5: RFC 7662）。
+//! Token introspection endpoint use case (F5: RFC 7662).
 //!
-//! - confidential client の認証が必須（public client は使用不可）。方式は `/token` と同じく
-//!   クライアントの登録値（`client_secret_basic` / `client_secret_post`）に従う。
-//! - access_token: JWT を検証（署名・iss・aud・exp）し、jti を失効リストと照合する。
-//! - refresh_token: DB で有効性（未失効・期限内）を確認する。
-//! - 不正トークン・不存在は `{ "active": false }` を返す（エラーにしない）。
+//! - Confidential client authentication is required (public clients cannot use it). The method follows the
+//!   client's registered value (`client_secret_basic` / `client_secret_post`), same as `/token`.
+//! - access_token: verify the JWT (signature, iss, aud, exp) and check jti against the revocation list.
+//! - refresh_token: check validity in the DB (not revoked, not expired).
+//! - Invalid or unknown tokens return `{ "active": false }` (not an error).
 
 use crate::application::access_token_verification::{AccessTokenRejection, AccessTokenVerifier};
 use crate::application::client_authentication::{
@@ -21,7 +21,7 @@ use crate::domain::tenant_context::TenantContext;
 use serde::Serialize;
 use std::sync::Arc;
 
-/// RFC 7662 イントロスペクションレスポンス。
+/// RFC 7662 introspection response.
 #[derive(Debug, Serialize)]
 pub struct IntrospectionResponse {
     pub active: bool,
@@ -43,7 +43,7 @@ pub struct IntrospectionResponse {
     pub iss: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub jti: Option<String>,
-    /// DPoP で結び付けた鍵（RFC 9449 §6.2。ADR-0075 決定 8）。結び付けていなければ省く。
+    /// Key bound with DPoP (RFC 9449 §6.2. ADR-0075 decision 8). Omitted when not bound.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cnf: Option<KeyConfirmation>,
 }
@@ -66,7 +66,7 @@ impl IntrospectionResponse {
     }
 }
 
-/// イントロスペクション固有のエラー（client 認証失敗のみ。トークン不正は inactive を返す）。
+/// Introspection-specific errors (client authentication failure only; an invalid token returns inactive).
 #[derive(Debug)]
 pub struct IntrospectionError {
     pub code: OAuthErrorCode,
@@ -85,12 +85,12 @@ impl IntrospectionError {
 pub struct IntrospectionService {
     clients: Arc<dyn ClientRepository>,
     refresh_tokens: Arc<dyn RefreshTokenRepository>,
-    /// アクセストークンの検証（署名・typ・iss・aud・exp・失効。`access_token_verification`）。
+    /// Access token verification (signature, typ, iss, aud, exp, revocation. `access_token_verification`).
     access_tokens: Arc<AccessTokenVerifier>,
     users: Arc<dyn UserRepository>,
     client_auth: Arc<ClientAuthenticator>,
     clock: Arc<dyn Clock>,
-    /// 基底 issuer。検証・応答の `iss` はテナント毎に `<基底>/<tenant_id>` を合成する（ADR-0009 §6）。
+    /// Base issuer. The `iss` for verification and response is composed per tenant as `<base>/<tenant_id>` (ADR-0009 §6).
     base_issuer: String,
 }
 
@@ -123,9 +123,9 @@ impl IntrospectionService {
         token_type_hint: Option<&str>,
         credentials: &PresentedClientCredentials,
     ) -> Result<IntrospectionResponse, IntrospectionError> {
-        // confidential client 認証（必須。フローのテナントに属する client のみ解決する）。
-        // トークンの有無に関わらず先に認証する（未認証の相手に「トークンが空かどうか」だけを
-        // 別の応答で返す意味は無く、RFC 7662 §2.1 も認証を必須と定める）。
+        // Confidential client authentication (required; only resolves clients belonging to the flow's tenant).
+        // Authenticate first regardless of whether a token is present (there is no point answering an unauthenticated
+        // party with a different response just for "is the token empty", and RFC 7662 §2.1 requires authentication).
         let client = self
             .authenticate_confidential_client(tenant, credentials)
             .await?;
@@ -134,10 +134,10 @@ impl IntrospectionService {
             return Ok(IntrospectionResponse::inactive());
         }
 
-        // `iss` はテナント毎に合成する（発行テナントに束縛。ADR-0009 §6）。
+        // `iss` is composed per tenant (bound to the issuing tenant. ADR-0009 §6).
         let issuer = tenant_issuer(&self.base_issuer, tenant.tenant_id());
 
-        // token_type_hint に従って access_token / refresh_token を試みる。
+        // Try access_token / refresh_token according to token_type_hint.
         match token_type_hint {
             Some("refresh_token") => {
                 let resp = self
@@ -160,7 +160,7 @@ impl IntrospectionService {
         }
     }
 
-    /// Access Token（JWT）のイントロスペクション。
+    /// Introspection of an access token (JWT).
     async fn introspect_access_token(
         &self,
         tenant: TenantContext,
@@ -175,10 +175,10 @@ impl IntrospectionService {
             Err(_) => return IntrospectionResponse::inactive(),
         };
 
-        // 主体の現在の状態確認。無効化・削除済みの主体のトークンは exp 前でも inactive にする
-        // （管理者による無効化・削除を即時反映する。/userinfo と同じ判定）。
-        // `client_credentials` のトークン（G4）は主体がクライアント自身なので、利用者ではなく
-        // クライアントの有効性を見る（`sub` は UUID ではないため利用者検索では必ず落ちてしまう）。
+        // Check the subject's current state. Tokens of disabled or deleted subjects are inactive even before exp
+        // (admin disabling/deletion takes effect immediately; same check as /userinfo).
+        // For `client_credentials` tokens (G4) the subject is the client itself, so check the client's validity, not
+        // a user's (`sub` is not a UUID, so a user lookup would always fail).
         let subject_active = if claims.subject_is_client() {
             self.client_subject_is_active(tenant, &claims.sub).await
         } else {
@@ -210,7 +210,7 @@ impl IntrospectionService {
         }
     }
 
-    /// Refresh Token のイントロスペクション（発行テナントの一致を含む）。
+    /// Introspection of a refresh token (including matching the issuing tenant).
     async fn introspect_refresh_token(
         &self,
         tenant: TenantContext,
@@ -233,7 +233,7 @@ impl IntrospectionService {
             return IntrospectionResponse::inactive();
         }
 
-        // 利用者の現在の状態確認（無効化・削除済みは inactive。access_token 経路と同じ）。
+        // Check the user's current state (disabled/deleted are inactive; same as the access_token path).
         let user = match self.users.find_by_id(rt.user_id).await {
             Ok(Some(user)) if user.is_active() => user,
             _ => return IntrospectionResponse::inactive(),
@@ -247,18 +247,18 @@ impl IntrospectionService {
             token_type: Some("refresh_token".to_string()),
             exp: Some(rt.expires_at.timestamp()),
             iat: None,
-            // 公開の `sub`（ID Token・アクセストークンと同じ値）。内部の利用者 ID を返していた
-            // （task #593。アクセストークンの経路と食い違い、内部 ID が RP へ漏れていた）。
+            // The public `sub` (same value as the ID Token and access token). It used to return the internal user ID
+            // (task #593; it disagreed with the access token path and leaked the internal ID to RPs).
             sub: Some(user.sub.to_string()),
             iss: Some(issuer.to_string()),
-            // refresh token は不透明トークンで JWT の `jti` を持たない。保存している SHA-256 ハッシュを
-            // `jti` として返すと内部保存値が client へ漏れるため付与しない（RFC 7662 で jti は任意）。
+            // A refresh token is opaque and has no JWT `jti`. Returning the stored SHA-256 hash as `jti`
+            // would leak an internal stored value to the client, so it is omitted (jti is optional in RFC 7662).
             jti: None,
             cnf: rt.dpop_jkt.map(|jkt| KeyConfirmation { jkt }),
         }
     }
 
-    /// `sub` クレームのクライアントが現存し ACTIVE であるかを返す（G4。照会失敗は非活性扱い）。
+    /// Returns whether the client in the `sub` claim exists and is ACTIVE (G4; a lookup failure counts as inactive).
     async fn client_subject_is_active(&self, tenant: TenantContext, sub: &str) -> bool {
         match self
             .clients
@@ -274,7 +274,7 @@ impl IntrospectionService {
         }
     }
 
-    /// `sub` クレームの利用者が現存し ACTIVE であるかを返す（不正な `sub`・照会失敗は非活性扱い）。
+    /// Returns whether the user in the `sub` claim exists and is ACTIVE (an invalid `sub` or lookup failure counts as inactive).
     async fn subject_is_active(&self, sub: &str) -> bool {
         let Ok(sub) = uuid::Uuid::parse_str(sub) else {
             return false;
@@ -289,8 +289,8 @@ impl IntrospectionService {
         }
     }
 
-    /// confidential client のみ認証を許可する（RFC 7662 §2.1）。方式は `/token` と同じ
-    /// （`client_secret_basic` / `client_secret_post`。G3）。
+    /// Only confidential clients may authenticate (RFC 7662 §2.1). The method is the same as `/token`
+    /// (`client_secret_basic` / `client_secret_post`. G3).
     async fn authenticate_confidential_client(
         &self,
         tenant: TenantContext,
@@ -325,9 +325,9 @@ impl IntrospectionService {
             ));
         }
 
-        // 資格情報の照合は `client_authentication` へ集約してある（G3・ADR-0030）。
-        // public client は使用不可（RFC 7662 §2.1）。認証器は public を `NotRequired` で
-        // 素通しするため、ここで別に弾く。
+        // Credential checking is centralized in `client_authentication` (G3, ADR-0030).
+        // Public clients cannot use this (RFC 7662 §2.1). The authenticator passes public clients through as
+        // `NotRequired`, so they are rejected separately here.
         match self
             .client_auth
             .authenticate(tenant, &client, credentials)
@@ -347,7 +347,7 @@ impl IntrospectionService {
                 ))
             }
             Err(ClientAuthError::Internal(message)) => {
-                // 内部エラーの詳細はクライアントへ出さない（`CLAUDE.md`「国際化」の翻訳対象外）。
+                // Internal error details are not shown to the client (not subject to translation under `CLAUDE.md` "i18n").
                 tracing::error!(error = %message, "client authentication internal error");
                 return Err(IntrospectionError::new(
                     OAuthErrorCode::ServerError,

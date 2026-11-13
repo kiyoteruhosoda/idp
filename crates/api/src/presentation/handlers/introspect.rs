@@ -1,10 +1,10 @@
-//! Token イントロスペクションエンドポイント（`POST /introspect`、RFC 7662）。
+//! Token introspection endpoint (`POST /introspect`, RFC 7662).
 //!
-//! - confidential client のみ許可（public client は 401）。認証方式はクライアントの登録値
-//!   （`client_secret_basic` / `client_secret_post` / `private_key_jwt`）に従う。
-//! - `token`: 対象トークン（必須）。
-//! - `token_type_hint`: `access_token` または `refresh_token`（任意）。
-//! - 無効・失効済みのトークンは `{"active": false}` を返す。
+//! - Only confidential clients allowed (public clients get 401). The auth method follows the client's registered value
+//!   (`client_secret_basic` / `client_secret_post` / `private_key_jwt`).
+//! - `token`: the target token (required).
+//! - `token_type_hint`: `access_token` or `refresh_token` (optional).
+//! - Invalid or revoked tokens return `{"active": false}`.
 
 use crate::application::introspection::IntrospectionError;
 use crate::domain::error::OAuthErrorCode;
@@ -26,15 +26,15 @@ pub struct IntrospectionRequest {
     pub token: Option<String>,
     pub token_type_hint: Option<String>,
     pub client_id: Option<String>,
-    /// `client_secret_post` のクライアント secret（G3）。
+    /// Client secret for `client_secret_post` (G3).
     pub client_secret: Option<String>,
-    /// `private_key_jwt` の署名済み assertion（RFC 7523 §2.2。ADR-0030）。
+    /// Signed `private_key_jwt` assertion (RFC 7523 §2.2, ADR-0030).
     pub client_assertion: Option<String>,
-    /// `client_assertion` の種別。`urn:ietf:params:oauth:client-assertion-type:jwt-bearer` のみ。
+    /// Type of `client_assertion`. Only `urn:ietf:params:oauth:client-assertion-type:jwt-bearer`.
     pub client_assertion_type: Option<String>,
 }
 
-/// Token イントロスペクションエンドポイント（RFC 7662）。
+/// Token introspection endpoint (RFC 7662).
 #[utoipa::path(
     post,
     path = "/{tenant_id}/introspect",
@@ -83,7 +83,7 @@ pub async fn introspect(
                 error_description: Some(description),
             });
             match code {
-                // RFC 6749 §5.2: invalid_client は 401 + WWW-Authenticate。
+                // RFC 6749 §5.2: invalid_client is 401 + WWW-Authenticate.
                 OAuthErrorCode::InvalidClient => (
                     StatusCode::UNAUTHORIZED,
                     [(header::WWW_AUTHENTICATE, "Basic realm=\"introspect\"")],
@@ -93,7 +93,7 @@ pub async fn introspect(
                 OAuthErrorCode::ServerError => {
                     (StatusCode::INTERNAL_SERVER_ERROR, body).into_response()
                 }
-                // 複数方式の同時提示（§2.3.1）等は要求そのものの不正。
+                // Presenting multiple methods at once (§2.3.1) etc. is a malformed request itself.
                 _ => (StatusCode::BAD_REQUEST, body).into_response(),
             }
         }

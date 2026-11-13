@@ -1,21 +1,21 @@
-//! 認証アプリで承認するログイン（「アプリで続ける」。task #892。ADR-0077）。
+//! Sign-in approved in the authenticator app ("Continue in app". task #892. ADR-0077).
 //!
-//! 3 つのものを持つ:
+//! Holds three things:
 //!
-//! | もの | 何か | 寿命 |
+//! | Thing | What | Lifetime |
 //! |---|---|---|
-//! | [`ApproverKey`] | 利用者の認証アプリの鍵（Android の Keystore の中・使うたびに指紋）。「自分の端末」に並ぶ | 取り消すまで |
-//! | [`ApproverEnrollment`] | 鍵の登録の受付。Key Attestation → パスキーで本人の確認 → アプリの署名で有効にする | 10 分 |
-//! | [`ApprovalRequest`] | 「アプリで続ける」の依頼。始めたブラウザだけが持つ印（Cookie）に結ぶ | 5 分 |
+//! | [`ApproverKey`] | The user's authenticator app key (inside Android Keystore; fingerprint on every use). Listed under "My devices" | Until revoked |
+//! | [`ApproverEnrollment`] | Key registration intake. Key Attestation -> verify the user with a passkey -> activated by the app's signature | 10 minutes |
+//! | [`ApprovalRequest`] | A "Continue in app" request. Bound to a mark (Cookie) held only by the browser that started it | 5 minutes |
 //!
-//! アプリはトークンを持たない。呼ぶたびに鍵で [`signed_message`] に署名する。
+//! The app holds no token. It signs [`signed_message`] with the key on every call.
 //!
-//! # 別の端末で始めた依頼を承認させる攻撃
+//! # Attack: getting a request started on another device approved
 //!
-//! 承認すると assay は使い捨てのコード（30 秒）を**アプリへ**返し、アプリが同じスマホのブラウザで開く。
-//! ログインはそのコードと、依頼を始めたブラウザの印の両方が揃ったときだけ完了する。他人の端末で
-//! 始めた依頼をだまされて承認しても、コードは持ち主のスマホのブラウザへ届き、そこには印が無い。
-//! 依頼を始めたブラウザの側から「承認されたか」を待って完了する口は**作らない**（作るとこの守りが消える）。
+//! On approval, assay returns a one-time code (30 seconds) **to the app**, and the app opens it in the browser on the same phone.
+//! Sign-in completes only when both that code and the mark of the browser that started the request are present. Even if
+//! someone is tricked into approving a request started on another person's device, the code goes to the owner's phone browser, which has no mark.
+//! **No endpoint is made** for the browser that started the request to wait for "approved" and complete (making one would remove this protection).
 
 use crate::domain::crypto;
 use crate::domain::key_attestation::KeySecurityLevel;
@@ -25,24 +25,24 @@ use chrono::{DateTime, Duration, Utc};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-/// 鍵の登録の受付の寿命。
+/// Lifetime of a key registration intake.
 pub const ENROLLMENT_TTL_SECS: i64 = 600;
-/// 登録の確認（パスキー）から、アプリが有効にするまでのコードの寿命。
+/// Lifetime of the code from the registration check (passkey) until the app activates it.
 pub const ENROLLMENT_CODE_TTL_SECS: i64 = 120;
-/// 「アプリで続ける」の依頼の寿命。
+/// Lifetime of a "Continue in app" request.
 pub const REQUEST_TTL_SECS: i64 = 300;
-/// 承認して返すコードの寿命（持ち主の決定: 30 秒）。
+/// Lifetime of the code returned on approval (owner's decision: 30 seconds).
 pub const APPROVAL_CODE_TTL_SECS: i64 = 30;
-/// 取り消しの署名の時刻の許容幅。
+/// Allowed window for the time in a revocation signature.
 pub const SIGNED_AT_TOLERANCE_SECS: i64 = 300;
-/// 機種名の長さの上限（文字数）。アプリの自己申告で、表示にだけ使う。
+/// Max length (characters) of the device model name. Self-reported by the app; used only for display.
 pub const MAX_DEVICE_NAME_CHARS: usize = 64;
-/// 署名する文の先頭（版）。
+/// Prefix (version) of the signed message.
 pub const SIGNED_MESSAGE_VERSION: &str = "assay-app-approver-v1";
-/// 識別子・challenge・コードの乱数のバイト数。
+/// Number of random bytes for identifiers, challenges and codes.
 pub const RANDOM_BYTES: usize = 32;
 
-/// アプリが署名する操作。
+/// Operations the app signs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignedAction {
     Activate,
@@ -62,10 +62,10 @@ impl SignedAction {
     }
 }
 
-/// アプリが署名する文（UTF-8）。
+/// The message the app signs (UTF-8).
 ///
-/// `assay-app-approver-v1\n<操作>\n<組織>\n<対象>\n<使い捨ての値>`。操作と対象と組織を入れるのは、
-/// ある操作への署名を別の操作・別の依頼・別の組織に使い回させないため。
+/// `assay-app-approver-v1\n<operation>\n<organization>\n<target>\n<one-time value>`. Operation, target and organization are included
+/// so a signature for one operation cannot be reused for another operation, another request, or another organization.
 pub fn signed_message(action: SignedAction, tenant_id: &str, target: &str, nonce: &str) -> String {
     format!(
         "{SIGNED_MESSAGE_VERSION}\n{}\n{tenant_id}\n{target}\n{nonce}",
@@ -73,43 +73,43 @@ pub fn signed_message(action: SignedAction, tenant_id: &str, target: &str, nonce
     )
 }
 
-/// 鍵の番号: SubjectPublicKeyInfo（DER）の SHA-256 を base64url（パディングなし・43 文字）。
+/// Key number: base64url of the SHA-256 of the SubjectPublicKeyInfo (DER) (no padding, 43 chars).
 pub fn key_id_of(public_key_spki: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(public_key_spki))
 }
 
-/// 識別子・challenge・コードに使う乱数（base64url・43 文字）。
+/// Random value used for identifiers, challenges and codes (base64url, 43 chars).
 pub fn random_value() -> String {
     crypto::random_token(RANDOM_BYTES)
 }
 
-/// 利用者の認証アプリの鍵。
+/// The user's authenticator app key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApproverKey {
     pub id: Uuid,
     pub user_id: Uuid,
-    /// [`key_id_of`]。アプリはこの値で自分の鍵を名乗る。
+    /// [`key_id_of`]. The app identifies its own key with this value.
     pub key_id: String,
     pub public_key_spki: Vec<u8>,
     pub security_level: KeySecurityLevel,
-    /// アプリの自己申告の機種名（表示だけ）。
+    /// The app's self-reported device model name (display only).
     pub device_name: String,
     pub registered_at: DateTime<Utc>,
     pub last_used_at: Option<DateTime<Utc>>,
 }
 
-/// 鍵の登録の受付の段階。
+/// Stage of a key registration intake.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnrollmentStage {
-    /// challenge を出した。証明書の鎖を待つ。
+    /// Challenge issued. Waiting for the certificate chain.
     AwaitingKey,
-    /// 鍵の証明は通った。利用者のパスキーでの確認を待つ。
+    /// Key attestation passed. Waiting for the user's passkey confirmation.
     AwaitingConfirmation {
         public_key_spki: Vec<u8>,
         security_level: KeySecurityLevel,
         device_name: String,
     },
-    /// 利用者が確認した。アプリが鍵で署名して有効にするのを待つ（コードの SHA-256 だけを持つ）。
+    /// The user confirmed. Waiting for the app to activate by signing with the key (holds only the code's SHA-256).
     Confirmed {
         public_key_spki: Vec<u8>,
         security_level: KeySecurityLevel,
@@ -120,12 +120,12 @@ pub enum EnrollmentStage {
     },
 }
 
-/// 鍵の登録の受付。
+/// Key registration intake.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApproverEnrollment {
     pub id: String,
     pub tenant_id: Uuid,
-    /// Key Attestation に入れてもらう値（base64url）。
+    /// The value to be included in Key Attestation (base64url).
     pub challenge: String,
     pub stage: EnrollmentStage,
     pub created_at: DateTime<Utc>,
@@ -148,20 +148,20 @@ impl ApproverEnrollment {
         self.expires_at <= now
     }
 
-    /// challenge のバイト列（Key Attestation に入っているはずの値）。
+    /// Challenge bytes (the value expected to be in the Key Attestation).
     pub fn challenge_bytes(&self) -> Option<Vec<u8>> {
         URL_SAFE_NO_PAD.decode(self.challenge.as_bytes()).ok()
     }
 }
 
-/// 「アプリで続ける」の依頼の状態。
+/// State of a "Continue in app" request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalState {
     Pending,
     Approved,
     Denied,
     Completed,
-    /// 印が合わないブラウザで完了しようとした（別の端末で始めた依頼を承認した疑い）。
+    /// Completion was attempted from a browser whose mark does not match (suspected approval of a request started on another device).
     Refused,
 }
 
@@ -188,26 +188,26 @@ impl ApprovalState {
     }
 }
 
-/// 「アプリで続ける」の依頼。
+/// A "Continue in app" request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalRequest {
     pub id: String,
     pub tenant_id: Uuid,
-    /// 始めたブラウザの印（Cookie）の SHA-256。
+    /// SHA-256 of the starting browser's mark (Cookie).
     pub browser_binding_hash: String,
-    /// 認可の途中から来たなら、その AuthSession（の SHA-256）。
+    /// If coming from the middle of authorization, that AuthSession (its SHA-256).
     pub auth_session_hash: Option<String>,
-    /// 認可の途中から来たなら、その RP（表示と監査）。
+    /// If coming from the middle of authorization, that RP (for display and audit).
     pub client_id: Option<String>,
-    /// アプリが署名に入れる値（依頼ごと）。
+    /// The value the app includes in the signature (per request).
     pub challenge: String,
     pub state: ApprovalState,
     pub ip_address: Option<String>,
     pub country: Option<String>,
-    /// 承認した鍵と利用者（承認の後）。
+    /// The approving key and user (after approval).
     pub approver_key: Option<Uuid>,
     pub user_id: Option<Uuid>,
-    /// 承認して返したコードの SHA-256 と期限。
+    /// SHA-256 and expiry of the code returned on approval.
     pub code_hash: Option<String>,
     pub code_expires_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -220,14 +220,14 @@ impl ApprovalRequest {
     }
 }
 
-/// 依頼を始めたブラウザに渡す印を作る（平文と SHA-256）。
+/// Creates the mark given to the browser that started the request (plaintext and SHA-256).
 pub fn new_browser_binding() -> (String, String) {
     let binding = random_value();
     let hash = crypto::sha256_hex(&binding);
     (binding, hash)
 }
 
-/// 取り消しの署名の時刻（`YYYY-MM-DDTHH:MM:SSZ`）が今から許容幅の中か。
+/// Whether the time in a revocation signature (`YYYY-MM-DDTHH:MM:SSZ`) is within the allowed window from now.
 pub fn signed_at_is_fresh(signed_at: &str, now: DateTime<Utc>) -> bool {
     let Ok(at) = DateTime::parse_from_rfc3339(signed_at) else {
         return false;
@@ -235,7 +235,7 @@ pub fn signed_at_is_fresh(signed_at: &str, now: DateTime<Utc>) -> bool {
     (now - at.with_timezone(&Utc)).num_seconds().abs() <= SIGNED_AT_TOLERANCE_SECS
 }
 
-/// 機種名を表示に使える形にする（前後の空白を落とし、制御文字を除き、長さを切る）。空なら `None`。
+/// Makes a model name usable for display (trims whitespace, removes control characters, truncates). `None` if empty.
 pub fn normalize_device_name(raw: &str) -> Option<String> {
     let cleaned: String = raw
         .trim()

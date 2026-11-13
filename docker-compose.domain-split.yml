@@ -1,21 +1,21 @@
-# 別ドメイン公開（ADR-0012・ADR-0015）用の override。ベース Compose に重ねて使う。
-# `docker-compose.db-debug.yml` と同じ「override で足すだけ」の形。
+# Override for domain-split publishing (ADR-0012, ADR-0015). Layered on top of the base Compose.
+# Same "just add via override" shape as `docker-compose.db-debug.yml`.
 #
 #   docker compose -f docker-compose.deploy.yml -f docker-compose.domain-split.yml up -d
 #
-# 手で -f を並べる必要はない。`PUBLISH_TOPOLOGY` の**既定が domain-split**（ADR-0016）なので、
-# `scripts/deploy.sh` は `.env` に指定が無くても本ファイルを重ねる。単一オリジンへ戻すときだけ
-# `.env` に `PUBLISH_TOPOLOGY=single-origin` を明記する（そのとき本ファイルは重ならない）。
+# No need to list -f by hand. `PUBLISH_TOPOLOGY` **defaults to domain-split** (ADR-0016), so
+# `scripts/deploy.sh` layers this file even if `.env` does not specify it. Only to go back to single origin,
+# state `PUBLISH_TOPOLOGY=single-origin` in `.env` (then this file is not layered).
 #
-# 変更点は proxy の 2 点だけ:
-#   1. nginx 設定をポート分割版へ差し替える（volumes はマウント先パスをキーにマージされる）
-#   2. api 用の公開ポートを追加する（ports は追記マージ。ベースの WEB_PORT→8080 は残る）
-# api・web コンテナは publish しない（公開点は proxy だけ）。
+# Only two changes, both to proxy:
+#   1. Replace the nginx config with the port-split version (volumes merge keyed by mount target path)
+#   2. Add the public port for api (ports merge by appending; the base WEB_PORT->8080 remains)
+# api and web containers are not published (the only public point is proxy).
 services:
   proxy:
     volumes:
       - ./docker/nginx.domain-split.conf:/etc/nginx/nginx.conf:ro
     ports:
-      # ベース側の "${WEB_BIND_HOST}:${WEB_PORT}:8080"（= web）に加えて api 側を公開する。
-      # WEB_PORT と同じ値にはできない（ホストポート衝突）。
+      # In addition to the base "${WEB_BIND_HOST}:${WEB_PORT}:8080" (= web), publish the api side.
+      # Cannot be the same value as WEB_PORT (host port conflict).
       - "${API_BIND_HOST:-127.0.0.1}:${API_PORT:-8070}:8081"

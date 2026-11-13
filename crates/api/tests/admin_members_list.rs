@@ -1,18 +1,18 @@
-//! メンバー一覧のページング・絞り込み（`GET /{tenant_id}/admin/members`。MT22）の統合テスト（DB あり）。
+//! Integration tests (with DB) for paging and filtering the member list (`GET /{tenant_id}/admin/members`; MT22).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test admin_members_list
 //!
-//! 一覧はテナント全体を返すため、テスト用の行だけを対象にできるよう**一意なマーカーを含む
-//! メールアドレス**で絞り込む（同じ DB を共有する他のテストが root テナントへ行を追加しても
-//! 件数の検証が壊れないようにするため）。検証するのは:
+//! The list returns the whole tenant, so to target only test rows it is filtered by **email addresses
+//! containing a unique marker** (so count checks do not break even if other tests sharing the same DB add rows
+//! to the root tenant). What is checked:
 //!
-//! 1. 認可（未認証 401 / 権限なし 403）。
-//! 2. `limit` / `offset` でページが切り出され、`total` は絞り込み後の総件数を返すこと。
-//! 3. ページ間で行が重複・欠落しないこと（並びが安定していること）。
-//! 4. `limit` が上限へ丸められ、丸めた結果が応答の `limit` に載ること。
-//! 5. `LIKE` のワイルドカードがエスケープされること（`%` が「全件一致」にならない）。
-//! 6. 一覧の対象が**メンバーシップ**であること（他テナント所属のゲストは出る／非メンバーは出ない）。
+//! 1. Authorization (unauthenticated 401 / no permission 403).
+//! 2. `limit` / `offset` cut out a page, and `total` returns the total after filtering.
+//! 3. No rows are duplicated or missing across pages (the order is stable).
+//! 4. `limit` is clamped to the cap, and the clamped value appears in the response's `limit`.
+//! 5. `LIKE` wildcards are escaped (`%` does not become "match everything").
+//! 6. The list targets **memberships** (guests homed in other tenants appear / non-members do not).
 
 mod support;
 
@@ -21,8 +21,8 @@ use serde_json::Value;
 use sqlx::MySqlPool;
 use support::{admin_token, body_json, create_plain_user, get, send};
 
-/// メールアドレスに一意マーカーを含む利用者を当該テナントへ作る（HOME メンバーシップ付き）。
-/// `index` は並び順（メールアドレスの昇順）が予測できるようゼロ埋めする。
+/// Creates a user in the tenant whose email address contains the unique marker (with a HOME membership).
+/// `index` is zero-padded so the order (ascending email address) is predictable.
 async fn insert_marked_user(pool: &MySqlPool, tenant_id: &str, marker: &str, index: u32) -> String {
     let id = uuid::Uuid::now_v7().to_string();
     sqlx::query(
@@ -70,7 +70,7 @@ async fn member_list_pages_and_filters_on_the_server() {
     }
     let base = format!("/{}/admin/members", env.root_tenant_id);
 
-    // ── 認可: トークン無しは 401、権限の無い利用者は 403。
+    // ── Authorization: no token is 401, a user without permission is 403.
     let res = send(&env.app, support::anonymous(Method::GET, &base, None)).await;
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "no cookie -> 401");
 
@@ -79,7 +79,7 @@ async fn member_list_pages_and_filters_on_the_server() {
     let res = send(&env.app, get(&plain_token, &base)).await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "no admin perm -> 403");
 
-    // ── 1 ページ目。`total` は limit を無視した該当総数。
+    // ── First page. `total` is the total number of matches ignoring limit.
     let res = send(
         &env.app,
         get(&admin_tok, &format!("{base}?q={marker}&limit=2&offset=0")),
@@ -87,7 +87,7 @@ async fn member_list_pages_and_filters_on_the_server() {
     .await;
     assert_eq!(res.status(), StatusCode::OK);
     let first = body_json(res).await;
-    assert_eq!(first["total"], 5, "絞り込み後の総件数");
+    assert_eq!(first["total"], 5, "total after filtering");
     assert_eq!(first["limit"], 2);
     assert_eq!(first["offset"], 0);
     let page1 = emails(&first);
@@ -97,10 +97,10 @@ async fn member_list_pages_and_filters_on_the_server() {
             format!("{marker}-01@example.com"),
             format!("{marker}-02@example.com"),
         ],
-        "メールアドレスの昇順で 1 ページ分だけ返る"
+        "one page is returned in ascending email order"
     );
 
-    // ── 2 ページ目。ページ間で行が重複・欠落しない（並びが安定している）。
+    // ── Second page. No rows duplicated or missing across pages (the order is stable).
     let res = send(
         &env.app,
         get(&admin_tok, &format!("{base}?q={marker}&limit=2&offset=2")),
@@ -117,7 +117,7 @@ async fn member_list_pages_and_filters_on_the_server() {
         ]
     );
 
-    // ── 最終ページは端数（残り 1 件）。
+    // ── The last page is the remainder (1 left).
     let res = send(
         &env.app,
         get(&admin_tok, &format!("{base}?q={marker}&limit=2&offset=4")),
@@ -126,7 +126,7 @@ async fn member_list_pages_and_filters_on_the_server() {
     let third = body_json(res).await;
     assert_eq!(emails(&third), vec![format!("{marker}-05@example.com")]);
 
-    // ── 範囲外の offset は空ページ（エラーにしない）。total は変わらない。
+    // ── An out-of-range offset gives an empty page (not an error). total does not change.
     let res = send(
         &env.app,
         get(&admin_tok, &format!("{base}?q={marker}&offset=999")),
@@ -136,35 +136,35 @@ async fn member_list_pages_and_filters_on_the_server() {
     assert_eq!(beyond["total"], 5);
     assert!(emails(&beyond).is_empty());
 
-    // ── limit は上限（200）へ丸め、丸めた値を応答に載せる（呼び出し側がページ送りに使えるよう）。
+    // ── limit is clamped to the cap (200) and the clamped value is in the response (so callers can page with it).
     let res = send(
         &env.app,
         get(&admin_tok, &format!("{base}?q={marker}&limit=100000")),
     )
     .await;
     let clamped = body_json(res).await;
-    assert_eq!(clamped["limit"], 200, "上限へ丸める");
+    assert_eq!(clamped["limit"], 200, "clamped to the cap");
     assert_eq!(clamped["members"].as_array().unwrap().len(), 5);
 
-    // ── 氏名でも部分一致する（`name` 側の LIKE）。
+    // ── The name also matches partially (LIKE on `name`).
     let res = send(&env.app, get(&admin_tok, &format!("{base}?q=Member%2003"))).await;
     let by_name = body_json(res).await;
     assert!(
         emails(&by_name).contains(&format!("{marker}-03@example.com")),
-        "氏名の部分一致で見つかる: {by_name}"
+        "found by partial name match: {by_name}"
     );
 }
 
-/// `%` / `_` は `LIKE` のワイルドカードなので、エスケープしないと検索語が意図しない広い一致になる
-/// （`%` 単独なら全件一致）。
-/// 一覧はユーザー名（主たるログイン識別子）を載せ、その値でも絞り込める。
+/// `%` / `_` are `LIKE` wildcards, so without escaping a search term matches unintentionally broadly
+/// (`%` alone matches everything).
+/// The list carries the username (primary login identifier) and can be filtered by it too.
 ///
-/// ⚠ **ユーザー名は `users` に無い**（migration 0039 で撤去）。登録簿の主識別子行から
-/// 相関サブクエリで引いている。
+/// ⚠ **The username is not in `users`** (removed in migration 0039). It is looked up from the registry's primary
+/// identifier row with a correlated subquery.
 ///
-/// ⚠ **JOIN にしてはいけない。** ユーザー名を持たない利用者（管理画面から付けずに作られた
-/// アカウント）が**一覧から丸ごと消える**。消えると、その人は管理画面から操作できなくなる
-/// —— 見えないので探しようがない。ここはその 1 点を守るためのテストでもある。
+/// ⚠ **Do not make it a JOIN.** Users without a username (accounts created from the admin screen without one)
+/// would **vanish from the list entirely**. Then that person can no longer be operated from the admin screen
+/// — invisible, so there is no way to find them. This test also guards that one point.
 #[tokio::test]
 async fn the_list_carries_the_login_identifier_and_can_filter_on_it() {
     let Some(env) = support::setup("member list login identifier").await else {
@@ -175,7 +175,7 @@ async fn the_list_carries_the_login_identifier_and_can_filter_on_it() {
     let unique = uuid::Uuid::now_v7().simple().to_string();
     let marker = format!("mlid{}", &unique[..8]);
 
-    // ユーザー名を持つ利用者（プロフィール編集で主識別子の行が作られる）。
+    // A user with a username (profile edit creates the primary identifier row).
     let named = insert_marked_user(&env.pool, &env.root_tenant_id, &marker, 1).await;
     let username = format!("{marker}-login");
     let res = send(
@@ -189,10 +189,10 @@ async fn the_list_carries_the_login_identifier_and_can_filter_on_it() {
     .await;
     assert_eq!(res.status(), StatusCode::OK);
 
-    // ユーザー名を持たない利用者（SQL で直接作るので登録簿に行が無い）。
+    // A user without a username (created directly with SQL, so no registry row).
     let nameless = insert_marked_user(&env.pool, &env.root_tenant_id, &marker, 2).await;
 
-    // ── メールで絞ると 2 人とも出る。ユーザー名の無いほうは `preferred_username` が省略される。
+    // ── Filtering by email shows both. The one without a username has `preferred_username` omitted.
     let body =
         body_json(send(&env.app, get(&admin_tok, &format!("{base}?q={marker}"))).await).await;
     assert_eq!(body["total"], 2, "{body}");
@@ -205,13 +205,13 @@ async fn the_list_carries_the_login_identifier_and_can_filter_on_it() {
     let nameless_row = members
         .iter()
         .find(|m| m["user_id"] == Value::String(nameless.clone()))
-        .expect("ユーザー名の無い利用者も一覧に出る（JOIN にすると消える）");
+        .expect("users without a username are listed too (a JOIN would drop them)");
     assert!(
         nameless_row["preferred_username"].is_null(),
         "{nameless_row}"
     );
 
-    // ── ユーザー名でも絞り込める（一覧に出ている値で引けないと「見えているのに探せない」）。
+    // ── Filtering by username works too (if values shown in the list cannot be searched, "visible but not findable").
     let body =
         body_json(send(&env.app, get(&admin_tok, &format!("{base}?q={username}"))).await).await;
     assert_eq!(body["total"], 1, "{body}");
@@ -228,27 +228,27 @@ async fn like_wildcards_in_the_search_term_are_escaped() {
     insert_marked_user(&env.pool, &env.root_tenant_id, &marker, 1).await;
     let base = format!("/{}/admin/members", env.root_tenant_id);
 
-    // `%` は「全件一致」ではなく、リテラルの `%` を含む行（＝無い）にだけ一致する。
+    // `%` matches not everything but only rows containing a literal `%` (= none).
     let res = send(&env.app, get(&admin_tok, &format!("{base}?q=%25"))).await;
     assert_eq!(res.status(), StatusCode::OK);
     let escaped = body_json(res).await;
-    assert_eq!(escaped["total"], 0, "`%` が全件一致になってはいけない");
+    assert_eq!(escaped["total"], 0, "`%` must not match everything");
 
-    // `_` も同様（任意の 1 文字ではなくリテラル）。マーカーの `-` は `_` に一致しない。
+    // `_` likewise (a literal, not any single character). The marker's `-` does not match `_`.
     let res = send(&env.app, get(&admin_tok, &format!("{base}?q=mt22esc_"))).await;
     let underscore = body_json(res).await;
     assert_eq!(
         underscore["total"], 0,
-        "`_` が任意の 1 文字になってはいけない"
+        "`_` must not be any single character"
     );
 
-    // エスケープしても通常の検索は効く。
+    // Normal searches still work with escaping.
     let res = send(&env.app, get(&admin_tok, &format!("{base}?q={marker}"))).await;
     assert_eq!(body_json(res).await["total"], 1);
 }
 
-/// 一覧の対象は**当該テナントのメンバーシップ**であって「所属元が当該テナントの利用者」ではない。
-/// 他テナント所属のゲストは出て、メンバーシップを持たない利用者は出ない（テナント分離）。
+/// The list targets **the tenant's memberships**, not "users homed in the tenant".
+/// Guests homed in other tenants appear, and users without a membership do not (tenant isolation).
 #[tokio::test]
 async fn list_covers_memberships_not_home_users() {
     let Some(env) = support::setup("admin members list scope").await else {
@@ -257,7 +257,7 @@ async fn list_covers_memberships_not_home_users() {
     let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let marker = format!("mt22scope-{}", uuid::Uuid::now_v7().simple());
 
-    // 別テナント（root の子）に 2 名。片方だけ root へゲスト参加させる。
+    // Two people in another tenant (a child of root). Only one joins root as a guest.
     let other_tenant = uuid::Uuid::now_v7().to_string();
     sqlx::query("INSERT INTO tenants (id, parent_tenant_id, name) VALUES (?, ?, ?)")
         .bind(&other_tenant)
@@ -289,12 +289,12 @@ async fn list_covers_memberships_not_home_users() {
     let body = body_json(res).await;
     assert_eq!(
         body["total"], 1,
-        "ゲスト 1 名だけが root のメンバー: {body}"
+        "only the one guest is a member of root: {body}"
     );
     assert_eq!(emails(&body), vec![format!("{marker}-01@example.com")]);
     assert_eq!(body["members"][0]["membership_type"], "GUEST");
 
-    // 招待中（未承諾）もメンバーシップ行なので一覧には出る（状態で区別できる）。
+    // Pending invitations (not accepted) are membership rows too, so they are listed (distinguishable by state).
     let invited = insert_marked_user(&env.pool, &other_tenant, &marker, 3).await;
     sqlx::query(
         "INSERT INTO tenant_memberships (tenant_id, user_id, membership_type, status) \
@@ -318,11 +318,11 @@ async fn list_covers_memberships_not_home_users() {
     assert_eq!(body["members"][1]["status"], "INVITED");
 }
 
-/// メンバー 1 人を名指しで引く（`GET /{tenant_id}/admin/members/{user_id}`）。
+/// Fetches one member by name (`GET /{tenant_id}/admin/members/{user_id}`).
 ///
-/// ⚠ **一覧から探させないための口。** 一覧はページングされているので、目的の 1 人が何ページ目に
-/// 居るかは呼び出し側には分からない。要求テナントに所属していなければ 404（他テナントのメンバーの
-/// 存在を推測させない）。
+/// ⚠ **An endpoint so callers need not search the list.** The list is paged, so the caller cannot know which page
+/// the person is on. If not in the requested tenant, 404 (no guessing the existence of other tenants'
+/// members).
 #[tokio::test]
 async fn one_member_can_be_fetched_by_id() {
     let Some(env) = support::setup("member detail").await else {
@@ -333,7 +333,7 @@ async fn one_member_can_be_fetched_by_id() {
     let user_id = insert_marked_user(&env.pool, &env.root_tenant_id, &marker, 1).await;
     let path = format!("/{}/admin/members/{}", env.root_tenant_id, user_id);
 
-    // 認可（一覧と同じ関門）。
+    // Authorization (same gate as the list).
     let res = send(&env.app, support::anonymous(Method::GET, &path, None)).await;
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "no token -> 401");
 
@@ -345,8 +345,8 @@ async fn one_member_can_be_fetched_by_id() {
     assert_eq!(body["membership_type"], "HOME");
     assert_eq!(body["status"], "ACTIVE");
 
-    // メンバーではない利用者は 404（存在するかどうかを漏らさない）。
-    // ⚠ `create_plain_user` は HOME メンバーシップまで作るので使えない。**行だけ**を入れる。
+    // A user who is not a member is 404 (does not leak existence).
+    // ⚠ `create_plain_user` also creates a HOME membership, so it cannot be used. Insert **only the row**.
     let stranger = uuid::Uuid::now_v7().to_string();
     sqlx::query(
         "INSERT INTO users (id, tenant_id, sub, email, email_verified, password_hash, status) \

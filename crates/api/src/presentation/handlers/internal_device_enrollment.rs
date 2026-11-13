@@ -1,9 +1,9 @@
-//! 登録していない端末で正しく入ろうとした人が、その場で端末を登録する口（`/internal/device-enrollment/*`。
-//! task #916。ADR-0079）。
+//! Endpoints letting someone who correctly signs in on an unregistered device register it on the spot (`/internal/device-enrollment/*`,
+//! task #916, ADR-0079).
 //!
-//! web だけが呼ぶ内部の口（サービストークンの内側）。判定は Application 層（`DeviceEnrollmentService`）
-//! にあり、ここは DTO の詰め替えだけを行う。札が今のブラウザのものかは、web が添えた端末の印
-//! （`client_device`）で Application 層が確かめる。
+//! Internal endpoints called only by web (behind the service token). Decisions are in the application layer (`DeviceEnrollmentService`);
+//! this only repacks DTOs. Whether the ticket belongs to the current browser is checked by the application layer
+//! using the device mark attached by web (`client_device`).
 
 use crate::application::audit::RequestContext;
 use crate::application::device_enrollment::{
@@ -23,7 +23,7 @@ use axum::response::Response;
 use axum::Json;
 use uuid::Uuid;
 
-/// 札の中身（`POST /internal/device-enrollment/describe`）。
+/// Ticket contents (`POST /internal/device-enrollment/describe`).
 pub async fn describe(
     State(state): State<AppState>,
     Json(req): Json<InternalDeviceEnrollmentDescribeRequest>,
@@ -50,7 +50,7 @@ pub async fn describe(
     ))
 }
 
-/// パスキーの確かめを始める（`POST /internal/device-enrollment/passkey/begin`）。
+/// Starts passkey verification (`POST /internal/device-enrollment/passkey/begin`).
 pub async fn begin(
     State(state): State<AppState>,
     Json(req): Json<InternalDeviceEnrollmentBeginRequest>,
@@ -81,7 +81,7 @@ pub async fn begin(
     ))
 }
 
-/// パスキーで確かめて登録し、ログインする（`POST /internal/device-enrollment/passkey/complete`）。
+/// Verifies with a passkey, registers and signs in (`POST /internal/device-enrollment/passkey/complete`).
 pub async fn complete(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,

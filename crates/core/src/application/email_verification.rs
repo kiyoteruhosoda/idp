@@ -1,15 +1,15 @@
-//! 自己登録アカウントのメール検証ユースケース（SEC6b）。
+//! Email verification use case for self-registered accounts (SEC6b).
 //!
-//! 自己登録（SEC6）で作成されるアカウントは `email_verified = false` の状態で作られる。本サービスは
-//! 確認リンク付きメールを送り（送信基盤は MT17 の [`Mailer`]・SMTP はシステム設定 MT14 を再利用）、
-//! リンクの平文トークン消費で `email_verified` を立てる。検証が済むまでは当該アカウントでログイン
-//! できない（`LoginService` が `email_verified` を判定。SEC6b）。
+//! Accounts created by self-registration (SEC6) start with `email_verified = false`. This service
+//! sends an email with a confirmation link (sending infrastructure is MT17's [`Mailer`]; SMTP reuses system settings MT14),
+//! and sets `email_verified` when the link's plaintext token is consumed. Until verified, the account cannot log in
+//! (`LoginService` checks `email_verified`. SEC6b).
 //!
-//! セキュリティ方針:
-//! - **トークン**: 32 バイトのランダム値。保存は SHA-256 hex のみ・TTL 付き（既定 24 時間）・単回消費。
-//!   再送時は当該ユーザーの未使用トークンを失効させる（有効リンクは常に最新の 1 本）。
-//! - トークン・メールアドレスはログ・監査に出さない（PII 方針）。
-//! - 送信は best-effort（SMTP 未設定・送信失敗でも登録自体は成立する。検証は後追いで可能）。
+//! Security policy:
+//! - **Token**: 32 random bytes. Stored only as SHA-256 hex, with a TTL (default 24 hours), consumed once.
+//!   On resend, the user's unused tokens are revoked (the valid link is always the single latest one).
+//! - Tokens and email addresses never appear in logs or audit (PII policy).
+//! - Sending is best-effort (registration itself succeeds even if SMTP is unset or sending fails; verification can follow later).
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::system_settings::SystemSettingsService;
@@ -27,13 +27,13 @@ use crate::domain::tenant_context::TenantContext;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// 検証トークンのバイト長（base64url で 43 文字程度）。
+/// Byte length of the verification token (about 43 chars in base64url).
 const VERIFICATION_TOKEN_BYTES: usize = 32;
 
-/// 検証リンク消費の結果。
+/// Result of consuming a verification link.
 pub enum VerifyEmailOutcome {
     Ok,
-    /// トークンが無効・期限切れ・使用済み・別テナント。
+    /// The token is invalid, expired, used, or for another tenant.
     InvalidOrExpired,
     Internal(String),
 }
@@ -45,9 +45,9 @@ pub struct EmailVerificationService {
     mailer: Arc<dyn Mailer>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
-    /// テナントが上書きできる設定の解決（ADR-0058）。参照のたびに引く。
+    /// Resolution of settings tenants can override (ADR-0058). Looked up every time.
     settings: Arc<dyn EffectiveTenantSettings>,
-    /// 検証リンクの土台となる公開ベース URL（web 画面。末尾スラッシュ無し）。
+    /// Public base URL the verification link is built on (web screens; no trailing slash).
     console_base_url: String,
 }
 
@@ -75,8 +75,8 @@ impl EmailVerificationService {
         }
     }
 
-    /// 検証メールを送る（best-effort）。SMTP 未設定・送信失敗でも呼び出し元の処理は継続する。
-    /// メールを送出した場合のみ `true` を返す（呼び出し側が「メールを確認して」と案内するため）。
+    /// Sends the verification email (best-effort). The caller's processing continues even if SMTP is unset or sending fails.
+    /// Returns `true` only if an email was sent (so the caller can say "check your email").
     pub async fn send_verification(
         &self,
         tenant_id: TenantId,
@@ -84,8 +84,8 @@ impl EmailVerificationService {
         user_email: &str,
         ctx: &RequestContext,
     ) -> bool {
-        // SMTP 未設定なら送れない（アカウントは作成済み。検証は後追いで行える）。
-        // 送るのは検証するテナントの経路（ADR-0058 §8。持っていなければ全体の経路）。
+        // Can't send if SMTP is unset (the account is already created; verification can follow later).
+        // Sent through the verifying tenant's channel (ADR-0058 §8; the global channel if it has none).
         let server = match self.system_settings.smtp_server_for(tenant_id).await {
             Ok(Some(server)) => server,
             Ok(None) => return false,
@@ -95,9 +95,9 @@ impl EmailVerificationService {
             }
         };
 
-        // 有効期間は利用者の所属元テナントの値（`tenant_id` は登録したテナント＝所属元で、リンクも
-        // ここを指す。ADR-0058）。消費側は保存した `expires_at` を見る。
-        // 旧トークンを失効させる前に引く（引けずに終わったとき、有効なリンクが 1 本も無くならないように）。
+        // The lifetime is the value of the user's home tenant (`tenant_id` is the registering tenant = home, and the link
+        // points here too. ADR-0058). The consuming side looks at the stored `expires_at`.
+        // Looked up before revoking old tokens (so a failed lookup doesn't leave no valid link at all).
         let verification_ttl = match self.settings.email_verification_ttl(tenant_id).await {
             Ok(ttl) => ttl,
             Err(e) => {
@@ -106,7 +106,7 @@ impl EmailVerificationService {
             }
         };
         let now = self.clock.now();
-        // 再送時は旧トークンを失効させ、有効な検証リンクを常に最新の 1 本にする。
+        // On resend, revoke old tokens so the valid verification link is always the single latest one.
         if let Err(e) = self.tokens.invalidate_all_for_user(user_id, now).await {
             tracing::warn!(error = %e, "failed to invalidate previous verification tokens");
             return false;
@@ -126,7 +126,7 @@ impl EmailVerificationService {
             return false;
         }
 
-        // 監査には内部 ID のみ記録する（トークン・メールアドレスは出さない）。
+        // Only internal IDs are recorded in the audit (no tokens or email addresses).
         self.audit
             .record(
                 AuditEventType::EmailVerificationRequested,
@@ -139,8 +139,8 @@ impl EmailVerificationService {
             )
             .await;
 
-        // トークンは base64url（URL 安全）なのでそのまま連結できる。
-        // 文言は MT19（API の多言語化）まで日英併記の固定文とする。
+        // The token is base64url (URL-safe), so it can be concatenated as-is.
+        // Until MT19 (API i18n), the wording is fixed text in both Japanese and English.
         let verify_url = format!(
             "{}/{}/verify-email?token={}",
             self.console_base_url, tenant_id, token
@@ -164,16 +164,16 @@ impl EmailVerificationService {
             ),
         };
         if let Err(e) = self.mailer.send(&server, &mail).await {
-            // 宛先等の PII はログに出さない。
+            // PII such as the destination is not logged.
             tracing::warn!(error = %e, "email verification delivery failed");
             return false;
         }
         true
     }
 
-    /// 検証リンクの平文トークンを消費して `email_verified` を立てる。トークンの所有者を解決し、
-    /// リンクのテナント（画面の経路）と所属元が一致することを確認する（他テナントの検証画面へ
-    /// トークンを持ち込ませない）。
+    /// Consumes the verification link's plaintext token and sets `email_verified`. Resolves the token's owner and
+    /// confirms the link's tenant (the screen's route) matches the home tenant (so a token can't be carried to
+    /// another tenant's verification screen).
     pub async fn verify(
         &self,
         tenant: TenantContext,
@@ -259,8 +259,8 @@ mod tests {
     }
     #[async_trait]
     impl UserRepository for FakeUsers {
-        /// 本番の sqlx 実装は 1 文の UPDATE で加算する（SEC13）。フェイクは単一スレッドの
-        /// テストでしか動かないので、同じ結果になる素朴な加算で足りる。
+        /// The production sqlx implementation increments in a single UPDATE (SEC13). The fake only runs in
+        /// single-threaded tests, so a naive increment giving the same result is enough.
         async fn record_login_failure(
             &self,
             id: Uuid,
@@ -574,7 +574,7 @@ mod tests {
             VerifyEmailOutcome::Ok
         ));
         assert!(h.users.rows.lock().unwrap()[0].email_verified);
-        // 監査に requested + verified が記録され、トークンは漏れない。
+        // requested + verified are recorded in the audit, and the token doesn't leak.
         {
             let events = h.sink.events.lock().unwrap();
             assert!(events
@@ -589,7 +589,7 @@ mod tests {
                 .map(|r| !r.contains(&token))
                 .unwrap_or(true)));
         }
-        // 再利用は拒否（単回消費）。
+        // Reuse is refused (consumed once).
         assert!(matches!(
             h.svc
                 .verify(TenantContext::new(tenant), &token, &ctx())

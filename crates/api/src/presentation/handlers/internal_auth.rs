@@ -1,19 +1,19 @@
-//! 内部認証 API（`/internal/*`、ADR-0007 §3・§5）。
+//! Internal authentication API (`/internal/*`, ADR-0007 §3, §5).
 //!
-//! ログイン画面（将来の `web` crate）と認可サーバ（api）を分離するための **OIDC 標準外の内部
-//! エンドポイント**。web はフォーム描画とリダイレクトのみを担い、資格情報・`auth_session_id` 参照・
-//! 接続元情報（`X-Forwarded-For` 由来 IP・User-Agent）を本 API へ転送する。資格情報検証・ロックアウト
-//! （設計仕様 §4.3）・IP レート制限・SSO/code 発行・監査記録はすべて api（唯一の DB 所有者）が行い、
-//! Cookie 組み立てとエラー文言のローカライズは web が担う。
+//! **Internal endpoints outside the OIDC standard** for separating the login screens (the future `web` crate) from
+//! the authorization server (api). web only renders forms and redirects, forwarding credentials, the `auth_session_id` reference and
+//! client connection info (IP from `X-Forwarded-For`, User-Agent) to this API. Credential verification, lockout
+//! (design spec §4.3), IP rate limiting, SSO/code issuance and audit recording are all done by the api (the sole DB owner);
+//! building cookies and localizing error messages are web's job.
 //!
-//! P2（ADR-0007）では api・web が同一プロセスのため、既存の HTML ログイン画面ハンドラは
-//! [`crate::application::login::LoginService`] を直接呼び続ける。本モジュールは同じユースケースを
-//! **内部エンドポイント越しに呼べる形**として公開し、P3 の web crate 化で HTTP クライアントから
-//! 利用される。
+//! In P2 (ADR-0007) api and web are the same process, so the existing HTML login screen handlers
+//! keep calling [`crate::application::login::LoginService`] directly. This module exposes the same use cases
+//! **in a form callable through internal endpoints**, used from an HTTP client once web becomes a crate
+//! in P3.
 //!
-//! 保護（§5）: `/internal/*` は外部公開しない（リバースプロキシで遮断）。多層防御として、web→api の
-//! 呼び出しにサービス認証トークン（共有シークレット。`X-Internal-Auth-Token` ヘッダ）を必須とする。
-//! トークンは設定（`config` 経由）で注入する。
+//! Protection (§5): `/internal/*` is never exposed externally (blocked at the reverse proxy). As defense in depth,
+//! web->api calls require the service auth token (a shared secret, `X-Internal-Auth-Token` header).
+//! The token is injected via settings (through `config`).
 
 use crate::application::account_language::{UpdateLanguageCommand, UpdateLanguageOutcome};
 use crate::application::account_password::{AccountPasswordCommand, AccountPasswordOutcome};
@@ -94,8 +94,8 @@ use axum::Json;
 
 use assay_contracts::internal_auth::{service_token_matches, SERVICE_TOKEN_HEADER};
 
-/// `/internal/*` を保護するミドルウェア（ADR-0007 §5）。設定のサービストークンとヘッダ値を
-/// 定数時間で照合し、一致しなければ 401 で遮断する。
+/// Middleware protecting `/internal/*` (ADR-0007 §5). Compares the configured service token with the header value
+/// in constant time, blocking with 401 on mismatch.
 pub async fn require_service_token(
     State(state): State<AppState>,
     request: Request,
@@ -112,14 +112,14 @@ pub async fn require_service_token(
     next.run(request).await
 }
 
-/// 認証（OIDC ログイン）。web から転送された資格情報・`auth_session_id`・接続元情報で
-/// [`LoginService`](crate::application::login::LoginService) を実行し、結果を JSON で返す。
+/// Authentication (OIDC login). Runs [`LoginService`](crate::application::login::LoginService) with the credentials,
+/// `auth_session_id` and client connection info forwarded by web, returning the result as JSON.
 pub async fn authenticate(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Json(req): Json<InternalAuthenticateRequest>,
 ) -> Result<Json<InternalAuthenticateResponse>, Response> {
-    // 接続元情報は web が転送する（api はプロキシ直下ではないため自前で X-Forwarded-For を見ない）。
+    // Client connection info is forwarded by web (the api is not directly behind the proxy, so it doesn't read X-Forwarded-For itself).
     let ctx = RequestContext {
         correlation_id: correlation.0,
         ip_address: req.ip_address,
@@ -198,10 +198,10 @@ pub async fn authenticate(
     }))
 }
 
-/// パスワード変更（`POST /internal/change-password`、ADR-0009 §5）。`LoginService` が検出した
-/// `must_change_password` を受けて、パスワード検証済みの `auth_session_id` で新パスワードを設定する。
-/// セルフサービスのパスワード変更（`POST /internal/account/change-password`。MT15）。ログイン済み
-/// ユーザーが SSO セッションで本人確認のうえ、現行パスワードを再検証して新パスワードを設定する。
+/// Password change (`POST /internal/change-password`, ADR-0009 §5). Following `must_change_password` detected by
+/// `LoginService`, sets a new password with a password-verified `auth_session_id`.
+/// Self-service password change (`POST /internal/account/change-password`, MT15). A signed-in
+/// user, identified by the SSO session, re-verifies the current password and sets a new one.
 pub async fn account_change_password(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -325,10 +325,10 @@ pub async fn change_password(
     }))
 }
 
-/// Domain の拒否理由を contracts の理由コードへ写す（AP7）。
+/// Maps the domain's rejection reason to the contracts reason code (AP7).
 ///
-/// web は理由ごとに違う文言を出す。訳文そのものではなく**理由コード**を渡すのは、翻訳を
-/// 引くのは表示する側（web）の責務であり、api が言語を決めないためである。
+/// web shows different wording per reason. A **reason code** is passed rather than the translation itself because
+/// looking up translations is the displaying side's (web's) job, and the api does not decide the language.
 fn rejection_reason(rejection: &PasswordRejection) -> PasswordRejectionReason {
     match rejection {
         PasswordRejection::Strength(_) => PasswordRejectionReason::Policy,
@@ -337,7 +337,7 @@ fn rejection_reason(rejection: &PasswordRejection) -> PasswordRejectionReason {
     }
 }
 
-/// 管理コンソール認証。CSRF は web 側で検証済み（ADR-0007 §4）。成功時は SSO セッション id を返す。
+/// Admin console authentication. CSRF already verified by web (ADR-0007 §4). Returns the SSO session id on success.
 pub async fn authenticate_admin(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -390,7 +390,7 @@ pub async fn authenticate_admin(
             tracing::error!("unexpected WeakPassword outcome from admin authenticate");
             InternalAdminAuthenticateResponse::Internal
         }
-        // パスキー経路でしか出ない outcome（パスワード経路では到達しない）。
+        // Outcomes that only occur on the passkey path (unreachable on the password path).
         AdminLoginOutcome::PasskeyChallengeNotFound => {
             tracing::error!(
                 "unexpected PasskeyChallengeNotFound outcome from admin password login"
@@ -404,8 +404,8 @@ pub async fn authenticate_admin(
     }))
 }
 
-/// エンドユーザー・ポータル認証（`POST /internal/authenticate/portal`）。CSRF は web 側で検証済み。
-/// 成功時は SSO セッション id を返す（code/redirect は無い）。TOTP 設定済みなら `mfa_ticket` を返す。
+/// End-user portal authentication (`POST /internal/authenticate/portal`). CSRF already verified by web.
+/// Returns the SSO session id on success (no code/redirect). Returns `mfa_ticket` if TOTP is configured.
 pub async fn authenticate_portal(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -460,7 +460,7 @@ pub async fn authenticate_portal(
             InternalPortalAuthenticateResponse::InvalidCredentials
         }
         PortalLoginOutcome::Locked => InternalPortalAuthenticateResponse::Locked,
-        // パスキー経路でしか出ない outcome（パスワード経路では到達しない）。
+        // Outcomes that only occur on the passkey path (unreachable on the password path).
         PortalLoginOutcome::PasskeyChallengeNotFound => {
             tracing::error!(
                 "unexpected PasskeyChallengeNotFound outcome from portal password login"
@@ -474,8 +474,8 @@ pub async fn authenticate_portal(
     }))
 }
 
-/// ポータルの TOTP 検証（`POST /internal/authenticate/portal/mfa`）。`mfa_ticket` ＋ TOTP コードを
-/// 検証し、成功時に SSO セッション id を返す。
+/// Portal TOTP verification (`POST /internal/authenticate/portal/mfa`). Verifies `mfa_ticket` + TOTP code
+/// and returns the SSO session id on success.
 pub async fn authenticate_portal_mfa(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -523,8 +523,8 @@ pub async fn authenticate_portal_mfa(
     }))
 }
 
-/// ポータルの強制パスワード変更（`POST /internal/authenticate/portal/change-password`、ADR-0009 §5）。
-/// ポータルログインは一時状態を持たないため、現行パスワードを含めフルに再検証する（admin 権限は不要）。
+/// Forced password change in the portal (`POST /internal/authenticate/portal/change-password`, ADR-0009 §5).
+/// Portal login holds no temporary state, so everything including the current password is fully re-verified (no admin permission needed).
 pub async fn authenticate_portal_change_password(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -593,8 +593,8 @@ pub async fn authenticate_portal_change_password(
     }))
 }
 
-/// 管理コンソールの強制パスワード変更（`POST /internal/authenticate/admin/change-password`、
-/// ADR-0009 §5）。管理ログインは一時状態を持たないため、現行パスワードを含めフルに再検証する。
+/// Forced password change in the admin console (`POST /internal/authenticate/admin/change-password`,
+/// ADR-0009 §5). Admin login holds no temporary state, so everything including the current password is fully re-verified.
 pub async fn admin_change_password(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -650,7 +650,7 @@ pub async fn admin_change_password(
             tracing::error!("unexpected PasswordChangeRequired outcome from admin change-password");
             InternalAdminChangePasswordResponse::Internal
         }
-        // パスキー経路でしか出ない outcome（パスワード経路では到達しない）。
+        // Outcomes that only occur on the passkey path (unreachable on the password path).
         AdminLoginOutcome::PasskeyChallengeNotFound => {
             tracing::error!(
                 "unexpected PasskeyChallengeNotFound outcome from admin change-password"
@@ -664,8 +664,8 @@ pub async fn admin_change_password(
     }))
 }
 
-/// ログアウト（`POST /internal/logout`）。web が管理コンソールのログアウトで呼ぶ。SSO セッションを
-/// DB から失効させ監査へ記録する（Cookie 失効は web が行う）。不明・不正なセッションは冪等に無視する。
+/// Logout (`POST /internal/logout`). Called by web on admin console logout. Revokes the SSO session
+/// in the DB and audits it (cookie removal is done by web). Unknown or invalid sessions are idempotently ignored.
 pub async fn logout(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -685,8 +685,8 @@ pub async fn logout(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// パスワードリセット要求（`POST /internal/password-reset/request`。MT18）。アカウントの有無では
-/// 応答を分岐しない（列挙防止はユースケース側の責務）。
+/// Password reset request (`POST /internal/password-reset/request`, MT18). The response does not branch on
+/// whether the account exists (preventing enumeration is the use case's responsibility).
 pub async fn password_reset_request(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -710,7 +710,7 @@ pub async fn password_reset_request(
     }))
 }
 
-/// パスワードリセット実行（`POST /internal/password-reset/complete`。MT18）。
+/// Password reset execution (`POST /internal/password-reset/complete`, MT18).
 pub async fn password_reset_complete(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -744,8 +744,8 @@ pub async fn password_reset_complete(
     }))
 }
 
-/// セルフサービスの表示言語変更（`POST /internal/account/update-language`。MT20）。
-/// ログイン済みユーザーが SSO セッション経由で自分の言語設定を更新する。
+/// Self-service display language change (`POST /internal/account/update-language`, MT20).
+/// A signed-in user updates their own language setting via the SSO session.
 pub async fn account_update_language(
     State(state): State<AppState>,
     Json(req): Json<InternalAccountUpdateLanguageRequest>,
@@ -772,8 +772,8 @@ pub async fn account_update_language(
     })
 }
 
-/// セルフサービスの配色変更（`POST /internal/account/update-theme`）。
-/// ログイン済みユーザーが SSO セッション経由で自分の配色設定を更新する。
+/// Self-service color scheme change (`POST /internal/account/update-theme`).
+/// A signed-in user updates their own color scheme setting via the SSO session.
 pub async fn account_update_theme(
     State(state): State<AppState>,
     Json(req): Json<InternalAccountUpdateThemeRequest>,
@@ -796,8 +796,8 @@ pub async fn account_update_theme(
     })
 }
 
-/// セルフサービスのプロフィール取得（`POST /internal/account/profile`）。設定画面が表示名等を
-/// 再表示するために SSO セッション経由で本人のプロフィールを取得する（副作用なし）。
+/// Self-service profile fetch (`POST /internal/account/profile`). The settings screen fetches the user's own profile
+/// via the SSO session to redisplay the display name etc. (no side effects).
 pub async fn account_profile(
     State(state): State<AppState>,
     Json(req): Json<InternalAccountProfileRequest>,
@@ -825,8 +825,8 @@ pub async fn account_profile(
     })
 }
 
-/// セルフサービスの表示名更新（`POST /internal/account/update-name`）。ログイン済みユーザーが
-/// SSO セッション経由で自分の表示名（`users.name`）を更新する。空・空白のみは解除扱い。
+/// Self-service display name update (`POST /internal/account/update-name`). A signed-in user
+/// updates their own display name (`users.name`) via the SSO session. Empty or whitespace-only clears it.
 pub async fn account_update_name(
     State(state): State<AppState>,
     Json(req): Json<InternalAccountUpdateNameRequest>,
@@ -849,8 +849,8 @@ pub async fn account_update_name(
     })
 }
 
-/// ログイン中ユーザーの所属テナント列挙（`POST /internal/account/tenants`）。テナント切り替え UI が
-/// 切替先候補（`ACTIVE` メンバーシップを持つテナント）を取得するために呼ぶ。
+/// Lists the tenants the signed-in user belongs to (`POST /internal/account/tenants`). Called by the tenant switcher UI
+/// to get the candidate tenants (those with an `ACTIVE` membership).
 pub async fn account_tenants(
     State(state): State<AppState>,
     Json(req): Json<InternalAccountTenantsRequest>,
@@ -875,9 +875,9 @@ pub async fn account_tenants(
     })
 }
 
-/// セルフサービスのセキュリティ画面（`POST /internal/account/security`。G10）。
+/// Self-service security screen (`POST /internal/account/security`, G10).
 ///
-/// ログイン中セッションの一覧と連携済みアプリの一覧を返す。CSRF は web 側で検証済み。
+/// Returns the list of signed-in sessions and connected apps. CSRF already verified by web.
 pub async fn account_security(
     State(state): State<AppState>,
     Json(req): Json<InternalAccountSecurityRequest>,
@@ -925,7 +925,7 @@ pub async fn account_security(
     }))
 }
 
-/// ログイン中セッションの失効（`POST /internal/account/security/revoke-session`。G10）。
+/// Revokes a signed-in session (`POST /internal/account/security/revoke-session`, G10).
 pub async fn account_revoke_session(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -958,7 +958,7 @@ pub async fn account_revoke_session(
     }))
 }
 
-/// 連携済みアプリの解除（`POST /internal/account/security/revoke-consent`。G10）。
+/// Disconnects a connected app (`POST /internal/account/security/revoke-consent`, G10).
 pub async fn account_revoke_consent(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -987,10 +987,10 @@ pub async fn account_revoke_consent(
     }))
 }
 
-/// 発行済みトークンの再発行（`POST /internal/account/security/reissue-tokens`。ADR-0047）。
+/// Reissues issued tokens (`POST /internal/account/security/reissue-tokens`, ADR-0047).
 ///
-/// 当人の refresh token を全部失効させる。セッションにも同意にも触れないので、アプリは
-/// 次の更新で SSO 越しに取り直す。
+/// Revokes all of the user's refresh tokens. Neither sessions nor consents are touched, so apps
+/// re-obtain them through SSO on the next refresh.
 pub async fn account_reissue_tokens(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -1021,14 +1021,14 @@ pub async fn account_reissue_tokens(
     }))
 }
 
-/// Step-up の判定（`POST /internal/step-up/check`。AP5）。
+/// Step-up decision (`POST /internal/step-up/check`, AP5).
 ///
-/// 重要操作の直前に web が呼び、`ChallengeRequired` なら本人確認画面へ誘導する。
+/// Called by web right before a sensitive operation; on `ChallengeRequired` it leads to the identity check screen.
 pub async fn step_up_check(
     State(state): State<AppState>,
     Json(req): Json<InternalStepUpCheckRequest>,
 ) -> Result<Json<InternalStepUpCheckResponse>, Response> {
-    // テナントは必須（他の `/internal/*` と同じ fail-closed。監査のテナント記録に使う）。
+    // Tenant is required (fail-closed like the other `/internal/*`; used for the audit's tenant record).
     let _tenant =
         require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let Some(operation) = SensitiveOperation::parse(&req.operation) else {
@@ -1055,7 +1055,7 @@ pub async fn step_up_check(
     ))
 }
 
-/// Step-up の検証（`POST /internal/step-up/verify`。AP5）。CSRF は web 側で検証済み。
+/// Step-up verification (`POST /internal/step-up/verify`, AP5). CSRF already verified by web.
 pub async fn step_up_verify(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -1099,18 +1099,18 @@ pub async fn step_up_verify(
     }))
 }
 
-/// パスキーでの本人確認の開始（`POST /internal/step-up/passkey/begin`。AP5・T38）。
+/// Starts passkey identity verification (`POST /internal/step-up/passkey/begin`, AP5, T38).
 ///
-/// ログインの開始と分けてあるのは、**用途の違うチャレンジを出すため**である。ここで出した
-/// チャレンジではログインできず、ログイン用のチャレンジでは本人確認が通らない。
+/// It is separate from starting a login **in order to issue challenges with a different purpose**. A challenge issued here
+/// cannot be used to log in, and a login challenge does not pass identity verification.
 pub async fn step_up_passkey_begin(
     State(state): State<AppState>,
     Json(req): Json<InternalStepUpPasskeyBeginRequest>,
 ) -> Result<Json<InternalStepUpPasskeyBeginResponse>, Response> {
     let _tenant =
         require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
-    // 未ログインの相手にチャレンジを配らない（本人確認は「あるセッションを引き上げる」操作で、
-    // 引き上げる先が無いなら始めない）。
+    // Don't hand challenges to someone not signed in (verification is an operation that "elevates an existing session";
+    // without anything to elevate, don't start).
     if state
         .admin_access
         .authenticated_user(Some(&req.sso_session_id))
@@ -1131,7 +1131,7 @@ pub async fn step_up_passkey_begin(
     }))
 }
 
-/// パスキーでの本人確認（`POST /internal/step-up/passkey/verify`。AP5・T38）。CSRF は web 側で検証済み。
+/// Passkey identity verification (`POST /internal/step-up/passkey/verify`, AP5, T38). CSRF already verified by web.
 pub async fn step_up_passkey_verify(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -1148,7 +1148,7 @@ pub async fn step_up_passkey_verify(
         return Ok(Json(InternalStepUpPasskeyVerifyResponse::UnknownOperation));
     };
     let Ok(challenge_id) = req.challenge_id.parse::<uuid::Uuid>() else {
-        // 解釈できない id は「そんなチャレンジは無い」であって内部エラーではない。
+        // An unparseable id means "no such challenge", not an internal error.
         return Ok(Json(InternalStepUpPasskeyVerifyResponse::InvalidCredential));
     };
     let outcome = state
@@ -1171,7 +1171,7 @@ pub async fn step_up_passkey_verify(
         }
         StepUpVerifyOutcome::RateLimited => InternalStepUpPasskeyVerifyResponse::RateLimited,
         StepUpVerifyOutcome::SessionExpired => InternalStepUpPasskeyVerifyResponse::SessionExpired,
-        // パスワード経路でしか出ない outcome（パスキーは 1 回で多要素を満たす）。
+        // Outcomes that only occur on the password path (a passkey satisfies multi-factor in one go).
         StepUpVerifyOutcome::SecondFactorRequired => {
             tracing::error!("unexpected second-factor request from a passkey step-up");
             InternalStepUpPasskeyVerifyResponse::Internal
@@ -1183,7 +1183,7 @@ pub async fn step_up_passkey_verify(
     }))
 }
 
-/// 登録済み認証器の一覧（`POST /internal/account/authenticators`。AP9）。
+/// Lists registered authenticators (`POST /internal/account/authenticators`, AP9).
 pub async fn account_authenticators(
     State(state): State<AppState>,
     Json(req): Json<InternalAuthenticatorsRequest>,
@@ -1235,7 +1235,7 @@ pub async fn account_authenticators(
             .has_confirmed_phone(user_id)
             .await
             .unwrap_or(false),
-        // ゲートウェイ未設定なら登録導線を出さない（登録できても送れない画面を並べない）。
+        // Without a configured gateway, don't offer registration (don't show a screen that can register but cannot send).
         sms_available: state
             .system_settings
             .sms_gateway()
@@ -1246,10 +1246,10 @@ pub async fn account_authenticators(
     }))
 }
 
-/// SMS OTP の送信（`POST /internal/account/sms-otp`。AP13）。
+/// Sends an SMS OTP (`POST /internal/account/sms-otp`, AP13).
 ///
-/// email OTP と同じく **MFA 待ちの利用者**にだけ送る（未認証の要求で SMS を撃たせない。
-/// SMS は 1 通ごとに費用が発生するので、この制限はコストの防御でもある）。
+/// Like email OTP, sent **only to users awaiting MFA** (unauthenticated requests can't fire SMS.
+/// Each SMS costs money, so this restriction is also a cost defense).
 pub async fn account_sms_otp(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -1303,8 +1303,8 @@ pub async fn account_sms_otp(
     ))
 }
 
-/// 電話番号の登録開始（`POST /internal/account/phone/register`。AP13）。
-/// ログイン済み利用者のセルフサービス操作のため、対象は SSO セッションから解決する。
+/// Starts phone number registration (`POST /internal/account/phone/register`, AP13).
+/// A self-service operation for signed-in users, so the target is resolved from the SSO session.
 pub async fn account_phone_register(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -1339,7 +1339,7 @@ pub async fn account_phone_register(
                 InternalPhoneRegistrationResponse::Unavailable
             }
             Err(e) => {
-                // 電話番号は PII なので、失敗ログにも載せない（エラー側にも含まれない）。
+                // Phone numbers are PII, so they are not put in failure logs either (nor contained in the error).
                 tracing::error!(error = %e, "phone registration failed");
                 InternalPhoneRegistrationResponse::Internal
             }
@@ -1347,7 +1347,7 @@ pub async fn account_phone_register(
     ))
 }
 
-/// 電話番号の登録確認（`POST /internal/account/phone/confirm`。AP13）。
+/// Confirms phone number registration (`POST /internal/account/phone/confirm`, AP13).
 pub async fn account_phone_confirm(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -1384,7 +1384,7 @@ pub async fn account_phone_confirm(
     ))
 }
 
-/// 認証器の状態変更（`POST /internal/account/authenticators/status`。AP9）。
+/// Changes an authenticator's status (`POST /internal/account/authenticators/status`, AP9).
 pub async fn account_authenticator_status(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -1432,9 +1432,9 @@ pub async fn account_authenticator_status(
     ))
 }
 
-/// リカバリーコードの発行（`POST /internal/account/recovery-codes`。AP9）。
+/// Issues recovery codes (`POST /internal/account/recovery-codes`, AP9).
 ///
-/// 平文はこの応答でしか返らない。web は 1 度だけ表示し、保存しない。
+/// The plaintext is returned only in this response. web shows it once and does not store it.
 pub async fn account_recovery_codes(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -1472,11 +1472,11 @@ pub async fn account_recovery_codes(
     ))
 }
 
-/// email OTP の送信（`POST /internal/account/email-otp`。AP9）。
+/// Sends an email OTP (`POST /internal/account/email-otp`, AP9).
 ///
-/// **MFA 待ちの利用者**にだけ送る。未認証のリクエストでメール送信を誘発させないため、
-/// パスワード検証済みの `auth_session_id`（OIDC）か、署名済みの `mfa_ticket`（ポータル）から
-/// 利用者を解決できた場合に限る。
+/// Sent **only to users awaiting MFA**. So that unauthenticated requests can't trigger mail sending,
+/// only when the user can be resolved from a password-verified `auth_session_id` (OIDC)
+/// or a signed `mfa_ticket` (portal).
 pub async fn account_email_otp(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -1527,8 +1527,8 @@ pub async fn account_email_otp(
     ))
 }
 
-/// 有効な外部 IdP の一覧（`POST /internal/external/providers`。AP10）。
-/// ログイン画面のボタンを描くために web が呼ぶ。
+/// Lists enabled external IdPs (`POST /internal/external/providers`, AP10).
+/// Called by web to draw the buttons on the login screen.
 pub async fn external_providers(
     State(state): State<AppState>,
     Json(req): Json<InternalExternalProvidersRequest>,
@@ -1558,7 +1558,7 @@ pub async fn external_providers(
     ))
 }
 
-/// 外部 IdP ログインの開始（`POST /internal/external/start`。AP10）。
+/// Starts an external IdP login (`POST /internal/external/start`, AP10).
 pub async fn external_start(
     State(state): State<AppState>,
     Json(req): Json<InternalExternalStartRequest>,
@@ -1587,7 +1587,7 @@ pub async fn external_start(
     ))
 }
 
-/// 外部 IdP からのコールバック（`POST /internal/external/callback`。AP10）。
+/// Callback from an external IdP (`POST /internal/external/callback`, AP10).
 pub async fn external_callback(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -1620,8 +1620,8 @@ pub async fn external_callback(
                 user_language,
                 sso_absolute_ttl_secs,
             } => {
-                // 認可フローの続きなら送信先とフォームフィールドの両方を渡す（G12）。
-                // 認可フローの外（アカウント設定から始めた連携）は戻り先を web が決める。
+                // If it continues an authorization flow, pass both the destination and the form fields (G12).
+                // Outside an authorization flow (linking started from account settings), web decides where to return.
                 let (redirect_to, form_post) = match location {
                     SuccessLocation::Redirect {
                         location,
@@ -1675,10 +1675,10 @@ pub async fn external_callback(
     ))
 }
 
-/// 外部 SAML IdP のアサーションを受け取る（ACS。AP12）。
+/// Receives an assertion from an external SAML IdP (ACS, AP12).
 ///
-/// 応答の形は OIDC のコールバックと**同じ**（`InternalExternalCallbackResponse`）。プロトコルが
-/// 違うのは「誰が認証されたかをどう確かめるか」までで、そこから先の結果は同じだからである。
+/// The response shape is **the same** as the OIDC callback (`InternalExternalCallbackResponse`). The protocols
+/// differ only in "how to confirm who was authenticated"; the result from there on is the same.
 pub async fn external_saml_acs(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -1770,8 +1770,8 @@ mod tests {
 
     #[test]
     fn constant_time_eq_matches_only_identical_bytes() {
-        // 照合そのものは contracts（`internal_auth`）に単一定義してある。ここでは
-        // api がその関数を通していることだけを確かめる。
+        // The comparison itself is defined once in contracts (`internal_auth`). Here we only
+        // check that the api goes through that function.
         assert!(service_token_matches("secret-token", "secret-token"));
         assert!(!service_token_matches("secret-token", "secret-tokeN"));
     }
@@ -1793,7 +1793,7 @@ mod tests {
         let invalid =
             serde_json::to_value(InternalAuthenticateResponse::InvalidCredentials).unwrap();
         assert_eq!(invalid["result"], "invalid_credentials");
-        // 失敗系は判別子以外のフィールドを持たない。
+        // Failure variants have no fields other than the discriminator.
         assert_eq!(invalid.as_object().unwrap().len(), 1);
     }
 

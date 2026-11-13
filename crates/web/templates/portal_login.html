@@ -23,18 +23,18 @@
         <a class="text-decoration-none" href="{{ tenant_prefix }}/forgot-password">{{ messages.get("login-forgot-password") }}</a>
       </div>
     </form>
-    {#- パスキーは JS（WebAuthn）が動く環境でしか使えない。初期状態は隠しておき、
-        `assets/passkey-login.js` が「この環境で使える」と確かめたときだけ出す —— 先に描いてから
-        無効化すると、押しても何も起きないボタンが一瞬見えてしまう。 -#}
+    {#- Passkeys work only where JS (WebAuthn) runs. Hidden initially and shown only when
+        `assets/passkey-login.js` confirms "usable here" -- rendering first and then
+        disabling would briefly show a button that does nothing when pressed. -#}
     <div id="passkey-login" hidden>
       <p class="auth-or">{{ messages.get("login-passkey-or") }}</p>
       <div class="d-grid mb-3">
         <button type="button" class="btn btn-outline-secondary btn-lg" id="btn-passkey-login"><i class="fa-solid fa-key me-2" aria-hidden="true"></i>{{ messages.get("login-passkey-button") }}</button>
       </div>
-      {# api のエラーコード → 表示文言の対応表。属性値はテンプレートが HTML エスケープし、
-         スクリプトは dataset 経由で復号済みの文言を読む（JS 文字列への直接埋め込みを避ける）。
-         開始・完了はポータル用の経路を指す（既定は認可フロー用）。開始を分けるのは、放置された
-         認可フローの Cookie を拾わないため（ADR-0040 決定 4）。 #}
+      {# Map of api error codes -> display text. The template HTML-escapes attribute values, and
+         the script reads the decoded text via dataset (avoids embedding directly into JS strings).
+         Start and complete point at the portal routes (the default is the authorization flow). Start is separated so
+         it never picks up the Cookie of an abandoned authorization flow (ADR-0040 decision 4). #}
       <div id="passkey-error" style="display:none"
            data-tenant-prefix="{{ tenant_prefix }}"
            data-begin-path="/passkey/login/direct/begin"
@@ -53,7 +53,7 @@
     <p class="auth-or">{{ messages.get("external-login-divider") }}</p>
     <div class="d-grid gap-2">
       {% for provider in external_providers %}
-      {#- 開始は GET（副作用は api 側の進行状態の作成のみで、CSRF の対象になる操作ではない）。 -#}
+      {#- Start is a GET (its only side effect is creating progress state in the api; not a CSRF-relevant operation). -#}
       <a class="btn btn-outline-secondary" href="{{ tenant_prefix }}/external/{{ provider.provider_code }}/start">{{ provider.display_name }}</a>
       {% endfor %}
     </div>

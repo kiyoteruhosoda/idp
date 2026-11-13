@@ -1,21 +1,21 @@
-//! Passkey（WebAuthn discoverable credentials）による **OIDC 認可フローのログイン**ユースケース。
+//! **Login in the OIDC authorization flow** with a passkey (WebAuthn discoverable credentials) use case.
 //!
-//! パスワード入力なしで Passkey だけでログインする。認証フロー:
-//! 1. `begin()` — discoverable チャレンジを生成して options JSON を返す。
-//! 2. `complete()` — ブラウザからのクレデンシャルを検証し、SSO セッション発行 → code 発行。
+//! Logs in with a passkey alone, without entering a password. Authentication flow:
+//! 1. `begin()` — generates a discoverable challenge and returns the options JSON.
+//! 2. `complete()` — verifies the credential from the browser, then issues the SSO session -> issues the code.
 //!
-//! セレモニーそのもの（チャレンジの発行・消費、アサーション検証、認証器登録簿の判定、テナント境界）は
-//! [`crate::application::passkey_assertion`] が持つ。本モジュールはその上に **`auth_session` の継続と
-//! authorization code の発行**を載せる層である。認可フロー外の直接ログインは
-//! [`crate::application::admin_login`]・[`crate::application::portal_login`] が同じセレモニーの上に
-//! それぞれの続きを載せる。
+//! The ceremony itself (issuing/consuming challenges, assertion verification, authenticator registry checks, tenant boundary)
+//! is owned by [`crate::application::passkey_assertion`]. This module is the layer on top that adds **continuing the
+//! `auth_session` and issuing the authorization code**. Direct logins outside the authorization flow
+//! ([`crate::application::admin_login`], [`crate::application::portal_login`]) each put their own continuation on
+//! the same ceremony.
 //!
-//! レート制限は IP 単位で、パスワードログイン・直接ログインのパスキー経路と**同じ枠**を消費する
-//! （入口ごとに枠が違うと、片方で締め出された相手がもう片方で試行を続けられる）。
+//! Rate limiting is per IP and consumes **the same bucket** as password login and the direct-login passkey path
+//! (with a bucket per entry point, a party locked out of one could keep trying on the other).
 //!
-//! 認証ポリシー（ユーザー認証・認証ポリシー仕様書 §7〜§9）: `deny` ポリシーはこの経路でも
-//! 拒否する（パスワード経路だけ塞いでも迂回できてしまうため）。`require_mfa` は WebAuthn が
-//! 所有＋生体/知識（User Verification）の複数要素・フィッシング耐性認証であるため満たすものと扱う。
+//! Authentication policy (user authentication & authentication policy spec §7–§9): `deny` policies refuse on this path
+//! too (blocking only the password path could be bypassed). `require_mfa` is treated as satisfied because WebAuthn is
+//! multi-factor (possession + biometric/knowledge via User Verification) and phishing-resistant.
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authentication_policy_gate::{
@@ -40,45 +40,45 @@ use uuid::Uuid;
 
 #[derive(Debug)]
 pub enum PasskeyAuthOutcome {
-    /// 認証成功かつ同意済み。code 付き redirect_to へ 302 する。
+    /// Authenticated and consented. 302 to redirect_to with the code.
     Success {
         location: String,
-        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        /// Hidden fields to POST for `form_post` (G12). `None` means `query`.
         form_post: Option<Vec<(String, String)>>,
         sso_session_id: String,
-        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        /// `Max-Age` of the SSO cookie (seconds until the established session's absolute expiry. ADR-0058).
         sso_absolute_ttl_secs: u64,
     },
-    /// 認証成功だが同意が必要。同意画面へ誘導する。
+    /// Authenticated but consent is needed. Send to the consent screen.
     ConsentRequired {
         auth_session_id: String,
         sso_session_id: String,
-        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        /// `Max-Age` of the SSO cookie (seconds until the established session's absolute expiry. ADR-0058).
         sso_absolute_ttl_secs: u64,
     },
-    /// チャレンジが見つからない・期限切れ。
+    /// Challenge not found or expired.
     ChallengeNotFound,
-    /// AuthSession が無い・期限切れ（OIDC フローをやり直し）。
+    /// No AuthSession, or expired (redo the OIDC flow).
     SessionExpired,
-    /// クレデンシャルが無効。
+    /// Invalid credential.
     InvalidCredential,
-    /// 認証ポリシーにより拒否（仕様 §7.4 `deny`）。
-    /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
-    /// SSO セッションは発行する（assay には入れている）ので、他のアプリへはそのまま進める。
+    /// Denied by the authentication policy (spec §7.4 `deny`).
+    /// Authentication passed, but use of this application is not permitted (ADR-0054). ⚠ **Do not return to the RP.**
+    /// The SSO session is issued (the user is signed in to assay), so other applications proceed as usual.
     ApplicationNotPermitted {
-        /// 画面に出すアプリ名。どのアプリで断られたかが分からないと、次に誰へ頼めばよいかを
-        /// 利用者が決められない。
+        /// Application name shown on screen. Without knowing which application refused them, the user
+        /// cannot decide whom to ask next.
         application_name: String,
         sso_session_id: String,
-        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        /// `Max-Age` of the SSO cookie (seconds until the established session's absolute expiry. ADR-0058).
         sso_absolute_ttl_secs: u64,
     },
     PolicyDenied,
-    /// IP 単位のレート制限超過（ログイン・直接ログインと同じ枠）。
+    /// Per-IP rate limit exceeded (same bucket as login and direct login).
     RateLimited,
-    /// 内部エラー。
-    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916）。SSO セッションは
-    /// 作っていない。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。
+    /// Internal error.
+    /// Authentication passed, but in an organization limited to registered devices this device is not registered (task #916).
+    /// No SSO session was created. web puts `ticket` in a cookie and sends the user to the device registration screen.
     DeviceEnrollmentRequired {
         ticket: String,
     },
@@ -86,15 +86,15 @@ pub enum PasskeyAuthOutcome {
 }
 
 pub struct PasskeyAuthenticationService {
-    /// WebAuthn セレモニー（チャレンジ発行・アサーション検証）。3 つのログイン経路で共有する。
+    /// WebAuthn ceremony (challenge issuance, assertion verification). Shared by the three login paths.
     assertion: Arc<PasskeyAssertionService>,
     auth_sessions: Arc<dyn AuthSessionRepository>,
-    /// 認証ポリシーの評価（材料の引き当てと評価。`authentication_policy_gate`）。
+    /// Authentication policy evaluation (looking up inputs and evaluating. `authentication_policy_gate`).
     policy_gate: Arc<AuthenticationPolicyGate>,
-    /// 認証が成立した後の共通の後段（SSO の確立・認可フローの続き）。
+    /// Shared tail after authentication succeeds (establishing SSO, continuing the authorization flow).
     sign_in: Arc<SignInCompletion>,
-    /// IP 単位のレート制限。**ログイン・直接ログインのパスキー経路と同じ枠を消費する** ——
-    /// 入口ごとに枠が違うと、片方で締め出された相手がもう片方で試行を続けられる。
+    /// Per-IP rate limit. **Consumes the same bucket as login and the direct-login passkey path** ——
+    /// with a bucket per entry point, a party locked out of one could keep trying on the other.
     rate_limiter: Arc<dyn LoginRateLimiter>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
@@ -122,9 +122,9 @@ impl PasskeyAuthenticationService {
         }
     }
 
-    /// 認証開始。`auth_session_id` は OIDC フローを継続するために必要。
+    /// Starts authentication. `auth_session_id` is needed to continue the OIDC flow.
     ///
-    /// 返り値: `(challenge_id, options_json)`
+    /// Returns: `(challenge_id, options_json)`
     pub async fn begin(
         &self,
         auth_session_id: Option<&str>,
@@ -132,7 +132,7 @@ impl PasskeyAuthenticationService {
         self.assertion.begin(auth_session_id).await
     }
 
-    /// 認証完了。
+    /// Completes authentication.
     pub async fn complete(
         &self,
         tenant: TenantContext,
@@ -143,7 +143,7 @@ impl PasskeyAuthenticationService {
         let now = self.clock.now();
         let tenant_id = tenant.tenant_id();
 
-        // 1. IP 単位のレート制限（直接ログインのパスキー経路・パスワード経路と同じ順序・同じ枠）。
+        // 1. Per-IP rate limit (same order and same bucket as the direct-login passkey path and the password path).
         if let Some(ip) = &ctx.ip_address {
             if !self.rate_limiter.check_and_record(ip, now) {
                 self.audit
@@ -161,8 +161,8 @@ impl PasskeyAuthenticationService {
             }
         }
 
-        // 2. WebAuthn セレモニーの検証（チャレンジ消費・登録簿の一時停止判定・署名カウンタ更新・
-        //    テナント境界）は `PasskeyAssertionService` が持つ。ここから下は OIDC フロー固有の続き。
+        // 2. Verification of the WebAuthn ceremony (consuming the challenge, registry suspension check, signature counter update,
+        //    tenant boundary) is owned by `PasskeyAssertionService`. Below is the OIDC-flow-specific continuation.
         let verified = match self
             .assertion
             .verify(
@@ -179,9 +179,9 @@ impl PasskeyAuthenticationService {
         };
         let user_id = verified.user_id;
 
-        // 3. AuthSession を取得して OIDC フローを継続する。
+        // 3. Fetch the AuthSession and continue the OIDC flow.
         let Some(auth_session_id_hash) = verified.auth_session_id_hash.as_deref() else {
-            // `PasskeyFlow::Oidc` の検証を通った＝結合は必ずある。
+            // Passed `PasskeyFlow::Oidc` verification = the binding always exists.
             return PasskeyAuthOutcome::Internal("no auth_session_id in challenge".to_string());
         };
         let mut session = match self
@@ -203,8 +203,8 @@ impl PasskeyAuthenticationService {
 
         let client_id = session.client_id().to_string();
 
-        // 4. 認証ポリシー評価（仕様 §9）。`deny` はパスキー経路でも拒否する。
-        //    `require_mfa` は WebAuthn（所有要素 + User Verification）が満たすため通過する。
+        // 4. Authentication policy evaluation (spec §9). `deny` refuses on the passkey path too.
+        //    `require_mfa` passes because WebAuthn (possession factor + User Verification) satisfies it.
         let decision = match self
             .policy_gate
             .decide(PolicyQuery {
@@ -234,9 +234,9 @@ impl PasskeyAuthenticationService {
                 .await;
             return PasskeyAuthOutcome::PolicyDenied;
         }
-        // `require_specific_method`（AP3）。パスキー認証は WebAuthn かつ User Verification 済み
-        // （`webauthn-rs` の検証を通っている）なので §12.2 の「WebAuthn 必須」「UV 必須」を満たす。
-        // 満たさないのは「TOTP でなければ駄目」のような別方式の指定に当たった場合。
+        // `require_specific_method` (AP3). Passkey authentication is WebAuthn with User Verification done
+        // (it passed `webauthn-rs` verification), so it satisfies §12.2's "WebAuthn required" and "UV required".
+        // It fails only when hitting a requirement for another method, like "must be TOTP".
         if let Some(unmet) =
             decision.unmet_method_requirement(&[AuthenticationMethod::WebAuthn], true)
         {
@@ -258,7 +258,7 @@ impl PasskeyAuthenticationService {
             return PasskeyAuthOutcome::PolicyDenied;
         }
 
-        // 5. SSO セッションを確立し、認可フローを続ける（同意の確認 → code 発行）。
+        // 5. Establish the SSO session and continue the authorization flow (consent check -> code issuance).
         let sso = match self
             .sign_in
             .establish_sso(
@@ -317,8 +317,8 @@ impl PasskeyAuthenticationService {
 impl From<PasskeyAssertionError> for PasskeyAuthOutcome {
     fn from(e: PasskeyAssertionError) -> Self {
         match e {
-            // 用途違いのチャレンジ（直接ログイン用を認可フローで完了しようとした）は、利用者から見れば
-            // 「やり直してください」でしかないため、期限切れと同じ扱いにする。
+            // A challenge for another purpose (one for direct login completed in the authorization flow) means only
+            // "please try again" to the user, so it is treated the same as expired.
             PasskeyAssertionError::ChallengeNotFound | PasskeyAssertionError::WrongFlow => {
                 PasskeyAuthOutcome::ChallengeNotFound
             }

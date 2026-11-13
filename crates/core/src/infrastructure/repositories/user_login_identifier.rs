@@ -1,4 +1,4 @@
-//! `UserLoginIdentifierRepository` の sqlx 実装（AP8）。
+//! sqlx implementation of `UserLoginIdentifierRepository` (AP8).
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::login_identifier::{LoginIdentifierType, UserLoginIdentifier};
@@ -20,9 +20,9 @@ impl SqlxUserLoginIdentifierRepository {
     }
 }
 
-/// `is_primary` は列ではなく `primary_of_user`（主なら自分の user_id、そうでなければ NULL）から
-/// 導く。同じ事実を 2 列に持つと片方だけ更新される余地が生まれるため、DB 側の単一の出所は
-/// `primary_of_user`（UNIQUE が「1 利用者 1 行」を守る）だけにしてある。
+/// `is_primary` is derived not from a column but from `primary_of_user` (own user_id if primary, otherwise NULL).
+/// Holding the same fact in 2 columns leaves room for only one being updated, so the single source in the DB is
+/// just `primary_of_user` (UNIQUE guards "one row per user").
 const SELECT_COLUMNS: &str = "id, tenant_id, user_id, identifier_type, display_value, \
      normalized_value, is_active, primary_of_user IS NOT NULL AS is_primary, \
      primary_email_of_user IS NOT NULL AS is_primary_email, \
@@ -54,7 +54,7 @@ pub(crate) fn map_row(row: &MySqlRow) -> Result<UserLoginIdentifier> {
         display_value: row.try_get("display_value").map_err(repo_err)?,
         normalized_value: row.try_get("normalized_value").map_err(repo_err)?,
         is_active: row.try_get("is_active").map_err(repo_err)?,
-        // MariaDB の真偽式は 1/0 の整数で返る。
+        // MariaDB boolean expressions come back as 1/0 integers.
         is_primary: row.try_get::<i64, _>("is_primary").map_err(repo_err)? != 0,
         is_primary_email: row
             .try_get::<i64, _>("is_primary_email")
@@ -121,9 +121,9 @@ impl UserLoginIdentifierRepository for SqlxUserLoginIdentifierRepository {
     }
 
     async fn set_active(&self, id: Uuid, user_id: Uuid, is_active: bool) -> Result<bool> {
-        // 主識別子は識別子単位で止められない（止めるとログインできなくなる。止めるなら
-        // アカウントの無効化を使う）。条件に含めて DB 側で弾く。主メール行も同じ扱い
-        // （`users.email` の写しなので、ここで止めると通知の宛先と入り口が割れる。ADR-0050）。
+        // The primary identifier can't be disabled per identifier (that would make login impossible; to stop it,
+        // disable the account). It is in the condition so the DB rejects it. The primary email row is treated the same
+        // (it mirrors `users.email`, so disabling it here would split the notification address from the entry point; ADR-0050).
         let result = sqlx::query(
             "UPDATE user_login_identifiers SET is_active = ? \
              WHERE id = ? AND user_id = ? \
@@ -139,8 +139,8 @@ impl UserLoginIdentifierRepository for SqlxUserLoginIdentifierRepository {
     }
 
     async fn delete(&self, id: Uuid, user_id: Uuid) -> Result<bool> {
-        // 主識別子は識別子単位で消せない（消すとログインできなくなる。変えるならプロフィール編集）。
-        // 主メール行も同じ（消すと `users.email` と登録簿が割れる。ADR-0050）。
+        // The primary identifier can't be deleted per identifier (that would make login impossible; to change it, edit the profile).
+        // Same for the primary email row (deleting it would split `users.email` from the registry; ADR-0050).
         let result = sqlx::query(
             "DELETE FROM user_login_identifiers WHERE id = ? AND user_id = ? \
              AND primary_of_user IS NULL AND primary_email_of_user IS NULL",

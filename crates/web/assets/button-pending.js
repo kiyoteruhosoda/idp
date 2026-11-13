@@ -1,38 +1,38 @@
-// ボタンが「押されて処理中」であることを示す（フォーム送信と fetch 駆動のボタンで共有する）。
+// Indicates that a button is "pressed and processing" (shared by form submissions and fetch-driven buttons).
 //
-// 押してから画面が変わるまでの間、何も起きないと利用者は押せたのか分からず同じボタンを続けて
-// 押す。押した直後にそのボタンへスピナーを出し、処理が終わるまで押せなくする。
+// If nothing happens between the press and the screen changing, users can't tell whether it registered and keep
+// pressing. Right after the press the button shows a spinner and cannot be pressed until processing ends.
 //
-// 使い分け:
+// When to use what:
 //
-// - サーバレンダリングのフォーム → `submit-feedback.js` が submit を捕まえて自動で呼ぶ。
-// - fetch でサーバと話すボタン（パスキー登録など）→ 画面のスクリプトが `mark` / `clear` を呼ぶ。
-//   終わりを知っているのは呼び出し側だけなので、解除は呼び出し側の責務になる。
+// - Server-rendered forms -> `submit-feedback.js` catches submit and calls this automatically.
+// - Buttons talking to the server via fetch (passkey registration etc.) -> the screen's script calls `mark` / `clear`.
+//   Only the caller knows when it ends, so clearing is the caller's responsibility.
 //
-// 注意点:
+// Notes:
 //
-// - **`disabled` は送信データが確定してから付ける。** submit ボタンを同期的に無効化すると
-//   そのボタンの name/value が送信されない（どのボタンを押したかで分岐するフォームが壊れる）。
-//   `setTimeout(..., 0)` で送信開始後に回す。fetch 経路にこの事情は無いが、次のクリックは
-//   必ずこのタイマより後に届くため二重押しは同じように止まる。
-// - **ボタンの幅を変えない。** スピナーをラベルの前に足すとボタンが横に伸び、隣のボタン
-//   （同意画面の承認／拒否など）が動いて押し間違いの元になる。ラベルを包んで場所ごと
-//   隠し、スピナーはその上に重ねる（見た目の指定は `app.css`）。
+// - **Set `disabled` only after the submitted data is fixed.** Disabling a submit button synchronously
+//   drops that button's name/value from the submission (breaks forms that branch on which button was pressed).
+//   It is deferred with `setTimeout(..., 0)` until submission has started. The fetch path has no such issue, but the next
+//   click always arrives after this timer, so double presses are stopped the same way.
+// - **Don't change the button's width.** Adding a spinner before the label widens the button, moving the adjacent
+//   button (approve/deny on the consent screen etc.) and causing mis-presses. Wrap the label and hide it in place,
+//   overlaying the spinner on top (styling lives in `app.css`).
 (function () {
   'use strict';
 
   var SPINNER_CLASS = 'js-pending-spinner';
   var LABEL_CLASS = 'js-pending-label';
 
-  // 処理中の印を付ける。`<input type="submit">` は子要素を持てないためスピナーは出さず、
-  // 無効化だけ行う。
+  // Applies the busy mark. `<input type="submit">` cannot have children, so no spinner is shown;
+  // it is only disabled.
   function mark(button) {
     if (!button || button.getAttribute('aria-busy') === 'true') {
       return;
     }
     button.setAttribute('aria-busy', 'true');
     if (button.nodeName === 'BUTTON') {
-      // ラベルを包んでから隠す（要素ごと消すのではなく場所を残すことで幅を保つ）
+      // Wrap the label, then hide it (keep its space rather than removing the element, to preserve width)
       var label = document.createElement('span');
       label.className = LABEL_CLASS;
       while (button.firstChild) {
@@ -44,15 +44,15 @@
       spinner.setAttribute('aria-hidden', 'true');
       button.appendChild(spinner);
     }
-    // タイマ ID を持っておく。`clear` がこれを取り消さないと、印を付けた直後に終わった処理
-    // （fetch の同期的な失敗など）で「解除 → その後にタイマが発火して無効化」の順になり、
-    // ボタンが押せないまま固まる。
+    // Keep the timer ID. If `clear` does not cancel it, processing that ends right after marking
+    // (e.g. a synchronous fetch failure) gives the order "clear -> timer fires and disables",
+    // leaving the button stuck unpressable.
     button.dataset.pendingTimer = String(window.setTimeout(function () {
       button.disabled = true;
     }, 0));
   }
 
-  // 印を外して押せる状態に戻す。印が付いていないボタンに対しては何もしない。
+  // Removes the mark and makes the button pressable again. Does nothing for a button without the mark.
   function clear(button) {
     if (!button || button.getAttribute('aria-busy') !== 'true') {
       return;
@@ -67,7 +67,7 @@
     if (spinner) {
       spinner.parentNode.removeChild(spinner);
     }
-    // 包んだラベルを元に戻す（次に押したときに二重に包まないため）
+    // Unwrap the label (so the next press doesn't wrap it twice)
     var label = button.querySelector('.' + LABEL_CLASS);
     if (label) {
       while (label.firstChild) {
@@ -77,7 +77,7 @@
     }
   }
 
-  // 画面上の印をすべて外す（戻るボタンで bfcache から復元されたページ用）。
+  // Removes every mark on the screen (for pages restored from bfcache via the back button).
   function clearAll() {
     var buttons = document.querySelectorAll('[aria-busy="true"]');
     Array.prototype.forEach.call(buttons, clear);

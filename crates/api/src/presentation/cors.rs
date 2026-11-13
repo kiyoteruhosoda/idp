@@ -1,26 +1,26 @@
-//! CORS ミドルウェア（G1）。
+//! CORS middleware (G1).
 //!
-//! 既定トポロジは `domain-split`（api と web が別ホスト名）なので、SPA（public client）が
-//! `identity.example.com/{tenant}/token` を呼ぶのは常にクロスオリジンになる。
-//! `application/x-www-form-urlencoded` の POST は CORS-safelisted でリクエスト自体は飛ぶが、
-//! `Access-Control-Allow-Origin` が無いためブラウザが**レスポンスを読めない**——これが G1 の症状。
+//! The default topology is `domain-split` (api and web on separate host names), so an SPA (public client)
+//! calling `identity.example.com/{tenant}/token` is always cross-origin.
+//! A POST of `application/x-www-form-urlencoded` is CORS-safelisted so the request itself goes out, but
+//! without `Access-Control-Allow-Origin` the browser **cannot read the response** -- that is G1's symptom.
 //!
-//! # 経路の分け方
+//! # How routes are split
 //!
-//! | 経路 | 判定 |
+//! | Route | Decision |
 //! |---|---|
-//! | `/.well-known/openid-configuration`・`/.well-known/jwks.json`・`/{tenant}/saml/metadata` | 無認証で誰でも取得できる公開メタデータなので `Access-Control-Allow-Origin: *` |
-//! | `/{tenant}/token`・`/revoke`・`/introspect`・`/userinfo` | テナントの許可オリジン集合（[`assay_core::application::cors_policy`]）と完全一致したときだけ、そのオリジンを反映 |
-//! | それ以外（管理 API・`/internal/*`・`/authorize` のリダイレクト） | CORS ヘッダを付けない（ブラウザ JS から叩く経路ではない） |
+//! | `/.well-known/openid-configuration`, `/.well-known/jwks.json`, `/{tenant}/saml/metadata` | Public metadata anyone can fetch without auth, so `Access-Control-Allow-Origin: *` |
+//! | `/{tenant}/token`, `/revoke`, `/introspect`, `/userinfo` | Reflect the origin only on an exact match with the tenant's allowed origin set ([`assay_core::application::cors_policy`]) |
+//! | Everything else (admin API, `/internal/*`, `/authorize` redirects) | No CORS headers (not routes called from browser JS) |
 //!
-//! **`Access-Control-Allow-Credentials` はどの経路にも付けない。** api はブラウザ Cookie を
-//! 読まない（ADR-0018）ため、付ける理由が無い。付けないことで、公開メタデータの `*` が
-//! セッションの持ち出しにつながらないことも構造的に保証される。
+//! **`Access-Control-Allow-Credentials` is never set on any route.** The api does not read browser cookies
+//! (ADR-0018), so there is no reason to. Not setting it also structurally guarantees that the public metadata's `*`
+//! cannot lead to session exfiltration.
 //!
-//! # なぜ `tower_http::CorsLayer` ではないのか
+//! # Why not `tower_http::CorsLayer`
 //!
-//! 許可オリジンがテナントごと・登録クライアントごとに動的に決まるため。`CorsLayer` の
-//! `AllowOrigin::predicate` でも書けるが、判定に DB 参照（async）が要る。
+//! Allowed origins are decided dynamically per tenant and per registered client. `CorsLayer`'s
+//! `AllowOrigin::predicate` could express it, but the decision needs a DB lookup (async).
 
 use crate::presentation::state::AppState;
 use assay_core::domain::tenant::TenantId;
@@ -35,25 +35,25 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use uuid::Uuid;
 
-/// プリフライト結果のキャッシュ時間（秒）。許可集合は管理画面から変わりうるので短めにする。
+/// Preflight result cache time (seconds). Kept short since the allowed set can change from the admin screen.
 const PREFLIGHT_MAX_AGE_SECS: u64 = 600;
 
-/// プリフライトで許可するメソッド（ assay のプロトコル面は GET と POST しか使わない）。
+/// Methods allowed in preflight (assay's protocol surface only uses GET and POST).
 const ALLOWED_METHODS: &str = "GET, POST, OPTIONS";
 
-/// リクエストの CORS 上の扱い。
+/// How a request is treated for CORS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CorsScope {
-    /// 誰でも取得できる公開メタデータ（`*`）。
+    /// Public metadata anyone can fetch (`*`).
     PublicMetadata,
-    /// テナントの許可オリジンとの照合が要る保護されたプロトコル面。
+    /// Protected protocol surface that needs matching against the tenant's allowed origins.
     TenantScoped(TenantId),
-    /// CORS を有効にしない経路。
+    /// Routes where CORS is not enabled.
     None,
 }
 
 pub async fn apply_cors(State(state): State<AppState>, request: Request, next: Next) -> Response {
-    // `Origin` の無いリクエストはブラウザの越境アクセスではない（curl・サーバ間）。何もしない。
+    // A request without `Origin` is not a browser cross-origin access (curl, server-to-server). Do nothing.
     let Some(origin) = request
         .headers()
         .get(ORIGIN)
@@ -77,8 +77,8 @@ pub async fn apply_cors(State(state): State<AppState>, request: Request, next: N
         CorsScope::None => None,
     };
 
-    // プリフライト（OPTIONS）はハンドラまで通さずここで完結させる。ルータは OPTIONS を
-    // 持たないため、通すと 405 になり CORS ヘッダも載らない。
+    // Preflight (OPTIONS) is completed here without reaching handlers. The router has no
+    // OPTIONS, so passing it through would give 405 with no CORS headers.
     if request.method() == Method::OPTIONS {
         let requested_headers = request
             .headers()
@@ -88,7 +88,7 @@ pub async fn apply_cors(State(state): State<AppState>, request: Request, next: N
     }
 
     let mut response = next.run(request).await;
-    // 許可しないオリジンにはヘッダを付けない（ブラウザ側で読み取りが失敗する = 期待どおり）。
+    // No headers for disallowed origins (reading fails in the browser = as intended).
     if let Some(value) = allow_origin
         .as_deref()
         .and_then(|o| HeaderValue::try_from(o).ok())
@@ -97,7 +97,7 @@ pub async fn apply_cors(State(state): State<AppState>, request: Request, next: N
             .headers_mut()
             .insert(ACCESS_CONTROL_ALLOW_ORIGIN, value);
     }
-    // オリジンごとに応答が変わることをキャッシュへ伝える（共有キャッシュの取り違え防止）。
+    // Tell caches the response varies per origin (prevents mix-ups in shared caches).
     append_vary_origin(&mut response);
     response
 }
@@ -107,8 +107,8 @@ fn preflight_response(
     requested_headers: Option<HeaderValue>,
 ) -> Response {
     let Some(origin) = allow_origin.and_then(|o| HeaderValue::try_from(o).ok()) else {
-        // 許可しないオリジンからのプリフライトは、CORS ヘッダ無しで返す（ブラウザが実リクエストを
-        // 送らない）。理由は返さない —— 許可集合を外から列挙させない。
+        // A preflight from a disallowed origin is returned without CORS headers (the browser won't send the actual
+        // request). No reason is given -- don't let outsiders enumerate the allowed set.
         let mut response = StatusCode::NO_CONTENT.into_response();
         append_vary_origin(&mut response);
         return response;
@@ -120,9 +120,9 @@ fn preflight_response(
         ACCESS_CONTROL_ALLOW_METHODS,
         HeaderValue::from_static(ALLOWED_METHODS),
     );
-    // 要求されたヘッダをそのまま許可する。`Allow-Credentials` を付けないため、ここで許すのは
-    // 「呼び出し側が自分で載せる値」（`Authorization`・`Content-Type`）だけで、ブラウザが
-    // 自動で載せる資格情報（Cookie）は対象外。
+    // Allow the requested headers as is. Since `Allow-Credentials` is not set, what is allowed here is only
+    // "values the caller attaches itself" (`Authorization`, `Content-Type`); credentials the browser
+    // attaches automatically (cookies) are out of scope.
     if let Some(requested) = requested_headers {
         headers.insert(ACCESS_CONTROL_ALLOW_HEADERS, requested);
     }
@@ -139,16 +139,16 @@ fn append_vary_origin(response: &mut Response) {
         .append(VARY, HeaderValue::from_name(ORIGIN));
 }
 
-/// パスから CORS 上の扱いを決める。
+/// Decides the CORS treatment from the path.
 ///
-/// テナントスコープのパスは `/{tenant_id}/...`（ADR-0009 §6）。`tenant_id` の存在確認までは
-/// しない（未知テナントは許可集合が空になり、結果として CORS ヘッダが付かない）。
+/// Tenant-scoped paths are `/{tenant_id}/...` (ADR-0009 §6). The existence of `tenant_id` is not
+/// checked (an unknown tenant has an empty allowed set, so no CORS headers end up attached).
 fn classify(path: &str) -> CorsScope {
     let mut segments = path.trim_start_matches('/').split('/');
     let Some(first) = segments.next() else {
         return CorsScope::None;
     };
-    // テナント外の公開メタデータは無い（Discovery はテナントごと）。`/{tenant}` 以外は対象外。
+    // There is no public metadata outside tenants (Discovery is per tenant). Anything but `/{tenant}` is out of scope.
     let Ok(tenant_id) = Uuid::parse_str(first) else {
         return CorsScope::None;
     };
@@ -200,8 +200,8 @@ mod tests {
         }
     }
 
-    /// 管理 API・内部 API・ブラウザのリダイレクト経路には CORS を開けない。管理 API は SSO Cookie を
-    /// 持つ web からしか呼ばれず、`/internal/*` はそもそも外部公開しない。
+    /// CORS is not opened for the admin API, internal API or browser redirect routes. The admin API is only called from web,
+    /// which holds the SSO cookie, and `/internal/*` is never exposed externally to begin with.
     #[test]
     fn everything_else_stays_closed() {
         assert_eq!(
@@ -214,13 +214,13 @@ mod tests {
         assert_eq!(classify("/api/openapi.json"), CorsScope::None);
     }
 
-    /// テナント部が UUID でなければテナントスコープとして扱わない（`/api/docs` 等の誤爆防止）。
+    /// If the tenant part is not a UUID, it is not treated as tenant-scoped (prevents misfires on `/api/docs` etc.).
     #[test]
     fn a_non_uuid_first_segment_is_not_a_tenant() {
         assert_eq!(classify("/not-a-uuid/token"), CorsScope::None);
     }
 
-    /// `Vary: Origin` は上書きではなく追記する（他のミドルウェアが付けた値を消さない）。
+    /// `Vary: Origin` is appended, not overwritten (does not erase values set by other middleware).
     #[test]
     fn vary_origin_is_appended() {
         let mut response = StatusCode::OK.into_response();

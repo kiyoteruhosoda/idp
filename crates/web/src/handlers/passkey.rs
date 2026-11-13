@@ -1,23 +1,23 @@
-//! Passkey（WebAuthn）Web ハンドラ。
+//! Passkey (WebAuthn) web handlers.
 //!
-//! セルフ登録（`/account/passkey/*`）とログイン（`/passkey/login/*`）を提供する。
-//! begin/complete は JSON API として提供し、ブラウザの WebAuthn JS API から呼び出す。
-//! 一覧・削除は HTML フォームで提供する。
+//! Provides self-registration (`/account/passkey/*`) and login (`/passkey/login/*`).
+//! begin/complete are provided as JSON APIs, called from the browser's WebAuthn JS API.
+//! List and deletion are provided as HTML forms.
 //!
-//! ログインは 3 画面（OIDC 認可フロー・管理コンソール・ポータル）から呼ばれる。開始は
-//! 認可フロー用（`/passkey/login/begin`。`auth_session_id` Cookie を読む）と直接ログイン用
-//! （`/passkey/login/direct/begin`。読まない）の 2 つ、完了は画面ごとに 3 つある
-//! （発行する Cookie と遷移先が違うため）。
+//! Login is called from 3 screens (OIDC authorization flow, admin console, portal). There are 2 begin endpoints,
+//! one for the authorization flow (`/passkey/login/begin`; reads the `auth_session_id` cookie) and one for direct login
+//! (`/passkey/login/direct/begin`; does not read it), and 3 complete endpoints, one per screen
+//! (because the issued cookies and destinations differ).
 //!
-//! # 画面の行き先
+//! # Where screens lead
 //!
-//! HTML 経路（一覧・削除）は、**結果を伝える専用ページを作らず一覧へ戻す**（PRG）。結果は
-//! `?saved=` / `?error=` で一覧の上のバナーに出す。認証器の管理画面
-//! （`handlers::authenticators`）と同じ形である。削除の完了ページのように「戻るリンクの無い
-//! 1 枚」を挟むと、利用者はブラウザの戻るしか手が無くなる。
+//! HTML paths (list, delete) **return to the list instead of creating dedicated result pages** (PRG). Results are
+//! shown in a banner above the list via `?saved=` / `?error=`. Same shape as the authenticator management screen
+//! (`handlers::authenticators`). Inserting "a single page without a back link" like a deletion completion page
+//! leaves the user with nothing but the browser's back button.
 //!
-//! サインインしていない・セッションが切れたときは、同じ理由でログイン画面へ送る（設定配下の
-//! 他の画面と揃える）。
+//! When not signed in or the session expired, the user is sent to the login screen for the same reason (aligned with
+//! other screens under settings).
 
 use super::{api_internal_error, found, internal_call_status, locale, see_other};
 use crate::client_ip::ClientIp;
@@ -45,9 +45,9 @@ use axum::response::{Html, IntoResponse, Json, Response};
 use axum::Form;
 use serde::{Deserialize, Serialize};
 
-// ─── 登録フロー ──────────────────────────────────────────────────────────────
+// ─── Registration flow ──────────────────────────────────────────────────────────────
 
-/// 一覧のバナー表示（削除からの PRG で戻ってくる）。
+/// List banner display (returning via PRG from deletion).
 #[derive(Debug, Deserialize)]
 pub struct PasskeyListQuery {
     #[serde(default)]
@@ -56,7 +56,7 @@ pub struct PasskeyListQuery {
     pub error: Option<String>,
 }
 
-/// Passkey 一覧ページ（`GET /account/passkey`）。SSO Cookie が必要。
+/// Passkey list page (`GET /account/passkey`). Requires the SSO cookie.
 pub async fn list_page(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -67,7 +67,7 @@ pub async fn list_page(
     let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return found(&format!("{}/login", tenant.prefix()));
     };
-    // 削除フォームへ埋める CSRF トークンの種（task #587）。
+    // Seed of the CSRF token embedded in the delete form (task #587).
     let sso_for_form = sso_session_id.clone();
     let req = InternalPasskeyListRequest { sso_session_id };
     let result = match state.api.passkey_list(&correlation.0, &req).await {
@@ -77,7 +77,7 @@ pub async fn list_page(
             return internal_call_status(&e).into_response();
         }
     };
-    // FluentBundle は !Send なので await の後に作成する。
+    // FluentBundle is !Send, so create it after the await.
     let messages = Messages::new(locale(&headers));
     match result {
         InternalPasskeyListResponse::Ok { credentials } => Html(render(&PasskeyListTemplate {
@@ -94,14 +94,14 @@ pub async fn list_page(
     }
 }
 
-/// Passkey 登録ページ（`GET /account/passkey/register`）。SSO Cookie が必要。
+/// Passkey registration page (`GET /account/passkey/register`). Requires the SSO cookie.
 pub async fn register_page(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
 ) -> Response {
-    // 認証器の追加は step-up の対象（AP5。TOTP セットアップと同じ理由）。
+    // Adding an authenticator is subject to step-up (AP5; same reason as TOTP setup).
     if let Err(response) = step_up::require_step_up(
         &state,
         &correlation,
@@ -114,7 +114,7 @@ pub async fn register_page(
     {
         return response;
     }
-    // ここへ来た時点で step-up のゲートを通っている（SSO が無ければログイン画面へ送られている）。
+    // Having reached here, the step-up gate has been passed (without SSO the user was sent to the login screen).
     let messages = Messages::new(locale(&headers));
     Html(render(&PasskeyRegisterTemplate {
         messages: &messages,
@@ -124,9 +124,9 @@ pub async fn register_page(
     .into_response()
 }
 
-/// Passkey 登録開始 JSON API（`POST /passkey/register/begin`）。JS から呼ぶ。
-/// 成功時: HTTP 200 `{ "result": "ok", "challenge_id": "...", "options": {...} }`
-/// 失敗時: HTTP 401 / 500
+/// Passkey registration begin JSON API (`POST /passkey/register/begin`). Called from JS.
+/// On success: HTTP 200 `{ "result": "ok", "challenge_id": "...", "options": {...} }`
+/// On failure: HTTP 401 / 500
 #[derive(Debug, Deserialize)]
 pub struct RegisterBeginBody {
     pub name: String,
@@ -142,8 +142,8 @@ pub async fn register_begin_api(
     let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    // 画面と同じく step-up の対象（AP5）。**画面のゲートだけでは守れない**: 認証器を実際に
-    // 作るのはこの JSON エンドポイントで、Cookie を持つ呼び出し元は画面を経由せず直接叩ける。
+    // Subject to step-up like the screen (AP5). **The screen gate alone cannot protect it**: what actually creates
+    // the authenticator is this JSON endpoint, which a caller with the cookie can hit directly without the screen.
     if let Err(response) = step_up::require_step_up_api(
         &state,
         &correlation,
@@ -156,7 +156,7 @@ pub async fn register_begin_api(
     {
         return response;
     }
-    // user_name は認証器に表示される名前。SSO セッションからは取得できないため入力名を使う。
+    // user_name is the name shown on the authenticator. It cannot be obtained from the SSO session, so the entered name is used.
     let req = InternalPasskeyRegisterBeginRequest {
         sso_session_id,
         user_name: body.name.clone(),
@@ -179,9 +179,9 @@ pub async fn register_begin_api(
     }
 }
 
-/// Passkey 登録完了 JSON API（`POST /passkey/register/complete`）。JS から呼ぶ。
-/// 成功時: HTTP 200 `{ "result": "ok", "credential_id": "..." }`
-/// 失敗時: HTTP 200 にエラー variant、または 401 / 500
+/// Passkey registration complete JSON API (`POST /passkey/register/complete`). Called from JS.
+/// On success: HTTP 200 `{ "result": "ok", "credential_id": "..." }`
+/// On failure: HTTP 200 with an error variant, or 401 / 500
 #[derive(Debug, Deserialize)]
 pub struct RegisterCompleteBody {
     pub challenge_id: String,
@@ -199,8 +199,8 @@ pub async fn register_complete_api(
     let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    // 画面と同じく step-up の対象（AP5）。**画面のゲートだけでは守れない**: 認証器を実際に
-    // 作るのはこの JSON エンドポイントで、Cookie を持つ呼び出し元は画面を経由せず直接叩ける。
+    // Subject to step-up like the screen (AP5). **The screen gate alone cannot protect it**: what actually creates
+    // the authenticator is this JSON endpoint, which a caller with the cookie can hit directly without the screen.
     if let Err(response) = step_up::require_step_up_api(
         &state,
         &correlation,
@@ -241,10 +241,10 @@ pub async fn register_complete_api(
     }
 }
 
-/// Passkey 削除（`POST /account/passkey/delete`）。HTML フォームから呼ぶ。
+/// Passkey deletion (`POST /account/passkey/delete`). Called from an HTML form.
 ///
-/// TOTP の削除と同じく CSRF 同期トークンを要る（task #587）。SameSite=Lax だけでは、同じサイトの
-/// 別のサブドメイン（`*.nolumia.com`）からの POST を止められない。
+/// Like TOTP deletion, requires the CSRF synchronizer token (task #587). SameSite=Lax alone cannot stop POSTs
+/// from another subdomain of the same site (`*.nolumia.com`).
 #[derive(Deserialize)]
 pub struct DeleteForm {
     pub credential_id: String,
@@ -263,7 +263,7 @@ pub async fn delete(
     let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return found(&format!("{}/login", tenant.prefix()));
     };
-    // 合わなければ何もせず一覧へ戻し、`?error=csrf` のバナーで伝える（step-up の前に見る）。
+    // On mismatch do nothing, return to the list and report with the `?error=csrf` banner (checked before step-up).
     if !console_csrf_valid(
         &sso_session_id,
         &form.csrf_token,
@@ -272,7 +272,7 @@ pub async fn delete(
         tracing::warn!("passkey deletion rejected: csrf token mismatch");
         return see_other(&format!("{list}?error=csrf"));
     }
-    // 認証器の削除は step-up の対象（AP5）。
+    // Deleting an authenticator is subject to step-up (AP5).
     if let Err(response) = step_up::require_step_up(
         &state,
         &correlation,
@@ -297,7 +297,7 @@ pub async fn delete(
         }
     };
     match result {
-        // 一覧へ戻して結果はバナーで伝える（残っているパスキーをその場で確かめられる）。
+        // Return to the list and report the result in a banner (the remaining passkeys can be checked on the spot).
         InternalPasskeyDeleteResponse::Ok => see_other(&format!("{list}?saved=deleted")),
         InternalPasskeyDeleteResponse::NotFound => see_other(&format!("{list}?error=not-found")),
         InternalPasskeyDeleteResponse::SessionExpired => {
@@ -307,10 +307,10 @@ pub async fn delete(
     }
 }
 
-// ─── ログインフロー ──────────────────────────────────────────────────────────
+// ─── Login flow ──────────────────────────────────────────────────────────
 
-/// Passkey 認証開始 JSON API（`POST /passkey/login/begin`）。ログイン画面の JS から呼ぶ。
-/// 成功時: HTTP 200 `{ "result": "ok", "challenge_id": "...", "options": {...} }`
+/// Passkey authentication begin JSON API (`POST /passkey/login/begin`). Called from the login screen's JS.
+/// On success: HTTP 200 `{ "result": "ok", "challenge_id": "...", "options": {...} }`
 pub async fn login_begin_api(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -320,14 +320,14 @@ pub async fn login_begin_api(
     begin(&state, &correlation, auth_session_id).await
 }
 
-/// 直接ログイン（管理コンソール・ポータル）の Passkey 認証開始 JSON API
-/// （`POST /passkey/login/direct/begin`）。
+/// Passkey authentication begin JSON API for direct login (admin console, portal)
+/// (`POST /passkey/login/direct/begin`).
 ///
-/// **認可フロー用と分けてあるのは、`auth_session_id` Cookie を読まないためである。** 別タブで
-/// 始めて放置した認可フローの Cookie が残っていると、共通の開始 API では認可フロー用の
-/// チャレンジが返ってしまい、直接ログインの完了 API が用途違いとして弾く（Cookie が期限切れに
-/// なるまで管理コンソールへ入れない）。「この画面は認可フローの続きではない」という事実を
-/// エンドポイントで表す。
+/// **It is separate from the authorization flow one so that it does not read the `auth_session_id` cookie.** If a cookie
+/// of an authorization flow started and abandoned in another tab remains, a shared begin API would return a challenge
+/// for the authorization flow, and the direct login complete API would reject it as the wrong purpose (no entry to the admin
+/// console until the cookie expires). The endpoint expresses the fact that "this screen is not a continuation of
+/// an authorization flow".
 pub async fn direct_login_begin_api(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -351,9 +351,9 @@ async fn begin(
     Json(result).into_response()
 }
 
-/// Passkey 認証完了 JSON API（`POST /passkey/login/complete`）。JS から呼ぶ。
-/// 成功時は `{ redirect_to: "..." }` を返し、JS がリダイレクトする。
-/// 失敗時は `{ error: "..." }` を返す。
+/// Passkey authentication complete JSON API (`POST /passkey/login/complete`). Called from JS.
+/// On success returns `{ redirect_to: "..." }`, and JS redirects.
+/// On failure returns `{ error: "..." }`.
 #[derive(Debug, Deserialize)]
 pub struct LoginCompleteBody {
     pub challenge_id: String,
@@ -364,12 +364,12 @@ pub struct LoginCompleteBody {
 pub struct LoginCompleteJsonResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub redirect_to: Option<String>,
-    /// `response_mode=form_post` のとき、`redirect_to` へ POST する hidden フィールド（G12）。
+    /// With `response_mode=form_post`, the hidden fields to POST to `redirect_to` (G12).
     ///
-    /// パスキーのログインだけは応答が JSON（ブラウザの JS が受ける）なので、他の経路のように
-    /// サーバ側で自動送信フォームを描けない。フィールドをそのまま渡し、**JS にフォームを
-    /// 組み立てて送信させる**（`assets/passkey-login.js`）。`None` のときは従来どおり
-    /// `redirect_to` へ遷移する。
+    /// Only passkey login responds with JSON (received by browser JS), so unlike other paths it cannot
+    /// render an auto-submit form on the server. The fields are passed as is and **JS builds and submits
+    /// the form** (`assets/passkey-login.js`). When `None`, it navigates to `redirect_to`
+    /// as before.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub form_post: Option<assay_contracts::auth::FormPostFields>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -450,7 +450,7 @@ pub async fn login_complete_api(
                 set_cookies.into_headers(),
                 Json(LoginCompleteJsonResponse {
                     redirect_to: Some(format!("{}/consent", tenant.prefix())),
-                    // 同意画面は web 自身の画面なので、認可応答の form_post は付かない。
+                    // The consent screen is web's own screen, so the authorization response's form_post is not attached.
                     form_post: None,
                     error: None,
                 }),
@@ -479,12 +479,12 @@ pub async fn login_complete_api(
             })
             .into_response()
         }
-        // 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。
+        // Authentication passed, but use of this app is not permitted (ADR-0054).
         //
-        // この経路だけは応答が JSON（ブラウザの JS が受ける）なので、他の 6 経路のような
-        // 断りの**ページ**を返せない。文言はログイン画面に出す ——どのアプリの話かは、その画面の
-        // 見出し（`login-title-for-client`）が既に示している。
-        // SSO Cookie は発行する（assay には入れているので、他のアプリへはそのまま進める）。
+        // Only this path responds with JSON (received by browser JS), so unlike the other 6 paths it cannot return
+        // a refusal **page**. The wording is shown on the login screen — which app it concerns is already shown by
+        // that screen's heading (`login-title-for-client`).
+        // The SSO cookie is issued (the user is signed in to assay, so other apps can proceed as is).
         InternalPasskeyLoginCompleteResponse::ApplicationNotPermitted {
             application_name,
             sso_session_id,
@@ -512,7 +512,7 @@ pub async fn login_complete_api(
             )
                 .into_response()
         }
-        // 登録した端末に限る組織で、登録していない端末だった（task #916）。札を置いて登録の画面へ。
+        // Organization limited to registered devices, and this device is not registered (task #916). Place the ticket and go to enrollment.
         InternalPasskeyLoginCompleteResponse::DeviceEnrollmentRequired { ticket } => (
             crate::handlers::device_enrollment::ticket_cookie(&state, &ticket).into_headers(),
             Json(login_redirect(
@@ -523,7 +523,7 @@ pub async fn login_complete_api(
             )),
         )
             .into_response(),
-        // 認証ポリシーによる拒否。フロント側スクリプトはこのコードを翻訳キーへ写す。
+        // Denied by the authentication policy. The front-end script maps this code to a translation key.
         InternalPasskeyLoginCompleteResponse::PolicyDenied => Json(LoginCompleteJsonResponse {
             redirect_to: None,
             form_post: None,
@@ -542,10 +542,10 @@ pub async fn login_complete_api(
     }
 }
 
-/// 管理コンソールの Passkey ログイン完了 JSON API（`POST /{tenant_id}/passkey/login/admin/complete`）。
+/// Admin console passkey login complete JSON API (`POST /{tenant_id}/passkey/login/admin/complete`).
 ///
-/// 認可フローの `login_complete_api` と違い、返す `redirect_to` は RP ではなく管理コンソールのホーム
-/// である（`form_post` も無い。RP へ返す認可応答が存在しないため）。
+/// Unlike the authorization flow's `login_complete_api`, the returned `redirect_to` is the admin console home, not the RP
+/// (no `form_post` either, since there is no authorization response to return to an RP).
 pub async fn admin_login_complete_api(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -579,7 +579,7 @@ pub async fn admin_login_complete_api(
             sso_session_id,
             sso_absolute_ttl_secs,
         } => {
-            // パスワード経路（`admin_console::login`）と同じく、SSO を立てて CSRF の種は捨てる。
+            // Like the password path (`admin_console::login`), set up SSO and discard the CSRF seed.
             let set_cookies = state
                 .set_cookies()
                 .set_session(
@@ -605,7 +605,7 @@ pub async fn admin_login_complete_api(
         InternalAdminPasskeyLoginCompleteResponse::Forbidden => {
             Json(login_error("forbidden")).into_response()
         }
-        // 登録した端末に限る組織で、登録していない端末だった（task #916）。札を置いて登録の画面へ。
+        // Organization limited to registered devices, and this device is not registered (task #916). Place the ticket and go to enrollment.
         InternalAdminPasskeyLoginCompleteResponse::DeviceEnrollmentRequired { ticket } => (
             crate::handlers::device_enrollment::ticket_cookie(&state, &ticket).into_headers(),
             Json(login_redirect(
@@ -628,10 +628,10 @@ pub async fn admin_login_complete_api(
     }
 }
 
-/// ポータルの Passkey ログイン完了 JSON API（`POST /{tenant_id}/passkey/login/portal/complete`）。
+/// Portal passkey login complete JSON API (`POST /{tenant_id}/passkey/login/portal/complete`).
 ///
-/// 遷移先と Cookie の組み立てはパスワード経路と同じ判断（SAML の続き・表示言語の同期）を通す
-/// （`portal::sso_success_parts`）。302 を返せないので、その結果を JSON の `redirect_to` に載せる。
+/// Destination and cookie building go through the same decisions as the password path (SAML continuation, display language sync)
+/// (`portal::sso_success_parts`). A 302 cannot be returned, so the result is put in the JSON `redirect_to`.
 pub async fn portal_login_complete_api(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -690,7 +690,7 @@ pub async fn portal_login_complete_api(
         InternalPortalPasskeyLoginCompleteResponse::EmailVerificationRequired => {
             Json(login_error("email_verification_required")).into_response()
         }
-        // 登録した端末に限る組織で、登録していない端末だった（task #916）。札を置いて登録の画面へ。
+        // Organization limited to registered devices, and this device is not registered (task #916). Place the ticket and go to enrollment.
         InternalPortalPasskeyLoginCompleteResponse::DeviceEnrollmentRequired { ticket } => (
             crate::handlers::device_enrollment::ticket_cookie(&state, &ticket).into_headers(),
             Json(login_redirect(
@@ -713,9 +713,9 @@ pub async fn portal_login_complete_api(
     }
 }
 
-// ─── ヘルパー ─────────────────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/// 直接ログイン（管理コンソール・ポータル）の成功応答。JS はこの `redirect_to` へ遷移する。
+/// Success response of direct login (admin console, portal). JS navigates to this `redirect_to`.
 fn login_redirect(destination: &str) -> LoginCompleteJsonResponse {
     LoginCompleteJsonResponse {
         redirect_to: Some(destination.to_string()),
@@ -724,7 +724,7 @@ fn login_redirect(destination: &str) -> LoginCompleteJsonResponse {
     }
 }
 
-/// 直接ログインの失敗応答。`code` はフロント側スクリプトが翻訳キーへ写す（文言は web が持つ）。
+/// Failure response of direct login. `code` is mapped to a translation key by the front-end script (web owns the wording).
 fn login_error(code: &str) -> LoginCompleteJsonResponse {
     LoginCompleteJsonResponse {
         redirect_to: None,
@@ -733,7 +733,7 @@ fn login_error(code: &str) -> LoginCompleteJsonResponse {
     }
 }
 
-/// 一覧のバナー（成功）。値は削除の PRG が付ける `?saved=` だけ。
+/// List banner (success). The only value is `?saved=` set by the deletion PRG.
 fn saved_key_for(value: &str) -> Option<&'static str> {
     match value {
         "deleted" => Some("passkey-deleted-message"),
@@ -741,7 +741,7 @@ fn saved_key_for(value: &str) -> Option<&'static str> {
     }
 }
 
-/// 一覧のバナー（失敗）。未知の値は何も出さない（URL の文字列を画面へ出さない）。
+/// List banner (failure). Unknown values show nothing (URL strings are not put on screen).
 fn error_key_for(value: &str) -> Option<&'static str> {
     match value {
         "not-found" => Some("passkey-error-not-found"),

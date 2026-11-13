@@ -1,20 +1,20 @@
-//! 監査イベント（設計仕様 §7）。構造化ログと `audit_log` テーブルの双方へ出力する。
+//! Audit events (design spec §7). Output to both structured logs and the `audit_log` table.
 #![allow(dead_code)]
 
 use crate::domain::tenant::TenantId;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-/// 監査イベント種別（設計仕様 §7）。`sso_session.terminated` は将来の Logout 用に予約。
+/// Audit event types (design spec §7). `sso_session.terminated` is reserved for future Logout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditEventType {
     LoginSucceeded,
     LoginFailed,
     LoginLocked,
-    /// 認証ポリシーによるログイン拒否（ユーザー認証・認証ポリシー仕様書 §21）。`reason` に
-    /// 一致したポリシーコードを記録する（資格情報は記録しない）。
+    /// Sign-in refusal by an authentication policy (user authentication & authentication policy spec §21). The matching
+    /// policy code is recorded in `reason` (credentials are not recorded).
     LoginPolicyDenied,
-    /// 管理者による認証ポリシーの作成・更新・削除（同仕様 §21）。`reason` にポリシーコードを記録する。
+    /// Creation, update and deletion of authentication policies by an admin (same spec §21). The policy code is recorded in `reason`.
     AuthenticationPolicyCreated,
     AuthenticationPolicyUpdated,
     AuthenticationPolicyDeleted,
@@ -27,176 +27,176 @@ pub enum AuditEventType {
     SsoSessionResumed,
     SsoSessionExpired,
     SsoSessionTerminated,
-    /// SAML SSO: 署名付き SAML Response（アサーション）の発行（成功）／AuthnRequest の拒否（失敗。
-    /// 未登録 SP・ACS 不一致等。理由を記録する）。
+    /// SAML SSO: issuance of a signed SAML Response (assertion) (success) / refusal of an AuthnRequest (failure:
+    /// unregistered SP, ACS mismatch, etc. The reason is recorded).
     SamlResponseIssued,
-    /// 管理者による利用者権限の付与／剥奪（ADR-0006、設計仕様 §7）。
+    /// Granting / revoking user permissions by an admin (ADR-0006, design spec §7).
     UserPermissionGranted,
     UserPermissionRevoked,
-    /// 管理者によるシステム用クライアントへの管理権限の付与／剥奪（ADR-0037）。
-    /// `client_id` 列は**操作対象**のクライアント、実行主体は `user_id` 列（人）か
-    /// `reason` の `actor_client=`（機械）に出る。
+    /// Granting / revoking admin permissions to system clients by an admin (ADR-0037).
+    /// The `client_id` column is the **target** client; the actor appears in the `user_id` column (person) or
+    /// `actor_client=` in `reason` (machine).
     ClientPermissionGranted,
     ClientPermissionRevoked,
-    /// 管理者による保護リソース（`aud` に入る宛名）の登録・更新・削除（ADR-0042）。
-    /// `reason` に `resource=<uri>` を記録する。
+    /// Registration, update and deletion of protected resources (the audience placed in `aud`) by an admin (ADR-0042).
+    /// `resource=<uri>` is recorded in `reason`.
     ResourceRegistered,
     ResourceUpdated,
     ResourceDeleted,
-    /// 管理者によるアプリ（`applications`）の登録・更新・削除（ADR-0054）。`reason` に
-    /// `application=<id>` を記録する。表示名は変わり得るので id で残す。
+    /// Registration, update and deletion of apps (`applications`) by an admin (ADR-0054). `application=<id>` is recorded in
+    /// `reason`. The display name can change, so it is kept by id.
     ApplicationRegistered,
     ApplicationUpdated,
     ApplicationDeleted,
-    /// 管理者によるアプリ ↔ 認証方法（binding）の追加・削除（ADR-0054）。
+    /// Adding / removing app <-> authentication method (binding) by an admin (ADR-0054).
     ApplicationBindingAdded,
     ApplicationBindingRemoved,
-    /// 管理者による名乗りの付け替え（別のアプリから移した。ADR-0067）。外す＋足すの 2 行ではなく
-    /// 1 行で残す ——2 行だと「外したまま」と「移した」が監査ログで見分けられない。`reason` は
-    /// `application=<移した先> … kind=<種類> target=<相手> from_application=<移した元>`。
+    /// Moving an identity by an admin (moved from another app. ADR-0067). Kept as 1 row rather than 2 rows of remove + add:
+    /// with 2 rows, "left removed" and "moved" cannot be told apart in the audit log. `reason` is
+    /// `application=<moved to> … kind=<kind> target=<counterpart> from_application=<moved from>`.
     ApplicationBindingMoved,
-    /// 管理者による主体（人・サービスアカウント）の割り当て・解除（ADR-0054 / ADR-0059）。
-    /// `user_id` 列（人）か `client_id` 列（サービスアカウント）が**操作対象**の主体、
-    /// 実行主体は `reason` の `actor=` に出る。
+    /// Assigning / unassigning principals (people, service accounts) by an admin (ADR-0054 / ADR-0059).
+    /// The `user_id` column (person) or `client_id` column (service account) is the **target** principal;
+    /// the actor appears in `actor=` of `reason`.
     ApplicationAssigned,
     ApplicationUnassigned,
-    /// 割り当てが無い利用者がアプリへ来た（ADR-0054 の判定）。`result` が
-    /// [`AuditResult::Failure`] なら実際に断り、[`AuditResult::Success`] なら
-    /// **記録するだけの期間に通した**（＝移行の漏れ）。この 2 つを 1 つの種別で出すのは、
-    /// 切り替えの前後を同じ問い合わせで数えられるようにするためである。
+    /// A user without an assignment came to an app (ADR-0054 decision). If `result` is
+    /// [`AuditResult::Failure`] they were actually refused; if [`AuditResult::Success`] they were
+    /// **let through during the record-only period** (= a migration gap). Both are emitted as one type
+    /// so that before and after the switch can be counted with the same query.
     ApplicationAccessDenied,
-    /// 管理者によるクライアント（RP）の登録・更新・シークレット再発行（設計仕様 §9.3・§7）。
+    /// Registration, update and secret reissue of clients (RPs) by an admin (design spec §9.3, §7).
     ClientRegistered,
     ClientUpdated,
     ClientSecretRotated,
-    /// 管理者によるクライアントの論理削除（ADR-0035）。実体は残すので、削除後も
-    /// `client_id` から「どのアプリだったか」を追える。
+    /// Logical deletion of a client by an admin (ADR-0035). The entity is kept, so even after deletion
+    /// "which app it was" can be traced from `client_id`.
     ClientDeleted,
-    /// Refresh Token の発行・使用（rotation 成功）・再利用検知（設計仕様 §9.1）。
-    /// `RefreshTokenRevoked` は利用者自身がセキュリティ画面から発行済みトークンを
-    /// まとめて落としたとき（ADR-0047）。`client_id` 列は空（対象が 1 つに定まらない）。
+    /// Refresh Token issuance, use (rotation success) and reuse detection (design spec §9.1).
+    /// `RefreshTokenRevoked` is when the user themselves drops issued tokens all at once from the security screen
+    /// (ADR-0047). The `client_id` column is empty (the target is not a single one).
     RefreshTokenIssued,
     RefreshTokenUsed,
     RefreshTokenReuseDetected,
     RefreshTokenRevoked,
-    /// DPoP で結び付けたリフレッシュトークンが、別の鍵の証明と一緒に来た（ADR-0075 決定 7）。
-    /// 盗まれたトークンが別の端末で使われようとした印。何も失効させない。
+    /// A DPoP-bound refresh token came with a proof from a different key (ADR-0075 decision 7).
+    /// A sign that a stolen token was about to be used on another device. Nothing is revoked.
     RefreshTokenKeyMismatch,
-    /// 同意の付与・取り消し（F3: Consent）。`ConsentRevoked` は利用者自身による連携解除（G10）。
+    /// Granting and revoking consent (F3: Consent). `ConsentRevoked` is unlinking by the user themselves (G10).
     ConsentGranted,
     ConsentDenied,
     ConsentRevoked,
-    /// ゲスト招待の作成・承諾・メンバーシップ解除（ADR-0009 §3）。招待トークンは記録しない。
+    /// Creating, accepting guest invitations and removing memberships (ADR-0009 §3). Invitation tokens are not recorded.
     TenantInvitationCreated,
     TenantInvitationAccepted,
     TenantMembershipRevoked,
-    /// ゲストメンバーシップの一時停止・再開（MT24）。解除（削除）と違い、メンバーシップ行と
-    /// 当該テナント scope の権限行は残る。
+    /// Suspending and resuming guest memberships (MT24). Unlike removal (deletion), the membership row and
+    /// permission rows scoped to that tenant remain.
     TenantMembershipSuspended,
     TenantMembershipResumed,
-    /// アカウント（人・サービスアカウント）の管理者メモの書き込み・消去（ADR-0063 / ADR-0065）。
-    /// メモの中身は記録しない（経緯の自由記述は PII を含む）。`reason` に種別と相手を書く。
+    /// Writing / clearing admin notes on accounts (people, service accounts) (ADR-0063 / ADR-0065).
+    /// Note contents are not recorded (free-form history may contain PII). `reason` holds the kind and the counterpart.
     AccountNoteUpdated,
-    /// 管理者による利用者の作成（ADR-0009 §5）。自動生成パスワードは記録しない。
+    /// Creation of a user by an admin (ADR-0009 §5). Auto-generated passwords are not recorded.
     UserCreated,
-    /// 管理者による利用者の状態変更（有効化・無効化）・削除・パスワード再発行（ADR-0009 §5）。
-    /// 自動生成パスワードは記録しない。
+    /// Status change (enable / disable), deletion and password reissue of a user by an admin (ADR-0009 §5).
+    /// Auto-generated passwords are not recorded.
     UserStatusChanged,
     UserDeleted,
     UserPasswordReset,
-    /// 管理者による利用者プロフィール（メール・表示名・ログイン識別子）の更新（MT25）。
-    /// 変更した項目名のみ記録し、値そのもの（PII）は記録しない。
+    /// Update of a user profile (email, display name, sign-in identifier) by an admin (MT25).
+    /// Only the names of changed fields are recorded, not the values themselves (PII).
     UserProfileUpdated,
-    /// 管理者によるログイン識別子（AP8。仕様 §4）の追加・有効/無効の切替・削除。
-    /// `reason` に**種別**のみ記録する（電話番号・メールアドレスは PII なので値は記録しない）。
+    /// Adding, enabling/disabling and deleting sign-in identifiers (AP8. Spec §4) by an admin.
+    /// Only the **kind** is recorded in `reason` (phone numbers and email addresses are PII, so values are not recorded).
     UserLoginIdentifierAdded,
     UserLoginIdentifierUpdated,
     UserLoginIdentifierRemoved,
-    /// 管理者による主メールアドレスの付け替え（ADR-0052）。`users.email` ＝通知の宛先が動く
-    /// 操作なので、識別子の追加・切替とは別の種別にしてある。`reason` には**どこから昇格した
-    /// か**だけを記録する（アドレスは PII なので値は記録しない）。
+    /// Changing the primary email address by an admin (ADR-0052). It is an operation that moves `users.email` = the notification destination,
+    /// so it is a separate type from adding/switching identifiers. `reason` records only **where it was promoted
+    /// from** (the address is PII, so the value is not recorded).
     UserPrimaryEmailChanged,
-    /// 認証器（AP9。仕様 §5）の状態変更・リカバリーコードの発行と使用・email OTP の送信。
-    /// `reason` に種別・件数・残数を記録する（コード・シークレットそのものは記録しない）。
+    /// Status changes of authenticators (AP9. Spec §5), issuance and use of recovery codes, and sending email OTP.
+    /// `reason` records kind, count and remaining (codes and secrets themselves are not recorded).
     AuthenticatorStatusChanged,
     RecoveryCodesIssued,
     RecoveryCodeUsed,
     EmailOtpSent,
-    /// SMS OTP・電話番号の登録確認コードの送信（AP13）。`reason` に用途だけを記録する
-    /// （電話番号もコードも記録しない）。
+    /// Sending SMS OTP and phone number registration confirmation codes (AP13). `reason` records only the purpose
+    /// (neither phone number nor code is recorded).
     SmsOtpSent,
-    /// 管理者による MFA（TOTP・Passkey）の解除（MT21）。本人が端末を失った場合の復旧手段。
-    /// 解除した要素の種別と件数のみ記録し、シークレット・クレデンシャルは記録しない。
+    /// Removal of MFA (TOTP, Passkey) by an admin (MT21). A recovery means when the user lost their device.
+    /// Only the kinds and counts of removed factors are recorded, not secrets or credentials.
     UserMfaReset,
-    /// 管理者によるアカウントロックの即時解除（AP6。仕様 §17.1・§24.6）。`reason` に
-    /// 解除前にロックが掛かっていたか・クリアした失敗回数を記録する。
+    /// Immediate unlock of an account lock by an admin (AP6. Spec §17.1, §24.6). `reason` records
+    /// whether it was locked before the unlock and the failure count that was cleared.
     UserAccountUnlocked,
-    /// 外部 IdP ログイン（AP10。仕様 §13）の成否。`reason` にプロバイダコードと失敗理由を
-    /// 記録する（外部 IdP のトークン・クレームは記録しない）。
+    /// Success/failure of external IdP sign-in (AP10. Spec §13). `reason` records the provider code and the failure
+    /// reason (external IdP tokens and claims are not recorded).
     ExternalLoginSucceeded,
     ExternalLoginFailed,
-    /// 外部 IdP 設定（AP10）の作成・更新・削除。`reason` にプロバイダコードを記録する。
+    /// Creation, update and deletion of external IdP settings (AP10). The provider code is recorded in `reason`.
     ExternalIdpCreated,
     ExternalIdpUpdated,
     ExternalIdpDeleted,
-    /// Step-up 認証（AP5。仕様 §15）の成否。`reason` に対象操作を記録する（資格情報は記録しない）。
+    /// Success/failure of step-up authentication (AP5. Spec §15). The target operation is recorded in `reason` (credentials are not recorded).
     StepUpSucceeded,
     StepUpFailed,
-    /// パスワード変更（初回強制変更を含む。ADR-0009 §5）。パスワードそのものは記録しない。
+    /// Password change (including the forced change on first sign-in. ADR-0009 §5). The password itself is not recorded.
     PasswordChanged,
-    /// テナントの作成・更新・削除（ADR-0009 §5）。自動生成パスワードは記録しない。
+    /// Creation, update and deletion of tenants (ADR-0009 §5). Auto-generated passwords are not recorded.
     TenantCreated,
     TenantUpdated,
     TenantDeleted,
-    /// テナントへのドメイン割り当て（ADR-0029）。ログインをどのテナントへ向けるかを決める操作。
+    /// Domain assignment to a tenant (ADR-0029). An operation that decides which tenant sign-ins go to.
     TenantDomainAdded,
     TenantDomainRemoved,
-    /// root（idp.system.admin）によるシステム設定の更新（SMTP 等。MT14）。値そのものは記録しない。
+    /// Update of system settings by root (idp.system.admin) (SMTP etc. MT14). Values themselves are not recorded.
     SystemSettingsUpdated,
-    /// テナント管理者によるテナントの設定値の上書き・解除（ADR-0058）。値そのものは記録せず、
-    /// `reason` にキーと設定/解除の別だけを残す（`SystemSettingsUpdated` と同じ）。
+    /// Overriding / clearing tenant setting values by a tenant admin (ADR-0058). Values themselves are not recorded;
+    /// `reason` keeps only the key and whether it was set or cleared (same as `SystemSettingsUpdated`).
     TenantSettingsUpdated,
-    /// root（idp.system.admin）による api の再起動要求（ADR-0017）。ランタイム設定の反映手段であり、
-    /// 稼働中の全リクエストを打ち切る操作なので必ず監査へ残す。
+    /// An api restart request by root (idp.system.admin) (ADR-0017). It is the means of applying runtime settings and
+    /// aborts all in-flight requests, so it is always audited.
     ServiceRestartRequested,
-    /// パスワードリセットの要求・完了（MT18）。トークン・メールアドレスは記録しない。
+    /// Requesting / completing a password reset (MT18). Tokens and email addresses are not recorded.
     PasswordResetRequested,
     PasswordResetCompleted,
-    /// 自己登録アカウントのメール検証の要求・完了（SEC6b）。トークン・メールアドレスは記録しない。
+    /// Requesting / completing email verification for self-registered accounts (SEC6b). Tokens and email addresses are not recorded.
     EmailVerificationRequested,
     EmailVerified,
-    /// 管理者が発行したアカウント設定リンクで資格情報が決まった（ADR-0062）。
-    /// `reason` に決め方（`method=passkey` / `method=password`）を残す。トークンは記録しない。
+    /// Credentials were set via an account setup link issued by an admin (ADR-0062).
+    /// `reason` keeps how they were set (`method=passkey` / `method=password`). Tokens are not recorded.
     AccountSetupCompleted,
-    /// 登録していない端末でログインした（task #872。ADR-0071）。`reason` に「初めての端末か」を残す。
-    /// 端末の印・セッション id は記録しない。
+    /// Signed in on an unregistered device (task #872. ADR-0071). `reason` keeps "whether it is a first-time device".
+    /// Device marks and session ids are not recorded.
     UnregisteredDeviceSignIn,
-    /// 登録した端末に限る組織（task #916。ADR-0079）で、登録していない端末で正しく認証した。ログインは
-    /// 成立させず、端末の登録へ回した。`reason` に方式と「端末の印があったか」を残す。
+    /// In an organization restricted to registered devices (task #916. ADR-0079), authenticated correctly on an unregistered device. Sign-in
+    /// was not completed and was redirected to device registration. `reason` keeps the method and "whether there was a device mark".
     UnregisteredDeviceRefused,
-    /// 利用者が端末を登録した・取り消した（task #872）。`reason` に端末の id を残す（名前は残さない）。
+    /// A user registered or revoked a device (task #872). `reason` keeps the device id (not the name).
     DeviceRegistered,
     DeviceRevoked,
-    /// 使われないまま期限が過ぎ、端末の登録が切れた（task #872）。
+    /// A device registration expired after going unused past its expiry (task #872).
     DeviceExpired,
-    /// 利用者が SSH の公開鍵を登録した・取り消した（task #885）。`reason` に鍵の id と指紋を残す
-    /// （名前は残さない）。
+    /// A user registered or revoked an SSH public key (task #885). `reason` keeps the key id and fingerprint
+    /// (not the name).
     SshKeyRegistered,
     SshKeyRevoked,
-    /// SSO セッションを端末の鍵へ結び付けた（DBSC。task #887・ADR-0074）。`reason` に方式と鍵の指紋を残す。
+    /// Bound an SSO session to a device key (DBSC. task #887, ADR-0074). `reason` keeps the method and the key fingerprint.
     SessionKeyBound,
-    /// 結び付けの登録・更新の署名を受け付けなかった（`reason` に理由）。別の鍵の署名でセッションを
-    /// 終わらせたときは `reason` に `key_mismatch`。
+    /// A binding registration/refresh signature was not accepted (reason in `reason`). When the session was ended by a signature
+    /// from a different key, `reason` is `key_mismatch`.
     SessionKeyRejected,
-    /// 認証アプリの鍵を登録した・取り消した（task #892・ADR-0077）。`reason` に鍵の id と置き場。
+    /// Registered or revoked an authenticator app key (task #892, ADR-0077). `reason` holds the key id and where it lives.
     ApproverKeyRegistered,
     ApproverKeyRevoked,
-    /// 鍵の登録の受付で、Key Attestation を受け付けなかった（`reason` に理由）。
+    /// Key Attestation was not accepted at key registration intake (reason in `reason`).
     ApproverKeyRejected,
-    /// 「アプリで続ける」の依頼を認証アプリで承認した・断った。
+    /// A "Continue in app" request was approved or refused in the authenticator app.
     AppApprovalApproved,
     AppApprovalDenied,
-    /// 承認したコードを、依頼を始めたのとは別のブラウザで使おうとした（別の端末の依頼を承認した疑い）。
+    /// An approved code was used from a browser different from the one that started the request (suspected approval of another device's request).
     AppApprovalRefused,
 }
 
@@ -310,7 +310,7 @@ impl AuditEventType {
     }
 }
 
-/// 監査イベントの成否。
+/// Success/failure of an audit event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditResult {
     Success,
@@ -326,13 +326,13 @@ impl AuditResult {
     }
 }
 
-/// 監査イベント 1 件。PII は含めない（ユーザー識別はハッシュ済み `user_id` のみ）。
+/// One audit event. No PII (users are identified only by the hashed `user_id`).
 #[derive(Debug, Clone)]
 pub struct AuditEvent {
     pub event_type: AuditEventType,
     pub occurred_at: DateTime<Utc>,
-    /// イベントが属するテナント（テナント単位の追跡。ADR-0009 §8）。テナント文脈の無い
-    /// イベント（起動時処理等）のみ `None`。
+    /// The tenant the event belongs to (per-tenant tracking. ADR-0009 §8). `None` only for events with no
+    /// tenant context (startup processing, etc.).
     pub tenant_id: Option<TenantId>,
     pub user_id: Option<Uuid>,
     pub client_id: Option<String>,
@@ -343,10 +343,10 @@ pub struct AuditEvent {
     pub correlation_id: String,
 }
 
-/// `audit_log` から読み出した 1 行（状況確認画面 A3 の読み取りモデル）。
+/// One row read from `audit_log` (the read model of the status screen A3).
 ///
-/// `event_type` / `result` は保存時の文字列そのままを保持する（過去に廃止された種別も欠落なく表示するため、
-/// enum へは restrict しない）。
+/// `event_type` / `result` keep the stored string as is (not restricted to the enum, so that types retired in the past are still shown
+/// without gaps).
 #[derive(Debug, Clone)]
 pub struct AuditLogEntry {
     pub id: i64,
@@ -362,20 +362,20 @@ pub struct AuditLogEntry {
     pub correlation_id: String,
 }
 
-/// 監査ログ検索条件（A3。エラー絞り込みを主眼に、`event_type` / `result` / 期間 / `client_id` /
-/// `correlation_id` で絞る）。指定した項目のみ AND で適用する。
+/// Audit log search conditions (A3. Mainly for narrowing down errors, filtering by `event_type` / `result` / period / `client_id` /
+/// `correlation_id`). Only the specified items are applied, combined with AND.
 #[derive(Debug, Clone, Default)]
 pub struct AuditLogFilter {
-    /// 監査ログを参照するテナント（テナント越しの閲覧を防ぐため、参照系は常に設定する）。
+    /// The tenant whose audit log is viewed (always set on reads to prevent viewing across tenants).
     pub tenant_id: Option<Uuid>,
     pub event_type: Option<String>,
     pub result: Option<String>,
     pub client_id: Option<String>,
     pub correlation_id: Option<String>,
-    /// 期間の下限・上限（`occurred_at`、含む）。
+    /// Lower and upper bounds of the period (`occurred_at`, inclusive).
     pub from: Option<DateTime<Utc>>,
     pub to: Option<DateTime<Utc>>,
-    /// ページング（新しい順）。
+    /// Paging (newest first).
     pub limit: i64,
     pub offset: i64,
 }

@@ -1,11 +1,11 @@
-//! システム設定ユースケース（root/idp.system.admin による SMTP 等の管理。ADR-0009 §5、MT14）。
+//! System settings use case (management of SMTP etc. by root/idp.system.admin. ADR-0009 §5, MT14).
 //!
-//! `system_settings` テーブル（DB 層）を読み書きする。秘匿値（SMTP パスワード）は
-//! `crypto::encrypt`（AES-256-GCM）で暗号化して保存し、参照時は**平文を返さない**
-//! （設定済みか否かのみ返す）。認可（root のみ）は Presentation の `RequirePerms<IdpSystemAdmin>`
-//! が担い、本サービスは呼び出された時点で認可済みとして扱う。
+//! Reads and writes the `system_settings` table (DB layer). Secret values (SMTP password) are
+//! encrypted with `crypto::encrypt` (AES-256-GCM) when stored, and **plaintext is never returned** on read
+//! (only whether it is set). Authorization (root only) is handled by Presentation's `RequirePerms<IdpSystemAdmin>`,
+//! and this service treats itself as already authorized when called.
 //!
-//! 設定値の消費側（MT17 招待メール・MT18 パスワードリセット）は本サービスの `get_smtp` を通す。
+//! Consumers of the settings (MT17 invitation email, MT18 password reset) go through this service's `get_smtp`.
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::admin_actor::AdminActor;
@@ -30,7 +30,7 @@ use crate::domain::tenant_setting::TenantSetting;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// メールの経路を構成するキー（ADR-0058 §8）。テナントの経路はこの**塊**で解決する。
+/// Keys that make up the mail route (ADR-0058 §8). A tenant's route is resolved as this **block**.
 const SMTP_KEYS: &[&str] = &[
     SMTP_HOST,
     SMTP_PORT,
@@ -40,28 +40,28 @@ const SMTP_KEYS: &[&str] = &[
     SMTP_USE_TLS,
 ];
 
-/// テナントが自分の経路を持っているかを決めるキー。`port` と `use_tls` だけの行は数えない
-/// （保存フォームは既定値を必ず送るので、数えると空のフォームを保存しただけで経路を持った扱いになり、
-/// 全体の経路へ落ちなくなる ——メールが黙って止まる）。
+/// Keys that decide whether a tenant has its own route. Rows with only `port` and `use_tls` are not counted
+/// (the save form always sends defaults, so counting them would make saving an empty form count as having a route,
+/// and it would no longer fall back to the global route: mail would silently stop).
 const SMTP_ROUTE_DEFINING_KEYS: &[&str] =
     &[SMTP_HOST, SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM_ADDRESS];
 
-/// テナントの SMTP 設定の表示用（ADR-0058 §8）。
+/// For displaying a tenant's SMTP settings (ADR-0058 §8).
 #[derive(Debug, Clone, Default)]
 pub struct TenantSmtpView {
-    /// このテナントの経路（持っていなければ全項目が空）。パスワードは設定の有無だけ。
+    /// This tenant's route (all fields empty if it has none). The password shows only whether it is set.
     pub settings: SmtpSettingsView,
-    /// `true` = このテナントは経路を持たず、全体の経路でメールを送る。
+    /// `true` = this tenant has no route and sends mail via the global route.
     pub inherited: bool,
 }
 
 pub struct SystemSettingsService {
     repo: Arc<dyn SystemSettingsRepository>,
-    /// テナントのメールの経路（ADR-0058 §8）。全体の表とは別の表に置く。
+    /// Tenants' mail routes (ADR-0058 §8). Kept in a separate table from the global one.
     tenant_settings: Arc<dyn TenantSettingsRepository>,
     key_encryption_key: [u8; 32],
-    /// 実行中プロセスの配置状態（ADR-0017）。DB 上書きを保存する前に「その値で次回起動できるか」を
-    /// 判定するために持つ。
+    /// Deployment state of the running process (ADR-0017). Held to decide, before saving a DB override,
+    /// "can the next startup succeed with that value".
     deployment_state: DeploymentState,
     audit: Arc<AuditService>,
     #[allow(dead_code)]
@@ -92,7 +92,7 @@ impl SystemSettingsService {
         Ok(all.into_iter().map(|s| (s.key, s.value)).collect())
     }
 
-    /// テナントのメールの経路の行（保存形式のまま。空の行は含めない）。
+    /// A tenant's mail route rows (as stored. Empty rows are excluded).
     async fn tenant_smtp_map(&self, tenant_id: TenantId) -> Result<HashMap<String, String>> {
         Ok(self
             .tenant_settings
@@ -104,15 +104,15 @@ impl SystemSettingsService {
             .collect())
     }
 
-    /// そのテナントのメールを送るための SMTP 接続情報（復号済みパスワード込み）を返す（ADR-0058 §8）。
-    /// **画面表示には使わない**。`None` はメールを送れないことを表す（呼び出し側は手動伝達へ落ちる）。
+    /// Returns the SMTP connection info (including the decrypted password) for sending that tenant's mail (ADR-0058 §8).
+    /// **Not used for screen display**. `None` means mail cannot be sent (the caller falls back to manual delivery).
     ///
-    /// ⚠ **経路は塊で決める。** テナントが自分の経路を 1 項目でも持っていれば、**そのテナントの塊だけ**を
-    /// 使い、欠けた項目を全体の値で埋めない。項目ごとに全体へ落とすと、テナントが `host` だけを
-    /// 自分のサーバに向けて `password` を未設定にするだけで、**全体の SMTP 資格情報が
-    /// そのテナントのサーバへ送られる**。
+    /// ⚠ **The route is decided as a block.** If the tenant has even one field of its own route, **only that tenant's block**
+    /// is used, and missing fields are not filled with global values. Falling back per field would mean that just by pointing
+    /// `host` at its own server and leaving `password` unset, a tenant would get **the global SMTP credentials
+    /// sent to that tenant's server**.
     ///
-    /// 返り値の秘匿値をログ・監査に出さないこと。
+    /// Do not output the returned secret values to logs or audits.
     pub async fn smtp_server_for(&self, tenant_id: TenantId) -> Result<Option<SmtpServerConfig>> {
         let tenant = self.tenant_smtp_map(tenant_id).await?;
         if defines_own_route(&tenant) {
@@ -121,7 +121,7 @@ impl SystemSettingsService {
         self.smtp_server_from(&self.load_map().await?, SmtpRoute::WholeIdp)
     }
 
-    /// テナントの SMTP 設定を返す（パスワードは設定の有無だけ）。
+    /// Returns the tenant's SMTP settings (the password shows only whether it is set).
     pub async fn get_tenant_smtp(&self, tenant_id: TenantId) -> Result<TenantSmtpView> {
         let tenant = self.tenant_smtp_map(tenant_id).await?;
         let inherited = !defines_own_route(&tenant);
@@ -135,11 +135,11 @@ impl SystemSettingsService {
         })
     }
 
-    /// テナントの SMTP 設定を保存する。`password` は `None` = 現行維持 / `Some("")` = 消去 /
-    /// `Some(x)` = 設定（全体と同じ規則）。
+    /// Saves the tenant's SMTP settings. `password`: `None` = keep current / `Some("")` = clear /
+    /// `Some(x)` = set (same rules as the global settings).
     ///
-    /// 保存した結果、経路を決める項目が 1 つも残らなければ**行ごと消して全体に従う状態へ戻す**
-    /// （空のフォームを保存しただけでメールが止まる形を作らない）。
+    /// If, after saving, no route-defining field remains, **the row is deleted to go back to following the global route**
+    /// (so that just saving an empty form does not stop mail).
     pub async fn update_tenant_smtp(
         &self,
         tenant: TenantContext,
@@ -148,7 +148,7 @@ impl SystemSettingsService {
         ctx: &RequestContext,
     ) -> Result<TenantSmtpView> {
         let tenant_id = tenant.tenant_id();
-        // 字面で内部と分かる宛先はここで断る。引いた先は送るときに確かめる（task #740）。
+        // Destinations recognizably internal by their text are refused here. The resolved address is checked when sending (task #740).
         if !cmd.host.trim().is_empty() && is_internal_host(&cmd.host) {
             return Err(DomainError::InvalidValue(
                 "smtp host must not point at an internal destination".to_string(),
@@ -201,7 +201,7 @@ impl SystemSettingsService {
         self.get_tenant_smtp(tenant_id).await
     }
 
-    /// テナントの SMTP 設定を消し、全体の経路に従う状態へ戻す。
+    /// Deletes the tenant's SMTP settings and goes back to following the global route.
     pub async fn clear_tenant_smtp(
         &self,
         tenant: TenantContext,
@@ -248,14 +248,14 @@ impl SystemSettingsService {
                 Some(tenant_id),
                 actor.user_id(),
                 actor.client_id(),
-                // 値そのものは記録しない（経路の設定/解除の別だけ）。
+                // The value itself is not recorded (only whether the route was set or cleared).
                 Some(&format!("smtp {change}")),
                 ctx,
             )
             .await;
     }
 
-    /// 保存形式の塊から SMTP 接続情報を組み立てる。`host` か `from_address` が空なら `None`。
+    /// Builds SMTP connection info from the stored block. `None` if `host` or `from_address` is empty.
     fn smtp_server_from(
         &self,
         map: &HashMap<String, String>,
@@ -286,13 +286,13 @@ impl SystemSettingsService {
         }))
     }
 
-    /// 全体の SMTP 設定を取得する。パスワードは平文を返さず「設定済みか否か」（`password_set`）のみ返す。
+    /// Gets the global SMTP settings. The password is not returned in plaintext; only "set or not" (`password_set`).
     pub async fn get_smtp(&self) -> Result<SmtpSettingsView> {
         Ok(smtp_view_from(&self.load_map().await?))
     }
 
-    /// SMTP 設定を保存する。`password` が `Some` のときのみパスワードを暗号化して上書きする
-    /// （`None` は現行維持、`Some("")` は消去）。
+    /// Saves the SMTP settings. The password is encrypted and overwritten only when `password` is `Some`
+    /// (`None` keeps current, `Some("")` clears).
     pub async fn update_smtp(
         &self,
         tenant: TenantContext,
@@ -343,9 +343,9 @@ impl SystemSettingsService {
         self.get_smtp().await
     }
 
-    /// SMS 送信用にゲートウェイ接続情報（復号済みトークン込み）を返す（AP13）。**画面表示には
-    /// 使わない**（表示用は `get_sms`）。URL が未設定なら `None`（SMS 送信は無効）。
-    /// 返り値の秘匿値をログ・監査に出さないこと。
+    /// Returns gateway connection info (including the decrypted token) for sending SMS (AP13). **Not used for
+    /// screen display** (display uses `get_sms`). `None` if the URL is unset (SMS sending disabled).
+    /// Do not output the returned secret values to logs or audits.
     pub async fn sms_gateway(&self) -> Result<Option<SmsGatewayConfig>> {
         let map = self.load_map().await?;
         let endpoint_url = map.get(SMS_GATEWAY_URL).cloned().unwrap_or_default();
@@ -369,7 +369,7 @@ impl SystemSettingsService {
         }))
     }
 
-    /// SMS ゲートウェイ設定を取得する。トークンは平文を返さず「設定済みか否か」のみ返す。
+    /// Gets the SMS gateway settings. The token is not returned in plaintext; only "set or not".
     pub async fn get_sms(&self) -> Result<SmsSettingsView> {
         let map = self.load_map().await?;
         Ok(SmsSettingsView {
@@ -383,8 +383,8 @@ impl SystemSettingsService {
         })
     }
 
-    /// SMS ゲートウェイ設定を保存する。`auth_token` が `Some` のときのみトークンを暗号化して
-    /// 上書きする（`None` は現行維持、`Some("")` は消去。SMTP パスワードと同じ規則）。
+    /// Saves the SMS gateway settings. The token is encrypted and overwritten only when `auth_token` is `Some`
+    /// (`None` keeps current, `Some("")` clears. Same rules as the SMTP password).
     pub async fn update_sms(
         &self,
         tenant: TenantContext,
@@ -430,8 +430,8 @@ impl SystemSettingsService {
         self.get_sms().await
     }
 
-    /// DB に保存されているランタイム設定（`RUNTIME_SETTING_DEFINITIONS` のキー）の上書き値を返す
-    /// （表示用。空文字列 = 未設定として除外する。secret キーは含めない）。
+    /// Returns the DB override values of runtime settings (keys of `RUNTIME_SETTING_DEFINITIONS`)
+    /// (for display. Empty strings are excluded as unset. Secret keys are not included).
     pub async fn runtime_overrides(&self) -> Result<HashMap<String, String>> {
         let map = self.load_map().await?;
         Ok(map
@@ -445,9 +445,9 @@ impl SystemSettingsService {
             .collect())
     }
 
-    /// ランタイム設定の DB 上書き値を更新する。`DB_MANAGED` かつ非 secret のキーのみ許可する。
-    /// `value` が `None` または空文字列のときは上書きを解除する（既定値・環境変数へ戻る）。
-    /// 反映には再起動が必要（起動時に `Config` が解決する）。
+    /// Updates the DB override value of a runtime setting. Only `DB_MANAGED`, non-secret keys are allowed.
+    /// When `value` is `None` or an empty string, the override is removed (falls back to default / environment variable).
+    /// A restart is needed to apply it (`Config` resolves it at startup).
     pub async fn update_runtime_setting(
         &self,
         tenant: TenantContext,
@@ -466,16 +466,16 @@ impl SystemSettingsService {
         }
         let value = value.map(|v| v.trim().to_string()).unwrap_or_default();
         if !value.is_empty() {
-            // 書式の検査はテナント設定（ADR-0058）と同じ関数を通す。片方だけ規則を変えると、
-            // 全体には保存できるのにテナントには保存できない値が生まれる。
+            // Format checks go through the same function as tenant settings (ADR-0058). Changing the rules on only one side
+            // would create values that can be saved globally but not for a tenant.
             validate_setting_value(def, &value).map_err(DomainError::InvalidValue)?;
-            // 書式が正しくても、その値では次回起動できないことがある（https ISSUER × 開発用既定
-            // secret）。保存してしまうと再起動で api・web ごと落ちて画面から直せなくなるため、
-            // 「値の書式」ではなく「配置状態との衝突」として 409 相当で返す（ADR-0017）。
+            // Even with a correct format, the next startup may fail with that value (https ISSUER x development default
+            // secret). Saving it would bring down both api and web on restart, unfixable from the screen, so
+            // it is returned as a 409-equivalent "conflict with the deployment state", not a "value format" error (ADR-0017).
             ensure_override_is_bootable(key, &value, &self.deployment_state)
                 .map_err(DomainError::Conflict)?;
         }
-        // 空文字列の upsert = 上書き解除（`Config` の resolver は空値を未設定として扱う）。
+        // Upserting an empty string = removing the override (`Config`'s resolver treats empty values as unset).
         self.upsert_plain(key, &value).await?;
         self.audit
             .record(
@@ -484,7 +484,7 @@ impl SystemSettingsService {
                 Some(tenant.tenant_id()),
                 actor.user_id(),
                 actor.client_id(),
-                // 値そのものは記録しない（キーと設定/解除の別のみ）。
+                // The value itself is not recorded (only the key and whether it was set or cleared).
                 Some(&format!(
                     "runtime {key} {}",
                     if value.is_empty() { "cleared" } else { "set" }
@@ -506,14 +506,14 @@ impl SystemSettingsService {
     }
 }
 
-/// テナントが自分のメールの経路を持っているか（[`SMTP_ROUTE_DEFINING_KEYS`] が 1 つでもあるか）。
+/// Whether the tenant has its own mail route (whether any of [`SMTP_ROUTE_DEFINING_KEYS`] is present).
 fn defines_own_route(map: &HashMap<String, String>) -> bool {
     SMTP_ROUTE_DEFINING_KEYS
         .iter()
         .any(|key| map.get(*key).is_some_and(|v| !v.is_empty()))
 }
 
-/// 保存形式の塊から表示用の SMTP 設定を作る（パスワードは設定の有無だけ）。
+/// Builds display SMTP settings from the stored block (the password shows only whether it is set).
 fn smtp_view_from(map: &HashMap<String, String>) -> SmtpSettingsView {
     SmtpSettingsView {
         host: map.get(SMTP_HOST).cloned().unwrap_or_default(),
@@ -528,7 +528,7 @@ fn smtp_view_from(map: &HashMap<String, String>) -> SmtpSettingsView {
     }
 }
 
-/// テナントの設定を持たない実装（テナントの経路を使わない試験の土台）。
+/// An implementation with no tenant settings (the base for tests that do not use tenant routes).
 #[cfg(test)]
 pub(crate) struct NoTenantSettings;
 
@@ -638,7 +638,7 @@ mod tests {
         tenants: Arc<MemoryTenantSettings>,
     }
 
-    /// 全体の経路（パスワード付き）が入った状態。
+    /// A state containing the global route (with password).
     async fn fixture() -> Fixture {
         let system = Arc::new(MemorySystemSettings::default());
         let tenants = Arc::new(MemoryTenantSettings::default());
@@ -717,7 +717,7 @@ mod tests {
         assert_eq!(server.from_address, "noreply@tenant.example");
     }
 
-    /// テナントの経路の宛先は、字面で内部と分かれば保存で断る（task #740）。
+    /// A tenant route destination recognizably internal by its text is refused on save (task #740).
     #[tokio::test]
     async fn a_tenant_route_to_an_internal_host_is_refused_on_save() {
         let f = fixture().await;
@@ -747,7 +747,7 @@ mod tests {
         assert!(f.service.get_tenant_smtp(t).await.unwrap().inherited);
     }
 
-    /// 経路の区別が送信へ届く（テナントの経路だけ送る前に宛先を確かめる）。
+    /// The route distinction reaches sending (the destination is checked before sending only for tenant routes).
     #[tokio::test]
     async fn the_route_tells_where_the_config_came_from() {
         let f = fixture().await;
@@ -767,8 +767,8 @@ mod tests {
         assert_eq!(own.route, SmtpRoute::Tenant);
     }
 
-    /// ⚠ いちばん大事な試験。テナントが `host` だけを持ち、パスワードを未設定にしても、
-    /// **全体のパスワードがそのテナントのサーバへ送られない**（項目ごとに全体へ落とさない）。
+    /// ⚠ The most important test. Even if a tenant has only `host` and leaves the password unset,
+    /// **the global password is not sent to that tenant's server** (no per-field fallback to global).
     #[tokio::test]
     async fn the_whole_idp_password_never_goes_to_a_tenant_server() {
         let f = fixture().await;
@@ -791,7 +791,7 @@ mod tests {
         assert_eq!(server.username, "tenant");
     }
 
-    /// 経路を持っているのに `host` が空なら、全体へ落ちずにメールを送れない状態になる。
+    /// If a route exists but `host` is empty, it does not fall back to global and mail cannot be sent.
     #[tokio::test]
     async fn an_incomplete_tenant_route_does_not_fall_back_to_the_whole_idp() {
         let f = fixture().await;
@@ -825,7 +825,7 @@ mod tests {
         assert_eq!(server.host, "smtp.whole.example");
     }
 
-    /// パスワードは暗号化して保存し、表示には設定の有無だけを出す。
+    /// The password is stored encrypted, and display shows only whether it is set.
     #[tokio::test]
     async fn the_tenant_password_is_stored_encrypted_and_never_shown() {
         let f = fixture().await;
@@ -848,7 +848,7 @@ mod tests {
         assert_ne!(stored.value, "tenant-secret");
     }
 
-    /// 空のフォームを保存しただけでメールが止まらない（行ごと消えて全体に従う）。
+    /// Just saving an empty form does not stop mail (the row is deleted and the global route is followed).
     #[tokio::test]
     async fn saving_an_empty_form_returns_the_tenant_to_the_whole_idp_route() {
         let f = fixture().await;

@@ -1,28 +1,28 @@
-//! アプリの名簿を答える（ADR-0057 / ADR-0059）。RP の定期照合（ADR-0049 の I7）が読む。
+//! Answers an app's roster (ADR-0057 / ADR-0059). Read by the RP's periodic reconciliation (I7 of ADR-0049).
 //!
-//! # どのアプリの名簿か
+//! # Whose roster
 //!
-//! ⚠ **RP に言わせない。** 呼んできた主体がサービスアカウントで、それが**あるアプリの名乗り**
-//! として結び付いていれば、そのアプリの名簿を返す（ADR-0059）。「このサービスアカウントはどの
-//! アプリのものか」は assay が持つ事実であり、RP が経路に書いた `client_id` を信じると、
-//! 権限さえあれば他のアプリの名簿を読める。
+//! ⚠ **Do not let the RP say.** If the calling principal is a service account bound as **an app's
+//! identity**, that app's roster is returned (ADR-0059). "Which app does this service account belong to"
+//! is a fact assay holds; trusting a `client_id` the RP put in the path would let anyone with the
+//! permission read other apps' rosters.
 //!
-//! # 何を答えるか
+//! # What it answers
 //!
-//! 「**このアプリを使ってよい利用者**」であって、テナントの利用者一覧ではない。割り当てのモードに
-//! 関わらず同じ形で答え、⚠ **モードは RP に知らせない**（ADR-0054）。
+//! "**Users allowed to use this app**", not the tenant's user list. It answers in the same shape regardless
+//! of the assignment mode, and ⚠ **the mode is not revealed to the RP** (ADR-0054).
 //!
-//! # 規則は 1 つ
+//! # One rule
 //!
-//! 可否は [`Application::roster_state`] が決め、その中身は判定（code の発行地点）と同じ
-//! [`Application::admits`] である。リポジトリは事実だけを返す ——⚠ 一覧が判定と食い違うと、
-//! 「名簿に居るのに入れない」「居ないのに入れる」が起きる。
+//! Eligibility is decided by [`Application::roster_state`], whose content is the same
+//! [`Application::admits`] as the decision (where codes are issued). The repository returns only facts: ⚠ if the list
+//! disagrees with the decision, "on the roster but cannot get in" and "not on it but can get in" happen.
 //!
-//! # 差分は無い
+//! # No deltas
 //!
-//! ⚠ **`updated_since` を持たない。** 外した割り当ては行ごと消えるので差分に出てこず、足した
-//! 割り当ては `users.updated_at` を動かさない ——照会がいちばん拾いたい変化が、いちばん伝わらない。
-//! 照合は全件で回し、RP が持っている `sub` の消息は [`RosterQuery::Subjects`] で聞く。
+//! ⚠ **No `updated_since`.** A removed assignment disappears with its row, so it never shows in a delta, and an
+//! added assignment does not move `users.updated_at`: the changes the query most wants to catch are the least visible.
+//! Reconciliation runs over everything, and the fate of `sub`s the RP holds is asked via [`RosterQuery::Subjects`].
 
 use crate::domain::admin_actor::AdminActor;
 use crate::domain::application::{
@@ -35,38 +35,38 @@ use crate::domain::values::AssignmentMode;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// 1 ページの既定件数。
+/// Default number of rows per page.
 pub const DEFAULT_PAGE_SIZE: i64 = 50;
-/// 1 ページの上限件数（超過分は丸める）。
+/// Maximum rows per page (larger values are clamped).
 pub const MAX_PAGE_SIZE: i64 = 200;
-/// 一度に消息を聞ける `sub` の上限。
+/// Maximum number of `sub`s whose fate can be asked at once.
 ///
-/// ⚠ **URI の長さで決めている。** `sub` は 36 文字なので、100 件で約 3.7KB ——前段（nginx・
-/// cloudflared）の要求行の上限（既定 8KB）に対して安全側に収まる。足りなければ分けて聞く。
+/// ⚠ **Decided by URI length.** A `sub` is 36 chars, so 100 is about 3.7KB, safely within the request line
+/// limit (default 8KB) of the front (nginx, cloudflared). If not enough, ask in parts.
 pub const MAX_SUBJECTS: usize = 100;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ApplicationUserDirectoryError {
-    /// 呼んできた主体がサービスアカウントではない（管理コンソールの利用者など）。
+    /// The calling principal is not a service account (e.g. an admin console user).
     ///
-    /// 名簿の self は「呼んできたサービスアカウントのアプリ」なので、利用者には答える相手が無い。
+    /// The roster's self is "the app of the calling service account", so a user has nothing to answer for.
     NotAServiceAccount,
-    /// 呼んできたサービスアカウントが、どのアプリの名乗りにも結び付いていない。
+    /// The calling service account is not bound to any app's identity.
     ///
-    /// ⚠ **空の名簿を返さない。** 「誰も使えない」と答えると RP は全員を止める。
+    /// ⚠ **Never return an empty roster.** Answering "nobody may use it" makes the RP stop everyone.
     NotBound,
-    /// 一度に聞ける `sub` の上限を超えた。
+    /// Exceeded the maximum number of `sub`s that can be asked at once.
     TooManySubjects,
     Internal(String),
 }
 
-/// 何を聞かれているか。
+/// What is being asked.
 pub enum RosterQuery {
-    /// このアプリの候補を 1 ページ分（`EVERYONE` ならテナントのメンバー、`INDIVIDUAL` なら
-    /// 割り当てのある利用者）。
+    /// One page of this app's candidates (tenant members for `EVERYONE`, users with an assignment
+    /// for `INDIVIDUAL`).
     Page,
-    /// RP が持っている `sub` の消息。⚠ **`unknown`（消えた）を答えられるのはこちらだけ**である
-    /// ——消えた人は、いない以上、候補の一覧には現れない。
+    /// The fate of `sub`s the RP holds. ⚠ **Only this can answer `unknown` (gone)**:
+    /// people who are gone, being absent, never appear in the candidate list.
     Subjects(Vec<Uuid>),
 }
 
@@ -86,11 +86,11 @@ impl ApplicationUserDirectoryService {
         }
     }
 
-    /// 呼んできたサービスアカウントのアプリの名簿を引く（`self`）。
+    /// Looks up the roster of the calling service account's app (`self`).
     ///
-    /// 解決は「主体 → サービスアカウントの名乗り → アプリ」の 1 本だけ。⚠ **権限コードでは
-    /// 通さない** ——名乗りとして結び付いていることが、そのアプリの名簿を読んでよい理由である
-    /// （テナント全体の `idp.applications:read` を配ると、他のアプリの名簿まで読める）。
+    /// Resolution is the single path "principal -> service account identity -> app". ⚠ **Permission codes do
+    /// not grant it**: being bound as the identity is the reason one may read that app's roster
+    /// (handing out tenant-wide `idp.applications:read` would allow reading other apps' rosters too).
     pub async fn for_caller(
         &self,
         tenant: TenantContext,
@@ -120,8 +120,8 @@ impl ApplicationUserDirectoryService {
         Ok(PagedResult::new(items, page))
     }
 
-    /// 候補を 1 ページ分。⚠ **モードで引く表が変わる**（判定が `EVERYONE` で割り当てを引かないのと
-    /// 同じ分かれ方。ADR-0054）。
+    /// One page of candidates. ⚠ **The table queried depends on the mode** (the same split as the decision not
+    /// querying assignments for `EVERYONE`; ADR-0054).
     async fn candidates(
         &self,
         tenant: TenantContext,
@@ -155,8 +155,8 @@ impl ApplicationUserDirectoryService {
         ))
     }
 
-    /// 聞かれた `sub` の消息。⚠ **聞かれた `sub` は必ず 1 行で返す**（返ってこない `sub` があると、
-    /// 呼び出し側は「消えた」と「答えそびれた」を区別できない）。
+    /// The fate of the asked `sub`s. ⚠ **Every asked `sub` is always returned as one row** (if some `sub` did not
+    /// come back, the caller could not tell "gone" from "missed").
     async fn subjects(
         &self,
         tenant: TenantContext,
@@ -179,15 +179,15 @@ impl ApplicationUserDirectoryService {
                 let state = facts
                     .iter()
                     .find(|row| row.sub == *sub)
-                    // 行が無い ＝ このテナントの利用者ではない。
+                    // No row = not a user of this tenant.
                     .map_or(ApplicationUserState::Unknown, |row| {
                         application.roster_state(row.facts)
                     });
                 ApplicationUser { sub: *sub, state }
             })
             .collect();
-        // 候補の一覧と同じ並び（`sub` 昇順）に揃える。要求の順に返すと、同じ問い合わせでも
-        // 並びが変わる。
+        // Use the same order as the candidate list (`sub` ascending). Returning in request order would change
+        // the order for the same query.
         answers.sort_by_key(|user| user.sub);
         answers.dedup_by_key(|user| user.sub);
         Ok(Page::from_all(answers, page))
@@ -238,7 +238,7 @@ mod tests {
         }
     }
 
-    /// 1 件のアプリと、決め打ちの事実を返すフェイク。
+    /// Fake returning one app and fixed facts.
     struct Fake {
         application: Option<Application>,
         rows: Vec<SubjectFacts>,
@@ -264,7 +264,7 @@ mod tests {
             _t: TenantId,
             target: BindingTarget,
         ) -> DomainResult<Option<Application>> {
-            // ⚠ サービスアカウントの名乗りでだけ引ける（ログイン用の名乗りでは答えない）。
+            // ⚠ Looked up only by a service account identity (login identities get no answer).
             match target {
                 BindingTarget::ServiceAccount { client_row_id }
                     if client_row_id == service_account() =>
@@ -396,7 +396,7 @@ mod tests {
         TenantContext::new(tenant_id())
     }
 
-    /// 名乗りとして結び付いたサービスアカウントの `clients.id`。
+    /// `clients.id` of the service account bound as the identity.
     fn service_account() -> Uuid {
         Uuid::from_u128(99)
     }
@@ -408,7 +408,7 @@ mod tests {
         }
     }
 
-    /// 名乗りに結び付いていないサービスアカウントには**空の名簿を返さない**。返すと RP が全員を止める。
+    /// A service account not bound to an identity **never gets an empty roster**. Returning one makes the RP stop everyone.
     #[tokio::test]
     async fn a_service_account_without_an_application_is_not_an_empty_roster() {
         let svc = service(Fake {
@@ -429,7 +429,7 @@ mod tests {
         assert_eq!(err, ApplicationUserDirectoryError::NotBound);
     }
 
-    /// 利用者（管理コンソールの人）は self を持たない。
+    /// A user (a person in the admin console) has no self.
     #[tokio::test]
     async fn a_user_has_no_own_application() {
         let svc = service(Fake {
@@ -452,7 +452,7 @@ mod tests {
         assert_eq!(err, ApplicationUserDirectoryError::NotAServiceAccount);
     }
 
-    /// 聞かれた `sub` は、assay に居なくても必ず 1 行で返る（＝消えた）。
+    /// An asked `sub` always comes back as one row even if not in assay (= gone).
     #[tokio::test]
     async fn a_subject_that_is_gone_comes_back_as_unknown() {
         let here = Uuid::from_u128(10);
@@ -493,7 +493,7 @@ mod tests {
         );
     }
 
-    /// 止まっているアカウントは、割り当てがあっても `blocked`（⚠ 結び付きは残す側）。
+    /// A stopped account is `blocked` even with an assignment (⚠ the binding is kept).
     #[tokio::test]
     async fn a_disabled_account_is_blocked_even_when_assigned() {
         let sub = Uuid::from_u128(10);
@@ -514,8 +514,8 @@ mod tests {
         assert_eq!(result.page.items[0].state, ApplicationUserState::Blocked);
     }
 
-    /// 止めたアプリは、候補が消えるのではなく**全員が `blocked`** で返る
-    /// ——「引けなかった」と「誰も使えない」を取り違えさせない。
+    /// A stopped app returns **everyone as `blocked`** instead of candidates disappearing,
+    /// so "could not look up" is not confused with "nobody may use it".
     #[tokio::test]
     async fn a_disabled_application_blocks_everyone_without_emptying_the_roster() {
         let sub = Uuid::from_u128(10);
@@ -537,7 +537,7 @@ mod tests {
         assert_eq!(result.page.items[0].state, ApplicationUserState::Blocked);
     }
 
-    /// 「全員」のアプリでは、参加中でないメンバー（招待中・一時停止）は `blocked`。
+    /// In an "everyone" app, members not currently participating (invited, suspended) are `blocked`.
     #[tokio::test]
     async fn everyone_mode_blocks_members_who_are_not_active() {
         let sub = Uuid::from_u128(10);

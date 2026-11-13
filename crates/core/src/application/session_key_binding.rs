@@ -1,23 +1,23 @@
-//! SSO セッションを端末の鍵へ結び付ける（Chrome の DBSC。task #887。ADR-0074）。
+//! Binds SSO sessions to a device key (Chrome's DBSC. task #887. ADR-0074).
 //!
-//! # 流れ
+//! # Flow
 //!
-//! 1. **登録**: ログインの応答で web が Chrome に結び付けを求め、Chrome は TPM の中で鍵を作り、公開鍵を
-//!    添えた署名を `/dbsc/register` へ送る。web はそれを [`SessionKeyBindingService::register`] へ渡す。
-//! 2. **更新**: 短い Cookie（10 分）が切れると、Chrome は `/dbsc/refresh` で鍵の署名を送り直す
-//!    （[`SessionKeyBindingService::refresh`]）。
-//! 3. **入口の確かめ**: 合う短い Cookie の無い要求は、web が [`SessionKeyBindingService::binding_of`] で
-//!    結び付いているかを聞き、結び付いていれば長い Cookie を外す（web 側）。
+//! 1. **Registration**: in the sign-in response the web asks Chrome to bind; Chrome creates a key inside the TPM and sends
+//!    a signature with the public key to `/dbsc/register`. The web passes it to [`SessionKeyBindingService::register`].
+//! 2. **Refresh**: when the short Cookie (10 minutes) expires, Chrome resends a key signature at `/dbsc/refresh`
+//!    ([`SessionKeyBindingService::refresh`]).
+//! 3. **Entrance check**: for a request without a matching short Cookie, the web asks [`SessionKeyBindingService::binding_of`]
+//!    whether it is bound, and if so strips the long Cookie (web side).
 //!
-//! # 長さ
+//! # Lifetime
 //!
-//! 登録と更新のたびに置き直す（[`lifetime_for`]）。結び付いていて、そのログイン状態の端末（ADR-0071 の
-//! 端末の印）が登録済みなら `SSO_BOUND_TTL_SECS`、そうでなければ `SSO_ABSOLUTE_TTL_SECS`。
+//! Reset on every registration and refresh ([`lifetime_for`]). If bound and the device of that signed-in state (the
+//! device mark of ADR-0071) is registered, `SSO_BOUND_TTL_SECS`; otherwise `SSO_ABSOLUTE_TTL_SECS`.
 //!
-//! # 別の鍵の署名
+//! # Signatures from a different key
 //!
-//! 結び付いたログイン状態へ、登録した鍵と違う鍵の署名（登録のし直しを含む）が来たら、そのログイン状態を
-//! 終わらせ（refresh token も。ADR-0044）、監査に残し、知らせる。Cookie が持ち出された印だからである。
+//! If a bound signed-in state receives a signature from a key different from the registered one (including re-registration),
+//! that signed-in state is ended (refresh tokens too. ADR-0044), audited, and notified. It is a sign the Cookie was exfiltrated.
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::audit::{AuditEventType, AuditResult};
@@ -41,19 +41,19 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use std::sync::Arc;
 
-/// 登録・更新の結果。
+/// Result of registration or refresh.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionKeyOutcome {
-    /// 結び付いた・更新できた。`remaining_secs` はログイン状態が切れるまでの秒数（長い Cookie の Max-Age）。
+    /// Bound or refreshed. `remaining_secs` is the seconds until the signed-in state expires (the long Cookie's Max-Age).
     Bound {
         session_identifier: String,
         remaining_secs: u64,
     },
-    /// 署名・challenge・形が合わない（結び付けは変えない）。
+    /// Signature, challenge, or shape does not match (the binding is not changed).
     Rejected,
-    /// 登録した鍵と違う鍵で署名された。ログイン状態は終わらせた。
+    /// Signed with a key different from the registered one. The signed-in state was ended.
     KeyMismatch,
-    /// ログイン状態が無い・切れている・識別子が違う。
+    /// The signed-in state is missing, expired, or the identifier differs.
     SessionGone,
 }
 
@@ -67,7 +67,7 @@ pub struct SessionKeyBindingService {
     alerts: Arc<dyn SecurityAlertSink>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
-    /// challenge の HMAC の鍵（`CSRF_SECRET`。用途は contracts の側で分ける）。
+    /// HMAC key for challenges (`CSRF_SECRET`. Purposes are separated on the contracts side).
     secret: [u8; 32],
 }
 
@@ -104,7 +104,7 @@ impl SessionKeyBindingService {
         }
     }
 
-    /// 結び付いていれば識別子を返す（web の入口の確かめ）。無い・切れたセッションは `None`。
+    /// Returns the identifier if bound (the web entrance check). `None` for missing or expired sessions.
     pub async fn binding_of(&self, sso_session_id: &str) -> Result<Option<String>, DomainError> {
         let session_hash = crypto::sha256_hex(sso_session_id);
         Ok(self
@@ -114,7 +114,7 @@ impl SessionKeyBindingService {
             .map(|b| b.session_identifier))
     }
 
-    /// 登録（Chrome が公開鍵を添えて送ってきた署名）。
+    /// Registration (a signature Chrome sent along with its public key).
     pub async fn register(
         &self,
         sso_session_id: &str,
@@ -138,7 +138,7 @@ impl SessionKeyBindingService {
         };
         if let Some(existing) = self.bindings.find(&session.session_hash).await? {
             if existing.key.thumbprint == key.thumbprint {
-                // 同じ鍵での登録のし直し（Chrome が再起動した等）。結び付けはそのまま。
+                // Re-registration with the same key (Chrome restarted, etc.). The binding stays as is.
                 return self.renew(&session, &user, &existing, now).await;
             }
             return self.end_for_mismatch(&session, &user, now, ctx).await;
@@ -149,7 +149,7 @@ impl SessionKeyBindingService {
             bound_at: now,
         };
         if !self.bindings.bind(&session.session_hash, &binding).await? {
-            // 同時に別の登録が先に入った。どちらの鍵が正しいか分からないので、入った方を正とする。
+            // Another registration got in first concurrently. We cannot tell which key is right, so the one that got in wins.
             let Some(existing) = self.bindings.find(&session.session_hash).await? else {
                 return Ok(SessionKeyOutcome::SessionGone);
             };
@@ -176,7 +176,7 @@ impl SessionKeyBindingService {
         self.renew(&session, &user, &binding, now).await
     }
 
-    /// 更新（短い Cookie が切れたときの、登録した鍵での署名）。
+    /// Refresh (a signature with the registered key when the short Cookie expired).
     pub async fn refresh(
         &self,
         sso_session_id: &str,
@@ -195,7 +195,7 @@ impl SessionKeyBindingService {
             return Ok(SessionKeyOutcome::SessionGone);
         }
         let Some(challenge) = self.fresh_challenge(sso_session_id, proof, now) else {
-            // 古い challenge・形の崩れ。web は新しい challenge を出し直す（持ち出しの印とはしない）。
+            // Stale challenge or malformed. The web issues a new challenge (not treated as a sign of exfiltration).
             return Ok(SessionKeyOutcome::Rejected);
         };
         match verify_refresh(proof, &binding.key, &challenge) {
@@ -214,7 +214,7 @@ impl SessionKeyBindingService {
         self.renew(&session, &user, &binding, now).await
     }
 
-    /// 生きているセッションと利用者。
+    /// The live session and the user.
     async fn live_session(
         &self,
         sso_session_id: &str,
@@ -233,9 +233,9 @@ impl SessionKeyBindingService {
         Ok(Some((session, user)))
     }
 
-    /// 署名の `jti` が、このセッションに出した新しい challenge か。そうならその値を返す。
+    /// Whether the signature's `jti` is a fresh challenge issued to this session. If so, returns that value.
     ///
-    /// ここでは署名を確かめない（確かめるのは domain の `verify_*`。`jti` はそこでもう一度照合する）。
+    /// The signature is not verified here (verification is the domain's `verify_*`, which checks `jti` again).
     fn fresh_challenge(
         &self,
         sso_session_id: &str,
@@ -248,7 +248,7 @@ impl SessionKeyBindingService {
             .then_some(jti)
     }
 
-    /// 長さを置き直して、結び付いた結果を返す。
+    /// Resets the lifetime and returns the bound result.
     async fn renew(
         &self,
         session: &SsoSession,
@@ -275,7 +275,7 @@ impl SessionKeyBindingService {
                 .await?;
         }
         if !(idle > now && absolute > now) {
-            // 30 日から戻したら、もう切れていた（端末の登録を取り消した後の古いログイン状態）。
+            // After shortening back from 30 days it had already expired (an old signed-in state after the device registration was revoked).
             return Ok(SessionKeyOutcome::SessionGone);
         }
         let remaining = (idle.min(absolute) - now).num_seconds().max(0);
@@ -285,7 +285,7 @@ impl SessionKeyBindingService {
         })
     }
 
-    /// 別の鍵の署名が来た: ログイン状態を終わらせ、監査に残し、知らせる。
+    /// A signature from a different key arrived: end the signed-in state, audit, and notify.
     async fn end_for_mismatch(
         &self,
         session: &SsoSession,
@@ -326,7 +326,7 @@ impl SessionKeyBindingService {
             .await;
     }
 
-    /// 知らせる。ADR-0071 の端末の知らせと違い、組織の設定に関わらず送る（盗みの強い印のため）。
+    /// Notifies. Unlike ADR-0071's device notifications, sent regardless of the organization's settings (a strong sign of theft).
     async fn alert(&self, user: &User, now: DateTime<Utc>, ctx: &RequestContext) {
         let username = user
             .preferred_username

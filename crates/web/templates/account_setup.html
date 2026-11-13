@@ -11,14 +11,14 @@
     <div class="alert alert-success" role="status">{{ messages.get("account-setup-done") }}</div>
     <a class="btn btn-primary w-100" href="{{ tenant }}/login">{{ messages.get("account-setup-go-to-login") }}</a>
     {% else if let Some(key) = fatal_key %}
-    {#- リンクが死んでいる。⚠ 理由は言い分けない（拾った相手に当たりを与えない）。 -#}
+    {#- The link is dead. ⚠ Do not distinguish reasons (gives no hint to whoever found it). -#}
     <div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>
     <p class="text-muted small mb-0">{{ messages.get("account-setup-ask-admin") }}</p>
     {% else %}
     {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
 
     {% if allows_passkey %}
-    {#- 主の道。パスワードを決めずに済ませられる（以後はこの端末の顔・指紋・PIN で入る）。 -#}
+    {#- The primary path. Lets them finish without choosing a password (afterwards they sign in with this device's face, fingerprint or PIN). -#}
     <div class="d-grid gap-2 mb-3" id="passkey-section" data-tenant="{{ tenant }}" data-token="{{ token }}">
       <button type="button" class="btn btn-primary btn-lg" id="passkey-register">
         <i class="fa-solid fa-key me-2" aria-hidden="true"></i>{{ messages.get("account-setup-passkey-button") }}
@@ -30,7 +30,7 @@
     <div class="auth-or">{{ messages.get("account-setup-or") }}</div>
     {% endif %}
 
-    {#- 従の道。パスキーを使えない端末・使いたくない人のために残す。 -#}
+    {#- The secondary path. Kept for devices that cannot use passkeys and people who do not want to. -#}
     <details class="mb-0"{% if !allows_passkey %} open{% endif %}>
       <summary class="mb-3">{{ messages.get("account-setup-password-summary") }}</summary>
       <form method="post" action="{{ tenant }}/account-setup">

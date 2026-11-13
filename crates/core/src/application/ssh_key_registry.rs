@@ -1,19 +1,19 @@
-//! 利用者が自分で登録する SSH の公開鍵と、配る機械への一覧（task #885。ADR-0072）。
+//! SSH public keys users register themselves, and the list for the machines that distribute them (task #885. ADR-0072).
 //!
-//! # 流れ
+//! # Flow
 //!
-//! 1. **登録**: 利用者が「アカウントのセキュリティ」の「SSH の鍵」で [`SshKeyRegistryService::register`]。
-//!    **パスキーで本人を確かめてから 5 分以内**だけ通す（端末の登録と同じ確かめ方。ADR-0071）。
-//!    受け付けるのは sk 型だけ（[`SshPublicKey::parse`]）。
-//! 2. **取り消し**: [`SshKeyRegistryService::revoke`]。これもパスキーで 5 分以内だけ。
-//! 3. **配る**: `idp.ssh-keys:read` を持つ**機械クライアント**が [`SshKeyRegistryService::distributable`]
-//!    で組織の有効な鍵の一覧を読み、各機器の authorized_keys へ書く（deploy-repo の host/sshkeys）。
+//! 1. **Registration**: the user calls [`SshKeyRegistryService::register`] from "SSH keys" in "Account security".
+//!    Allowed **only within 5 minutes of verifying oneself with a passkey** (same check as device registration. ADR-0071).
+//!    Only sk-type keys are accepted ([`SshPublicKey::parse`]).
+//! 2. **Revocation**: [`SshKeyRegistryService::revoke`]. Also only within 5 minutes of a passkey check.
+//! 3. **Distribution**: a **machine client** holding `idp.ssh-keys:read` reads the organization's valid keys via
+//!    [`SshKeyRegistryService::distributable`] and writes them to each host's authorized_keys (deploy-repo's host/sshkeys).
 //!
-//! どれも組織の設定 `SSH_KEYS_ENABLED`（既定 false）が有効なときだけ働く。無効の組織では画面に出さず、
-//! 配る一覧は空にする（登録済みの行は消さない。有効へ戻すと元の鍵がそのまま配られる）。
+//! All of this works only when the organization setting `SSH_KEYS_ENABLED` (default false) is on. In disabled organizations
+//! it is not shown on screen and the distribution list is empty (registered rows are not deleted. Re-enabling distributes the original keys as is).
 //!
-//! 登録・取り消しは監査ログに必ず残し、セキュリティの知らせ（[`SecurityAlertSink`]）へ送る。
-//! 機能を有効にした組織だけが鍵を登録できるので、知らせに別の有効・無効は持たない。
+//! Registration and revocation are always recorded in the audit log and sent to security notifications ([`SecurityAlertSink`]).
+//! Only organizations that enabled the feature can register keys, so notifications have no separate on/off.
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::admin_actor::AdminActor;
@@ -36,12 +36,12 @@ use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// 「SSH の鍵」の欄に出すもの。
+/// What is shown in the "SSH keys" section.
 #[derive(Debug, Clone)]
 pub struct SshKeyOverview {
-    /// この組織で SSH の鍵を使うか（無効なら画面に欄を出さない）。
+    /// Whether this organization uses SSH keys (if disabled, the section is not shown on screen).
     pub enabled: bool,
-    /// パスキーでの本人確認がまだ有効か（有効なら登録・取り消しはそのまま通る）。
+    /// Whether the passkey verification is still valid (if so, registration and revocation pass as is).
     pub passkey_fresh: bool,
     pub keys: Vec<UserSshKey>,
 }
@@ -58,17 +58,17 @@ pub enum RegisterSshKeyOutcome {
     Registered {
         fingerprint: String,
     },
-    /// この組織では SSH の鍵を使っていない。
+    /// This organization does not use SSH keys.
     Disabled,
-    /// パスキーで本人を確かめてから 5 分を過ぎている（またはパスキーで確かめていない）。
+    /// More than 5 minutes have passed since verifying with a passkey (or not verified with a passkey).
     PasskeyRequired,
-    /// 名前が空・長すぎ・制御文字入り。
+    /// Name is empty, too long, or contains control characters.
     InvalidName,
-    /// 公開鍵を断った（秘密鍵らしきもの・sk 型でない・壊れている）。
+    /// The public key was refused (looks like a private key, not sk type, or broken).
     Rejected(SshKeyRejection),
-    /// 同じ鍵がこの組織に登録済み。
+    /// The same key is already registered in this organization.
     AlreadyRegistered,
-    /// 1 人が登録できる数を超える。
+    /// Exceeds the number one person can register.
     TooMany,
     SessionExpired,
     Internal(String),
@@ -83,10 +83,10 @@ pub enum RevokeSshKeyOutcome {
     Internal(String),
 }
 
-/// 配る一覧を読めなかった理由。
+/// Why the distribution list could not be read.
 #[derive(Debug, PartialEq, Eq)]
 pub enum SshKeyDistributionError {
-    /// 呼び出し元が機械クライアントではない（人の管理トークン）。
+    /// The caller is not a machine client (a person's admin token).
     NotAMachine,
     Internal(String),
 }
@@ -101,7 +101,7 @@ pub struct SshKeyRegistryService {
     clock: Arc<dyn Clock>,
 }
 
-/// 認証済みの今のセッションと利用者。
+/// The authenticated current session and user.
 struct ActiveSession {
     session: SsoSession,
     user: User,
@@ -129,7 +129,7 @@ impl SshKeyRegistryService {
         }
     }
 
-    /// 「SSH の鍵」の欄の中身。
+    /// Contents of the "SSH keys" section.
     pub async fn overview(
         &self,
         tenant: TenantContext,
@@ -171,7 +171,7 @@ impl SshKeyRegistryService {
         }))
     }
 
-    /// SSH の公開鍵を登録する。
+    /// Registers an SSH public key.
     pub async fn register(
         &self,
         tenant: TenantContext,
@@ -191,8 +191,8 @@ impl SshKeyRegistryService {
             Ok(false) => return RegisterSshKeyOutcome::Disabled,
             Err(e) => return RegisterSshKeyOutcome::Internal(e.to_string()),
         }
-        // 鍵の形は本人確認より先に見る（貼り間違いのたびにパスキーへ回さない）。秘密鍵は
-        // ここで断り、どこにも残さない。
+        // Check the key's shape before identity verification (do not send every mis-paste to the passkey). Private keys
+        // are refused here and kept nowhere.
         let key = match SshPublicKey::parse(public_key) {
             Ok(key) => key,
             Err(rejection) => return RegisterSshKeyOutcome::Rejected(rejection),
@@ -259,7 +259,7 @@ impl SshKeyRegistryService {
         RegisterSshKeyOutcome::Registered { fingerprint }
     }
 
-    /// SSH の公開鍵を取り消す。
+    /// Revokes an SSH public key.
     pub async fn revoke(
         &self,
         tenant: TenantContext,
@@ -317,11 +317,11 @@ impl SshKeyRegistryService {
         RevokeSshKeyOutcome::Revoked
     }
 
-    /// 配る機械へ渡す、組織の有効な鍵の一覧。
+    /// The list of the organization's valid keys, handed to the distributing machines.
     ///
-    /// ⚠ **機械クライアントだけ**に返す。人の管理トークンは `idp.ssh-keys:read` を含意していても
-    /// 断る（テナント管理者のブラウザが乗っ取られても、ここから「誰のどの鍵が通るか」を集めさせない
-    /// ——一覧そのものは公開鍵だが、どの機器のどの利用者に通るかの地図になる）。
+    /// ⚠ Returned **only to machine clients**. A person's admin token is refused even if it implies `idp.ssh-keys:read`
+    /// (even if a tenant admin's browser is hijacked, do not let it gather "whose key gets into what" from here:
+    /// the list itself is public keys, but it becomes a map of which user gets into which host).
     pub async fn distributable(
         &self,
         tenant: TenantContext,
@@ -344,7 +344,7 @@ impl SshKeyRegistryService {
             .map_err(|e| SshKeyDistributionError::Internal(e.to_string()))
     }
 
-    /// パスキーで本人を確かめてから 5 分以内か（端末の登録と同じ判定。ADR-0071）。
+    /// Whether within 5 minutes of verifying oneself with a passkey (same check as device registration. ADR-0071).
     async fn passkey_is_fresh(
         &self,
         session: &SsoSession,
@@ -399,7 +399,7 @@ impl SshKeyRegistryService {
                 country: None,
                 ip_address: ctx.ip_address.clone(),
                 user_agent: ctx.user_agent.clone(),
-                // 同じ鍵の知らせを束ねる（指紋の頭。指紋は公開鍵から誰でも計算できる値）。
+                // Bundle notifications for the same key (fingerprint prefix. Anyone can compute the fingerprint from the public key).
                 group_key: crypto::sha256_hex(fingerprint)[..16].to_string(),
             })
             .await;
@@ -620,7 +620,7 @@ mod tests {
         audit_events: Arc<CapturingSink>,
     }
 
-    /// `enabled`: その組織で SSH の鍵を使うか。`methods`・`auth_age`: ログインの入り方と経過時間。
+    /// `enabled`: whether the organization uses SSH keys. `methods`, `auth_age`: how the user signed in and the elapsed time.
     fn harness(enabled: bool, methods: Vec<AuthenticationMethod>, auth_age: Duration) -> Harness {
         let settings = tenant_settings();
         if enabled {
@@ -762,7 +762,7 @@ mod tests {
             register(&h, &ed25519_sk_line(1)).await,
             RegisterSshKeyOutcome::PasskeyRequired
         );
-        // 後からパスキーで確かめれば通る（step-up）。
+        // Verifying with a passkey afterwards makes it pass (step-up).
         *h.sessions.passkey_at.lock().unwrap() = Some(now() - Duration::seconds(10));
         assert!(matches!(
             register(&h, &ed25519_sk_line(1)).await,
@@ -790,7 +790,7 @@ mod tests {
             RegisterSshKeyOutcome::Registered { .. }
         ));
         assert_eq!(h.keys.rows.lock().unwrap().len(), 1);
-        // 断ったものは監査にも知らせにも出ない（秘密鍵の中身をどこにも残さない）。
+        // Refused keys appear in neither the audit nor notifications (the private key content is kept nowhere).
         assert_eq!(events(&h).len(), 1);
     }
 
@@ -801,7 +801,7 @@ mod tests {
             register(&h, &ed25519_sk_line(1)).await,
             RegisterSshKeyOutcome::Registered { .. }
         ));
-        // コメントだけ違う同じ鍵も同じ鍵。
+        // The same key differing only in comment is the same key.
         let same_key = ed25519_sk_line(1).replace("kyon@kyon-pc", "other-comment");
         assert_eq!(
             register(&h, &same_key).await,
@@ -824,7 +824,7 @@ mod tests {
             panic!("overview failed");
         };
         assert!(!view.enabled);
-        // 行が残っていても、無効の組織では配らない。
+        // Even if rows remain, nothing is distributed in a disabled organization.
         h.keys.rows.lock().unwrap().push(UserSshKey {
             id: Uuid::now_v7(),
             tenant_id: tenant_id(),
@@ -848,7 +848,7 @@ mod tests {
         assert_eq!(listed.len(), 2);
         let target = h.keys.rows.lock().unwrap()[0].clone();
 
-        // 5 分を過ぎたら取り消しも断る。
+        // After 5 minutes, revocation is refused too.
         let stale = harness(
             true,
             vec![AuthenticationMethod::WebAuthn],
@@ -876,7 +876,7 @@ mod tests {
             h.alerts.sent.lock().unwrap().last().unwrap().kind,
             SecurityAlertKind::SshKeyRevoked { .. }
         ));
-        // 2 度目・別の組織の id は見つからない。
+        // A second time, or an id from another organization, is not found.
         assert_eq!(
             h.service.revoke(tenant(), COOKIE, target.id, &ctx()).await,
             RevokeSshKeyOutcome::NotFound

@@ -1,10 +1,10 @@
-//! G2: 期限切れレコードの一括 GC。
+//! G2: bulk GC of expired records.
 //!
-//! 検証するのは 2 点:
-//!   1. 掃除の**網羅性** —— `expires_at` を持つ表がすべて掃除対象に載っている（載せ忘れの検出）。
-//!   2. 掃除の**動作** —— 期限切れ行だけが消え、期限内の行は残る。
+//! Two things are checked:
+//!   1. **Coverage** of the purge — every table with `expires_at` is a purge target (detects forgotten ones).
+//!   2. **Behaviour** of the purge — only expired rows disappear; rows still valid remain.
 //!
-//! 実行方法は `schema.rs` と同じ（`TEST_DATABASE_URL` が必須）。
+//! Run the same way as `schema.rs` (`TEST_DATABASE_URL` is required).
 
 mod support;
 
@@ -15,10 +15,10 @@ use assay_api::infrastructure::repositories::expired_records::{
 use sqlx::Row;
 use std::sync::Arc;
 
-/// `expires_at` を持ちながら掃除対象に載っていない表を検出する。
+/// Detects tables that have `expires_at` but are not purge targets.
 ///
-/// G2 の症状は「掃除が無い」ではなく「掃除される表とされない表が混ざっている」ことだった。
-/// 表を足したときにここが落ちれば、掃除口の追加を忘れたと分かる。
+/// The G2 symptom was not "no purge" but "a mix of tables that are purged and tables that are not".
+/// If this fails when a table is added, the purge entry was forgotten.
 #[tokio::test]
 async fn every_table_with_an_expiry_column_is_swept() {
     let Some(env) = support::setup("expired_record_purge_coverage").await else {
@@ -36,7 +36,7 @@ async fn every_table_with_an_expiry_column_is_swept() {
     let mut missing: Vec<String> = Vec::new();
     for row in &rows {
         let table: String = row.get(0);
-        // `log` は保持日数（APP_LOG_RETENTION_DAYS）で別途削除しており、`expires_at` も持たない。
+        // `log` is deleted separately by retention days (APP_LOG_RETENTION_DAYS) and has no `expires_at`.
         if !PURGED_TABLES.contains(&table.as_str()) {
             missing.push(table);
         }
@@ -47,7 +47,7 @@ async fn every_table_with_an_expiry_column_is_swept() {
         "these tables have an `expires_at` but are not swept by the purge task: {missing:?}"
     );
 
-    // 逆向き: 掃除対象に載っているのに存在しない表（改名・削除の追随漏れ）も落とす。
+    // The reverse: tables listed as purge targets that do not exist (missed renames / drops) also fail.
     for table in PURGED_TABLES {
         let n: i64 = sqlx::query(
             "SELECT COUNT(*) FROM information_schema.tables \
@@ -62,7 +62,7 @@ async fn every_table_with_an_expiry_column_is_swept() {
     }
 }
 
-/// 期限切れ行だけが消える（期限内の進行中フローを巻き込まない）。
+/// Only expired rows disappear (in-progress flows that are still valid are not affected).
 #[tokio::test]
 async fn only_expired_rows_are_deleted() {
     let Some(env) = support::setup("expired_record_purge_behaviour").await else {
@@ -79,17 +79,21 @@ async fn only_expired_rows_are_deleted() {
         Arc::new(support::SystemClock),
     );
     let deleted = service.purge_once().await;
-    assert!(deleted >= 1, "期限切れ行が 1 件以上消えている");
+    assert!(deleted >= 1, "at least one expired row was deleted");
 
     assert_eq!(
         count_auth_session(&env, &expired).await,
         0,
-        "期限切れは消える"
+        "expired rows disappear"
     );
-    assert_eq!(count_auth_session(&env, &live).await, 1, "期限内は残る");
+    assert_eq!(
+        count_auth_session(&env, &live).await,
+        1,
+        "rows still valid remain"
+    );
 }
 
-/// `auth_sessions` に 1 行入れて、その `id_hash` を返す（`expires_at` は現在から `offset_secs` 秒後）。
+/// Inserts one row into `auth_sessions` and returns its `id_hash` (`expires_at` is `offset_secs` seconds from now).
 async fn insert_auth_session(env: &support::TestEnv, client_id: &str, offset_secs: i64) -> String {
     let id_hash = assay_api::domain::auth_session::AuthSessionIdHash::of_plain(&format!(
         "purge-test-{}-{offset_secs}",

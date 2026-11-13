@@ -1,5 +1,5 @@
-//! `ProtectedResourceRepository` の sqlx 実装（ADR-0042）。
-//! UUID は CHAR(36) 正準文字列で入出力する。
+//! sqlx implementation of `ProtectedResourceRepository` (ADR-0042).
+//! UUIDs are read and written as canonical CHAR(36) strings.
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::ProtectedResourceRepository;
@@ -92,8 +92,8 @@ impl ProtectedResourceRepository for SqlxProtectedResourceRepository {
         row.as_ref().map(map_row).transpose()
     }
 
-    /// 照合は**完全一致**。`https://x` と `https://x/` を同じ宛名として扱わないのは、
-    /// リソースサーバ側も受け取った `aud` を文字列で比べるためである（片方だけを正規化すると外れる）。
+    /// Matching is **exact**. `https://x` and `https://x/` are not treated as the same audience because
+    /// resource servers also compare the received `aud` as a string (normalizing only one side breaks the match).
     async fn find_by_uri(
         &self,
         tenant_id: TenantId,
@@ -121,8 +121,8 @@ impl ProtectedResourceRepository for SqlxProtectedResourceRepository {
         rows.iter().map(map_row).collect()
     }
 
-    /// `tenant_id` も条件に入れる（id だけで更新できると、root の管理者が他テナントの宛名を
-    /// 止められる）。
+    /// `tenant_id` is also part of the condition (if updating by id alone were possible, a root admin could
+    /// disable another tenant's audience).
     async fn set_status(
         &self,
         tenant_id: TenantId,

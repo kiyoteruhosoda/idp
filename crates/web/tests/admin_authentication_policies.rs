@@ -1,8 +1,8 @@
-//! 認証ポリシー管理画面のルータ経由の統合テスト（AP1。土台は G11）。
+//! Router-level integration tests of the authentication policy admin screen (AP1; built on G11).
 //!
-//! この画面の要は「api の更新が**全項目置換**である」こと。編集で出し忘れた条件は保存の瞬間に
-//! 消えるため、ここでは *画面に全条件が出ること* と *送信内容が api へそのまま渡ること* を、
-//! api をスタブして実際の HTTP ボディで確かめる。
+//! The key point of this screen is that "api updates **replace all fields**". A condition left out when editing
+//! disappears the moment it is saved, so here we stub the api and check with real HTTP bodies that *all conditions
+//! appear on screen* and *the submission reaches the api as is*.
 
 mod support;
 
@@ -57,10 +57,10 @@ fn sample_policy() -> Value {
     })
 }
 
-/// 管理ポリシーの**作成呼び出し**の本文（届いていなければ `None`）。
+/// Body of the policy **create call** (`None` if it did not arrive).
 ///
-/// 記録された要求を単に「最初の POST」で拾わない。管理コンソールのレイアウトは表示のために
-/// `/internal/account/profile` を POST するので、それを掴んでしまう。
+/// Do not simply pick "the first POST" among recorded requests. The admin console layout POSTs
+/// `/internal/account/profile` for display, which would be caught instead.
 async fn created_policy_body(env: &WebEnv) -> Option<Value> {
     env.api
         .received_requests()
@@ -74,7 +74,7 @@ async fn created_policy_body(env: &WebEnv) -> Option<Value> {
         .map(|r| serde_json::from_slice(&r.body).expect("json body"))
 }
 
-/// ポリシーを書き換える呼び出し（作成・更新・削除）が api へ届いたか。
+/// Whether a call rewriting policies (create, update, delete) reached the api.
 async fn wrote_a_policy(env: &WebEnv) -> bool {
     env.api
         .received_requests()
@@ -98,7 +98,7 @@ async fn stub_list(env: &WebEnv, policies: Value) {
         .await;
 }
 
-/// そのテナントの一覧だけを、指定した既定動作で返す。
+/// Returns only that tenant's list, with the given default effect.
 async fn stub_list_for_tenant(env: &WebEnv, tenant: &str, default_effect: &str) {
     Mock::given(method("GET"))
         .and(path(format!("/{tenant}/admin/authentication-policies")))
@@ -123,11 +123,11 @@ async fn list_page(env: &WebEnv, tenant: &str) -> String {
     body_text(response).await
 }
 
-/// 既定動作が見えないと、同じ「deny 1 件」でも意味が読めない。
+/// Without the default effect visible, the same "1 deny" cannot be interpreted.
 ///
-/// ⚠ 既定動作は**テナントが決める**（ADR-0058 §4）ので、web は自分の設定ではなく api の応答に
-/// 載ったそのテナントの値を描く。2 テナントで違う値を返し、それぞれの画面にそれぞれの値が出ることを
-/// 確かめる ——1 テナントだけだと、web が起動時の全体の値（既定 `allow`）を出していても通ってしまう。
+/// ⚠ The default effect is **decided by the tenant** (ADR-0058 §4), so web renders not its own setting but the tenant's
+/// value carried in the api response. Return different values for 2 tenants and check that each screen shows its own value
+/// -- with only 1 tenant, it would pass even if web showed the global startup value (default `allow`).
 #[tokio::test]
 async fn the_list_shows_the_tenants_own_default_effect_because_a_policy_alone_does_not_decide_anything(
 ) {
@@ -156,8 +156,8 @@ async fn the_list_shows_the_tenants_own_default_effect_because_a_policy_alone_do
     );
 }
 
-/// 一覧を引けなかったときは既定動作を出さない（推測の値を出すと、そのテナントの実際の値と
-/// 食い違っていても気付けない）。
+/// When the list could not be fetched, the default effect is not shown (with a guessed value, a mismatch with the
+/// tenant's actual value would go unnoticed).
 #[tokio::test]
 async fn the_default_effect_is_not_guessed_when_the_list_fails() {
     let env = setup().await;
@@ -204,7 +204,7 @@ async fn editing_prefills_every_condition_so_a_save_cannot_silently_drop_one() {
         html.contains("mon,tue,wed,thu,fri 09:00-18:00 +09:00"),
         "time window must round-trip into the textarea: {html}"
     );
-    // 更新は専用の POST パス経由（HTML フォームは PUT を送れない）。
+    // Updates go via a dedicated POST path (HTML forms cannot send PUT).
     assert!(
         html.contains("/admin/authentication-policies/019f8ea8-f5dd-7fc7-ac15-a7d4337e4610/update"),
         "edit form must post to the update path: {html}"
@@ -277,8 +277,8 @@ async fn creating_a_policy_sends_the_conditions_the_operator_typed() {
     assert_eq!(body["time_windows"][0]["utc_offset_minutes"], 540);
 }
 
-/// 効果を切り替えたときにチェックが残っていただけ、という取り違えを web 側で落とす
-/// （`require_specific_method` 以外で要求内容を送ると api が弾く）。
+/// web drops the mix-up where a check merely remained after switching the effect
+/// (the api rejects requirements sent with anything other than `require_specific_method`).
 #[tokio::test]
 async fn method_requirements_are_not_sent_for_other_effects() {
     let env = setup().await;
@@ -310,12 +310,12 @@ async fn method_requirements_are_not_sent_for_other_effects() {
         .await
         .expect("the create call must reach the api");
     assert_eq!(body["effect_params"], Value::Null);
-    // 未チェックのチェックボックスは送信されない = 無効として保存される。
+    // Unchecked checkboxes are not submitted = saved as disabled.
     assert_eq!(body["enabled"], false);
 }
 
-/// 読めない時間帯は**保存させない**。読める行だけ送ると、書いたはずの条件が黙って消えたまま
-/// 「保存しました」と表示される。
+/// Unreadable time windows are **not saved**. Sending only the readable rows would show "Saved" while the
+/// condition you wrote silently disappeared.
 #[tokio::test]
 async fn an_unreadable_time_window_stops_the_save_and_keeps_the_edit_context() {
     let env = setup().await;
@@ -350,7 +350,7 @@ async fn an_unreadable_time_window_stops_the_save_and_keeps_the_edit_context() {
         "nothing may be written when a condition could not be read"
     );
 
-    // 入力は消えない。1 項目直すために全部入れ直させない。
+    // Input is not lost. Do not make users retype everything to fix one field.
     let html = body_text(response).await;
     assert!(
         html.contains(r#"value="office-hours""#),
@@ -364,7 +364,7 @@ async fn an_unreadable_time_window_stops_the_save_and_keeps_the_edit_context() {
         html.contains("mon 09:00-18:00\nnonsense"),
         "the rejected time windows must stay so the operator can fix them: {html}"
     );
-    // 編集対象を見失わない（新規作成のフォームに化けると別のポリシーが増える）。
+    // Do not lose the edit target (turning into a create form would add another policy).
     assert!(
         html.contains("/admin/authentication-policies/019f8ea8-f5dd-7fc7-ac15-a7d4337e4610/update"),
         "the form must still target the policy being edited: {html}"

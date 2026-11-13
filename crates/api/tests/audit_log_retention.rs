@@ -1,12 +1,12 @@
-//! G8: 監査ログの保持期間と絞り込み索引。
+//! G8: audit log retention period and filter indexes.
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test audit_log_retention
 //!
-//! 検証するのは 3 点:
-//!   1. 保持期間が既定（`0`）では**削除しない** —— 既定値で監査ログが消え始めない。
-//!   2. 保持期間を設定すると、期限を過ぎた行だけが消える。
-//!   3. 管理コンソールが投げる絞り込みが複合索引を使う —— 期間検索が全表走査に落ちない。
+//! Three things are checked:
+//!   1. With the default retention (`0`) **nothing is deleted** — audit logs do not start disappearing by default.
+//!   2. With a retention period set, only rows past it disappear.
+//!   3. The filters the admin console sends use the composite index — period searches do not fall back to full scans.
 
 mod support;
 
@@ -19,14 +19,14 @@ use sqlx::Row;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// 保持期間の削除は**表全体**を時刻で薙ぐ（`purge_older_than(cutoff)`）。同じバイナリの
-/// テストは並行に走るため、片方が入れた「十分に古い行」をもう片方の purge が巻き込む
-/// —— 入れた直後に数えても 0 件になる。共有 DB の他バイナリは現在時刻の行しか書かないので、
-/// 直列化が要るのはこのファイルの中だけである。
+/// Retention deletion sweeps **the whole table** by time (`purge_older_than(cutoff)`). Tests in the same
+/// binary run in parallel, so one test's purge sweeps up the "old enough rows" another inserted
+/// — counting right after inserting gives 0. Other binaries sharing the DB only write rows at the current time,
+/// so serialization is needed only within this file.
 static PURGE_SERIALIZATION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// 監査イベントを 1 件、指定時刻で書き込む。`correlation_id` はテストごとに固有にして、
-/// 他のテストが書いた行と混ざらないようにする。
+/// Writes one audit event at the given time. `correlation_id` is unique per test so
+/// rows do not mix with those written by other tests.
 async fn record_at(
     sink: &SqlxAuditLogSink,
     correlation_id: &str,
@@ -58,8 +58,8 @@ async fn count_by_correlation(pool: &sqlx::MySqlPool, correlation_id: &str) -> i
         .get(0)
 }
 
-/// 既定（`AUDIT_LOG_RETENTION_DAYS = 0`）では 1 行も消さない。監査ログの保存期間は法令・契約で
-/// 決まるため、設定し忘れが「黙って消える」に転ばないことを保証する。
+/// With the default (`AUDIT_LOG_RETENTION_DAYS = 0`) not a single row is deleted. Audit log retention is set by
+/// law and contract, so this guarantees forgetting to configure it does not turn into "silently deleted".
 #[tokio::test]
 async fn the_default_retention_never_deletes_anything() {
     let Some(env) = support::setup("audit log retention default").await else {
@@ -68,7 +68,7 @@ async fn the_default_retention_never_deletes_anything() {
     let _serialized = PURGE_SERIALIZATION.lock().await;
     let correlation = format!("retention-default-{}", Uuid::new_v4());
     let sink = SqlxAuditLogSink::new(env.pool.clone());
-    // 10 年前の行でも残る。
+    // Even a row from 10 years ago remains.
     record_at(&sink, &correlation, Utc::now() - Duration::days(3_650)).await;
 
     let audit = AuditService::new(
@@ -79,7 +79,7 @@ async fn the_default_retention_never_deletes_anything() {
     assert_eq!(count_by_correlation(&env.pool, &correlation).await, 1);
 }
 
-/// 保持期間を設定すると、境界より古い行だけが消える。
+/// With a retention period set, only rows older than the boundary disappear.
 #[tokio::test]
 async fn only_rows_older_than_the_retention_window_are_deleted() {
     let Some(env) = support::setup("audit log retention window").await else {
@@ -102,10 +102,10 @@ async fn only_rows_older_than_the_retention_window_are_deleted() {
     assert_eq!(count_by_correlation(&env.pool, &fresh).await, 1);
 }
 
-/// 管理コンソールの絞り込み（テナント × 期間 × result）が複合索引を使う。
+/// The admin console's filter (tenant × period × result) uses the composite index.
 ///
-/// G8 の症状は「索引が単一列しかなく、期間検索が事実上の全表走査になる」ことだった。
-/// `EXPLAIN` が索引を選ばない（`type = ALL`）なら索引の設計が要件と噛み合っていない。
+/// The G8 symptom was "only single-column indexes, so period searches are effectively full scans".
+/// If `EXPLAIN` does not choose an index (`type = ALL`), the index design does not fit the requirement.
 #[tokio::test]
 async fn the_console_filter_uses_a_composite_index() {
     let Some(env) = support::setup("audit log index").await else {

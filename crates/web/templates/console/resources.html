@@ -60,8 +60,8 @@
 <h3 class="h5 mb-3">{{ messages.get("admin-resources-register-heading") }}</h3>
 <div class="card">
   <div class="card-body">
-    {# 宛名は「叩く先」ではないので、実在の URL である必要はない。ここで誤解されると
-       「公開ホスト名を書いて、そこへ接続すると思ってしまう」ため、例を 2 つ並べて出す。 #}
+    {# An audience is not "where to call", so it need not be a real URL. Misunderstood here, people
+       "write a public host name and think it will be connected to", so show two examples side by side. #}
     <p class="text-muted">{{ messages.get("admin-resources-register-intro") }}</p>
     <form method="post" action="{{ tenant }}/admin/resources/register">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">

@@ -1,32 +1,32 @@
-//! XML 署名（XMLDSIG）の**検証**（AP12。ADR-0027）。
+//! **Verification** of XML signatures (XMLDSIG) (AP12, ADR-0027).
 //!
-//! 外部 SAML IdP から受け取った Response / Assertion の署名を確かめる。生成側
-//! （[`crate::domain::saml_response`]）と違い、XML を作るのは相手なので本物の正準化が要る
-//! （[`crate::domain::xml_c14n`]）。
+//! Checks signatures on Responses / Assertions received from external SAML IdPs. Unlike the generating side
+//! ([`crate::domain::saml_response`]), the XML is made by the other party, so real canonicalization is needed
+//! ([`crate::domain::xml_c14n`]).
 //!
-//! # 対応する組み合わせを絞る
+//! # Narrowing the supported combinations
 //!
-//! - 正準化: 排他的（`xml-exc-c14n#`）のみ。
-//! - ダイジェスト: SHA-256 のみ。
-//! - 署名: RSA-SHA256 / ECDSA-SHA256 のみ。
-//! - 変換: enveloped signature + 排他的正準化のみ。
+//! - Canonicalization: exclusive (`xml-exc-c14n#`) only.
+//! - Digest: SHA-256 only.
+//! - Signature: RSA-SHA256 / ECDSA-SHA256 only.
+//! - Transforms: enveloped signature + exclusive canonicalization only.
 //!
-//! **未対応の値は既定へ丸めずエラー**にする。丸めると、SHA-1 の署名を「検証した」ことにして
-//! しまう経路が生まれる。
+//! **Unsupported values are errors, not rounded to a default.** Rounding would create a path that treats a SHA-1
+//! signature as "verified".
 //!
-//! # 署名ラッピング（XSW）
+//! # Signature wrapping (XSW)
 //!
-//! SAML SP の典型的な破れ方は、署名そのものではなく「**署名された要素**と**読む要素**が違う」
-//! ことで起きる。攻撃者は正当な署名付きアサーションを別の場所へ押し込み、自分が作った
-//! 無署名のアサーションを SP に読ませる。ここでは:
+//! The typical way SAML SPs break is not the signature itself but the **signed element** and the **element read**
+//! being different. An attacker pushes a legitimately signed assertion somewhere else and makes the SP read
+//! an unsigned assertion they crafted. Here, verification fails unless:
 //!
-//! - `Reference URI` は `#ID` 形式のみ（空 URI = 文書全体・外部参照は拒否）。
-//! - 参照先 ID を持つ要素が文書全体で**ちょうど 1 つ**であること（[`xml_c14n`] が数える）。
-//! - 署名は**署名対象の直下**にあること（enveloped）。
+//! - `Reference URI` is of the `#ID` form only (empty URI = whole document, and external references are rejected).
+//! - Exactly **one** element in the whole document has the referenced ID (counted by [`xml_c14n`]).
+//! - The signature is **directly under the signed element** (enveloped).
 //!
-//! を満たさない限り検証は失敗する。「どの要素が検証されたか」は
-//! [`VerifiedSignature::signed_element_id`] で呼び出し側へ返し、**その ID の要素から読み直す**
-//! ことを呼び出し側の責務にする（[`crate::domain::saml_external_idp`]）。
+//! all hold. "Which element was verified" is returned to the caller via
+//! [`VerifiedSignature::signed_element_id`], and **re-reading from the element with that ID**
+//! is the caller's responsibility ([`crate::domain::saml_external_idp`]).
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::xml_c14n::{canonicalize, Target, ALGORITHM_EXC_C14N, NS_XMLDSIG};
@@ -42,14 +42,14 @@ const SIG_RSA_SHA256: &str = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"
 const SIG_ECDSA_SHA256: &str = "http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha256";
 const TRANSFORM_ENVELOPED: &str = "http://www.w3.org/2000/09/xmldsig#enveloped-signature";
 
-/// 検証に通った署名。**どの要素が**検証されたかを持つ。
+/// A signature that passed verification. Holds **which element** was verified.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedSignature {
-    /// 署名が覆っていた要素の `ID`。呼び出し側はこの ID の要素から値を読み直す。
+    /// `ID` of the element the signature covered. Callers re-read values from the element with this ID.
     pub signed_element_id: String,
 }
 
-/// `ds:Signature` から取り出した、検証に必要な値。
+/// Values needed for verification, extracted from `ds:Signature`.
 #[derive(Debug, Clone)]
 struct SignatureParts {
     reference_id: String,
@@ -59,20 +59,20 @@ struct SignatureParts {
     inclusive_prefixes: Vec<String>,
 }
 
-/// 署名検証に使う公開鍵。管理者が登録した証明書（base64 DER の X.509）から取り出す。
+/// Public key used for signature verification. Extracted from a certificate registered by an admin (base64 DER X.509).
 pub enum SigningCertificateKey {
-    /// SubjectPublicKeyInfo の DER（取り出すときに RSA の公開鍵として読めることを確かめてある）。
+    /// SubjectPublicKeyInfo DER (verified at extraction to be readable as an RSA public key).
     Rsa(Vec<u8>),
     P256(Box<p256::ecdsa::VerifyingKey>),
 }
 
 impl SigningCertificateKey {
-    /// `<ds:X509Certificate>` 本文（base64 DER。空白を含んでいてよい）から公開鍵を取り出す。
+    /// Extracts the public key from the `<ds:X509Certificate>` body (base64 DER; may contain whitespace).
     ///
-    /// **証明書チェーンは検証しない。** 信頼の起点は「管理者がこの証明書を外部 IdP の設定として
-    /// 登録した」ことであって CA ではない（SAML メタデータの交換はそういう運用になっている）。
-    /// 有効期限も見ない——期限切れの証明書で署名を止めると、IdP 側の更新漏れで全員のログインが
-    /// 落ちる一方、鍵の危殆化への対処は管理者が設定から外すことで行える。
+    /// **The certificate chain is not verified.** The trust anchor is "an admin registered this certificate as the
+    /// external IdP's setting", not a CA (that is how SAML metadata exchange is operated).
+    /// Expiry is not checked either -- stopping signatures on an expired certificate would break everyone's login when the
+    /// IdP forgets to renew, while key compromise is handled by the admin removing it from the settings.
     pub fn from_base64_certificate(certificate: &str) -> Result<Self> {
         use x509_cert::der::Decode as _;
 
@@ -84,8 +84,8 @@ impl SigningCertificateKey {
             .map_err(|e| DomainError::InvalidValue(format!("certificate is not X.509 DER: {e}")))?;
         let spki = cert.tbs_certificate().subject_public_key_info();
 
-        // RSA を先に試し、駄目なら P-256。どちらでもなければ拒否する（対応するのは SAML IdP が
-        // 実際に使う 2 種類だけ。ADR-0027）。
+        // Try RSA first, then P-256. Reject anything else (only the 2 kinds SAML IdPs
+        // actually use are supported; ADR-0027).
         let spki_der = {
             use x509_cert::der::Encode as _;
             spki.to_der()
@@ -109,8 +109,8 @@ impl SigningCertificateKey {
     fn verify(&self, algorithm: &str, signed: &[u8], signature: &[u8]) -> Result<()> {
         match (self, algorithm) {
             (Self::Rsa(spki_der), SIG_RSA_SHA256) => {
-                // 鍵長は 1024 ビットから受ける（登録済みの外部 IdP の証明書を、部品の入れ替えで
-                // 弾き始めないため。RSA の部品を aws-lc-rs へ移す前と同じ範囲）。
+                // Key sizes from 1024 bits are accepted (so registered external IdP certificates don't start
+                // being rejected due to a component swap; same range as before moving RSA to aws-lc-rs).
                 aws_lc_rs::signature::UnparsedPublicKey::new(
                     &aws_lc_rs::signature::RSA_PKCS1_1024_8192_SHA256_FOR_LEGACY_USE_ONLY,
                     spki_der,
@@ -119,7 +119,7 @@ impl SigningCertificateKey {
                 .map_err(|_| DomainError::InvalidValue("signature does not verify".to_string()))
             }
             (Self::P256(key), SIG_ECDSA_SHA256) => {
-                // XMLDSIG の ECDSA 署名は r||s の連結（DER ではない）。
+                // XMLDSIG ECDSA signatures are the concatenation r||s (not DER).
                 let signature = p256::ecdsa::Signature::from_slice(signature).map_err(|e| {
                     DomainError::InvalidValue(format!("malformed ECDSA signature: {e}"))
                 })?;
@@ -137,11 +137,11 @@ impl SigningCertificateKey {
     }
 }
 
-/// `element_id` の要素に掛かった enveloped 署名を、**いずれかの**証明書で検証する。
+/// Verifies the enveloped signature on the `element_id` element with **any** of the certificates.
 ///
-/// 証明書を複数受け取るのは、IdP の証明書更新期間に新旧 2 枚が同時に有効になるため（1 枚しか
-/// 持てないと更新のたびにログインが止まる）。1 枚でも通れば成功で、どれで通ったかは返さない
-/// （運用上の意味が無く、返すと「どの鍵が使われたか」を攻撃者へ教える出口になる）。
+/// Multiple certificates are accepted because old and new are both valid during an IdP's certificate rollover (with only
+/// one, login would stop at every rollover). Success if any one passes; which one is not returned
+/// (it has no operational meaning, and returning it would leak "which key was used" to an attacker).
 pub fn verify_enveloped_signature(
     xml: &str,
     element_id: &str,
@@ -159,7 +159,7 @@ pub fn verify_enveloped_signature(
         ));
     }
 
-    // 1. ダイジェスト: 署名を取り除いた対象要素の正準形と突き合わせる。
+    // 1. Digest: compare against the canonical form of the target element with the signature removed.
     let canonical = canonicalize(
         xml,
         Target::SignedElement(element_id),
@@ -172,7 +172,7 @@ pub fn verify_enveloped_signature(
         ));
     }
 
-    // 2. 署名: `SignedInfo` の正準形に対して検証する。
+    // 2. Signature: verify against the canonical form of `SignedInfo`.
     let signed_info = canonicalize(
         xml,
         Target::SignedInfoOf(element_id),
@@ -203,10 +203,10 @@ pub fn verify_enveloped_signature(
     Err(last_error)
 }
 
-/// `element_id` の要素の直下にある `ds:Signature` を読む。
+/// Reads the `ds:Signature` directly under the `element_id` element.
 ///
-/// 接頭辞（`ds:`）は実装依存なのでローカル名で判定する。**対象要素の直下**に限るため深さを追う
-/// （深い所にある別の署名を拾うと、署名ラッピングの入口になる）。
+/// The prefix (`ds:`) is implementation-dependent, so local names are compared. Depth is tracked to restrict to
+/// **directly under the target element** (picking up another signature deeper down opens the door to signature wrapping).
 fn parse_signature(xml: &str, element_id: &str) -> Result<SignatureParts> {
     let mut reader = Reader::from_reader(xml.as_bytes());
     reader.config_mut().trim_text(false);
@@ -230,7 +230,7 @@ fn parse_signature(xml: &str, element_id: &str) -> Result<SignatureParts> {
             Event::Eof => break,
             Event::Start(e) => state.on_start(&e)?,
             Event::Empty(e) => {
-                // 空要素タグは開始と終了を兼ねる。
+                // An empty-element tag is both start and end.
                 state.on_start(&e)?;
                 state.on_end()?;
             }
@@ -252,13 +252,13 @@ fn parse_signature(xml: &str, element_id: &str) -> Result<SignatureParts> {
     state.found.into_parts()
 }
 
-/// `ds:Signature` を読む間の状態。
+/// State while reading `ds:Signature`.
 struct ParseState<'a> {
     element_id: &'a str,
     depth: usize,
     target_depth: Option<usize>,
     signature_depth: Option<usize>,
-    /// 本文を集めている要素（`DigestValue` / `SignatureValue`）。
+    /// Element whose body is being collected (`DigestValue` / `SignatureValue`).
     capture: Option<Capture>,
     captured: String,
     found: Found,
@@ -434,5 +434,5 @@ fn attribute(e: &quick_xml::events::BytesStart<'_>, name: &str) -> Result<Option
     Ok(None)
 }
 
-/// XMLDSIG の `Signature` 名前空間（呼び出し側の判定用に再輸出する）。
+/// XMLDSIG `Signature` namespace (re-exported for callers' checks).
 pub const NS_SIGNATURE: &str = NS_XMLDSIG;

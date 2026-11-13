@@ -1,10 +1,10 @@
-//! アカウント設定と管理コンソールのログアウト（POST）は CSRF トークンを要る（task #143）。
+//! Logout (POST) from account settings and the admin console requires a CSRF token (task #143).
 //!
-//! 以前はどちらもトークンを持たず、SSO Cookie の `SameSite=Lax` だけで守られていた。外部のページから
-//! ログアウトを強制されないよう、他のログイン後のフォームと同じ `console_csrf_token`（SSO セッション
-//! id 由来）を埋め、合わなければ api へ何も送らず、SSO Cookie も消さずに戻す。
+//! Previously neither had a token and they were protected only by the SSO Cookie's `SameSite=Lax`. To prevent forced
+//! logout from external pages, the same `console_csrf_token` (derived from the SSO session id) as other post-login forms
+//! is embedded; on mismatch nothing is sent to the api and the SSO Cookie is not cleared.
 //!
-//! RP からのログアウト（OIDC の end_session_endpoint＝`GET /logout`）は別の口で、ここでは扱わない。
+//! Logout from RPs (OIDC end_session_endpoint = `GET /logout`) is a different endpoint and not covered here.
 
 mod support;
 
@@ -31,7 +31,7 @@ fn csrf() -> String {
     assay_web::csrf::console_csrf_token(SSO, TEST_CSRF_SECRET)
 }
 
-/// 無い・空・でたらめ・別のセッションのもの。どれも「合わない」。
+/// Missing, empty, garbage, or another session's. All of them "do not match".
 fn wrong_tokens() -> Vec<Option<String>> {
     vec![
         None,
@@ -86,10 +86,10 @@ fn with_token<'a>(
     all
 }
 
-// ── アカウント設定のログアウト（`POST /{tenant_id}/logout`） ─────────────────
+// ── Account settings logout (`POST /{tenant_id}/logout`) ─────────────────────
 
-/// トークンが合わなければログアウトしない（SSO は api で失効させず、Cookie も消さない）。
-/// 設定画面へ `?error=csrf` で戻し、バナーで伝える。
+/// On token mismatch, do not log out (SSO is not revoked in the api and the Cookie is not cleared).
+/// Return to the settings screen with `?error=csrf` and show a banner.
 #[tokio::test]
 async fn the_account_logout_keeps_the_session_without_the_right_token() {
     let env = setup().await;
@@ -122,7 +122,7 @@ async fn the_account_logout_keeps_the_session_without_the_right_token() {
     );
 }
 
-/// 正しいトークンならログアウトする（api で SSO を失効させ、Cookie を消してログイン画面へ）。
+/// With the correct token, log out (revoke SSO in the api, clear the Cookie, go to the login screen).
 #[tokio::test]
 async fn the_account_logout_signs_out_with_the_right_token() {
     let env = setup().await;
@@ -146,7 +146,7 @@ async fn the_account_logout_signs_out_with_the_right_token() {
     assert_eq!(logout_calls(&env).await, 1);
 }
 
-/// 管理コンソールから開いた設定画面の文脈は、トークンが合わずに戻したときも保つ。
+/// The context of a settings screen opened from the admin console is kept even when sent back on token mismatch.
 #[tokio::test]
 async fn a_rejected_account_logout_keeps_the_console_context() {
     let env = setup().await;
@@ -157,8 +157,8 @@ async fn a_rejected_account_logout_keeps_the_console_context() {
     );
 }
 
-/// 未ログイン（SSO Cookie が無い）なら失効させるものが無い。トークンを見ずにログイン画面へ送り、
-/// api は呼ばない。
+/// When logged out (no SSO Cookie) there is nothing to revoke. Send to the login screen without checking the token,
+/// and do not call the api.
 #[tokio::test]
 async fn a_signed_out_logout_just_goes_to_the_login_page() {
     let env = setup().await;
@@ -168,8 +168,8 @@ async fn a_signed_out_logout_just_goes_to_the_login_page() {
     assert_eq!(logout_calls(&env).await, 0);
 }
 
-/// フォームとして読めない POST（Content-Type も本文も無い）も 4xx にせず、トークン無しとして扱う
-/// （ログイン中ならログアウトせずに戻す）。
+/// A POST not readable as a form (no Content-Type, no body) is not 4xx either; it is treated as no token
+/// (if logged in, sent back without logging out).
 #[tokio::test]
 async fn a_bodyless_logout_is_treated_as_a_missing_token() {
     let env = setup().await;
@@ -193,7 +193,7 @@ async fn a_bodyless_logout_is_treated_as_a_missing_token() {
     assert_eq!(logout_calls(&env).await, 0);
 }
 
-// ── 管理コンソールのログアウト（`POST /{tenant_id}/admin/logout`） ──────────
+// ── Admin console logout (`POST /{tenant_id}/admin/logout`) ──────────────
 
 #[tokio::test]
 async fn the_console_logout_keeps_the_session_without_the_right_token() {
@@ -259,8 +259,8 @@ async fn a_signed_out_console_logout_just_goes_to_the_login_page() {
     assert_eq!(logout_calls(&env).await, 0);
 }
 
-/// 戻った先のホームは `?error=csrf` でバナーを出し、ヘッダのログアウトにはトークンが埋まっている
-/// （再読み込みせずにもう一度押せば通る）。
+/// The home returned to shows a banner for `?error=csrf`, and the header logout has the token embedded
+/// (pressing again without reloading succeeds).
 #[tokio::test]
 async fn the_console_home_shows_the_banner_and_carries_the_logout_token() {
     let env = setup().await;

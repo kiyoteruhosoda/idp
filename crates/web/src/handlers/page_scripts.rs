@@ -1,21 +1,21 @@
-//! 画面固有スクリプトの配信（SEC12）。
+//! Serving of screen-specific scripts (SEC12).
 //!
-//! もとはテンプレートのインライン `<script>` だったものを自オリジンのアセットへ切り出し、
-//! CSP から `script-src 'unsafe-inline'` を外せるようにした。インライン許容を残したままでは、
-//! 反射型 XSS が 1 か所でもあれば CSP が防御にならない。
+//! What used to be inline `<script>` in templates was split out into same-origin assets so that
+//! `script-src 'unsafe-inline'` could be removed from the CSP. While inline is allowed, a single
+//! reflected XSS would make the CSP useless as a defense.
 //!
-//! nonce 方式ではなく外部アセット化を選んだのは、テンプレート構造体・ハンドラすべてに nonce を
-//! 通す必要が無く、`?v={asset_version}` で長期キャッシュも効くため。テンプレート側が持っていた
-//! 埋め込み値（テナントプレフィクス・翻訳済み文言）は `data-*` 属性で渡す。
+//! External assets were chosen over nonces because nonces would have to be threaded through every template
+//! struct and handler, and `?v={asset_version}` allows long-term caching. Values the templates used to
+//! embed (tenant prefix, translated wording) are passed via `data-*` attributes.
 //!
-//! 中身は `crates/web/assets/*.js` を `include_str!` で同梱する（`console.js`・
-//! `submit-feedback.js` と同じ方針）。
+//! The contents are `crates/web/assets/*.js` embedded with `include_str!` (same policy as `console.js`
+//! and `submit-feedback.js`).
 
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::response::IntoResponse;
 
 pub(crate) const PASSKEY_LOGIN_JS: &str = include_str!("../../assets/passkey-login.js");
-/// 「アプリで続ける」を Android のブラウザでだけ見せる（task #892。見た目だけ）。
+/// Shows "Continue in the app" only in Android browsers (task #892; appearance only).
 pub(crate) const APP_APPROVAL_LOGIN_JS: &str = include_str!("../../assets/app-approval-login.js");
 pub(crate) const PASSKEY_REGISTER_JS: &str = include_str!("../../assets/passkey-register.js");
 pub(crate) const ACCOUNT_SETUP_JS: &str = include_str!("../../assets/account-setup.js");
@@ -25,12 +25,12 @@ pub(crate) const RP_LOGOUT_JS: &str = include_str!("../../assets/rp-logout.js");
 pub(crate) const AUTO_SUBMIT_JS: &str = include_str!("../../assets/auto-submit.js");
 pub(crate) const CLIENT_FORM_JS: &str = include_str!("../../assets/client-form.js");
 pub(crate) const LOCAL_TIME_JS: &str = include_str!("../../assets/local-time.js");
-/// 一覧をその場で絞り込む（メンバーの「使えるアプリ」ほか）。
+/// Filters a list in place (a member's "available apps", etc.).
 pub(crate) const LIST_FILTER_JS: &str = include_str!("../../assets/list-filter.js");
-/// 検索欄を打つだけでサーバ側の一覧を絞り込む（アカウント一覧。ADR-0065 の続き）。
+/// Filters the server-side list just by typing in the search box (account list; continuation of ADR-0065).
 pub(crate) const LIVE_SEARCH_JS: &str = include_str!("../../assets/live-search.js");
 
-/// 参照 URL に `?v={asset_version}` が付きデプロイごとに変わるため長期キャッシュしてよい。
+/// The reference URL carries `?v={asset_version}`, which changes per deploy, so long-term caching is fine.
 fn javascript(body: &'static str) -> impl IntoResponse {
     (
         [

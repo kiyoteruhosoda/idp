@@ -1,16 +1,16 @@
-//! メンバーの管理者メモ（`PUT /{tenant_id}/admin/members/{user_id}/note`）と、メンバー 1 人が
-//! 使えるアプリ（`GET /{tenant_id}/admin/members/{user_id}/applications`）の統合テスト（ADR-0063）。
+//! Integration tests (ADR-0063) for a member's admin note (`PUT /{tenant_id}/admin/members/{user_id}/note`) and
+//! the apps one member can use (`GET /{tenant_id}/admin/members/{user_id}/applications`).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test admin_member_notes
 //!
-//! 検証するのは:
+//! What is checked:
 //!
-//! 1. 認可（未認証 401 / 権限なし 403）と、メンバーでない利用者へは 404。
-//! 2. 書いたメモが詳細・一覧に載り、**メモの言葉で絞り込める**こと。空で送ると消えること。
-//! 3. ⚠ **監査にメモの中身が残らない**こと（経緯の自由記述は PII を含む）。
-//! 4. ゲストを解除するとメモも消えること（招き直したときに前回のメモが黙って復活しない）。
-//! 5. 使えるアプリが判定と同じ規則で答えられ、ログインの名乗りの無いアプリは載らないこと。
+//! 1. Authorization (unauthenticated 401 / no permission 403), and 404 for users who are not members.
+//! 2. A written note appears in the details and list, and **the list can be filtered by note words**. Sending empty clears it.
+//! 3. ⚠ **The note content is not left in the audit log** (free-form background contains PII).
+//! 4. Removing a guest also removes the note (the previous note does not silently come back on re-invitation).
+//! 5. Usable apps are answered with the same rules as the decision, and apps without a login identity are not listed.
 
 mod support;
 
@@ -54,7 +54,7 @@ async fn admin_writes_reads_searches_and_clears_a_member_note() {
     let marker = format!("経緯-{}", support::unique());
     let text = format!("{marker}\n2026-09 に家族として招待");
 
-    // ── 認可。
+    // ── Authorization.
     let res = send(
         &env.app,
         support::anonymous(Method::PUT, &uri, Some(json!({ "note": "x" }))),
@@ -66,7 +66,7 @@ async fn admin_writes_reads_searches_and_clears_a_member_note() {
     let res = send(&env.app, put(&plain_tok, &uri, json!({ "note": "x" }))).await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "no permission -> 403");
 
-    // ── 書く。詳細にも一覧にも載る。
+    // ── Write. It appears in both the details and the list.
     let res = send(&env.app, put(&admin_tok, &uri, json!({ "note": text }))).await;
     assert_eq!(res.status(), StatusCode::NO_CONTENT, "write -> 204");
     let detail = body_json(
@@ -83,7 +83,7 @@ async fn admin_writes_reads_searches_and_clears_a_member_note() {
     assert_eq!(detail["note"]["text"], json!(text), "{detail}");
     assert!(detail["note"]["updated_at"].is_string(), "{detail}");
 
-    // ── メモの言葉で絞り込める。
+    // ── Filterable by note words.
     let found = body_json(
         send(
             &env.app,
@@ -103,12 +103,12 @@ async fn admin_writes_reads_searches_and_clears_a_member_note() {
     assert_eq!(found["members"][0]["user_id"], json!(member));
     assert_eq!(found["members"][0]["note"]["text"], json!(text));
 
-    // ── ⚠ 監査に中身を残さない。
+    // ── ⚠ The content is not left in the audit log.
     let reasons = audit_reasons(&env.pool, &member).await;
     assert_eq!(reasons.len(), 1, "{reasons:?}");
     assert!(!reasons[0].contains(&marker), "{reasons:?}");
 
-    // ── 長すぎれば 400（文字で数える）。前のメモはそのまま。
+    // ── Too long is 400 (counted in characters). The previous note stays.
     let res = send(
         &env.app,
         put(&admin_tok, &uri, json!({ "note": "あ".repeat(2001) })),
@@ -122,14 +122,14 @@ async fn admin_writes_reads_searches_and_clears_a_member_note() {
     .await;
     assert_eq!(res.status(), StatusCode::NO_CONTENT, "2000 chars fit");
 
-    // ── 空で送ると消える。
+    // ── Sending empty clears it.
     let res = send(&env.app, put(&admin_tok, &uri, json!({ "note": "  \n " }))).await;
     assert_eq!(res.status(), StatusCode::NO_CONTENT, "clear -> 204");
     assert_eq!(note_rows(&env.pool, &env.root_tenant_id, &member).await, 0);
     let reasons = audit_reasons(&env.pool, &member).await;
     assert!(reasons.last().unwrap().ends_with("cleared"), "{reasons:?}");
 
-    // ── メンバーでない利用者（別テナントの人）へは 404。
+    // ── 404 for a user who is not a member (someone from another tenant).
     let other_tenant = uuid::Uuid::now_v7().to_string();
     sqlx::query("INSERT INTO tenants (id, parent_tenant_id, name) VALUES (?, ?, ?)")
         .bind(&other_tenant)
@@ -151,7 +151,7 @@ async fn admin_writes_reads_searches_and_clears_a_member_note() {
     assert_eq!(res.status(), StatusCode::NOT_FOUND, "not a member -> 404");
 }
 
-/// 利用者の作成と同時にメモを書ける（作ったときがいちばん経緯を覚えている）。
+/// A note can be written when creating the user (creation is when the background is best remembered).
 #[tokio::test]
 async fn a_note_can_be_written_when_the_user_is_created() {
     let Some(env) = support::setup("admin member notes on create").await else {
@@ -161,7 +161,7 @@ async fn a_note_can_be_written_when_the_user_is_created() {
     let users_uri = format!("/{}/admin/users", env.root_tenant_id);
     let email = format!("created-{}@example.com", support::unique());
 
-    // 長すぎれば利用者ごと作らない。
+    // Too long: the user is not created at all.
     let res = send(
         &env.app,
         post(
@@ -237,7 +237,7 @@ async fn revoking_a_guest_drops_the_note_with_the_membership() {
     .await
     .expect("insert guest membership");
 
-    // ゲストにも書ける（このテナントの管理者の覚え書き）。
+    // Guests can have notes too (a memo of this tenant's admin).
     let res = send(
         &env.app,
         put(
@@ -278,12 +278,12 @@ async fn member_applications_follow_the_same_rule_as_the_gate() {
         env.root_tenant_id
     );
 
-    // 「全員」のアプリ（ログインの名乗りあり）。
+    // An "Everyone" app (with a login identity).
     let everyone_client =
         support::insert_public_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
     let everyone =
         support::open_client_as_application(&env.pool, &env.root_tenant_id, &everyone_client).await;
-    // 「個別」のアプリ（ログインの名乗りあり）。
+    // An "Individual" app (with a login identity).
     let individual_client =
         support::insert_public_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
     let individual =
@@ -294,7 +294,7 @@ async fn member_applications_follow_the_same_rule_as_the_gate() {
         .execute(&env.pool)
         .await
         .expect("make it individual");
-    // 名乗りの無いアプリは人が入る先ではないので載らない。
+    // An app without an identity is not a place people enter, so it is not listed.
     let created = body_json(
         send(
             &env.app,
@@ -309,7 +309,7 @@ async fn member_applications_follow_the_same_rule_as_the_gate() {
     .await;
     let without_login = created["id"].as_str().expect("id").to_string();
 
-    // ── 認可。
+    // ── Authorization.
     let plain = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let plain_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &plain).await;
     let res = send(&env.app, get(&plain_tok, &uri)).await;
@@ -336,7 +336,7 @@ async fn member_applications_follow_the_same_rule_as_the_gate() {
         "an application nobody signs in to is not listed: {listed}"
     );
 
-    // ── 割り当てると使えるようになる。
+    // ── Assigning makes it usable.
     let res = send(
         &env.app,
         post(
@@ -355,7 +355,7 @@ async fn member_applications_follow_the_same_rule_as_the_gate() {
     assert_eq!(row["access"], "allowed", "{row}");
     assert!(row["assigned_at"].is_string(), "{row}");
 
-    // ── アプリを止めると、割り当てがあっても使えない。
+    // ── Suspending the app makes it unusable even with an assignment.
     sqlx::query("UPDATE applications SET status = 'DISABLED' WHERE id = ?")
         .bind(&individual)
         .execute(&env.pool)
@@ -365,7 +365,7 @@ async fn member_applications_follow_the_same_rule_as_the_gate() {
     let row = find(&listed, &individual).expect("individual app listed");
     assert_eq!(row["access"], "application_disabled", "{row}");
 
-    // ── メンバーでない利用者へは 404。
+    // ── 404 for a user who is not a member.
     let res = send(
         &env.app,
         get(
@@ -381,7 +381,7 @@ async fn member_applications_follow_the_same_rule_as_the_gate() {
     assert_eq!(res.status(), StatusCode::NOT_FOUND, "not a member -> 404");
 }
 
-/// 仮登録の人には設定リンクの期限が出て、切れたら `setup_link_expired` が立つ。
+/// A provisional person shows the setup link expiry, and `setup_link_expired` is set once it lapses.
 #[tokio::test]
 async fn a_pending_member_carries_the_setup_link_deadline() {
     let Some(env) = support::setup("admin member setup link deadline").await else {
@@ -408,7 +408,7 @@ async fn a_pending_member_carries_the_setup_link_deadline() {
     assert!(member["setup_link_expires_at"].is_string(), "{member}");
     assert_eq!(member["setup_link_expired"], false, "{member}");
 
-    // 期限を過去にすると、読んだ時点で期限切れと判定される。
+    // Moving the expiry into the past makes it judged expired at read time.
     sqlx::query("UPDATE password_reset_tokens SET expires_at = ? WHERE user_id = ?")
         .bind(chrono::Utc::now().naive_utc() - chrono::Duration::hours(1))
         .bind(&user_id)
@@ -418,7 +418,7 @@ async fn a_pending_member_carries_the_setup_link_deadline() {
     let member = body_json(send(&env.app, get(&admin_tok, &uri)).await).await;
     assert_eq!(member["setup_link_expired"], true, "{member}");
 
-    // 出し直すと期限が戻る。
+    // Reissuing restores the expiry.
     let res = send(
         &env.app,
         post(
@@ -437,7 +437,7 @@ async fn a_pending_member_carries_the_setup_link_deadline() {
     assert_eq!(member["pending_setup"], true, "{member}");
 }
 
-/// クエリ文字列用の最小限のエンコード（非 ASCII と記号を %XX にする）。
+/// Minimal encoding for query strings (non-ASCII and symbols become %XX).
 fn urlencoding(value: &str) -> String {
     value
         .bytes()

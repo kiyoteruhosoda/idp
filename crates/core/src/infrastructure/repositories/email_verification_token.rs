@@ -1,7 +1,7 @@
-//! `EmailVerificationTokenRepository` の sqlx 実装（SEC6b）。
+//! sqlx implementation of `EmailVerificationTokenRepository` (SEC6b).
 //!
-//! 消費は「UPDATE（未使用・期限内のみ）→ SELECT」の 2 段で行い、`rows_affected == 0` を
-//! 使用済み・期限切れ・不存在として扱う（password_reset_token と同じ one-time パターン）。
+//! Consumption is done in two steps, "UPDATE (only unused and unexpired) -> SELECT", and `rows_affected == 0`
+//! is treated as used / expired / nonexistent (the same one-time pattern as password_reset_token).
 
 use crate::domain::email_verification::EmailVerificationToken;
 use crate::domain::error::{DomainError, Result};
@@ -22,7 +22,7 @@ impl SqlxEmailVerificationTokenRepository {
         Self { pool }
     }
 
-    /// 期限切れ行の掃除（`expired_records` の `ExpiringRecordStore` 実装）が使う。
+    /// Used by the expired-row cleanup (the `ExpiringRecordStore` impl in `expired_records`).
     pub(super) fn pool(&self) -> &Db {
         &self.pool
     }

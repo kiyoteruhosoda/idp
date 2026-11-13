@@ -1,20 +1,20 @@
-//! アプリ（application）——**RP がぶら下がる段**（ADR-0054）。
+//! Application: **the level RPs hang from** (ADR-0054).
 //!
-//! 1 行が「利用者から見た 1 つのアプリ」を表す。OIDC の `clients` や SAML の
-//! `saml_service_providers` は、そのアプリが**どう繋がるか**（binding）でしかない。
+//! One row represents "one app as seen by users". OIDC `clients` and SAML
+//! `saml_service_providers` are only **how that app connects** (binding).
 //!
-//! # なぜプロトコル設定の上に段が要るか
+//! # Why a level is needed above protocol settings
 //!
-//! `clients` と `saml_service_providers` は互いを参照していない。そのため同じアプリが OIDC と
-//! SAML の両方で繋がる形を表せず、認証ポリシー・同意・権限・宛名・back-channel logout の配信は
-//! **すべて OIDC 側にしか付かない**（SAML のアプリには MFA を要求できない）。利用者の割り当てを
-//! `clients` にぶら下げると、この一覧に 6 つ目が並ぶだけになる。
+//! `clients` and `saml_service_providers` do not reference each other. So the same app connecting via both OIDC and
+//! SAML cannot be expressed, and authentication policy, consent, permissions, audiences and back-channel logout delivery
+//! **all attach only to the OIDC side** (MFA cannot be required for SAML apps). Hanging user assignments from
+//! `clients` would just add a 6th item to this list.
 //!
-//! # 割り当てはロールを持たない
+//! # Assignments have no roles
 //!
-//! [`ApplicationAssignment`] に載るのは「使ってよいか」の 1 ビットだけである。アプリの中で何を
-//! してよいかは RP が持つ（ADR-0033 / ADR-0049 の I6）。ロールの列を持つか持たないかは**モデルの
-//! 形**なので、アプリごとに選べる類の設定ではない。
+//! [`ApplicationAssignment`] carries only one bit: "may use". What one may do inside the app
+//! is held by the RP (ADR-0033 / ADR-0049 I6). Whether to have a role column is **the shape of the
+//! model**, not something that can be chosen per app.
 
 use crate::domain::account::AccountRef;
 use crate::domain::message::MessageKey;
@@ -23,16 +23,16 @@ use crate::domain::values::{ApplicationStatus, AssignmentMode, ClientStatus, Use
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-/// `applications.display_name` のカラム上限。
+/// Column limit of `applications.display_name`.
 pub const DISPLAY_NAME_MAX_LEN: usize = 255;
 
-/// アプリ 1 件（`applications` テーブル）。
+/// One app (`applications` table).
 #[derive(Debug, Clone)]
 pub struct Application {
     pub id: Uuid,
-    /// アプリを所有するテナント。テナント越しに共有しない（ADR-0009 §1）。
+    /// The tenant that owns the app. Not shared across tenants (ADR-0009 §1).
     pub tenant_id: TenantId,
-    /// 画面と拒否メッセージに出す名前。
+    /// The name shown on screens and in refusal messages.
     pub display_name: String,
     pub status: ApplicationStatus,
     pub assignment_mode: AssignmentMode,
@@ -40,18 +40,18 @@ pub struct Application {
     pub updated_at: DateTime<Utc>,
 }
 
-/// 「この利用者はこのアプリを使ってよいか」の答え（ADR-0054）。
+/// The answer to "may this user use this app" (ADR-0054).
 ///
-/// 判定は**認証の後**に行う。認証するまで誰なのか分からないためで、これは実装の都合ではなく
-/// 順序の必然である。だからこそ拒否は RP へ戻さず assay の画面で伝える
-/// ——利用者から見れば「入れたのに弾かれた」ので、黙って弾くと障害と区別が付かない。
+/// The decision is made **after authentication**. We do not know who it is until authentication, so this is not an implementation
+/// convenience but a necessity of ordering. That is exactly why refusal is told on assay's screen rather than returned to the RP:
+/// from the user's view "I got in and was then rejected", so rejecting silently would be indistinguishable from an outage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplicationAccess {
-    /// 使ってよい。
+    /// May use.
     Allowed,
-    /// アプリ自体が止まっている。
+    /// The app itself is stopped.
     Disabled,
-    /// アプリは動いているが、この利用者に割り当てが無い。
+    /// The app is running, but this user has no assignment.
     NotAssigned,
 }
 
@@ -60,7 +60,7 @@ impl ApplicationAccess {
         matches!(self, Self::Allowed)
     }
 
-    /// 監査ログ・構造化ログに載せる理由（運用言語 = 英語）。
+    /// Reason recorded in audit logs and structured logs (operating language = English).
     pub fn reason(&self) -> &'static str {
         match self {
             Self::Allowed => "allowed",
@@ -71,11 +71,11 @@ impl ApplicationAccess {
 }
 
 impl Application {
-    /// 割り当ての有無を受け取って可否を返す（純粋関数。DB を引くのは呼び出し側）。
+    /// Takes whether an assignment exists and returns allow/deny (pure function. The caller queries the DB).
     ///
-    /// `EVERYONE` でも `assigned` を引数に取るのは、呼び出し側が**モードを見て問い合わせを
-    /// 省ける**ようにするためである（[`Self::needs_assignment_lookup`]）。ここで DB を引くと、
-    /// 判定が純粋でなくなるうえ「全員」のアプリで無駄な問い合わせが毎回走る。
+    /// `assigned` is taken as an argument even for `EVERYONE` so the caller can **look at the mode and skip
+    /// the query** ([`Self::needs_assignment_lookup`]). Querying the DB here would make the decision impure,
+    /// and a wasted query would run every time for "everyone" apps.
     pub fn admits(&self, assigned: bool) -> ApplicationAccess {
         if self.status != ApplicationStatus::Active {
             return ApplicationAccess::Disabled;
@@ -87,14 +87,14 @@ impl Application {
         }
     }
 
-    /// **サービスアカウント**がこのアプリを使ってよいか（ADR-0059 の決定 5・6）。
+    /// Whether a **service account** may use this app (ADR-0059 decisions 5, 6).
     ///
-    /// 「使う」とは、このアプリの宛名（`resource` の名乗り）宛のトークンを取ることである。
-    /// トークン発行（`client_credentials` + `resource`）とアカウントの画面が同じこの規則を読む
-    /// ——⚠ 画面が別の規則で答えると「使えると出ているのにトークンが出ない」が起きる。
+    /// "Using" means obtaining tokens for this app's audience (the `resource` identity).
+    /// Token issuance (`client_credentials` + `resource`) and the account screen read this same rule:
+    /// ⚠ if the screen answered with a different rule, "shown as usable but no token is issued" would happen.
     ///
-    /// ⚠ **割り当てモードを見ない。** 「全員（`EVERYONE`）」に含まれるのは人だけで、
-    /// サービスアカウントは必ず個別に割り当てる。
+    /// ⚠ **Does not look at the assignment mode.** "Everyone" (`EVERYONE`) includes only people;
+    /// service accounts are always assigned individually.
     pub fn admits_service_account(&self, assigned: bool) -> ApplicationAccess {
         if self.status != ApplicationStatus::Active {
             ApplicationAccess::Disabled
@@ -105,27 +105,27 @@ impl Application {
         }
     }
 
-    /// 判定に割り当ての問い合わせが要るか（`EVERYONE` は要らない）。
+    /// Whether the decision needs an assignment query (`EVERYONE` does not).
     pub fn needs_assignment_lookup(&self) -> bool {
         self.assignment_mode == AssignmentMode::Individual
     }
 
-    /// 新しいトークン・アサーションの発行先に使えるか。
+    /// Whether it can be used as the target of new tokens or assertions.
     pub fn is_active(&self) -> bool {
         self.status == ApplicationStatus::Active
     }
 }
 
-/// アプリの表示名を検証し、格納する値を返す。
+/// Validates an app's display name and returns the value to store.
 ///
-/// 他の管理 API と揃えて翻訳キーで返す（訳出は Presentation 層）。
+/// Returned as translation keys, consistent with the other admin APIs (translation happens in the Presentation layer).
 pub fn validate_display_name(raw: &str) -> Result<String, MessageKey> {
     let value = raw.trim();
     if value.is_empty() {
         return Err(MessageKey::new("api-application-name-required"));
     }
-    // カラムは VARCHAR(255) ＝ **255 文字**なので、バイト数ではなく文字数で見る
-    // （バイトで見ると非 ASCII を含む短い名前を取りこぼす）。
+    // The column is VARCHAR(255) = **255 characters**, so check characters, not bytes
+    // (checking bytes would miss short names containing non-ASCII).
     if value.chars().count() > DISPLAY_NAME_MAX_LEN {
         return Err(MessageKey::with_value(
             "api-application-name-too-long",
@@ -135,32 +135,32 @@ pub fn validate_display_name(raw: &str) -> Result<String, MessageKey> {
     Ok(value.to_string())
 }
 
-/// アプリの名乗り（binding の相手。ADR-0059）。
+/// An app identity (the counterpart of a binding. ADR-0059).
 ///
-/// アプリが「自分」として assay に現れる口は 4 種類ある。どれも **1 つの相手は 1 つのアプリにだけ
-/// 属する**（DB の UNIQUE）——2 つのアプリに属せると、その相手から来た要求がどのアプリのものか
-/// 決まらない。
+/// There are 4 kinds of ways an app shows up to assay as "itself". In all of them **one counterpart belongs to only one
+/// app** (DB UNIQUE): if it could belong to two apps, it would be undecidable which app a request from that counterpart
+/// belongs to.
 ///
-/// 2 つの null 許容列ではなく enum で持つのは、「OIDC なのに SP が入っている」という
-/// 表せてはいけない状態を型で消すためである（DB 側も CHECK 制約で同じことを言っている）。
+/// It is held as an enum rather than two nullable columns to eliminate by type the state "OIDC but holding an SP",
+/// which must not be representable (the DB says the same with a CHECK constraint).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BindingTarget {
-    /// ログイン用の OIDC の RP（`clients.id`。`client_id` ではなく代理キー）。
+    /// An OIDC RP for sign-in (`clients.id`. The surrogate key, not `client_id`).
     Oidc { client_row_id: Uuid },
-    /// SAML の SP（`saml_service_providers.id`）。
+    /// A SAML SP (`saml_service_providers.id`).
     Saml { service_provider_id: Uuid },
-    /// アプリ自身が assay を呼ぶときのサービスアカウント（`client_credentials` の `clients.id`）。
+    /// The service account the app itself uses to call assay (`clients.id` of a `client_credentials` client).
     ///
-    /// ⚠ **サービスアカウントはアプリではない。** アプリの名乗りの 1 つである（例: wiki が名簿を
-    /// 引きに来るときの client は、wiki というアプリの名乗り）。名簿の self の口は、呼んできた
-    /// client のこの名乗りからアプリを決める。
+    /// ⚠ **A service account is not an app.** It is one of the app's identities (e.g. the client wiki uses when
+    /// fetching the directory is an identity of the app wiki). The directory's self endpoint decides the app from this identity of
+    /// the calling client.
     ServiceAccount { client_row_id: Uuid },
-    /// アプリの API の宛名（`resources.id`。トークンの `aud` に入る値。ADR-0042）。
+    /// The audience of the app's API (`resources.id`. The value placed in a token's `aud`. ADR-0042).
     Resource { resource_id: Uuid },
 }
 
 impl BindingTarget {
-    /// DB の `kind` 列に入る値。許可値の単一の出所は本 enum。
+    /// The value stored in the DB `kind` column. This enum is the single source of allowed values.
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Oidc { .. } => "oidc",
@@ -170,7 +170,7 @@ impl BindingTarget {
         }
     }
 
-    /// 相手の代理キー（種類を問わず 1 つ）。
+    /// The counterpart's surrogate key (one, regardless of kind).
     pub fn target_id(&self) -> Uuid {
         match self {
             Self::Oidc { client_row_id } | Self::ServiceAccount { client_row_id } => *client_row_id,
@@ -182,7 +182,7 @@ impl BindingTarget {
     }
 }
 
-/// アプリ ↔ 名乗り（`application_bindings` テーブル）。1 アプリに 0〜N。
+/// App <-> identity (`application_bindings` table). 0..N per app.
 #[derive(Debug, Clone)]
 pub struct ApplicationBinding {
     pub id: Uuid,
@@ -191,81 +191,81 @@ pub struct ApplicationBinding {
     pub created_at: DateTime<Utc>,
 }
 
-/// アプリ × 主体（`application_assignments` テーブル）。
+/// App x principal (`application_assignments` table).
 ///
-/// ⚠ ロールを持たない。ここに載るのは「使ってよいか」の 1 ビットだけである。
+/// ⚠ No roles. Only one bit, "may use", is carried here.
 #[derive(Debug, Clone)]
 pub struct ApplicationAssignment {
     pub id: Uuid,
     pub application_id: Uuid,
     pub principal: AccountRef,
     pub assigned_at: DateTime<Utc>,
-    /// 割り当てた管理者（監査のための出所）。移行・機械経由は `None`。
+    /// The admin who assigned it (the source, for audit). `None` for migrations or via a machine.
     pub assigned_by: Option<Uuid>,
 }
 
-/// 割り当てられたサービスアカウント 1 行（管理 API と画面が読む読み取りモデル）。
+/// One assigned service account row (the read model read by the admin API and screens).
 #[derive(Debug, Clone)]
 pub struct AssignedServiceAccount {
     pub client_row_id: Uuid,
-    /// 発行された `client_id`（人が見分ける値）。
+    /// The issued `client_id` (the value people tell apart by).
     pub client_id: String,
-    /// クライアントの登録名。
+    /// The client's registered name.
     pub app_name: String,
     pub client_status: ClientStatus,
     pub assigned_at: DateTime<Utc>,
 }
 
-/// 割り当てられた利用者 1 行（管理 API と画面が読む読み取りモデル）。
+/// One assigned user row (the read model read by the admin API and screens).
 ///
-/// 割り当ての行（[`ApplicationAssignment`]）と分けてあるのは、**問いが違う**ためである。
-/// あちらは「誰に割り当てたか」を書くための値で、こちらは「誰が割り当てられているか」を
-/// 人が読むための値 ——名前もメールも `users` にしか無いので、1 回の問い合わせで一緒に読む
-/// （1 件ずつ利用者を引き直すと、名簿の長さだけ往復が増える）。
+/// It is separate from the assignment row ([`ApplicationAssignment`]) because **the question differs**.
+/// That one is a value for writing "who was assigned", and this one is a value for people to read "who is assigned";
+/// name and email exist only in `users`, so they are read together in one query
+/// (looking users up one by one would add round trips proportional to the directory length).
 #[derive(Debug, Clone)]
 pub struct AssignedUser {
     pub user_id: Uuid,
-    /// トークンの主体識別子。RP 側の名簿と突き合わせるときの鍵（ADR-0049）。
+    /// The token's subject identifier. The key for matching against the RP's directory (ADR-0049).
     pub sub: Uuid,
     pub email: String,
     pub name: Option<String>,
-    /// 利用者アカウント自体の状態。⚠ **止まっている利用者の割り当ては残る** ——復帰したときに
-    /// 名簿を作り直さずに済むようにするためで、入れるかどうかは利用者の状態が別に決める。
+    /// State of the user account itself. ⚠ **Assignments of stopped users remain**, so that
+    /// the directory need not be rebuilt when they come back; whether they can get in is decided separately by the user's state.
     pub status: UserStatus,
     pub assigned_at: DateTime<Utc>,
 }
 
-/// あるアカウントに付いている割り当て 1 件（アカウントの画面が「使えるアプリ」を出すため。
-/// ADR-0063 / ADR-0065）。
+/// One assignment attached to an account (so the account screen can show "usable apps".
+/// ADR-0063 / ADR-0065).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AccountAssignment {
     pub application_id: Uuid,
     pub assigned_at: DateTime<Utc>,
 }
 
-/// 名簿の 1 行（ADR-0057）。RP の定期照合が読む読み取りモデル。
+/// One directory row (ADR-0057). The read model read by RPs' periodic reconciliation.
 ///
-/// ⚠ **載るのは `sub` と状態だけである。** 属性の写しはログインのたびに渡っているので
-/// （ADR-0049 の I5）、ここは棚卸しの口であって属性を配る口ではない。
+/// ⚠ **Only `sub` and state are carried.** Copies of attributes are handed over at every sign-in
+/// (ADR-0049 I5), so this is an inventory endpoint, not an attribute distribution endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplicationUser {
-    /// トークンの主体識別子。RP の名簿（`federated_identities`）と突き合わせる鍵。
+    /// The token's subject identifier. The key for matching against the RP's directory (`federated_identities`).
     pub sub: Uuid,
     pub state: ApplicationUserState,
 }
 
-/// 「この人はいまこのアプリを使ってよいか」——**RP が取る行動**で 3 つに分ける（ADR-0057）。
+/// "May this person use this app now": split into 3 by **the action the RP takes** (ADR-0057).
 ///
-/// ⚠ **理由を細かく返さない。** 「割り当てが無い」と「アカウントが止まっている」を分けると
-/// 割り当てのモードが RP に漏れる（ADR-0054「RP にモードを知らせない」）うえ、⚠ **RP の行動は
-/// どちらも同じ**である ——入れない・結び付きは残す。
+/// ⚠ **Reasons are not returned in detail.** Separating "no assignment" from "account stopped" would
+/// leak the assignment mode to the RP (ADR-0054 "do not tell RPs the mode"), and ⚠ **the RP's action is
+/// the same for both**: do not let in, keep the link.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplicationUserState {
-    /// いま使ってよい。
+    /// May use now.
     Allowed,
-    /// assay に居るが、いまは使えない。⚠ **結び付きは残す**（戻る可能性がある）。
+    /// Exists in assay but cannot use it now. ⚠ **Keep the link** (they may come back).
     Blocked,
-    /// このテナントの利用者ではない（＝消えた）。結び付きごと落としてよい。
+    /// Not a user of this tenant (= gone). The link may be dropped as well.
     Unknown,
 }
 
@@ -279,32 +279,32 @@ impl ApplicationUserState {
     }
 }
 
-/// 名簿を組み立てるために DB から読む**事実**（判断はしない。ADR-0057 の決定 4）。
+/// **Facts** read from the DB to build the directory (no judgment. ADR-0057 decision 4).
 ///
-/// 可否は [`Application::admits`] が決める ——判定（code 発行地点）と一覧が別々の規則を持つと、
-/// ⚠ **「名簿に居るのに入れない」「居ないのに入れる」**が起きる。
+/// Allow/deny is decided by [`Application::admits`]: if the decision (code issuance point) and the list had separate rules,
+/// ⚠ **"in the directory but cannot get in" or "not in it but can get in"** would happen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ApplicationUserFacts {
-    /// 利用者アカウント自体の状態。
+    /// State of the user account itself.
     pub user_status: UserStatus,
-    /// 仮登録か（ADR-0064）。本人がまだ資格情報を決めていないので、ログインできない。
+    /// Whether provisionally registered (ADR-0064). The user has not chosen credentials yet, so cannot sign in.
     pub pending_setup: bool,
-    /// 要求テナントでのメンバーシップが**参加中**か。
+    /// Whether the membership in the requested tenant is **active**.
     pub active_member: bool,
-    /// このアプリの割り当て行があるか。
+    /// Whether there is an assignment row for this app.
     pub assigned: bool,
 }
 
 impl Application {
-    /// 事実から名簿の状態を決める（ADR-0057）。
+    /// Decides the directory state from the facts (ADR-0057).
     ///
-    /// ⚠ **判定に無い条件を足さない。** `INDIVIDUAL` でメンバーシップを見ないのは
-    /// [`Self::admits`] がそうだからで、一覧だけが厳しいと「名簿に居ないのに入れる」側へずれる。
-    /// `EVERYONE` がメンバーシップを見るのは、「全員」がテナントの中だけを指すためである
-    /// （ADR-0054）。
+    /// ⚠ **Do not add conditions the decision does not have.** `INDIVIDUAL` does not look at membership because
+    /// [`Self::admits`] does not, and if only the list were stricter it would drift toward "not in the directory but can get in".
+    /// `EVERYONE` looks at membership because "everyone" refers only to those within the tenant
+    /// (ADR-0054).
     pub fn roster_state(&self, facts: ApplicationUserFacts) -> ApplicationUserState {
-        // 止まっている利用者・仮登録の利用者はそもそもログインできない。割り当ての有無より先に効く
-        // （判定の側は `User::is_active` がどちらも断る）。
+        // Stopped users and provisionally registered users cannot sign in at all. This takes effect before whether there is an assignment
+        // (on the decision side, `User::is_active` refuses both).
         if facts.user_status != UserStatus::Active || facts.pending_setup {
             return ApplicationUserState::Blocked;
         }
@@ -351,7 +351,7 @@ mod tests {
         assert!(a.needs_assignment_lookup());
     }
 
-    /// 止めたアプリは、割り当てがあっても・全員に開いていても通さない。
+    /// A stopped app does not let anyone through, even with an assignment or when open to everyone.
     #[test]
     fn a_disabled_application_admits_nobody() {
         for mode in [AssignmentMode::Everyone, AssignmentMode::Individual] {
@@ -368,7 +368,7 @@ mod tests {
         assert!(validate_display_name(&long).is_err());
     }
 
-    /// ADR-0064: 仮登録の人は、割り当てがあっても名簿では「使えない」（ログインできないので）。
+    /// ADR-0064: a provisionally registered person is "cannot use" in the directory even with an assignment (since they cannot sign in).
     #[test]
     fn a_pending_user_is_blocked_on_the_roster() {
         let application = app(ApplicationStatus::Active, AssignmentMode::Everyone);

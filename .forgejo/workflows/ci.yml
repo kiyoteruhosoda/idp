@@ -1,22 +1,22 @@
 name: CI
 
 on:
-  # ⚠ **枝への push では走らせない**（forge へ移したとき変えた）。素の `push:` は
-  #   全部の枝を拾うので、PR を開いている枝では **push と pull_request で
-  #   同じコミットを 2 回**組むことになる。GitHub の台は要るだけ増えるので
-  #   誰も困らなかったが、⚠ **セルフホストは 3 台しかなく、しかも 2 本が
-  #   同じ置き場で待たされる**
-  #   （2026-09-11 に実測。1 本が 200% CPU、もう 1 本が 0.5% で待っていた）。
+  # ⚠ **Do not run on pushes to branches** (changed when moving to forge). A bare `push:`
+  #   picks up every branch, so a branch with an open PR would build **the same commit
+  #   twice, via push and pull_request**. GitHub adds as many runners as needed, so
+  #   nobody minded, but ⚠ **self-hosted has only 3 runners, and the two runs
+  #   wait on the same storage**
+  #   (measured 2026-09-11: one run at 200% CPU, the other waiting at 0.5%).
   push:
     branches: [main]
   pull_request:
 
-# 同じ枝（PR）へ続けて push したら、古い実行は取り消して最新の commit だけを検査する。
-# ⚠ **main も取り消す**（2026-09-28 の決定）。間の commit には合否が残らない代わりに、
-#   main への push が続いた日に古い検査がランナーの列を塞がない。副作用のある workflow には当てない。
-# ⚠ **別の枝どうしの取り合いはここでは防いでいない**（group が枝ごとのため）。
-#   別の PR や main のジョブとは並んで走る ——置き場（`target/`）を分けているのは
-#   下の `scripts/with-target-lock.sh`（3 つの置き場から空いている番を取る）である。
+# On consecutive pushes to the same branch (PR), cancel the old run and test only the latest commit.
+# ⚠ **main is cancelled too** (decided 2026-09-28). Intermediate commits get no result, but in exchange
+#   old checks do not clog the runner queue on days with many pushes to main. Not for workflows with side effects.
+# ⚠ **Contention between different branches is not prevented here** (the group is per branch).
+#   Jobs of other PRs or main run side by side — what separates the storage (`target/`) is
+#   `scripts/with-target-lock.sh` below (it takes a free slot out of 3).
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -24,29 +24,29 @@ concurrency:
 jobs:
   test:
     name: Rust
-    # ⚠ **docker を使わない関門はこちらの台**（docker.sock を渡さない）。
+    # ⚠ **Gates that do not use docker go to this runner** (no docker.sock is passed).
     runs-on: [self-hosted, nolumialab]
-    # ⚠ 既定は 6 時間。ぶら下がったジョブが台を食い潰すので上限を置く。
+    # ⚠ The default is 6 hours. A hung job would eat the runner, so set a limit.
     timeout-minutes: 60
-    # ⚠ **ジョブそのものをこのイメージの中で走らせる**（forge へ移したとき変えた）。
-    #   GitHub では `dtolnay/rust-toolchain@stable` が毎回 rustup で取り直し、
-    #   `Swatinem/rust-cache@v2` が中間物を持ち回っていた。
-    #   ⚠ **`Swatinem/rust-cache` は act_runner では効かない** ——中身は
-    #   `actions/cache` で、キャッシュ置き場はランナーのコンテナの IP で待って
-    #   おり、ジョブのコンテナからは経路が無い。そこで**イメージに toolchain を
-    #   焼き、中間物は名前付きボリューム**へ置く（定義は deploy-repo の
-    #   `host/services/builders/ci-rust/`、許可は台の `valid_volumes`）。
-    # ⚠ **digest で固定する。** タグのままだと、焼き直した日に
-    #   「昨日は通ったものが通らない」が起きて原因を追えない。
+    # ⚠ **Run the job itself inside this image** (changed when moving to forge).
+    #   On GitHub, `dtolnay/rust-toolchain@stable` re-fetched via rustup every time and
+    #   `Swatinem/rust-cache@v2` carried the build artifacts around.
+    #   ⚠ **`Swatinem/rust-cache` does not work on act_runner** — it is
+    #   `actions/cache` underneath, and the cache server listens on the runner container's IP,
+    #   with no route from the job container. So **the toolchain is baked into the image
+    #   and build artifacts go to named volumes** (defined in deploy-repo's
+    #   `host/services/builders/ci-rust/`, allowed by the runner's `valid_volumes`).
+    # ⚠ **Pin by digest.** With a tag, on the day the image is rebuilt
+    #   "what passed yesterday fails today" happens and the cause cannot be traced.
     container:
       image: hub.nolumia.com:5000/builder/ci-rust@sha256:bf1efa0fcafc9c2b750b662f65d4173e6a707e734b67da612b385ff3e72f27a6
-      # `target/` の置き場は 3 つ（番 1〜3）。ランナーの台が 3 台なので 4 つ目は要らない。
-      #   どのジョブにも 3 つとも付け、使うのは最初の段で取った 1 つだけ
-      #   （`scripts/with-target-lock.sh --take`、https://task.nolumia.com/issues/702）。
-      # ⚠ **`target/` は放っておくと上限なく育つ**（cargo は古い成果物を掃除しない。1 つの置き場に
-      #   52 GB 積もっていた）。番を取ったときに 20 GB を超えていれば空にしてから使う。
-      #   中身はいつ捨ててもよい（次回が遅くなるだけ）: `docker volume rm rust-target-cache-idp-ci-<番>`。
-      #   ⚠ **naso には置かない**（1 Gbps・週次の再起動で装置が振り直される・ネットワーク越しの flock は当てにならない）。
+      # There are 3 `target/` storages (slots 1-3). There are 3 runners, so a 4th is not needed.
+      #   Every job mounts all 3 and uses only the one taken in the first step
+      #   (`scripts/with-target-lock.sh --take`, https://task.nolumia.com/issues/702).
+      # ⚠ **`target/` grows without bound if left alone** (cargo never cleans old artifacts; one storage had
+      #   accumulated 52 GB). When a slot is taken and exceeds 20 GB, it is emptied before use.
+      #   The contents can be discarded any time (only the next run gets slower): `docker volume rm rust-target-cache-idp-ci-<slot>`.
+      #   ⚠ **Do not put it on naso** (1 Gbps, devices get reshuffled by the weekly reboot, flock over the network is unreliable).
       options: >-
         -v rust-cargo-registry:/cache/cargo
         -v rust-target-cache-idp-ci-1:/cache/target-1
@@ -60,14 +60,14 @@ jobs:
           MARIADB_USER: idp
           MARIADB_PASSWORD: idp
           MARIADB_ROOT_PASSWORD: root
-        # ⚠ **`ports:` を書かない**（forge へ移したとき外した）。GitHub の台では
-        #   サービスをホストへ出して `127.0.0.1:3306` で触っていたが、ここでは
-        #   ジョブもコンテナの中に居るので**同じネットワークの `mariadb:3306`**
-        #   で届く。出すと**ホストの 3306 を占有し、2 本同時に走れなくなる**。
-        # ⚠ **データはメモリ（tmpfs）に置く**（2026-09-30）。試験の DB は終われば捨てるのに、
-        #   コミットごとの fsync が nolumialab の NVMe（DRAM なしで 1 回 100〜300 ms 待つ）へ
-        #   届き、同じディスクに載る k3s・deck まで待たせていた。上限は runner-burst が
-        #   `shmem` としてメモリの見込みに数える。
+        # ⚠ **Do not write `ports:`** (removed when moving to forge). On GitHub runners
+        #   the service was exposed to the host and reached at `127.0.0.1:3306`, but here
+        #   the job is also inside a container, so it is reachable **as `mariadb:3306` on the same
+        #   network**. Exposing it **occupies the host's 3306, and two runs can no longer run at once**.
+        # ⚠ **Keep the data in memory (tmpfs)** (2026-09-30). The test DB is thrown away afterwards, yet
+        #   the per-commit fsync reached nolumialab's NVMe (no DRAM, 100-300 ms per wait)
+        #   and stalled k3s and deck on the same disk. runner-burst counts the limit
+        #   as `shmem` in its memory estimate.
         options: >-
           --tmpfs /var/lib/mysql:rw,size=2g
           --health-cmd="healthcheck.sh --connect --innodb_initialized"
@@ -75,21 +75,21 @@ jobs:
           --health-timeout=5s
           --health-retries=30
     env:
-      # ⚠ **`127.0.0.1` ではない**（上の注記）。
+      # ⚠ **Not `127.0.0.1`** (see the note above).
       DATABASE_URL: mysql://idp:idp@mariadb:3306/idp
       TEST_DATABASE_URL: mysql://idp:idp@mariadb:3306/idp
-      # 中間物と取得物をボリュームへ逃がす（ワークスペースは毎回消えるため）。
-      # ⚠ `CARGO_TARGET_DIR` はここに書かない。番を取る段が `$GITHUB_ENV` で後の段へ渡す。
+      # Move build artifacts and downloads to volumes (the workspace is wiped every time).
+      # ⚠ Do not set `CARGO_TARGET_DIR` here. The slot-taking step passes it to later steps via `$GITHUB_ENV`.
       CARGO_HOME: /cache/cargo
-      # ⚠ **書く量を減らす**（2026-09-30）。既定のままだと 1 run で約 63 GB を nolumialab の
-      #   NVMe（DRAM なし）へ書き、同じディスクの k3s・deck まで止めていた。試験の実行ファイルは
-      #   1 本 450 MB 前後で、ほとんどがデバッグ情報だった。
-      #   - デバッグ情報は行番号だけ残す（panic・バックトレースの位置は出る。変数は見えない）
-      #   - incremental は切る。PR ごとに中身が変わる CI では当たらず、`target/` に 19 GB 積もっていた
-      #   ⚠ CI だけの設定。手元のビルドは変えない。
+      # ⚠ **Reduce the amount written** (2026-09-30). With the defaults, one run wrote about 63 GB to nolumialab's
+      #   NVMe (no DRAM) and stalled k3s and deck on the same disk. Each test executable was
+      #   around 450 MB, mostly debug info.
+      #   - Keep only line tables in debug info (panic/backtrace locations show; variables do not)
+      #   - Turn off incremental. It never hits in CI where contents change per PR, and `target/` had 19 GB of it
+      #   ⚠ CI-only settings. Local builds are unchanged.
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       CARGO_INCREMENTAL: "0"
-      # 32 文字以上（`assay_contracts::deployment::INTERNAL_SERVICE_TOKEN_MIN_LEN`）。SEC11。
+      # At least 32 characters (`assay_contracts::deployment::INTERNAL_SERVICE_TOKEN_MIN_LEN`). SEC11.
       INTERNAL_SERVICE_TOKEN: ci-internal-service-token-0123456789
       KEY_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
       CSRF_SECRET: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
@@ -97,27 +97,27 @@ jobs:
       MARIADB_ROOT_PASSWORD: root
     steps:
       - uses: actions/checkout@v7
-      # ⚠ **scripts/ に固定の `/tmp/<名前>` を書かない。** 手元では別々のセッションが
-      #   同じ容れ物で同時にスクリプトを流すので、固定の道は互いの中間出力を踏み、
-      #   毎回違う行で落ちる（https://task.nolumia.com/tasks/86）。⚠ CI は 1 本ずつ
-      #   走るので**試験では捕まらない** ——ここで字面を止める。作業場所は `mktemp -d`。
-      #   ⚠ 行頭の `#`（説明）は除く ——禁じているものを注記で名指しできなくなるため。
+      # ⚠ **Do not write fixed `/tmp/<name>` paths in scripts/.** Locally, separate sessions run
+      #   scripts concurrently in the same container, so fixed paths trample each other's intermediate output
+      #   and fail at a different line each time (https://task.nolumia.com/tasks/86). ⚠ CI runs one at a
+      #   time, so **tests do not catch it** — the literal is blocked here. Use `mktemp -d` for work dirs.
+      #   ⚠ Lines starting with `#` (explanations) are excluded — otherwise a note could not name what is forbidden.
       - name: No fixed /tmp paths in scripts
         run: |
           if grep -nE '(^|[^A-Za-z0-9_])/tmp/' scripts/*.sh | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#'; then
-            echo "scripts/ に固定の /tmp が残っています。mktemp -d で実行ごとの作業場所を作ってください。" >&2
+            echo "scripts/ still contains a fixed /tmp path. Create a per-run work dir with mktemp -d." >&2
             exit 1
           fi
       - name: Format
         run: cargo fmt --all -- --check
       - name: Target lock tests
         run: ./scripts/test_with_target_lock.sh
-      # ⚠ **`target/` を使う段は必ず `scripts/with-target-lock.sh` を通し、その前にこの段を置く。**
-      #   置き場は PR と main のジョブで使い回しているので、番を握らずに cargo を回すと
-      #   別のジョブに組んだ実行ファイルを消され、試験の中身は ok のまま赤になる
-      #   （2026-09-16 に 5 回。症状と理由はスクリプトの冒頭）。
-      #   番はジョブが終わるまで握り続ける ——後の段は前の段が組んだものを使ってよい。
-      #   ⚠ 3 つとも埋まっていれば空くまで待ち、その時間も `timeout-minutes` に数えられる。
+      # ⚠ **Every step that uses `target/` must go through `scripts/with-target-lock.sh`, with this step before it.**
+      #   The storage is shared between PR and main jobs, so running cargo without holding a slot lets
+      #   another job delete the executables you built, turning red while the tests themselves are ok
+      #   (5 times on 2026-09-16; symptoms and reasons are at the top of the script).
+      #   The slot is held until the job ends — later steps may use what earlier steps built.
+      #   ⚠ If all 3 are taken, it waits until one frees up, and that time counts toward `timeout-minutes`.
       - name: Take a target slot
         run: ./scripts/with-target-lock.sh --take
       - name: Clippy
@@ -133,22 +133,22 @@ jobs:
 
   bundle:
     name: Deploy bundle
-    # ⚠ **この関門だけ台が違う。** `docker build` をするので、ジョブのイメージに
-    #   docker が入っている台へ回す。⚠ ここへ来たジョブは**ホスト root 相当**
-    #   になる（socket を持つため）。
+    # ⚠ **Only this gate uses a different runner.** It runs `docker build`, so it goes to the runner
+    #   whose job image has docker. ⚠ Jobs that land here are **equivalent to host root**
+    #   (they hold the socket).
     runs-on: [nolumialab-docker]
-    # ⚠ **Renovate の PR では走らせない**（task #603）。この台はジョブに docker.sock を
-    #   渡す ——版上げの PR は人が見る前に CI が走るので、依存に悪意の版が混ざると
-    #   その場でホスト root を取られる。飛ばしたジョブは緑に数えられる。
+    # ⚠ **Do not run on Renovate PRs** (task #603). This runner passes docker.sock to jobs
+    #   — version-bump PRs run CI before a human looks at them, so a malicious dependency version
+    #   would take host root on the spot. Skipped jobs count as green.
     if: github.event.pull_request.user.login != 'renovate'
     timeout-minutes: 45
     container:
       image: hub.nolumia.com:5000/builder/ci-docker@sha256:355d2a6999444d413b778291aa189459e933677a766183e27083d26d93189546
-    # ⚠ **`docker compose config` は値を解決するので、秘密の「形」が要る。**
-    #   GitHub では 1 つのジョブが全部やっていて、`test` 側に置いた env が
-    #   そのまま効いていた ——**割った側でここが抜けると
-    #   `required variable ... is missing a value` で落ちる**（2026-09-11 に実測）。
-    #   ⚠ 中身は捨て値でよい（ここでは何も起動しない）。
+    # ⚠ **`docker compose config` resolves values, so the secrets need a "shape".**
+    #   On GitHub one job did everything and the env placed on the `test` side
+    #   applied here as well — **once split, if this is missing here it fails with
+    #   `required variable ... is missing a value`** (measured 2026-09-11).
+    #   ⚠ Dummy values are fine (nothing is started here).
     env:
       MARIADB_PASSWORD: idp
       MARIADB_ROOT_PASSWORD: root
@@ -158,14 +158,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # ⚠ **docker の設定ディレクトリを、このジョブ専用の書ける場所へ向ける。**
-      #   ランナーはホストの `/root/.docker` を**読み取り専用**で mount している。
-      #   既定のままだと docker が `~/.docker` を作れずに落ち、しかも Node は
-      #   読み取り専用を **ENOENT**（「そんなファイルは無い」）として報せるので、
-      #   ログを読んでも原因に辿り着けない。
-      # ⚠ **ジョブの `env:` では書けない。** そこで使える文脈に `runner` は無く、
-      #   `${{ runner.temp }}` と書くと**ワークフローの読み込みごと失敗する**。
-      - name: docker の設定ディレクトリを用意する
+      # ⚠ **Point docker's config directory at a writable place dedicated to this job.**
+      #   The runner mounts the host's `/root/.docker` **read-only**.
+      #   With the default, docker fails because it cannot create `~/.docker`, and Node
+      #   reports read-only as **ENOENT** ("no such file"),
+      #   so reading the log does not lead to the cause.
+      # ⚠ **Cannot be set in the job's `env:`.** `runner` is not an available context there, and
+      #   writing `${{ runner.temp }}` **makes loading the whole workflow fail**.
+      - name: Prepare docker config directory
         run: |
           mkdir -p "$RUNNER_TEMP/docker"
           echo "DOCKER_CONFIG=$RUNNER_TEMP/docker" >> "$GITHUB_ENV"
@@ -173,20 +173,20 @@ jobs:
       - name: Docker build and deploy bundle
         run: ./scripts/build.sh
 
-      # ⚠ **`config` は組み立てるだけで mount しない。** 相対パスの bind mount が
-      #   18 か所あるが、ここで空のディレクトリが生えることはない（生えるのは
-      #   `up` したとき）。
-      # ⚠ **`--quiet` にしない理由**: ここは構文だけでなく**解決後の値**を見たいが、
-      #   出力はファイルへ落として画面に出さない ——`docker compose config` は
-      #   秘密を平文で展開する。
+      # ⚠ **`config` only assembles; it does not mount.** There are 18 relative bind mounts,
+      #   but no empty directories get created here (that happens
+      #   on `up`).
+      # ⚠ **Why not `--quiet`**: we want to check the **resolved values**, not just the syntax, but
+      #   the output goes to a file and not to the screen — `docker compose config` expands
+      #   secrets in plain text.
       - name: Compose config
         run: |
           docker compose -f docker-compose.yml config >/tmp/compose.yml
           docker compose -f docker-compose.deploy.yml config >/tmp/compose.deploy.yml
 
-      # ランナーは docker-out-of-docker（ホストのデーモンをそのまま使う）なので、
-      # 焼いたイメージはジョブが終わってもホストに残り続ける。ここで片付ける。
-      - name: 後始末（焼いたイメージを消す）
+      # The runner is docker-out-of-docker (uses the host daemon directly), so
+      # built images stay on the host after the job ends. Clean them up here.
+      - name: Clean up (remove built images)
         if: always()
         run: |
           docker image rm -f idp/api:latest idp/web:latest idp/migrate:latest || true

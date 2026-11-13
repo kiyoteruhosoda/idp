@@ -1,33 +1,36 @@
-//! 認可応答の返し方（`response_mode`。OAuth 2.0 Multiple Response Type Encoding Practices。G12）。
+//! How authorization responses are returned (`response_mode`; OAuth 2.0 Multiple Response Type
+//! Encoding Practices; G12).
 //!
-//! 認可応答（`code` と `state`、あるいはエラー）を **どうやって RP へ渡すか**を決める。
+//! Decides **how the authorization response** (`code` and `state`, or an error) **is delivered to
+//! the RP**.
 //!
-//! - `query`（既定）: `redirect_uri` のクエリ文字列に載せて 302 する。
-//! - `form_post`: 自動送信フォームの hidden フィールドに載せて `redirect_uri` へ POST する。
+//! - `query` (default): put in the query string of `redirect_uri` and 302.
+//! - `form_post`: put in hidden fields of an auto-submitting form and POST to `redirect_uri`.
 //!
-//! # なぜ `form_post` が要るか
+//! # Why `form_post` is needed
 //!
-//! `query` では認可コードが **URL に載る**。URL はブラウザの履歴・`Referer`・プロキシやサーバの
-//! アクセスログに残る。コードは 60 秒・単回使用で PKCE も必須なので直ちに悪用できるわけではないが、
-//! 「秘密を URL に置かない」ことを要求する配置は珍しくない。
+//! With `query`, the authorization code **appears in the URL**. URLs remain in browser history,
+//! `Referer`, and proxy/server access logs. The code is valid for 60 seconds, single-use, and
+//! requires PKCE, so it is not immediately exploitable, but deployments requiring "no secrets in
+//! URLs" are not rare.
 //!
-//! # URL からは復元できない
+//! # Cannot be recovered from a URL
 //!
-//! 完成した URL を持ち回して、後から「送信先とパラメータ」へ戻すことはできない。`redirect_uri`
-//! 自身がクエリを持ち得る（`https://rp.example.com/cb?tenant=a`）ため、どこまでが RP の
-//! クエリでどこからが認可応答かを URL だけでは決められない。だから応答は**最初から
-//! 「送信先＋パラメータ」の形**（[`AuthorizationResponse`]）で組み立て、`query` のときにだけ
-//! URL へ畳む。
+//! A finished URL cannot be carried around and later turned back into "destination and parameters".
+//! `redirect_uri` itself may have a query (`https://rp.example.com/cb?tenant=a`), so the URL alone
+//! cannot tell where the RP's query ends and the authorization response begins. So the response is
+//! built **from the start in the shape "destination + parameters"** ([`AuthorizationResponse`]) and
+//! folded into a URL only for `query`.
 
 use crate::domain::error::DomainError;
 
-/// assay が対応する `response_mode`。
+/// `response_mode` values assay supports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ResponseMode {
-    /// クエリ文字列に載せて 302（既定。RFC 6749 の `code` フローの標準）。
+    /// Put in the query string and 302 (default; the standard for RFC 6749's `code` flow).
     #[default]
     Query,
-    /// 自動送信フォームで POST（OAuth 2.0 Form Post Response Mode）。
+    /// POST via an auto-submitting form (OAuth 2.0 Form Post Response Mode).
     FormPost,
 }
 
@@ -39,9 +42,10 @@ impl ResponseMode {
         }
     }
 
-    /// 要求値を解釈する。**未知の値は既定へ丸めずエラーにする**（OAuth 2.0 Multiple Response
-    /// Type Encoding Practices）。丸めると、RP は `form_post` を要求したつもりでコードが URL に
-    /// 載って返り、しかもそれに気づけない——「秘密を URL に置かない」という要求が黙って破られる。
+    /// Interprets the requested value. **Unknown values are an error, not coerced to the default**
+    /// (OAuth 2.0 Multiple Response Type Encoding Practices). Coercing would return the code in the
+    /// URL while the RP believes it requested `form_post`, without the RP noticing — the "no
+    /// secrets in URLs" requirement would be silently broken.
     pub fn parse(raw: &str) -> Result<Self, DomainError> {
         match raw.trim() {
             "query" => Ok(Self::Query),
@@ -52,16 +56,17 @@ impl ResponseMode {
         }
     }
 
-    /// 保存値（`auth_sessions.response_mode`）から復元する。未知・未設定は既定（`query`）。
+    /// Restores from the stored value (`auth_sessions.response_mode`). Unknown / unset becomes the
+    /// default (`query`).
     ///
-    /// ここだけ丸めるのは、**保存値は既に検証を通った値**だからである（未知の値は
-    /// [`Self::parse`] が `/authorize` で弾いている）。読み出しで失敗させると、列が増える前から
-    /// 進行中だったフローが完了できなくなる。
+    /// Coercing only here is fine because **stored values already passed validation** (unknown
+    /// values are rejected by [`Self::parse`] at `/authorize`). Failing on read would leave flows
+    /// that were in progress before the column was added unable to complete.
     pub fn from_stored(raw: Option<&str>) -> Self {
         raw.and_then(|v| Self::parse(v).ok()).unwrap_or_default()
     }
 
-    /// 保存する値。既定（`query`）は `None`（列を使わない）。
+    /// Value to store. The default (`query`) is `None` (the column is unused).
     pub fn to_stored(self) -> Option<&'static str> {
         match self {
             Self::Query => None,
@@ -70,20 +75,21 @@ impl ResponseMode {
     }
 }
 
-/// 認可応答（送信先とパラメータ）。
+/// An authorization response (destination and parameters).
 ///
-/// **URL 文字列ではなくこの形で持ち回す**のがこの型の要点である（理由はモジュールドキュメント）。
-/// `query` のときだけ [`Self::location`] で URL へ畳む。
+/// The point of this type is that it **is carried in this shape rather than as a URL string** (see
+/// the module docs for why). Folded into a URL with [`Self::location`] only for `query`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorizationResponse {
     pub redirect_uri: String,
-    /// 認可応答のパラメータ（`code` / `state`、またはエラー）。値は未エンコードの生値。
+    /// Parameters of the authorization response (`code` / `state`, or an error). Values are raw,
+    /// unencoded.
     pub parameters: Vec<(String, String)>,
     pub response_mode: ResponseMode,
 }
 
 impl AuthorizationResponse {
-    /// 成功応答（`code` と `state`）。`state` は透過返却（設計仕様 §2.2）。
+    /// Success response (`code` and `state`). `state` is returned transparently (design spec §2.2).
     pub fn success(
         redirect_uri: &str,
         code: &str,
@@ -91,8 +97,8 @@ impl AuthorizationResponse {
         response_mode: ResponseMode,
     ) -> Self {
         let mut parameters = vec![("code".to_string(), code.to_string())];
-        // `state` は「要求に含まれていたら返す」。空文字列を返すと、送っていない RP から見ると
-        // 身に覚えのない `state=` が増える。
+        // `state` is "returned if it was in the request". Returning an empty string would, for an
+        // RP that did not send one, add an unexpected `state=`.
         if !state.is_empty() {
             parameters.push(("state".to_string(), state.to_string()));
         }
@@ -103,7 +109,8 @@ impl AuthorizationResponse {
         }
     }
 
-    /// エラー応答。`response_mode` は成功時と同じものを使う（RP は同じ受け口で待っている）。
+    /// Error response. Uses the same `response_mode` as on success (the RP is waiting at the same
+    /// endpoint).
     pub fn error(
         redirect_uri: &str,
         error: &str,
@@ -129,11 +136,12 @@ impl AuthorizationResponse {
         self.response_mode == ResponseMode::FormPost
     }
 
-    /// `query` モードの 302 先 URL。
+    /// The 302 target URL for `query` mode.
     ///
-    /// `form_post` のときは**パラメータを載せない**（`redirect_uri` そのものを返す）。form_post を
-    /// 見落とした経路がこの値で 302 すると、RP は「コードの無い戻り」を受け取ってエラーを出す
-    /// ——認可コードが URL に載って履歴・`Referer` に残るよりは、目に見えて失敗する方がよい。
+    /// For `form_post` it **carries no parameters** (returns `redirect_uri` itself). If a path that
+    /// overlooked form_post 302s with this value, the RP gets "a return without a code" and errors
+    /// — failing visibly is better than the authorization code staying in history / `Referer` via
+    /// the URL.
     pub fn location(&self) -> String {
         if self.is_form_post() {
             return self.redirect_uri.clone();
@@ -141,7 +149,7 @@ impl AuthorizationResponse {
         self.query_location()
     }
 
-    /// パラメータをクエリ文字列へ畳んだ URL（`response_mode` を問わない）。
+    /// URL with the parameters folded into the query string (regardless of `response_mode`).
     fn query_location(&self) -> String {
         let encoded: Vec<String> = self
             .parameters
@@ -160,7 +168,8 @@ impl AuthorizationResponse {
     }
 }
 
-/// クエリ文字列へ載せる値のパーセントエンコード（RFC 3986 の unreserved 以外を変換する）。
+/// Percent-encoding of values put in the query string (converts everything except RFC 3986
+/// unreserved).
 fn encode(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for b in value.bytes() {
@@ -185,12 +194,14 @@ mod tests {
             ResponseMode::parse("form_post").unwrap(),
             ResponseMode::FormPost
         );
-        // 丸めると「form_post を要求したのにコードが URL で返る」を RP が検知できない。
+        // Coercing would keep the RP from detecting "requested form_post but the code came back in
+        // the URL".
         assert!(ResponseMode::parse("fragment").is_err());
         assert!(ResponseMode::parse("").is_err());
     }
 
-    /// 保存値の読み出しだけは丸める（列が増える前から進行中のフローを完了させるため）。
+    /// Only reading stored values coerces (to let flows in progress before the column was added
+    /// complete).
     #[test]
     fn stored_values_fall_back_to_the_default() {
         assert_eq!(ResponseMode::from_stored(None), ResponseMode::Query);
@@ -206,7 +217,7 @@ mod tests {
         assert_eq!(ResponseMode::FormPost.to_stored(), Some("form_post"));
     }
 
-    /// `redirect_uri` が元からクエリを持っていても、認可応答は追記になる。
+    /// Even if `redirect_uri` already has a query, the authorization response is appended.
     #[test]
     fn query_mode_appends_to_an_existing_query_string() {
         let response = AuthorizationResponse::success(
@@ -221,8 +232,8 @@ mod tests {
         );
     }
 
-    /// **form_post ではパラメータを URL に載せない。** 見落とした経路が 302 しても、
-    /// 認可コードが履歴・`Referer` に残らない（RP 側でエラーになるだけ）。
+    /// **form_post does not put parameters in the URL.** Even if an overlooking path 302s,
+    /// the authorization code does not remain in history / `Referer` (the RP just errors).
     #[test]
     fn form_post_mode_never_puts_the_code_in_the_url() {
         let response = AuthorizationResponse::success(
@@ -242,7 +253,7 @@ mod tests {
         );
     }
 
-    /// `state` は要求に含まれていたときだけ返す。
+    /// `state` is returned only when it was in the request.
     #[test]
     fn an_absent_state_is_not_echoed_back() {
         let response = AuthorizationResponse::success(

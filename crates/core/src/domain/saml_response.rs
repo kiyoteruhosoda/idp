@@ -1,32 +1,37 @@
-//! 署名付き SAML Response（`IDPSSODescriptor` の SSO 応答）を生成する。
+//! Generates signed SAML Responses (SSO responses of `IDPSSODescriptor`).
 //!
-//! # 署名と正準化（C14N）の方針
+//! # Policy for signing and canonicalization (C14N)
 //!
-//! XML 署名（XMLDSIG）は「排他的正準化（exclusive C14N）した部分木のバイト列」に対して行う。
-//! 本モジュールは XML を**最初から排他的正準形**で生成する（自前の正準化器を持たない）:
+//! XML signatures (XMLDSIG) are computed over "the bytes of a subtree under exclusive
+//! canonicalization (exclusive C14N)". This module generates XML **in exclusive canonical form from
+//! the start** (it has no canonicalizer of its own):
 //!
-//! - 空要素タグ（`<e/>`）を使わず、常に開始・終了タグの対で出力する
-//! - 各要素で名前空間宣言 → 属性（ローカル名の辞書順）の順に出力する
-//! - 署名対象（`Assertion`）は、使用する名前空間を自要素で宣言し自己完結させる
-//! - エスケープは正準形の規則（属性値: `& < " TAB LF CR`、テキスト: `& < > CR`）に従う
+//! - Never uses empty-element tags (`<e/>`); always outputs start/end tag pairs
+//! - Outputs namespace declarations, then attributes (lexical order of local names), for each
+//!   element
+//! - The signed part (`Assertion`) declares the namespaces it uses on itself, making it
+//!   self-contained
+//! - Escaping follows canonical rules (attribute values: `& < " TAB LF CR`, text: `& < > CR`)
 //!
-//! こうして出力したバイト列は、検証側（SP）が部分木を排他的 C14N しても同一バイト列になる。
-//! Assertion に enveloped signature を差し込み、`SignedInfo` は署名時に `xmlns:ds` 付きで
-//! 直列化したもの（= SP が C14N した結果と一致する形）へ署名する。
+//! Bytes output this way stay identical even after the verifier (SP) applies exclusive C14N to the
+//! subtree. An enveloped signature is inserted into the Assertion, and the signature is over
+//! `SignedInfo` serialized with `xmlns:ds` at signing time (= the form matching the SP's C14N
+//! result).
 //!
-//! 署名鍵は OIDC の ID Token と同じ ACTIVE 署名鍵を使う（RS256 → rsa-sha256、ES256 →
-//! ecdsa-sha256）。
+//! The signing key is the same ACTIVE signing key as OIDC ID Tokens (RS256 → rsa-sha256, ES256 →
+//! ecdsa-sha256).
 //!
-//! # `KeyInfo` は載せる（2026-08-28）
+//! # `KeyInfo` is included (2026-08-28)
 //!
-//! **どの鍵で署名したかを、アサーション自身が名乗る。** ADR-0039 でメタデータが複数の
-//! `KeyDescriptor` を並べるようになったため、名乗らないと SP は「どれで検証すべきか」を
-//! 総当たりか先頭かで推測するしかない。SAML には JWT の `kid` にあたる標準の印が無いので、
-//! `KeyInfo/KeyValue` がその役目を果たす（Entra ID なども同じ形を採る）。
+//! **The assertion itself states which key signed it.** Since ADR-0039 the metadata lists multiple
+//! `KeyDescriptor`s, so without this the SP could only guess "which to verify with" by trying all
+//! or taking the first. SAML has no standard marker like JWT's `kid`, so `KeyInfo/KeyValue` plays
+//! that role (Entra ID and others take the same form).
 //!
-//! **`KeyInfo` は `SignedInfo` の外**（署名対象ではない）なので、載せても署名計算は変わらない。
-//! 値の描画はメタデータと同じ [`crate::domain::saml_metadata::IdpSigningKey::to_key_value`] を
-//! 使う —— 別々に書くと、SP が突き合わせられない形にずれ得る。
+//! **`KeyInfo` is outside `SignedInfo`** (not signed), so including it does not change the
+//! signature computation. Values are rendered with the same
+//! [`crate::domain::saml_metadata::IdpSigningKey::to_key_value`] as the metadata — writing them
+//! separately could drift into forms the SP cannot match.
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::saml_metadata::{IdpSigningKey, NAMED_CURVE_P256};
@@ -45,49 +50,50 @@ const DIGEST_SHA256: &str = "http://www.w3.org/2001/04/xmlenc#sha256";
 const SIG_RSA_SHA256: &str = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256";
 const SIG_ECDSA_SHA256: &str = "http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha256";
 const STATUS_SUCCESS: &str = "urn:oasis:names:tc:SAML:2.0:status:Success";
-/// `AuthnContextClassRef`。SSO セッションは確立時の認証手段（パスワード・TOTP・Passkey）を保持
-/// しないため、特定の強度（例: `PasswordProtectedTransport`）を主張せず `unspecified` を用いる
-/// （誤った認証強度を SP に伝えない）。手段別のコンテキスト送出はセッションへの手段記録が前提。
+/// `AuthnContextClassRef`. SSO sessions do not keep the authentication means used at establishment
+/// (password, TOTP, passkey), so no specific strength (e.g. `PasswordProtectedTransport`) is
+/// claimed and `unspecified` is used (no wrong authentication strength is conveyed to the SP).
+/// Per-means context requires recording the means in the session.
 const AUTHN_CONTEXT_UNSPECIFIED: &str = "urn:oasis:names:tc:SAML:2.0:ac:classes:unspecified";
 const SUBJECT_CONFIRMATION_BEARER: &str = "urn:oasis:names:tc:SAML:2.0:cm:bearer";
 
-/// SAML Response の組み立て入力。ID（`response_id` / `assertion_id`）は NCName 制約のため
-/// [`generate_saml_id`] で採番した値を渡す。
+/// Inputs for building a SAML Response. IDs (`response_id` / `assertion_id`) must be NCNames, so
+/// pass values numbered by [`generate_saml_id`].
 pub struct SamlResponseInput<'a> {
     pub response_id: &'a str,
     pub assertion_id: &'a str,
-    /// 発行時刻（Response / Assertion の `IssueInstant`）。
+    /// Issue time (`IssueInstant` of Response / Assertion).
     pub issued_at: DateTime<Utc>,
-    /// assay のエンティティ ID（テナント issuer）。
+    /// assay's entity ID (tenant issuer).
     pub idp_entity_id: &'a str,
-    /// 対象 SP のエンティティ ID（`Audience`）。
+    /// Entity ID of the target SP (`Audience`).
     pub sp_entity_id: &'a str,
-    /// アサーション送信先（`Destination` / `Recipient`）。
+    /// Assertion destination (`Destination` / `Recipient`).
     pub acs_url: &'a str,
-    /// AuthnRequest の `ID`（`InResponseTo`。IdP-initiated 相当では `None`）。
+    /// `ID` of the AuthnRequest (`InResponseTo`; `None` for the IdP-initiated equivalent).
     pub in_response_to: Option<&'a str>,
-    /// `NameID` の値と Format（SP 登録の `name_id_format`）。
+    /// `NameID` value and Format (`name_id_format` of the SP registration).
     pub name_id: &'a str,
     pub name_id_format: &'a str,
-    /// 認証時刻（SSO セッションの `auth_time`）。
+    /// Authentication time (`auth_time` of the SSO session).
     pub authn_instant: DateTime<Utc>,
-    /// `SessionIndex`（SSO セッション由来の不透明値）。
+    /// `SessionIndex` (an opaque value derived from the SSO session).
     pub session_index: &'a str,
-    /// アサーションの有効期限（`NotOnOrAfter`）。
+    /// Assertion expiry (`NotOnOrAfter`).
     pub not_on_or_after: DateTime<Utc>,
-    /// email 属性（`AttributeStatement`）。`None` なら属性を出力しない。
+    /// email attribute (`AttributeStatement`). If `None`, no attribute is output.
     pub email: Option<&'a str>,
 }
 
-/// SAML 応答の署名鍵。ACTIVE 署名鍵（PEM）から生成する。
+/// Signing key for SAML responses. Built from the ACTIVE signing key (PEM).
 pub enum SamlSigner {
     Rsa(Box<aws_lc_rs::rsa::KeyPair>),
     P256(Box<p256::ecdsa::SigningKey>),
 }
 
 impl SamlSigner {
-    /// 署名鍵 PEM とアルゴリズム（`RS256` / `ES256`）から署名器を作る。PEM の形式は
-    /// 鍵生成（[`crate::domain::jwt`]）と対にする: RSA は PKCS#1、EC は PKCS#8。
+    /// Builds a signer from the signing key PEM and algorithm (`RS256` / `ES256`). The PEM format
+    /// pairs with key generation ([`crate::domain::jwt`]): PKCS#1 for RSA, PKCS#8 for EC.
     pub fn from_pem(algorithm: &str, private_pem: &str) -> Result<Self> {
         match algorithm {
             "RS256" => Self::rsa_from_pkcs1_pem(private_pem).map(|key| Self::Rsa(Box::new(key))),
@@ -122,8 +128,8 @@ impl SamlSigner {
         }
     }
 
-    /// 署名に使う鍵の公開値（`KeyInfo/KeyValue` に載せる形）。メタデータの `KeyDescriptor` と
-    /// 同じ表現なので、SP は両者を突き合わせられる。
+    /// Public value of the signing key (in the form put in `KeyInfo/KeyValue`). Same representation
+    /// as the metadata's `KeyDescriptor`, so the SP can match the two.
     fn public_key(&self) -> IdpSigningKey {
         match self {
             Self::Rsa(key) => {
@@ -136,7 +142,7 @@ impl SamlSigner {
                 }
             }
             Self::P256(key) => {
-                // XMLDSIG の ECKeyValue は非圧縮点（0x04 || X || Y）を base64 で持つ。
+                // XMLDSIG ECKeyValue holds the uncompressed point (0x04 || X || Y) in base64.
                 let point = key.verifying_key().to_sec1_point(false);
                 IdpSigningKey::Ec {
                     named_curve_uri: NAMED_CURVE_P256.to_string(),
@@ -146,8 +152,8 @@ impl SamlSigner {
         }
     }
 
-    /// `SignedInfo` バイト列へ署名する。RSA は PKCS#1 v1.5、ECDSA は IEEE P1363（r||s）形式
-    /// （どちらも XMLDSIG の規定形式）。
+    /// Signs the `SignedInfo` bytes. RSA uses PKCS#1 v1.5, ECDSA uses IEEE P1363 (r||s)
+    /// (both the formats XMLDSIG specifies).
     fn sign(&self, message: &[u8]) -> Result<Vec<u8>> {
         match self {
             Self::Rsa(key) => {
@@ -170,17 +176,17 @@ impl SamlSigner {
     }
 }
 
-/// XML の ID 属性（NCName: 先頭が数字不可）として安全なランダム ID を採番する。
+/// Numbers a random ID safe as an XML ID attribute (NCName: must not start with a digit).
 pub fn generate_saml_id() -> String {
     format!("_{}", crate::domain::crypto::random_hex(16))
 }
 
-/// 署名付き SAML Response XML を生成する（Assertion に enveloped signature）。
+/// Generates signed SAML Response XML (enveloped signature in the Assertion).
 pub fn build_signed_response_xml(input: &SamlResponseInput, signer: &SamlSigner) -> Result<String> {
     let assertion = build_assertion(input);
     let signature = build_signature(input.assertion_id, assertion.as_bytes(), signer)?;
 
-    // enveloped signature を Issuer の直後（SAML スキーマの規定位置）へ差し込む。
+    // Insert the enveloped signature right after Issuer (the position the SAML schema specifies).
     let issuer_close = "</saml:Issuer>";
     let insert_at = assertion
         .find(issuer_close)
@@ -209,12 +215,13 @@ pub fn build_signed_response_xml(input: &SamlResponseInput, signer: &SamlSigner)
     ))
 }
 
-/// 未署名の Assertion を排他的正準形で組み立てる（署名のダイジェスト対象そのもの）。
+/// Builds the unsigned Assertion in exclusive canonical form (exactly what the signature digests).
 fn build_assertion(input: &SamlResponseInput) -> String {
     let issued_at = format_instant(input.issued_at);
     let authn_instant = format_instant(input.authn_instant);
     let not_on_or_after = format_instant(input.not_on_or_after);
-    // NotBefore は発行時刻とする（SP 側の許容スキューは SP の検証設定に委ねる）。
+    // NotBefore is the issue time (allowed skew on the SP side is left to the SP's verification
+    // settings).
     let not_before = issued_at.clone();
 
     let in_response_to = input
@@ -235,7 +242,8 @@ fn build_assertion(input: &SamlResponseInput) -> String {
         })
         .unwrap_or_default();
 
-    // 属性は正準形の順（名前空間宣言 → ローカル名の辞書順）で出力している。
+    // Attributes are output in canonical order (namespace declarations → lexical order of local
+    // names).
     format!(
         "<saml:Assertion xmlns:saml=\"{NS_ASSERTION}\" ID=\"{id}\" IssueInstant=\"{issued_at}\" Version=\"2.0\">\
 <saml:Issuer>{issuer}</saml:Issuer>\
@@ -263,8 +271,8 @@ fn build_assertion(input: &SamlResponseInput) -> String {
     )
 }
 
-/// `ds:Signature` 要素を組み立てる。ダイジェストは「署名を差し込む前の Assertion」
-/// （enveloped-signature transform 適用後と同一）に対して計算する。
+/// Builds the `ds:Signature` element. The digest is computed over "the Assertion before inserting
+/// the signature" (identical to the result of the enveloped-signature transform).
 fn build_signature(
     assertion_id: &str,
     unsigned_assertion: &[u8],
@@ -272,7 +280,8 @@ fn build_signature(
 ) -> Result<String> {
     let digest = STANDARD.encode(Sha256::digest(unsigned_assertion));
 
-    // SignedInfo は SP が排他的 C14N した結果（apex 要素に xmlns:ds が現れる形）へ署名する。
+    // SignedInfo is signed in the form the SP gets by exclusive C14N (xmlns:ds appears on the apex
+    // element).
     let signed_info_canonical = format!(
         "<ds:SignedInfo xmlns:ds=\"{NS_XMLDSIG}\">\
 <ds:CanonicalizationMethod Algorithm=\"{EXC_C14N}\"></ds:CanonicalizationMethod>\
@@ -291,14 +300,15 @@ fn build_signature(
     );
     let signature_value = STANDARD.encode(signer.sign(signed_info_canonical.as_bytes())?);
 
-    // 文書へは xmlns:ds を Signature 要素で宣言して埋め込む（SignedInfo の C14N 結果は上と一致する）。
+    // In the document, xmlns:ds is declared on the Signature element (SignedInfo's C14N result
+    // matches the above).
     let signed_info_embedded = signed_info_canonical.replacen(
         &format!("<ds:SignedInfo xmlns:ds=\"{NS_XMLDSIG}\">"),
         "<ds:SignedInfo>",
         1,
     );
-    // KeyInfo は SignedInfo の外なので、署名計算には影響しない（XMLDSIG のスキーマ順は
-    // SignedInfo → SignatureValue → KeyInfo）。
+    // KeyInfo is outside SignedInfo, so it does not affect the signature computation (XMLDSIG
+    // schema order is SignedInfo → SignatureValue → KeyInfo).
     let key_value = signer.public_key().to_key_value();
     Ok(format!(
         "<ds:Signature xmlns:ds=\"{NS_XMLDSIG}\">\
@@ -309,12 +319,13 @@ fn build_signature(
     ))
 }
 
-/// SAML の時刻表現（xsd:dateTime、UTC・ミリ秒精度）。
+/// SAML time representation (xsd:dateTime, UTC, millisecond precision).
 fn format_instant(at: DateTime<Utc>) -> String {
     at.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
 }
 
-/// 属性値の正準形エスケープ（Canonical XML: `&` `<` `"` と TAB/LF/CR のみ。`>` `'` はそのまま）。
+/// Canonical escaping of attribute values (Canonical XML: only `&` `<` `"` and TAB/LF/CR; `>` `'`
+/// stay as is).
 fn escape_attr(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for c in value.chars() {
@@ -331,7 +342,7 @@ fn escape_attr(value: &str) -> String {
     out
 }
 
-/// テキストノードの正準形エスケープ（Canonical XML: `&` `<` `>` と CR のみ）。
+/// Canonical escaping of text nodes (Canonical XML: only `&` `<` `>` and CR).
 fn escape_text(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for c in value.chars() {
@@ -372,14 +383,15 @@ mod tests {
     }
 
     fn rsa_signer() -> (SamlSigner, aws_lc_rs::rsa::PublicKey) {
-        // aws-lc-rs が作る RSA 鍵は 2048 ビットから（1024 は作れない）。
+        // RSA keys made by aws-lc-rs start at 2048 bits (1024 cannot be made).
         let private =
             aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).expect("keygen");
         let public = private.public_key().clone();
         (SamlSigner::Rsa(Box::new(private)), public)
     }
 
-    /// 文書から最初の `<tag ...>...</tag>` 部分文字列を取り出す（バイト等価の検証用）。
+    /// Extracts the first `<tag ...>...</tag>` substring from a document (for byte-equality
+    /// checks).
     fn extract(doc: &str, open: &str, close: &str) -> String {
         let start = doc.find(open).expect("open tag");
         let end = doc.find(close).expect("close tag") + close.len();
@@ -395,14 +407,15 @@ mod tests {
         assert!(xml.contains("user@example.test</saml:NameID>"));
         assert!(xml.contains("InResponseTo=\"_req1\""));
         assert!(xml.contains("SessionIndex=\"_session1\""));
-        // 認証手段を保持しないため、特定の認証強度（PasswordProtectedTransport 等）を主張しない。
+        // The authentication means is not kept, so no specific strength (PasswordProtectedTransport
+        // etc.) is claimed.
         assert!(xml.contains(&format!(
             "<saml:AuthnContextClassRef>{AUTHN_CONTEXT_UNSPECIFIED}</saml:AuthnContextClassRef>"
         )));
         assert!(!xml.contains("PasswordProtectedTransport"));
-        // Destination のクエリ `&` は正準形でエスケープされる。
+        // The `&` in Destination's query is escaped in canonical form.
         assert!(xml.contains("Destination=\"https://sp.example.test/acs?x=1&amp;y=2\""));
-        // 生成 XML は整形式（再パース可能）である。
+        // The generated XML is well-formed (re-parsable).
         let mut reader = Reader::from_str(&xml);
         while !matches!(reader.read_event().expect("well-formed"), Event::Eof) {}
     }
@@ -413,7 +426,8 @@ mod tests {
         let input = test_input();
         let xml = build_signed_response_xml(&input, &signer).expect("build");
 
-        // enveloped-signature transform: Signature 要素を除いた Assertion がダイジェスト対象。
+        // enveloped-signature transform: the Assertion without the Signature element is what is
+        // digested.
         let signed_assertion = extract(&xml, "<saml:Assertion", "</saml:Assertion>");
         let signature = extract(&signed_assertion, "<ds:Signature", "</ds:Signature>");
         let without_signature = signed_assertion.replacen(&signature, "", 1);
@@ -422,15 +436,16 @@ mod tests {
             xml.contains(&format!("<ds:DigestValue>{expected}</ds:DigestValue>")),
             "digest must match the assertion minus its signature"
         );
-        // 未署名 Assertion と同一バイト列である（差し込みが他の部分を変えない）。
+        // Identical bytes to the unsigned Assertion (the insertion does not change other parts).
         assert_eq!(without_signature, build_assertion(&input));
     }
 
-    /// アサーションが「どの鍵で署名したか」を名乗る（2026-08-28）。
+    /// The assertion states "which key signed it" (2026-08-28).
     ///
-    /// ADR-0039 でメタデータが複数の `KeyDescriptor` を並べるようになったため、名乗らないと
-    /// SP は総当たりか先頭かで推測するしかない。**メタデータの `KeyDescriptor` と同じ表現**で
-    /// あることが要点で、ここがずれると SP は突き合わせられない。
+    /// Since ADR-0039 the metadata lists multiple `KeyDescriptor`s, so without this the SP could
+    /// only guess by trying all or taking the first. The point is that it uses **the same
+    /// representation as the metadata's `KeyDescriptor`**; if this drifts, the SP cannot match
+    /// them.
     #[test]
     fn the_assertion_names_the_key_it_was_signed_with() {
         let (signer, public) = rsa_signer();
@@ -439,14 +454,14 @@ mod tests {
         let key_info = extract(&xml, "<ds:KeyInfo>", "</ds:KeyInfo>");
         assert!(key_info.contains("<ds:RSAKeyValue>"), "{xml}");
 
-        // 署名に使った鍵そのものが載っていること（別の鍵を名乗らない）。
+        // The key actually used for signing is included (it does not claim another key).
         let modulus = STANDARD.encode(public.modulus().big_endian_without_leading_zero());
         assert!(
             key_info.contains(&format!("<ds:Modulus>{modulus}</ds:Modulus>")),
             "{key_info}"
         );
 
-        // メタデータ側と同じ描画であること（SP はこの 2 つを突き合わせる）。
+        // Rendered the same as the metadata side (the SP matches these two).
         let published = crate::domain::saml_metadata::IdpSigningKey::Rsa {
             modulus_b64: modulus,
             exponent_b64: STANDARD.encode(public.exponent().big_endian_without_leading_zero()),
@@ -454,14 +469,14 @@ mod tests {
         assert!(key_info.contains(&published.to_key_value()), "{key_info}");
     }
 
-    /// `KeyInfo` は `SignedInfo` の外なので、載せても署名対象は変わらない。
+    /// `KeyInfo` is outside `SignedInfo`, so including it does not change what is signed.
     #[test]
     fn adding_key_info_does_not_change_what_is_signed() {
         let (signer, _) = rsa_signer();
         let xml = build_signed_response_xml(&test_input(), &signer).expect("build");
         let signed_info = extract(&xml, "<ds:SignedInfo>", "</ds:SignedInfo>");
         assert!(!signed_info.contains("KeyInfo"), "{signed_info}");
-        // スキーマ順は SignedInfo → SignatureValue → KeyInfo。
+        // Schema order is SignedInfo → SignatureValue → KeyInfo.
         let sv = xml.find("<ds:SignatureValue>").expect("SignatureValue");
         let ki = xml.find("<ds:KeyInfo>").expect("KeyInfo");
         assert!(sv < ki, "{xml}");
@@ -472,7 +487,8 @@ mod tests {
         let (signer, public) = rsa_signer();
         let xml = build_signed_response_xml(&test_input(), &signer).expect("build");
 
-        // SP と同じ再構成: SignedInfo を取り出し、apex に xmlns:ds を補って C14N 形にする。
+        // Same reconstruction as the SP: take SignedInfo and add xmlns:ds to the apex to get the
+        // C14N form.
         let signed_info = extract(&xml, "<ds:SignedInfo>", "</ds:SignedInfo>").replacen(
             "<ds:SignedInfo>",
             &format!("<ds:SignedInfo xmlns:ds=\"{NS_XMLDSIG}\">"),
@@ -511,7 +527,7 @@ mod tests {
             .replace("<ds:SignatureValue>", "")
             .replace("</ds:SignatureValue>", "");
         let raw = STANDARD.decode(signature_value).expect("base64");
-        // XMLDSIG の ECDSA 署名値は r||s（P-256 では 64 バイト）。
+        // The XMLDSIG ECDSA signature value is r||s (64 bytes for P-256).
         assert_eq!(raw.len(), 64);
         let signature = p256::ecdsa::Signature::from_slice(&raw).expect("p1363");
         verifying

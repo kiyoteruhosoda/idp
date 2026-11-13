@@ -1,8 +1,8 @@
-# デプロイ先（ソースを持たない別ホスト）用の Compose。build: を持たず、ビルド済みイメージを image: 参照で
-# 起動する。イメージは別ホストの scripts/build.sh が tar（dist/ バンドル）で出力し、バンドル内では本ファイルが
-# docker-compose.yml として同梱される。開発・ビルド用（build: を持つ）はリポジトリの docker-compose.yml。
-#   イメージ名: ${IMAGE_PREFIX:-idp}/{api,web,migrate}:${IMAGE_TAG:-latest}
-#   deploy.sh（初回・更新・reset の単一入口）が使う。手で -f 指定する必要はない。
+# Compose for deployment targets (separate hosts without the source). Has no build:; starts prebuilt images via image:
+# references. Images are output as a tar (dist/ bundle) by scripts/build.sh on another host, and inside the bundle this file
+# ships as docker-compose.yml. The development/build one (with build:) is the repository's docker-compose.yml.
+#   Image names: ${IMAGE_PREFIX:-idp}/{api,web,migrate}:${IMAGE_TAG:-latest}
+#   Used by deploy.sh (single entry point for initial setup, update and reset). No need to pass -f by hand.
 services:
   mariadb:
     image: mariadb:10.11
@@ -56,7 +56,7 @@ services:
       HSTS_MAX_AGE: ${HSTS_MAX_AGE:-}
       CSRF_SECRET: ${CSRF_SECRET:-}
       PUBLIC_WEB_BASE_URL: ${PUBLIC_WEB_BASE_URL:-}
-      # サービス横断 Cookie の Domain 属性（別ドメイン構成のみ。ADR-0012。web と同値）。
+      # Domain attribute of the cross-service Cookie (domain-split only; ADR-0012; same value as web).
       COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
     restart: unless-stopped
     mem_limit: 512m
@@ -90,10 +90,10 @@ services:
       COOKIE_SECURE: ${COOKIE_SECURE:-}
       CSRF_SECRET: ${CSRF_SECRET:-}
       HSTS_MAX_AGE: ${HSTS_MAX_AGE:-}
-      # `X-Forwarded-For` を信頼してクライアント IP を採るか（SEC1。api と同値）。web が組み立てた
-      # IP が api のレート制限・監査ログの IP になるため、両サービスで同じ値にする。
+      # Whether to trust `X-Forwarded-For` for the client IP (SEC1; same value as api). The IP web builds
+      # becomes the IP in the api's rate limiting and audit logs, so use the same value in both services.
       TRUST_FORWARDED_HEADERS: ${TRUST_FORWARDED_HEADERS:-}
-      # web 自身の公開オリジン（別ドメイン構成のみ。ADR-0012。api と同値）。
+      # web's own public origin (domain-split only; ADR-0012; same value as api).
       PUBLIC_WEB_BASE_URL: ${PUBLIC_WEB_BASE_URL:-}
       COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
     restart: unless-stopped
@@ -150,7 +150,7 @@ services:
       retries: 5
       start_period: 10s
 
-  # DDL・マスタデータ適用の専用ワンショットジョブ（ビルド済みイメージ）。常駐させない。
+  # Dedicated one-shot job applying DDL and master data (prebuilt image). Not kept running.
   migrate:
     image: ${IMAGE_PREFIX:-idp}/migrate:${IMAGE_TAG:-latest}
     environment:

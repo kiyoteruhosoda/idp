@@ -1,26 +1,26 @@
-//! エンドユーザー・ポータルへのログインのユースケース。
+//! Use case for logging in to the end-user portal.
 //!
-//! 通常の OIDC ログイン（[`crate::application::login`]）は `/authorize` が発行する `auth_session_id` に
-//! 結合し、成功後は authorization code を発行して RP の `redirect_uri` へ戻す。対して本ユースケースは
-//! IdP 自身のアカウント画面（`/{tenant_id}/settings`）へ入るための **クライアント非依存の直接ログイン**で、
-//! 管理コンソールのログイン（[`crate::application::admin_login`]）と同じく **SSO セッションを直接発行する**
-//! （code 発行・redirect は行わない）。
+//! Normal OIDC login ([`crate::application::login`]) is bound to the `auth_session_id` issued by `/authorize`, and
+//! after success issues an authorization code and returns to the RP's `redirect_uri`. This use case, by contrast, is a
+//! **client-independent direct login** for entering the IdP's own account screen (`/{tenant_id}/settings`), and like
+//! admin console login ([`crate::application::admin_login`]) it **issues the SSO session directly**
+//! (no code issuance or redirect).
 //!
-//! 管理ログインとの違いは 2 点:
-//! 1. admin 権限を要求しない（有効な利用者なら誰でも入れる）。
-//! 2. **TOTP（MFA）を尊重する**。TOTP 設定済みの利用者はパスワード認証だけでは SSO を発行せず、署名付きの
-//!    短命チケット（`mfa_ticket`）を返して TOTP 入力ステップへ誘導する。これにより、ポータルログインが
-//!    OIDC ログインの MFA を迂回して SSO を得る抜け道になることを防ぐ。
+//! Two differences from admin login:
+//! 1. It doesn't require admin permissions (any active user can enter).
+//! 2. **It respects TOTP (MFA).** For users with TOTP set up, password authentication alone doesn't issue SSO; a signed
+//!    short-lived ticket (`mfa_ticket`) is returned and the user is sent to the TOTP input step. This keeps portal login
+//!    from being a loophole that bypasses OIDC login's MFA to obtain SSO.
 //!
-//! ロックアウト（設計仕様 §4.3）と IP レート制限・メール検証ゲート（SEC6b）・強制パスワード変更
-//! （ADR-0009 §5）は通常ログインと同じ方針で適用する。
+//! Lockout (design spec §4.3), IP rate limiting, the email verification gate (SEC6b) and forced password change
+//! (ADR-0009 §5) are applied with the same policy as normal login.
 //!
-//! 認証ポリシー（AP2。ユーザー認証・認証ポリシー仕様書 §7〜§9）も OIDC ログインと同じ規則で適用する。
-//! ポリシーは「認証時に満たすべき条件」であって「OIDC フローで満たすべき条件」ではないため、
-//! ポータル・管理コンソールだけがポリシーの外に置かれていると、`deny` されたはずの利用者が
-//! ポータル経由で SSO セッションを得て（そのセッションで OIDC の SSO 復元まで通って）しまう。
-//! ポータルはクライアント文脈を持たないため、評価コンテキストの `client_id` は `None` になる
-//! （`client_ids` 条件を持つポリシーは一致しない ＝ `user_ids` 条件と全体条件が主対象）。
+//! Authentication policies (AP2. User authentication & authentication policy spec §7–§9) are also applied with the same rules as OIDC login.
+//! A policy is "a condition to satisfy at authentication", not "a condition to satisfy in the OIDC flow", so
+//! if only the portal and admin console were outside the policies, a user who should have been `deny`-ed could
+//! obtain an SSO session via the portal (and with that session even pass OIDC SSO restore).
+//! The portal has no client context, so the evaluation context's `client_id` is `None`
+//! (policies with `client_ids` conditions don't match = `user_ids` conditions and global conditions are the main targets).
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authentication_policy_gate::{
@@ -64,17 +64,17 @@ use uuid::Uuid;
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// MFA チケットの有効期間（秒）。TOTP 入力までの猶予。
+/// Lifetime of the MFA ticket (seconds). Time allowed until TOTP input.
 const MFA_TICKET_TTL_SECS: i64 = 300;
 
 pub struct PortalLoginCommand {
-    /// ログイン識別子（ユーザー名 = `preferred_username`。ADR-0009 §8）。
+    /// Login identifier (user name = `preferred_username`. ADR-0009 §8).
     pub username: String,
     pub password: String,
 }
 
-/// ⚠ 秘密（`password`）を `Debug` に出さない（task #593）。`{:?}` でログへ
-/// 落としても値が漏れないよう、手書きで載せる項目を選ぶ。
+/// ⚠ Don't put secrets (`password`) in `Debug` (task #593). Fields are chosen by hand so values don't leak
+/// even if logged with `{:?}`.
 impl std::fmt::Debug for PortalLoginCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PortalLoginCommand")
@@ -89,27 +89,27 @@ pub struct PortalMfaCommand {
     pub totp_code: String,
 }
 
-/// パスキー（WebAuthn）によるポータルログインのコマンド。ログイン識別子もパスワードも取らない
-/// （discoverable credential が持ち主を名乗る）。
+/// Command for portal login with a passkey (WebAuthn). Takes neither a login identifier nor a password
+/// (the discoverable credential names its owner).
 #[derive(Debug)]
 pub struct PortalPasskeyLoginCommand {
-    /// `POST /internal/passkey/login/begin` が返したチャレンジ ID。
+    /// The challenge ID returned by `POST /internal/passkey/login/begin`.
     pub challenge_id: Uuid,
-    /// ブラウザの `navigator.credentials.get()` が返したアサーション。
+    /// The assertion returned by the browser's `navigator.credentials.get()`.
     pub credential: serde_json::Value,
 }
 
-/// ポータルの強制パスワード変更（ADR-0009 §5）のコマンド。ポータルログインは `auth_session_id` の
-/// ような一時状態を持たないため、管理コンソールと同じく現行パスワードを含め毎回フルに再検証する。
+/// Command for the portal's forced password change (ADR-0009 §5). Portal login holds no temporary state like
+/// `auth_session_id`, so like the admin console it fully re-verifies every time, including the current password.
 pub struct PortalChangePasswordCommand {
-    /// ログイン識別子（ユーザー名 = `preferred_username`）。
+    /// Login identifier (user name = `preferred_username`).
     pub username: String,
     pub current_password: String,
     pub new_password: String,
 }
 
-/// ⚠ 秘密（`current_password`, `new_password`）を `Debug` に出さない（task #593）。`{:?}` でログへ
-/// 落としても値が漏れないよう、手書きで載せる項目を選ぶ。
+/// ⚠ Don't put secrets (`current_password`, `new_password`) in `Debug` (task #593). Fields are chosen by hand so values
+/// don't leak even if logged with `{:?}`.
 impl std::fmt::Debug for PortalChangePasswordCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PortalChangePasswordCommand")
@@ -118,99 +118,99 @@ impl std::fmt::Debug for PortalChangePasswordCommand {
     }
 }
 
-/// ポータルログインの結果。Presentation は画面（HTML）に写す。
+/// Result of portal login. Presentation maps it to a screen (HTML).
 pub enum PortalLoginOutcome {
-    /// 認証成功（TOTP 未設定）。SSO Cookie を発行してアカウント画面へ 302 する。
+    /// Authenticated (no TOTP). Issue the SSO cookie and 302 to the account screen.
     Success {
         sso_session_id: String,
-        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        /// `Max-Age` of the SSO cookie (seconds until the established session's absolute expiry. ADR-0058).
         sso_absolute_ttl_secs: u64,
         user_language: Option<String>,
     },
-    /// パスワード認証成功だが TOTP が必要。`mfa_ticket` を Cookie 化して TOTP 入力画面へ誘導する。
+    /// Password authentication succeeded but TOTP is needed. Turn `mfa_ticket` into a cookie and send to the TOTP input screen.
     MfaRequired {
         mfa_ticket: String,
     },
-    /// 自己登録アカウントのメール未検証（SEC6b）。
+    /// The self-registered account's email is unverified (SEC6b).
     EmailVerificationRequired,
-    /// 強制パスワード変更が必要（ADR-0009 §5）。web は強制パスワード変更フォームへ誘導する
-    /// （管理コンソールと同方式。`username` は入力値をフォーム再表示用に返す）。
+    /// Forced password change needed (ADR-0009 §5). web sends the user to the forced password change form
+    /// (same approach as the admin console; `username` returns the input value to re-display the form).
     PasswordChangeRequired {
         username: String,
     },
-    /// 認証ポリシーにより拒否（AP2。仕様 §7.4 `deny`）。資格情報は検証済みのため、資格情報エラーとは
-    /// 別の文言で「組織のポリシーで拒否された」ことを表示してよい。
+    /// Denied by the authentication policy (AP2. spec §7.4 `deny`). Credentials are verified, so it may be shown with
+    /// wording distinct from a credential error: "denied by the organization's policy".
     PolicyDenied,
-    /// 認証ポリシーが MFA を必須としたが、使用可能な認証器（確認済み TOTP）が無い（AP2）。
+    /// The authentication policy requires MFA, but there is no usable authenticator (verified TOTP) (AP2).
     MfaEnrollmentRequired,
-    /// パスキーのチャレンジが見つからない・期限切れ・用途違い（パスキー経路のみ）。やり直しを促す。
+    /// Passkey challenge not found, expired, or for another purpose (passkey path only). Prompt to retry.
     PasskeyChallengeNotFound,
-    /// IP 単位のレート制限超過。
+    /// Per-IP rate limit exceeded.
     RateLimited,
-    /// 資格情報不正（ユーザー不存在・パスワード不一致・無効アカウントを区別しない）。
+    /// Invalid credentials (missing user, wrong password and disabled account are not distinguished).
     InvalidCredentials,
-    /// アカウントロック中。
+    /// Account locked.
     Locked,
-    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916）。SSO は作っていない。
+    /// Authentication passed, but in an organization limited to registered devices this device is not registered (task #916). No SSO was created.
     DeviceEnrollmentRequired {
         ticket: String,
     },
     Internal(String),
 }
 
-/// ポータルの強制パスワード変更の結果。
+/// Result of the portal's forced password change.
 pub enum PortalChangePasswordOutcome {
-    /// 変更成功（TOTP 未設定）。SSO Cookie を発行してアカウント画面へ 302 する。
+    /// Changed (no TOTP). Issue the SSO cookie and 302 to the account screen.
     Success {
         sso_session_id: String,
-        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        /// `Max-Age` of the SSO cookie (seconds until the established session's absolute expiry. ADR-0058).
         sso_absolute_ttl_secs: u64,
         user_language: Option<String>,
     },
-    /// パスワード変更は成功したが TOTP が必要（`login()` と同じ MFA ゲート）。`mfa_ticket` を Cookie 化して
-    /// TOTP 入力画面へ誘導する。SSO はまだ発行しない（所持のみでの MFA バイパスを防ぐ）。
+    /// The password change succeeded but TOTP is needed (same MFA gate as `login()`). Turn `mfa_ticket` into a cookie and
+    /// send to the TOTP input screen. SSO is not issued yet (prevents bypassing MFA by possession alone).
     MfaRequired {
         mfa_ticket: String,
     },
-    /// 自己登録アカウントのメール未検証（SEC6b）。ステートレスな本経路は `login()` のメール検証ゲートを
-    /// 経ていないため、ここで再判定する（管理者が未検証ユーザーをリセットした場合の抜け道を塞ぐ）。
+    /// The self-registered account's email is unverified (SEC6b). This stateless path hasn't gone through `login()`'s email
+    /// verification gate, so it is re-checked here (closes the loophole of an admin resetting an unverified user).
     EmailVerificationRequired,
-    /// 変更は成功したが認証ポリシーにより拒否（AP2。仕様 §7.4 `deny`）。
+    /// Changed, but denied by the authentication policy (AP2. spec §7.4 `deny`).
     PolicyDenied,
-    /// 変更は成功したが認証ポリシーが MFA を必須とし、使用可能な認証器が無い（AP2）。
+    /// Changed, but the authentication policy requires MFA and there is no usable authenticator (AP2).
     MfaEnrollmentRequired,
-    /// IP 単位のレート制限超過。
+    /// Per-IP rate limit exceeded.
     RateLimited,
-    /// 資格情報不正（利用者不存在・現行パスワード不一致・無効アカウントを区別しない）。
+    /// Invalid credentials (missing user, wrong current password and disabled account are not distinguished).
     InvalidCredentials,
-    /// アカウントロック中。
+    /// Account locked.
     Locked,
-    /// 新パスワードが強度要件を満たさない。
-    /// 新パスワードがポリシーを満たさない（長さ・漏えい済み・再利用。AP7）。
+    /// The new password doesn't meet the strength requirements.
+    /// The new password doesn't satisfy the policy (length, breached, reused. AP7).
     WeakPassword(PasswordRejection),
-    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916）。SSO は作っていない。
+    /// Authentication passed, but in an organization limited to registered devices this device is not registered (task #916). No SSO was created.
     DeviceEnrollmentRequired {
         ticket: String,
     },
     Internal(String),
 }
 
-/// ポータル TOTP 検証の結果。
+/// Result of portal TOTP verification.
 pub enum PortalMfaOutcome {
     Success {
         sso_session_id: String,
-        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        /// `Max-Age` of the SSO cookie (seconds until the established session's absolute expiry. ADR-0058).
         sso_absolute_ttl_secs: u64,
         user_language: Option<String>,
     },
-    /// TOTP コード不正（チケットが有効なら再試行できる）。
+    /// Invalid TOTP code (can retry while the ticket is valid).
     InvalidCode,
-    /// 認証ポリシーにより拒否（AP2。チケット発行後にポリシーが変わった場合）。
+    /// Denied by the authentication policy (AP2; when the policy changed after the ticket was issued).
     PolicyDenied,
-    /// チケットが無効・期限切れ（ログインからやり直し）。
+    /// The ticket is invalid or expired (start over from login).
     TicketExpired,
     RateLimited,
-    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916）。SSO は作っていない。
+    /// Authentication passed, but in an organization limited to registered devices this device is not registered (task #916). No SSO was created.
     DeviceEnrollmentRequired {
         ticket: String,
     },
@@ -218,17 +218,17 @@ pub enum PortalMfaOutcome {
 }
 
 pub struct PortalLoginService {
-    /// 認証器の登録簿（AP9）。リカバリーコード・email OTP の消費に使う。
+    /// The authenticator registry (AP9). Used to consume recovery codes and email OTPs.
     authenticators: Arc<dyn UserAuthenticatorRepository>,
     users: Arc<dyn UserRepository>,
-    /// WebAuthn セレモニー（パスキーログイン用）。OIDC 認可フローのログインと同じものを共有する。
+    /// WebAuthn ceremony (for passkey login). Shares the same one as OIDC authorization flow login.
     passkey_assertion: Arc<PasskeyAssertionService>,
-    /// テナントへ割り当てたドメイン（ADR-0029）。ログイン欄の入力が `local@domain` の形のとき、
-    /// 所属元テナントを 1 つに決めるために引く（`login_user_resolution`）。
+    /// Domains assigned to tenants (ADR-0029). Looked up when the login input has the form `local@domain`,
+    /// to pin down a single home tenant (`login_user_resolution`).
     tenant_domains: Arc<dyn TenantDomainRepository>,
     sso_sessions: Arc<dyn SsoSessionRepository>,
     totp_secrets: Arc<dyn TotpSecretRepository>,
-    /// 認証ポリシーの評価（材料の引き当てと評価。`authentication_policy_gate`）。
+    /// Authentication policy evaluation (looking up inputs and evaluating. `authentication_policy_gate`).
     policy_gate: Arc<AuthenticationPolicyGate>,
     hasher: Arc<dyn PasswordHasher>,
     password_policy: Arc<PasswordPolicyService>,
@@ -236,22 +236,22 @@ pub struct PortalLoginService {
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
     key_encryption_key: [u8; 32],
-    /// `mfa_ticket` の署名鍵。CSRF 秘密鍵を流用する（用途はプレフィクスで名前空間分離）。
+    /// Signing key for `mfa_ticket`. Reuses the CSRF secret (purposes are namespaced by prefix).
     ticket_secret: [u8; 32],
-    /// テナントが上書きできる設定（ADR-0058）。参照のたびに引く。一致するポリシーが無い場合の
-    /// 既定動作（AP2・§4）もここから引く。
+    /// Settings tenants can override (ADR-0058). Looked up every time. The default behavior when no policy
+    /// matches (AP2, §4) is also taken from here.
     settings: Arc<dyn EffectiveTenantSettings>,
-    /// 登録した端末の関門（task #916）。`None` は関門なし（試験だけ。api は必ず付ける）。
+    /// The registered-device gate (task #916). `None` means no gate (tests only; api always attaches it).
     device_gate: Option<Arc<DeviceGate>>,
 }
 
-/// ポータルで SSO を作ろうとした結論。
+/// Conclusion of trying to create SSO in the portal.
 enum PortalSso {
     Issued {
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
     },
-    /// 登録していない端末だった（task #916）。
+    /// It was an unregistered device (task #916).
     EnrollmentRequired { ticket: String },
 }
 
@@ -294,13 +294,13 @@ impl PortalLoginService {
         }
     }
 
-    /// 登録した端末の関門を付ける（task #916。⚠ api の組み立てでは必ず呼ぶ）。
+    /// Attaches the registered-device gate (task #916. ⚠ always call it when assembling api).
     pub fn with_device_gate(mut self, gate: Arc<DeviceGate>) -> Self {
         self.device_gate = Some(gate);
         self
     }
 
-    /// 認証ポリシーを評価する（AP2）。ポータルはクライアント文脈を持たないため `client_id` は `None`。
+    /// Evaluates the authentication policy (AP2). The portal has no client context, so `client_id` is `None`.
     async fn evaluate_policy(
         &self,
         tenant_id: TenantId,
@@ -313,7 +313,7 @@ impl PortalLoginService {
                 audience: PolicyAudience::Unaddressed,
                 user_id,
                 ip_address,
-                // ポータルログインは OIDC 認可要求ではないため `acr_values` は無い。
+                // Portal login is not an OIDC authorization request, so there are no `acr_values`.
                 requested_acr: &[],
                 now: self.clock.now(),
             })
@@ -321,7 +321,7 @@ impl PortalLoginService {
             .map_err(|e| e.to_string())
     }
 
-    /// ポリシー拒否を監査へ記録する（AP2。OIDC ログインと同じイベント種別・理由形式を使う）。
+    /// Records a policy denial in the audit (AP2; uses the same event type and reason format as OIDC login).
     async fn record_policy_denied(
         &self,
         tenant_id: TenantId,
@@ -351,7 +351,7 @@ impl PortalLoginService {
         let now = self.clock.now();
         let tenant_id = tenant.tenant_id();
 
-        // 1. IP 単位のレート制限（資格情報検証前。通常ログインと同順）。
+        // 1. Per-IP rate limit (before credential verification; same order as normal login).
         if let Some(ip) = &ctx.ip_address {
             if !self.rate_limiter.check_and_record(ip, now) {
                 self.record_failure(tenant_id, None, "ip_rate_limited", ctx)
@@ -360,8 +360,8 @@ impl PortalLoginService {
             }
         }
 
-        // 2. ユーザー検索（ログイン識別子。AP8 の登録簿で解決する）。対象はこのテナントの ACTIVE な
-        //    メンバー（HOME / GUEST。ADR-0009 §8。解決の規則は `login_user_resolution`）。
+        // 2. Look up the user (login identifier, resolved via the AP8 registry). Targets are this tenant's ACTIVE
+        //    members (HOME / GUEST. ADR-0009 §8; resolution rules in `login_user_resolution`).
         let user = match resolve_login_user(
             self.users.as_ref(),
             self.tenant_domains.as_ref(),
@@ -371,10 +371,10 @@ impl PortalLoginService {
         .await
         {
             Ok(LoginIdentifierMatch::Resolved(u)) => u,
-            // 不在と曖昧で応答は変えない（存在の露呈を避ける）。監査に残す理由だけを分ける。
+            // The response is the same for missing and ambiguous (avoid revealing existence). Only the audit reason differs.
             Ok(LoginIdentifierMatch::Unresolved(reason)) => {
-                // 実在利用者と同じ argon2 検証を 1 回消費し、応答時間で利用者の有無を
-                // 推し量れないようにする（列挙対策）。
+                // Spend one argon2 verification, same as for a real user, so the user's existence can't be
+                // inferred from response time (enumeration countermeasure).
                 crate::domain::password::verify_against_dummy(self.hasher.as_ref(), &cmd.password);
                 self.record_failure(tenant_id, None, reason.audit_code(), ctx)
                     .await;
@@ -383,9 +383,9 @@ impl PortalLoginService {
             Err(e) => return PortalLoginOutcome::Internal(e.to_string()),
         };
 
-        // 3. ロック状態の確認。
+        // 3. Check the lock state.
         if user.is_locked_at(now) {
-            // 不在のときと同じだけ argon2 の検証を消費する（応答時間で状態を推し量らせない。task #590）。
+            // Spend the same argon2 verification as for a missing user (don't let the state be inferred from response time. task #590).
             crate::domain::password::verify_against_dummy(self.hasher.as_ref(), &cmd.password);
             self.audit
                 .record(
@@ -401,16 +401,16 @@ impl PortalLoginService {
             return PortalLoginOutcome::Locked;
         }
 
-        // 4. アカウント状態の確認（存在の露呈を避けるため資格情報エラーと同じ応答にする）。
+        // 4. Check the account state (same response as a credential error to avoid revealing existence).
         if !user.is_active() {
-            // 不在のときと同じだけ argon2 の検証を消費する（応答時間で状態を推し量らせない。task #590）。
+            // Spend the same argon2 verification as for a missing user (don't let the state be inferred from response time. task #590).
             crate::domain::password::verify_against_dummy(self.hasher.as_ref(), &cmd.password);
             self.record_failure(tenant_id, Some(user.id), "account_not_active", ctx)
                 .await;
             return PortalLoginOutcome::InvalidCredentials;
         }
 
-        // 5. パスワード検証。
+        // 5. Verify the password.
         let verified = match self.hasher.verify(&cmd.password, &user.password_hash) {
             Ok(v) => v,
             Err(e) => return PortalLoginOutcome::Internal(e.to_string()),
@@ -419,23 +419,23 @@ impl PortalLoginService {
             return self.handle_password_failure(tenant_id, &user, ctx).await;
         }
 
-        // 6. 成功: 失敗カウンタとロックをリセットする。
+        // 6. Success: reset the failure counter and lock.
         if user.failed_login_count > 0 || user.locked_until.is_some() {
             if let Err(e) = self.users.update_login_state(user.id, 0, None).await {
                 return PortalLoginOutcome::Internal(e.to_string());
             }
         }
 
-        // 7. メール検証ゲート（SEC6b）。パスワード検証成功後に判定して列挙を防ぐ。
+        // 7. Email verification gate (SEC6b). Checked after password verification succeeds to prevent enumeration.
         if !user.email_verified {
             self.record_failure(tenant_id, Some(user.id), "email_not_verified", ctx)
                 .await;
             return PortalLoginOutcome::EmailVerificationRequired;
         }
 
-        // 7.5. 認証ポリシー評価（AP2。仕様 §9）。パスワード検証成功後に評価する（資格情報を知らない
-        //      攻撃者にポリシーの存在・内容を観測させない）。`deny` は即拒否、`require_mfa` は後段の
-        //      MFA ゲート（9.）で強制する。
+        // 7.5. Authentication policy evaluation (AP2. spec §9). Evaluated after password verification (attackers without
+        //      credentials can't observe a policy's existence or content). `deny` refuses immediately; `require_mfa` is enforced
+        //      by the later MFA gate (9.).
         let policy_decision = match self
             .evaluate_policy(tenant_id, user.id, ctx.ip_address.as_deref())
             .await
@@ -449,9 +449,9 @@ impl PortalLoginService {
             return PortalLoginOutcome::PolicyDenied;
         }
 
-        // 8. 強制パスワード変更（ADR-0009 §5）。SSO はまだ発行せず、強制変更フォームへ誘導する
-        //    （管理コンソールと同方式。`change_password` で現行パスワードを含め再検証する）。
-        //    有効期限は利用者の所属元テナントのポリシーで測る（ADR-0058）。
+        // 8. Forced password change (ADR-0009 §5). Don't issue SSO yet; send to the forced change form
+        //    (same approach as the admin console; `change_password` re-verifies including the current password).
+        //    Expiry is measured by the policy of the user's home tenant (ADR-0058).
         let password_policy = match self.password_policy.policy(user.tenant_id).await {
             Ok(policy) => policy,
             Err(e) => return PortalLoginOutcome::Internal(e.to_string()),
@@ -462,7 +462,7 @@ impl PortalLoginService {
             };
         }
 
-        // 9. TOTP（MFA）が設定済みなら SSO を発行せず TOTP 入力ステップへ誘導する。
+        // 9. If TOTP (MFA) is set up, don't issue SSO; send to the TOTP input step.
         let has_totp = match user_has_confirmed_totp(self.totp_secrets.as_ref(), user.id).await {
             Ok(v) => v,
             Err(e) => return PortalLoginOutcome::Internal(e.to_string()),
@@ -471,8 +471,8 @@ impl PortalLoginService {
             let ticket = self.issue_ticket(tenant_id, user.id, now);
             return PortalLoginOutcome::MfaRequired { mfa_ticket: ticket };
         }
-        // ポリシーが MFA 必須なのに使用可能な認証器が無い場合は、単一要素での成立を許さない
-        // （仕様 §24.4）。OIDC ログイン（`login.rs`）と同じ順序・同じ判定にする。
+        // If the policy requires MFA but there's no usable authenticator, single-factor completion isn't allowed
+        // (spec §24.4). Same order and same check as OIDC login (`login.rs`).
         if let PolicyDecision::RequireMfa { policy_code } = &policy_decision {
             self.record_policy_denied(
                 tenant_id,
@@ -483,9 +483,9 @@ impl PortalLoginService {
             .await;
             return PortalLoginOutcome::MfaEnrollmentRequired;
         }
-        // `require_specific_method`（AP3）。ここまで来た＝この経路が完了する時点で使う方式は
-        // パスワードだけ（TOTP を持つ利用者は上の MFA ステップへ抜けており、`verify_mfa` が
-        // 最終的な方式集合で判定し直す）。満たしていなければ SSO を発行しない。
+        // `require_specific_method` (AP3). Reaching here = the only method used when this path completes is the
+        // password (users with TOTP left via the MFA step above, and `verify_mfa` re-checks with the
+        // final set of methods). If not satisfied, SSO is not issued.
         if let Some(unmet) =
             policy_decision.unmet_method_requirement(&[AuthenticationMethod::Password], false)
         {
@@ -503,7 +503,7 @@ impl PortalLoginService {
             return PortalLoginOutcome::PolicyDenied;
         }
 
-        // 10. TOTP 未設定: SSO セッションを発行する。
+        // 10. No TOTP: issue the SSO session.
         let (sso_session_id, sso_absolute_ttl_secs) = match self
             .issue_sso(
                 tenant_id,
@@ -530,19 +530,19 @@ impl PortalLoginService {
         }
     }
 
-    /// パスキー（WebAuthn）によるポータルログイン。
+    /// Portal login with a passkey (WebAuthn).
     ///
-    /// パスワード経路（[`Self::login`]）との違いは、OIDC 認可フローのパスキーログイン
-    /// （[`crate::application::passkey_authentication`]）と同じ規則である:
+    /// The differences from the password path ([`Self::login`]) follow the same rules as passkey login in the OIDC
+    /// authorization flow ([`crate::application::passkey_authentication`]):
     ///
-    /// 1. ログイン識別子の解決もロックアウトの加算も無い（総当たりの的になる秘密が無い）。
-    /// 2. **TOTP の入力ステップを踏ませない。** パスキーは所有 + User Verification の多要素・
-    ///    フィッシング耐性認証であり、`require_mfa` を満たす。TOTP 設定済みの利用者に対して
-    ///    「パスキー + TOTP」を要求しても得るものが無い。
-    /// 3. 強制パスワード変更（`must_change_password`）を見ない（パスワードを使わない経路のため）。
+    /// 1. No login identifier resolution and no lockout increments (there's no secret to brute-force).
+    /// 2. **No TOTP input step.** A passkey is multi-factor (possession + User Verification) and
+    ///    phishing-resistant, satisfying `require_mfa`. Requiring "passkey + TOTP" from users with TOTP set up
+    ///    gains nothing.
+    /// 3. Forced password change (`must_change_password`) is not checked (the path doesn't use a password).
     ///
-    /// **メール検証ゲート（SEC6b）は残す。** これは資格情報の強さではなく「このアカウントで
-    /// ポータルへ入ってよいか」の判定であり、認証方式を変えても外す理由が無い。
+    /// **The email verification gate (SEC6b) remains.** It decides not credential strength but "may this account
+    /// enter the portal", and changing the authentication method is no reason to drop it.
     pub async fn login_with_passkey(
         &self,
         tenant: TenantContext,
@@ -552,7 +552,7 @@ impl PortalLoginService {
         let now = self.clock.now();
         let tenant_id = tenant.tenant_id();
 
-        // 1. IP 単位のレート制限（パスワード経路と同じ順序・同じ制限）。
+        // 1. Per-IP rate limit (same order and same limit as the password path).
         if let Some(ip) = &ctx.ip_address {
             if !self.rate_limiter.check_and_record(ip, now) {
                 self.record_failure(tenant_id, None, "ip_rate_limited", ctx)
@@ -561,8 +561,8 @@ impl PortalLoginService {
             }
         }
 
-        // 2. WebAuthn アサーションの検証。アカウントの有効性とテナント境界（ADR-0009 §8）は
-        //    ここで確認済みになる。`Direct` は認可フロー外のチャレンジであることの要求である。
+        // 2. Verify the WebAuthn assertion. Account validity and the tenant boundary (ADR-0009 §8) are
+        //    confirmed here. `Direct` requires that the challenge is from outside the authorization flow.
         let verified = match self
             .passkey_assertion
             .verify(
@@ -579,21 +579,21 @@ impl PortalLoginService {
         };
         let user_id = verified.user_id;
 
-        // 3. 応答に載せる表示言語とメール検証状態のために利用者を引き直す（有効性の判定は 2. で済み）。
+        // 3. Look up the user again for the display language and email verification state in the response (validity was decided in 2.).
         let user = match self.users.find_by_id(user_id).await {
             Ok(Some(u)) => u,
             Ok(None) => return PortalLoginOutcome::InvalidCredentials,
             Err(e) => return PortalLoginOutcome::Internal(e.to_string()),
         };
 
-        // 4. メール検証ゲート（SEC6b）。パスワード経路の 7. と同一判定。
+        // 4. Email verification gate (SEC6b). Same check as step 7 of the password path.
         if !user.email_verified {
             self.record_failure(tenant_id, Some(user.id), "email_not_verified", ctx)
                 .await;
             return PortalLoginOutcome::EmailVerificationRequired;
         }
 
-        // 5. 認証ポリシー評価（AP2）。`deny` は拒否、`require_mfa` はパスキーが満たす。
+        // 5. Authentication policy evaluation (AP2). `deny` refuses; `require_mfa` is satisfied by the passkey.
         let policy_decision = match self
             .evaluate_policy(tenant_id, user.id, ctx.ip_address.as_deref())
             .await
@@ -606,8 +606,8 @@ impl PortalLoginService {
                 .await;
             return PortalLoginOutcome::PolicyDenied;
         }
-        // `require_specific_method`（AP3）。使った方式はパスキー 1 本・User Verification 済み。
-        // この経路で足せる要素はもう無いため、満たしていなければ SSO を発行せず拒否する。
+        // `require_specific_method` (AP3). The method used is a single passkey with User Verification done.
+        // No more factors can be added on this path, so if not satisfied, refuse without issuing SSO.
         if let Some(unmet) =
             policy_decision.unmet_method_requirement(&[AuthenticationMethod::WebAuthn], true)
         {
@@ -625,7 +625,7 @@ impl PortalLoginService {
             return PortalLoginOutcome::PolicyDenied;
         }
 
-        // 6. SSO セッション発行（パスワード経路と同一機構。方式だけが WebAuthn）。
+        // 6. Issue the SSO session (same mechanism as the password path; only the method is WebAuthn).
         let (sso_session_id, sso_absolute_ttl_secs) = match self
             .issue_sso(
                 tenant_id,
@@ -652,10 +652,10 @@ impl PortalLoginService {
         }
     }
 
-    /// 強制パスワード変更（ADR-0009 §5）。ポータルログインを現行パスワードを含めフルに再検証し、
-    /// 成功時に新パスワードを保存して SSO セッションを発行する（管理コンソールの `change_password` と
-    /// 同方式。ポータルは admin 権限を要求しない点だけが異なる）。この状態のユーザーは自己登録 MFA を
-    /// 設定できないため（SSO が必要）、変更後に改めて TOTP 判定へ進む必要はない。
+    /// Forced password change (ADR-0009 §5). Fully re-verifies portal login including the current password, and
+    /// on success saves the new password and issues the SSO session (same approach as the admin console's `change_password`;
+    /// the only difference is that the portal doesn't require admin permissions). Users in this state can't set up
+    /// self-service MFA (that needs SSO), so there's no need to go to the TOTP check again after the change.
     pub async fn change_password(
         &self,
         tenant: TenantContext,
@@ -683,8 +683,8 @@ impl PortalLoginService {
         {
             Ok(LoginIdentifierMatch::Resolved(u)) => u,
             Ok(LoginIdentifierMatch::Unresolved(_)) => {
-                // 実在利用者と同じ argon2 検証を 1 回消費し、応答時間で利用者の有無を
-                // 推し量れないようにする（列挙対策）。
+                // Spend one argon2 verification, same as for a real user, so the user's existence can't be
+                // inferred from response time (enumeration countermeasure).
                 crate::domain::password::verify_against_dummy(
                     self.hasher.as_ref(),
                     &cmd.current_password,
@@ -701,13 +701,13 @@ impl PortalLoginService {
             return PortalChangePasswordOutcome::InvalidCredentials;
         }
 
-        // 多重送信の検出（冪等化）: 直前の送信で変更が成功して `must_change_password` が下りた直後に
-        // 同じフォームが再送されると（ダブルクリック・POST 応答のリロード）、旧 current_password は
-        // 新ハッシュに一致しないため「現在のパスワードが正しくありません」と誤表示されていた。
-        // `new_password` が現行ハッシュに一致する場合は同じ変更の再送とみなし、保存をスキップして
-        // 成功時と同じ後続（メール検証 → TOTP ゲート → SSO 発行）へ進める。`new_password` の照合は
-        // 現行パスワードの完全な検証であり、認証強度は通常ログインと等価（列挙も生じない）。
-        // 変更を要求されている状態か（強制フラグ、または有効期限切れ。AP7）。
+        // Duplicate submission detection (idempotency): if the same form is resubmitted right after the previous submission
+        // succeeded and cleared `must_change_password` (double click, reloading the POST response), the old current_password
+        // doesn't match the new hash, so "the current password is incorrect" used to be shown wrongly.
+        // If `new_password` matches the current hash, it is treated as a resubmission of the same change; saving is skipped and
+        // it proceeds to the same follow-up as success (email verification -> TOTP gate -> SSO issuance). Checking `new_password`
+        // is a full verification of the current password, so authentication strength equals normal login (no enumeration either).
+        // Whether a change is required (forced flag, or expired. AP7).
         let password_policy = match self.password_policy.policy(user.tenant_id).await {
             Ok(policy) => policy,
             Err(e) => return PortalChangePasswordOutcome::Internal(e.to_string()),
@@ -722,10 +722,10 @@ impl PortalLoginService {
             }
         };
         if !change_required && !duplicate_submit {
-            // 変更不要な状態でこのエンドポイントに来るのは想定外。fail-closed
-            //（利用者列挙を避けるため資格情報エラーと同じ応答にする）。上の `new_password` 照合が
-            // パスワードの正誤オラクルになるため、通常ログインと同じ失敗カウント・ロック判定に載せて
-            // 本経路がロックアウトを迂回する推測口にならないようにする。
+            // Reaching this endpoint when no change is needed is unexpected. Fail closed
+            // (same response as a credential error to avoid user enumeration). The `new_password` check above acts as
+            // an oracle for password correctness, so it is put on the same failure count and lock decision as normal login
+            // so this path can't become a guessing channel that bypasses lockout.
             return self
                 .handle_change_password_failure(
                     tenant_id,
@@ -748,21 +748,21 @@ impl PortalLoginService {
             }
         };
         if !verified {
-            // 現行パスワード不一致は通常ログインと同じ失敗カウント・ロック判定に載せる。
+            // A current password mismatch is put on the same failure count and lock decision as normal login.
             return self
                 .handle_change_password_failure(tenant_id, &user, "invalid_password", ctx)
                 .await;
         }
 
-        // メール検証ゲート（SEC6b）。`login()` はメール検証を強制変更より先に判定するが、本経路は
-        // ステートレスで直接呼べるため、その前提に依存できない。現行パスワード検証後に判定して列挙を防ぐ。
+        // Email verification gate (SEC6b). `login()` checks email verification before forced change, but this path is
+        // stateless and directly callable, so it can't rely on that. Checked after current password verification to prevent enumeration.
         if !user.email_verified {
             self.record_failure(tenant_id, Some(user.id), "email_not_verified", ctx)
                 .await;
             return PortalChangePasswordOutcome::EmailVerificationRequired;
         }
 
-        // 多重送信（変更適用済み）の場合は保存・監査をスキップし、成功時と同じ後続へ進める。
+        // For a duplicate submission (change already applied), skip saving and audit and proceed to the same follow-up as success.
         if !duplicate_submit {
             match self
                 .password_policy
@@ -782,7 +782,7 @@ impl PortalLoginService {
                 Ok(h) => h,
                 Err(e) => return PortalChangePasswordOutcome::Internal(e.to_string()),
             };
-            // 現行ハッシュを条件にした置き換え（AP7。`admin_login` と同じ扱い）。
+            // Replace conditioned on the current hash (AP7; same as `admin_login`).
             match self
                 .users
                 .update_password(user.id, &user.password_hash, &new_hash)
@@ -819,8 +819,8 @@ impl PortalLoginService {
             }
         }
 
-        // 認証ポリシー評価（AP2）。本経路も SSO を発行する側なので `login()` と同じ規則を適用する
-        // （パスワード変更自体は本人のセルフサービスとして完了させ、セッション発行のみをゲートする）。
+        // Authentication policy evaluation (AP2). This path also issues SSO, so the same rules as `login()` apply
+        // (the password change itself completes as self-service; only session issuance is gated).
         let policy_decision = match self
             .evaluate_policy(tenant_id, user.id, ctx.ip_address.as_deref())
             .await
@@ -834,9 +834,9 @@ impl PortalLoginService {
             return PortalChangePasswordOutcome::PolicyDenied;
         }
 
-        // TOTP（MFA）が設定済みなら SSO を発行せず TOTP 入力ステップへ誘導する（`login()` と同じ MFA ゲート）。
-        // 管理者が既存 TOTP 利用者のパスワードをリセットした場合でも、生成パスワードの所持だけでは
-        // 第二要素を迂回できないようにする。
+        // If TOTP (MFA) is set up, don't issue SSO; send to the TOTP input step (same MFA gate as `login()`).
+        // Even if an admin resets the password of an existing TOTP user, possessing the generated password alone
+        // can't bypass the second factor.
         let has_totp = match user_has_confirmed_totp(self.totp_secrets.as_ref(), user.id).await {
             Ok(v) => v,
             Err(e) => return PortalChangePasswordOutcome::Internal(e.to_string()),
@@ -855,7 +855,7 @@ impl PortalLoginService {
             .await;
             return PortalChangePasswordOutcome::MfaEnrollmentRequired;
         }
-        // `require_specific_method`（AP3）。この経路で確定する方式はパスワードだけ。
+        // `require_specific_method` (AP3). The only method fixed on this path is the password.
         if let Some(unmet) =
             policy_decision.unmet_method_requirement(&[AuthenticationMethod::Password], false)
         {
@@ -899,7 +899,7 @@ impl PortalLoginService {
         }
     }
 
-    /// TOTP 検証（パスワード認証済みの `mfa_ticket` を提示して行う 2 段階目）。
+    /// TOTP verification (the second step, presenting the `mfa_ticket` from password authentication).
     pub async fn verify_mfa(
         &self,
         tenant: TenantContext,
@@ -909,19 +909,19 @@ impl PortalLoginService {
         let now = self.clock.now();
         let tenant_id = tenant.tenant_id();
 
-        // 1. IP 単位のレート制限。
+        // 1. Per-IP rate limit.
         if let Some(ip) = &ctx.ip_address {
             if !self.rate_limiter.check_and_record(ip, now) {
                 return PortalMfaOutcome::RateLimited;
             }
         }
 
-        // 2. チケット検証（署名・テナント・期限）。
+        // 2. Verify the ticket (signature, tenant, expiry).
         let Some(user_id) = self.verify_ticket(tenant_id, &cmd.mfa_ticket, now) else {
             return PortalMfaOutcome::TicketExpired;
         };
 
-        // 3. ユーザーを取得して有効確認する。
+        // 3. Fetch the user and check it is active.
         let user = match self.users.find_by_id(user_id).await {
             Ok(Some(u)) => u,
             Ok(None) => return PortalMfaOutcome::TicketExpired,
@@ -931,8 +931,8 @@ impl PortalLoginService {
             return PortalMfaOutcome::TicketExpired;
         }
 
-        // 4. 第二要素を検証する。OIDC ログインと同じく、TOTP・リカバリーコード・email OTP の
-        //    どれでも 1 つの入力欄で受ける（AP9。認証器を失った利用者の復旧経路を残す）。
+        // 4. Verify the second factor. Like OIDC login, one input field accepts TOTP, recovery codes or email OTP
+        //    (AP9; keeps a recovery path for users who lost their authenticator).
         let second_factor = match self
             .verify_second_factor(user_id, &cmd.totp_code, now)
             .await
@@ -946,12 +946,12 @@ impl PortalLoginService {
             Err(e) => return PortalMfaOutcome::Internal(e),
         };
 
-        // 4.5. 認証ポリシーの再評価（AP2/AP3）。チケット発行後にポリシーが `deny` へ変わった場合でも
-        //      SSO を発行しない（チケットの寿命 5 分ぶんだけ古い判断で通してしまわないため）。
-        //      `require_mfa` はこの時点で満たされている（第二要素を検証済み）が、
-        //      `require_specific_method` は**実際に使った第二要素**が要求と一致するかで決まるため、
-        //      ここで最終的な方式集合に対して判定する（`Ok(_)` で素通しにすると、TOTP で
-        //      WebAuthn 必須のポリシーを回避できる）。
+        // 4.5. Re-evaluate the authentication policy (AP2/AP3). Even if the policy changed to `deny` after the ticket was issued,
+        //      SSO is not issued (so a stale decision isn't honored for the ticket's 5-minute lifetime).
+        //      `require_mfa` is satisfied at this point (the second factor is verified), but
+        //      `require_specific_method` depends on whether **the second factor actually used** matches the requirement, so
+        //      it is checked here against the final set of methods (passing through on `Ok(_)` would let TOTP
+        //      bypass a WebAuthn-required policy).
         let used_methods = [AuthenticationMethod::Password, second_factor];
         match self
             .evaluate_policy(tenant_id, user_id, ctx.ip_address.as_deref())
@@ -968,7 +968,7 @@ impl PortalLoginService {
                 return PortalMfaOutcome::PolicyDenied;
             }
             Ok(decision) => {
-                // ポータルは WebAuthn を通らないため User Verification は未実施として扱う。
+                // The portal doesn't go through WebAuthn, so User Verification is treated as not performed.
                 if let Some(unmet) = decision.unmet_method_requirement(&used_methods, false) {
                     self.record_policy_denied(
                         tenant_id,
@@ -987,7 +987,7 @@ impl PortalLoginService {
             Err(e) => return PortalMfaOutcome::Internal(e),
         }
 
-        // 5. SSO セッションを発行する。
+        // 5. Issue the SSO session.
         let (sso_session_id, sso_absolute_ttl_secs) = match self
             .issue_sso(
                 tenant_id,
@@ -1014,7 +1014,7 @@ impl PortalLoginService {
         }
     }
 
-    /// SSO セッションを発行し、監査へ記録する（`login.rs` / `admin_login.rs` と同一機構）。
+    /// Issues the SSO session and records it in the audit (same mechanism as `login.rs` / `admin_login.rs`).
     async fn issue_sso(
         &self,
         tenant_id: TenantId,
@@ -1043,7 +1043,7 @@ impl PortalLoginService {
                 return Ok(PortalSso::EnrollmentRequired { ticket });
             }
         }
-        // 寿命は利用者の所属元テナントの値（SSO セッションは全テナントで共有されるため。ADR-0058）。
+        // The lifetime is the value of the user's home tenant (SSO sessions are shared across all tenants. ADR-0058).
         let lifetime = self
             .settings
             .sso_session_lifetime(user.tenant_id)
@@ -1091,22 +1091,22 @@ impl PortalLoginService {
         })
     }
 
-    /// `mfa_ticket` から MFA 待ちの利用者を解決する（AP9。email OTP の送信先を決めるために使う）。
-    /// チケットが無効・期限切れなら `None`。
+    /// Resolves the user awaiting MFA from `mfa_ticket` (AP9; used to decide where to send the email OTP).
+    /// `None` if the ticket is invalid or expired.
     pub fn pending_mfa_user(&self, tenant: TenantContext, ticket: &str) -> Option<Uuid> {
         self.verify_ticket(tenant.tenant_id(), ticket, self.clock.now())
     }
 
-    /// 第二要素を検証する（AP9）。通ったら記録すべき認証方式を返す。`MfaLoginService` と同じ
-    /// 順序・同じ正規化を使う（経路ごとに規則が違うと、片方でだけ通るコードができる）。
+    /// Verifies the second factor (AP9). If it passes, returns the authentication method to record. Uses the same order and
+    /// normalization as `MfaLoginService` (if rules differed per path, codes passing on only one side would appear).
     async fn verify_second_factor(
         &self,
         user_id: Uuid,
         code: &str,
         now: DateTime<Utc>,
     ) -> Result<Option<AuthenticationMethod>, String> {
-        // 登録簿で止められた TOTP は、秘密が残っていても通さない（AP9。一時停止・失効は
-        // 登録簿にしか書かれないため、ここで見ないと「止めたはずの認証器」で入れてしまう）。
+        // A TOTP stopped in the registry doesn't pass even if the secret remains (AP9; suspension and revocation are
+        // only written to the registry, so without checking here "an authenticator that was supposedly stopped" would get in).
         let totp_blocked = is_blocked_in_registry(
             self.authenticators.as_ref(),
             user_id,
@@ -1121,7 +1121,7 @@ impl PortalLoginService {
                 let secret = crypto::decrypt(&record.secret_encrypted, &self.key_encryption_key)
                     .map_err(|e| e.to_string())?;
                 if let Some(step) = verify_totp_code(&secret, code).map_err(|e| e.to_string())? {
-                    // 受理したステップを記録できたときだけ通す（同じ・古いコードの再利用を拒否）。
+                    // Pass only if the accepted step could be recorded (refuses reuse of the same or an older code).
                     let recorded = self
                         .totp_secrets
                         .record_totp_step_if_newer(user_id, step as i64, self.clock.now())
@@ -1142,8 +1142,8 @@ impl PortalLoginService {
                 AuthenticationMethod::RecoveryCode,
             ),
             (AuthenticatorType::EmailOtp, AuthenticationMethod::EmailOtp),
-            // SMS OTP（AP13）。同じ「1 回きりのコード」なので同じ経路で消費する。
-            // 登録済み電話番号の行は秘密を持たないため、ここには当たらない。
+            // SMS OTP (AP13). It's the same kind of "one-time code", so it is consumed on the same path.
+            // Rows of registered phone numbers hold no secret, so they don't match here.
             (AuthenticatorType::SmsOtp, AuthenticationMethod::SmsOtp),
         ] {
             if consume_single_use_code(
@@ -1162,13 +1162,13 @@ impl PortalLoginService {
         Ok(None)
     }
 
-    /// 署名付き `mfa_ticket` を発行する。
+    /// Issues a signed `mfa_ticket`.
     fn issue_ticket(&self, tenant_id: TenantId, user_id: Uuid, now: DateTime<Utc>) -> String {
         let exp = now.timestamp() + MFA_TICKET_TTL_SECS;
         sign_ticket(&self.ticket_secret, tenant_id.as_uuid(), user_id, exp)
     }
 
-    /// `mfa_ticket` を検証し、有効なら `user_id` を返す（テナント一致・署名一致・未期限）。
+    /// Verifies the `mfa_ticket` and returns `user_id` if valid (tenant match, signature match, not expired).
     fn verify_ticket(&self, tenant_id: TenantId, ticket: &str, now: DateTime<Utc>) -> Option<Uuid> {
         verify_ticket(
             &self.ticket_secret,
@@ -1178,9 +1178,9 @@ impl PortalLoginService {
         )
     }
 
-    /// 強制パスワード変更経路の資格情報不一致（現行パスワード不一致・変更不要状態での照合失敗）を
-    /// 通常ログインと同じ失敗カウント・ロック判定に載せる（[`Self::handle_password_failure`] と
-    /// 同ポリシー。戻り値の型だけが異なる）。
+    /// Puts credential mismatches on the forced password change path (current password mismatch, failed check when no
+    /// change is needed) on the same failure count and lock decision as normal login (same policy as
+    /// [`Self::handle_password_failure`]; only the return type differs).
     async fn handle_change_password_failure(
         &self,
         tenant_id: TenantId,
@@ -1189,12 +1189,12 @@ impl PortalLoginService {
         ctx: &RequestContext,
     ) -> PortalChangePasswordOutcome {
         let now = self.clock.now();
-        // 閾値は利用者の所属元テナントの値（ロックの状態は利用者の行にある。ADR-0058）。
+        // The threshold is the value of the user's home tenant (the lock state lives on the user row. ADR-0058).
         let lockout = match self.settings.login_lockout(user.tenant_id).await {
             Ok(lockout) => lockout,
             Err(e) => return PortalChangePasswordOutcome::Internal(e.to_string()),
         };
-        // 加算とロック判定は 1 文の UPDATE に閉じる（SEC13）。
+        // The increment and lock decision are kept in a single UPDATE statement (SEC13).
         let failure = match self.users.record_login_failure(user.id, lockout, now).await {
             Ok(f) => f,
             Err(e) => return PortalChangePasswordOutcome::Internal(e.to_string()),
@@ -1218,7 +1218,7 @@ impl PortalLoginService {
         PortalChangePasswordOutcome::InvalidCredentials
     }
 
-    /// パスワード不一致時の失敗カウント更新とロック判定（login.rs / admin_login.rs と同ポリシー）。
+    /// Updates the failure count and decides locking on a password mismatch (same policy as login.rs / admin_login.rs).
     async fn handle_password_failure(
         &self,
         tenant_id: TenantId,
@@ -1226,12 +1226,12 @@ impl PortalLoginService {
         ctx: &RequestContext,
     ) -> PortalLoginOutcome {
         let now = self.clock.now();
-        // 閾値は利用者の所属元テナントの値（ロックの状態は利用者の行にある。ADR-0058）。
+        // The threshold is the value of the user's home tenant (the lock state lives on the user row. ADR-0058).
         let lockout = match self.settings.login_lockout(user.tenant_id).await {
             Ok(lockout) => lockout,
             Err(e) => return PortalLoginOutcome::Internal(e.to_string()),
         };
-        // 加算とロック判定は 1 文の UPDATE に閉じる（SEC13）。
+        // The increment and lock decision are kept in a single UPDATE statement (SEC13).
         let failure = match self.users.record_login_failure(user.id, lockout, now).await {
             Ok(f) => f,
             Err(e) => return PortalLoginOutcome::Internal(e.to_string()),
@@ -1276,14 +1276,14 @@ impl PortalLoginService {
     }
 }
 
-/// 署名付き `mfa_ticket` を作る。形式: `{tenant}.{user}.{exp}.{hmac_hex}`。
-/// HMAC は `portal-mfa:{tenant}:{user}:{exp}` に対して計算し、テナント越え・改竄・使い回しを防ぐ。
+/// Builds a signed `mfa_ticket`. Format: `{tenant}.{user}.{exp}.{hmac_hex}`.
+/// The HMAC is computed over `portal-mfa:{tenant}:{user}:{exp}`, preventing cross-tenant use, tampering and reuse.
 fn sign_ticket(secret: &[u8; 32], tenant: Uuid, user: Uuid, exp: i64) -> String {
     let sig = ticket_signature(secret, &tenant.to_string(), &user.to_string(), exp);
     format!("{tenant}.{user}.{exp}.{sig}")
 }
 
-/// `mfa_ticket` を検証し、有効なら `user_id` を返す（テナント一致・署名一致・未期限）。
+/// Verifies the `mfa_ticket` and returns `user_id` if valid (tenant match, signature match, not expired).
 fn verify_ticket(secret: &[u8; 32], tenant: Uuid, ticket: &str, now_ts: i64) -> Option<Uuid> {
     let mut parts = ticket.splitn(4, '.');
     let tenant_str = parts.next()?;
@@ -1291,7 +1291,7 @@ fn verify_ticket(secret: &[u8; 32], tenant: Uuid, ticket: &str, now_ts: i64) -> 
     let exp_str = parts.next()?;
     let sig = parts.next()?;
 
-    // テナント一致（チケットの使い回し防止）。
+    // Tenant match (prevents ticket reuse).
     if tenant_str != tenant.to_string() {
         return None;
     }
@@ -1299,7 +1299,7 @@ fn verify_ticket(secret: &[u8; 32], tenant: Uuid, ticket: &str, now_ts: i64) -> 
     if now_ts > exp {
         return None;
     }
-    // HMAC の定数時間検証（`verify_slice`）で署名照合する。
+    // Verify the signature with HMAC constant-time verification (`verify_slice`).
     let sig_bytes = hex::decode(sig).ok()?;
     let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
     mac.update(format!("portal-mfa:{tenant_str}:{user_str}:{exp}").as_bytes());
@@ -1316,12 +1316,12 @@ fn ticket_signature(secret: &[u8; 32], tenant: &str, user: &str, exp: i64) -> St
 impl From<PasskeyAssertionError> for PortalLoginOutcome {
     fn from(e: PasskeyAssertionError) -> Self {
         match e {
-            // 用途違いのチャレンジ（認可フロー用をポータルで完了しようとした）は、利用者から見れば
-            // 「やり直してください」でしかないため、期限切れと同じ扱いにする。
+            // A challenge for another purpose (one for the authorization flow completed in the portal) means only
+            // "please try again" to the user, so it is treated the same as expired.
             PasskeyAssertionError::ChallengeNotFound | PasskeyAssertionError::WrongFlow => {
                 PortalLoginOutcome::PasskeyChallengeNotFound
             }
-            // 停止中・失効・テナント非所属・アカウント無効も同じ応答にする（列挙防止）。
+            // Suspended, revoked, not in the tenant and disabled accounts all get the same response too (enumeration prevention).
             PasskeyAssertionError::InvalidCredential => PortalLoginOutcome::InvalidCredentials,
             PasskeyAssertionError::Internal(msg) => PortalLoginOutcome::Internal(msg),
         }
@@ -1347,7 +1347,7 @@ mod tests {
         let tenant = Uuid::from_u128(1);
         let user = Uuid::from_u128(2);
         let ticket = sign_ticket(&SECRET, tenant, user, 1_000);
-        // now (1_001) を exp (1_000) が下回る = 期限切れ。
+        // exp (1_000) is below now (1_001) = expired.
         assert_eq!(verify_ticket(&SECRET, tenant, &ticket, 1_001), None);
     }
 
@@ -1365,7 +1365,7 @@ mod tests {
         let tenant = Uuid::from_u128(1);
         let user = Uuid::from_u128(2);
         let ticket = sign_ticket(&SECRET, tenant, user, 5_000);
-        // 署名を 1 文字書き換える。
+        // Rewrite one character of the signature.
         let mut bytes = ticket.into_bytes();
         let last = bytes.len() - 1;
         bytes[last] = if bytes[last] == b'a' { b'b' } else { b'a' };

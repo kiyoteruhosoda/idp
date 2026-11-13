@@ -1,21 +1,21 @@
-// 一覧をその場で絞り込む（入力のたびに。サーバへは送らない）。
+// Filters a list in place (on every keystroke; nothing is sent to the server).
 //
-// 使い方（テンプレート側）:
+// Usage (template side):
 //   <div data-list-filter>
 //     <input type="search" data-list-filter-input>
-//     <button type="button" data-list-filter-state="">すべて</button>
-//     <button type="button" data-list-filter-state="allowed">使える</button>
-//     <p data-list-filter-empty hidden>該当なし</p>
-//     <li data-filter-item data-filter-text="表示名 など" data-filter-state="allowed">…</li>
+//     <button type="button" data-list-filter-state="">All</button>
+//     <button type="button" data-list-filter-state="allowed">Allowed</button>
+//     <p data-list-filter-empty hidden>No matches</p>
+//     <li data-filter-item data-filter-text="display name etc." data-filter-state="allowed">…</li>
 //   </div>
 //
-// ⚠ 絞り込みは**見せ方だけ**を変える。消した行も DOM には残り、フォーム（割り当て・外す）は
-//   そのまま動く。スクリプトが動かない環境では全件が出たままになる（何も隠さないのが既定）。
+// ⚠ Filtering changes **only the presentation**. Hidden rows stay in the DOM and forms (assign/remove)
+//   keep working. Where the script does not run, all rows stay visible (hiding nothing is the default).
 (function () {
   "use strict";
 
   function normalize(s) {
-    // 全角・半角と大文字小文字の違いで取りこぼさない（「Ｗｉｋｉ」でも wiki に当たる）。
+    // Don't miss matches due to full-width/half-width or case differences ("Ｗｉｋｉ" also matches wiki).
     return (s || "").normalize("NFKC").toLowerCase().trim();
   }
 
@@ -36,7 +36,7 @@
         var matchesState = !state || item.getAttribute("data-filter-state") === state;
         var visible = matchesText && matchesState;
         item.hidden = !visible;
-        // Bootstrap の `.d-flex` は `display:flex !important` なので `hidden` だけでは消えない。
+        // Bootstrap's `.d-flex` is `display:flex !important`, so `hidden` alone does not hide it.
         item.classList.toggle("d-none", !visible);
         if (visible) shown++;
       }

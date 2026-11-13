@@ -1,17 +1,17 @@
-//! AP11b: 認証器の秘密を登録簿へ一本化し終えた状態の統合テスト（AP9 の contract フェーズ 後半）。
+//! AP11b: integration tests for the state after authenticator secrets were unified into the registry (second half of AP9's contract phase).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' \
 //!     cargo test --test authenticator_secret_migration
 //!
-//! 前半（0035）は「登録簿と元の表の両方が読める」ことを固定していた。後半で元の表を落とした
-//! ので、ここで固定するのは**登録簿だけで完結している**という一点である。具体的には:
+//! The first half (0035) pinned "both the registry and the original tables are readable". The second half dropped the
+//! original tables, so what is pinned here is the single point that **the registry alone is self-contained**. Specifically:
 //!
-//! 1. 秘密は登録簿の行に載り、そこから読める。
-//! 2. 置き場所となる行が無ければ**黙って捨てずに失敗する**（登録できたのに設定されていない、
-//!    という状態を作らない）。
-//! 3. 消したときは登録簿からも消える（失効させた鍵が残らない）。
-//! 4. 失効した行の秘密は読まない（再登録で古い行が `revoked` になるため）。
+//! 1. Secrets are on registry rows and read from there.
+//! 2. Without a row to hold it, it **fails instead of silently dropping** (never creating the state
+//!    "registered but not configured").
+//! 3. Deleting also removes it from the registry (revoked keys do not remain).
+//! 4. Secrets of revoked rows are not read (re-registration marks old rows `revoked`).
 
 mod support;
 
@@ -23,7 +23,7 @@ use assay_api::infrastructure::repositories::webauthn_credential::SqlxWebAuthnCr
 use sqlx::MySqlPool;
 use uuid::Uuid;
 
-/// 登録簿に載っている TOTP の秘密（無ければ `None`）。
+/// The TOTP secret on the registry (`None` if absent).
 async fn registry_totp_secret(pool: &MySqlPool, user_id: &str) -> Option<String> {
     sqlx::query_scalar(
         "SELECT secret_encrypted FROM user_authenticators \
@@ -36,7 +36,7 @@ async fn registry_totp_secret(pool: &MySqlPool, user_id: &str) -> Option<String>
     .flatten()
 }
 
-/// `register_totp_pending` 相当の行を用意して、その行 id を返す。
+/// Prepares a row equivalent to `register_totp_pending` and returns its row id.
 async fn insert_pending_totp_row(pool: &MySqlPool, user_id: &str) -> Uuid {
     let id = Uuid::now_v7();
     sqlx::query(
@@ -51,7 +51,7 @@ async fn insert_pending_totp_row(pool: &MySqlPool, user_id: &str) -> Uuid {
     id
 }
 
-/// 秘密は登録簿の行に載り、そこから読める。消せば登録簿からも消える。
+/// Secrets are on registry rows and read from there. Deleting also removes them from the registry.
 #[tokio::test]
 async fn a_totp_secret_lives_on_the_registry_row_and_is_cleared_from_it() {
     let Some(env) = support::setup("ap11b totp registry only").await else {
@@ -88,7 +88,7 @@ async fn a_totp_secret_lives_on_the_registry_row_and_is_cleared_from_it() {
     assert_eq!(
         registry_totp_secret(&env.pool, &user_id).await,
         None,
-        "失効させた共有鍵が登録簿に残らない"
+        "the revoked shared key does not remain in the registry"
     );
     assert!(repo
         .find_by_user_id(user_uuid)
@@ -97,9 +97,9 @@ async fn a_totp_secret_lives_on_the_registry_row_and_is_cleared_from_it() {
         .is_none());
 }
 
-/// **置き場所が無ければ失敗する。** 秘密の置き場所が登録簿だけになった以上、行が無いときに
-/// 黙って何もしないと「登録できたのに設定されていない」利用者ができる（本人は QR を読み取り
-/// 終えており、次のログインで初めて気づく）。
+/// **Fails if there is nowhere to put it.** Now that the registry is the only place for secrets, silently doing nothing
+/// when there is no row would create users who are "registered but not configured" (the user has already scanned
+/// the QR code and first notices at the next sign-in).
 #[tokio::test]
 async fn storing_a_secret_without_a_registry_row_fails_instead_of_vanishing() {
     let Some(env) = support::setup("ap11b totp requires row").await else {
@@ -126,8 +126,8 @@ async fn storing_a_secret_without_a_registry_row_fails_instead_of_vanishing() {
     assert_eq!(registry_totp_secret(&env.pool, &user_id).await, None);
 }
 
-/// 失効した行の秘密は読まない。再登録すると古い行は `revoked` になるので、ここを見てしまうと
-/// **取り消したはずの共有鍵で認証が通る**。
+/// Secrets of revoked rows are not read. Re-registration marks old rows `revoked`, so looking at them would let
+/// **authentication pass with a shared key that should have been revoked**.
 #[tokio::test]
 async fn a_revoked_rows_secret_is_not_readable() {
     let Some(env) = support::setup("ap11b totp revoked").await else {
@@ -164,8 +164,8 @@ async fn a_revoked_rows_secret_is_not_readable() {
     );
 }
 
-/// パスキーは credential ID からの逆引きが要（認証レスポンスが持ってくるのはこの値だけ）。
-/// 登録簿の 1 行がパスキー 1 本であり、削除すると逆引きに当たらなくなる。
+/// Passkeys hinge on reverse lookup from the credential ID (the only value the authentication response carries).
+/// One registry row is one passkey, and deleting it makes the reverse lookup miss.
 #[tokio::test]
 async fn a_passkey_is_one_registry_row_reachable_by_its_credential_id() {
     let Some(env) = support::setup("ap11b webauthn lookup").await else {
@@ -190,7 +190,7 @@ async fn a_passkey_is_one_registry_row_reachable_by_its_credential_id() {
     .await
     .expect("create credential");
 
-    // 登録簿に「使える」行として 1 行だけ在る。
+    // Exactly one row exists in the registry as "usable".
     let rows: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM user_authenticators \
          WHERE user_id = ? AND authenticator_type = 'webauthn' AND status = 'active' \
@@ -212,7 +212,7 @@ async fn a_passkey_is_one_registry_row_reachable_by_its_credential_id() {
     assert_eq!(found.passkey_json, "{\"fake\":\"passkey\"}");
     assert_eq!(found.name, "Test key");
 
-    // 署名カウンタの更新は同じ行へ効く（進まないとクローン検知が働かない）。
+    // Sign counter updates apply to the same row (if it does not advance, clone detection does not work).
     repo.update_passkey(row_id, "{\"fake\":\"passkey2\"}", now)
         .await
         .expect("update");
@@ -225,7 +225,7 @@ async fn a_passkey_is_one_registry_row_reachable_by_its_credential_id() {
         "{\"fake\":\"passkey2\"}"
     );
 
-    // 削除すると逆引きに当たらなくなる（残ると、消したはずの鍵で認証が通る）。
+    // Deleting makes the reverse lookup miss (if it remained, authentication would pass with a deleted key).
     repo.delete(row_id, user_uuid).await.expect("delete");
     assert!(
         repo.find_by_credential_id(&credential_id)
@@ -241,7 +241,7 @@ async fn a_passkey_is_one_registry_row_reachable_by_its_credential_id() {
         .is_empty());
 }
 
-/// 同じ credential ID の二重登録は DB の一意制約で弾く（アプリ層の事前チェックに頼らない）。
+/// Duplicate registration of the same credential ID is rejected by a DB unique constraint (not relying on app-layer pre-checks).
 #[tokio::test]
 async fn registering_the_same_credential_twice_is_rejected() {
     let Some(env) = support::setup("ap11b webauthn duplicate").await else {

@@ -1,11 +1,11 @@
-//! 内部認証 API（`/internal/authenticate*`、ADR-0007 §3・§5）の統合テスト（DB あり）。
+//! Integration tests (with DB) for the internal auth API (`/internal/authenticate*`, ADR-0007 §3, §5).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test internal_auth
 //!
-//! web →api のサービス間 I/F を検証する。web は資格情報・auth_session 参照・接続元情報を
-//! JSON で転送し、api は SSO/code を発行して `result` タグ付き JSON を返す。サービス認証トークン
-//! （`X-Internal-Auth-Token`）が無ければ 401 で遮断される。
+//! Tests the service-to-service I/F from web to api. web forwards credentials, auth_session reference and client info
+//! as JSON, and api issues SSO/code and returns JSON with a `result` tag. Without the service auth token
+//! (`X-Internal-Auth-Token`) it is blocked with 401.
 
 mod support;
 
@@ -16,7 +16,7 @@ use support::{
     body_json, post_internal, register_user, send, CODE_CHALLENGE, REDIRECT_URI, SERVICE_TOKEN,
 };
 
-/// `/authorize` を開始して `auth_session_id` を得る（ハンドオフ → resume。ADR-0018 決定 2）。
+/// Starts `/authorize` and obtains an `auth_session_id` (handoff → resume; ADR-0018 decision 2).
 async fn start_authorize(app: &axum::Router, tenant: &str, client_id: &str) -> String {
     let uri = format!(
         "/{tenant}/authorize?response_type=code&client_id={client_id}&redirect_uri={}&scope=openid%20profile%20email&state=st&nonce=no&code_challenge={CODE_CHALLENGE}&code_challenge_method=S256",
@@ -41,7 +41,7 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
     register_user(&app, &root_tenant_id, &username, password).await;
     support::mark_email_verified(&pool, &root_tenant_id, &username).await;
 
-    // サービストークンが無ければ 401（本文まで到達しない）。
+    // Without the service token, 401 (the body is never reached).
     let auth_session = start_authorize(&app, &root_tenant_id, &client_id).await;
     let response = send(
         &app,
@@ -59,7 +59,7 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
     .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "missing token");
 
-    // 誤ったトークンも 401。
+    // A wrong token is also 401.
     let response = send(
         &app,
         post_internal(
@@ -76,7 +76,7 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
     .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "wrong token");
 
-    // CSRF 不一致（正しいトークンだが csrf が違う）→ result=csrf_mismatch。
+    // CSRF mismatch (correct token but different csrf) → result=csrf_mismatch.
     let response = send(
         &app,
         post_internal(
@@ -95,8 +95,8 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(body_json(response).await["result"], "csrf_mismatch");
 
-    // 正常系: 認証成功。初回は profile/email が未同意のため同意ステップへ（F3）。
-    // SSO セッション id はこの時点で発行される。
+    // Happy path: authentication succeeds. The first time, profile/email are not consented, so it goes to the consent step (F3).
+    // The SSO session id is issued at this point.
     let response = send(
         &app,
         post_internal(
@@ -124,7 +124,7 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
     assert!(!body["sso_session_id"].as_str().unwrap().is_empty());
     assert!(body["sso_absolute_ttl_secs"].as_u64().unwrap() > 0);
 
-    // 同意を承諾すると code 付き redirect を返す。
+    // Accepting consent returns a redirect with a code.
     let response = send(
         &app,
         post_internal(
@@ -145,8 +145,8 @@ async fn authenticate_requires_service_token_and_issues_sso_and_code() {
         "redirect_to should point at the RP: {body}"
     );
 
-    // SSO セッションが DB に作成され、web から転送された接続元 IP が記録されている
-    // （並行する他テストと干渉しないよう、この試行に固有の IP で絞り込む）。
+    // The SSO session is created in the DB and records the client IP forwarded from web
+    // (filtered by an IP unique to this attempt so as not to interfere with other parallel tests).
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sso_sessions WHERE ip_address = ?")
         .bind("203.0.113.7")
         .fetch_one(&pool)
@@ -162,7 +162,7 @@ async fn admin_authenticate_rejects_unknown_user() {
     };
     let (app, root_tenant_id) = (env.app, env.root_tenant_id);
 
-    // 認証情報が誤り（未登録ユーザー）→ result=invalid_credentials。
+    // Wrong credentials (unregistered user) → result=invalid_credentials.
     let response = send(
         &app,
         post_internal(
@@ -180,7 +180,7 @@ async fn admin_authenticate_rejects_unknown_user() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(body_json(response).await["result"], "invalid_credentials");
 
-    // サービストークンが無ければ 401。
+    // Without the service token, 401.
     let response = send(
         &app,
         post_internal(
@@ -192,7 +192,7 @@ async fn admin_authenticate_rejects_unknown_user() {
     .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
-    // tenant_id が無い・不正な内部リクエストは 400（fail-closed。SEC4）。
+    // Internal requests with a missing / invalid tenant_id are 400 (fail-closed; SEC4).
     for bad in [
         json!({ "username": "x", "password": "y" }),
         json!({ "tenant_id": "not-a-uuid", "username": "x", "password": "y" }),

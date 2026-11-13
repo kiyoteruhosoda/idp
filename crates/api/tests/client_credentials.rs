@@ -1,12 +1,12 @@
-//! `client_credentials` grant の統合テスト（G4）。
+//! Integration tests for the `client_credentials` grant (G4).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test client_credentials
 //!
-//! 検証の要:
-//! - 利用者が居ないため **ID Token も Refresh Token も返さない**こと。
-//! - 許可されていないクライアント（grant 未登録・public）が使えないこと。
-//! - `/userinfo` が本 grant のトークンを拒否し、`/introspect` は active として扱うこと。
+//! Key points checked:
+//! - With no user, **neither an ID Token nor a Refresh Token is returned**.
+//! - Clients not allowed (grant not registered, public) cannot use it.
+//! - `/userinfo` rejects tokens from this grant, and `/introspect` treats them as active.
 
 mod support;
 
@@ -17,7 +17,7 @@ use base64::Engine as _;
 use serde_json::Value;
 use support::{body_json, send};
 
-/// `Authorization: Basic` ヘッダ値を組み立てる。
+/// Builds the `Authorization: Basic` header value.
 fn basic(client_id: &str, secret: &str) -> String {
     format!(
         "Basic {}",
@@ -25,7 +25,7 @@ fn basic(client_id: &str, secret: &str) -> String {
     )
 }
 
-/// `/token` へ `client_credentials` を投げる。
+/// Sends `client_credentials` to `/token`.
 async fn request_token(
     app: &axum::Router,
     tenant_id: &str,
@@ -66,32 +66,32 @@ async fn issues_an_access_token_without_an_id_token_or_refresh_token() {
     let tokens = body_json(response).await;
 
     assert_eq!(tokens["token_type"], "Bearer");
-    // 登録できる scope は OIDC の 4 値だけで、そのすべてが利用者前提か offline_access のため、
-    // このトークンに載る scope は無い。業務上の権限はアプリが `sub`（= client_id）で判断する
-    // （ADR-0033）。
+    // The only registrable scopes are the 4 OIDC values, all of which assume a user or are offline_access, so
+    // no scope is carried by this token. Business permissions are decided by the app by `sub` (= client_id)
+    // (ADR-0033).
     assert_eq!(
         tokens["scope"], "",
-        "利用者が居ないトークンに scope は載らない"
+        "a token without a user carries no scope"
     );
     assert!(tokens["access_token"]
         .as_str()
         .is_some_and(|t| !t.is_empty()));
-    // 利用者が居ないため、この 2 つは**存在してはならない**（OIDC Core の ID Token 定義に反する）。
+    // There is no user, so these two **must not exist** (it would violate the OIDC Core ID Token definition).
     assert_eq!(
         tokens["id_token"],
         Value::Null,
-        "client_credentials は ID Token を返さない"
+        "client_credentials does not return an ID Token"
     );
     assert_eq!(
         tokens["refresh_token"],
         Value::Null,
-        "client_credentials は Refresh Token を返さない"
+        "client_credentials does not return a Refresh Token"
     );
 }
 
-/// 利用者前提の scope（`openid` / `profile` / `email`）は、登録済みでも本 grant では拒否する。
-/// 省略時は落としているのに明示要求だけ通すと、**利用者が居ないのに利用者のクレームを名乗る
-/// トークン**が出せてしまう（ADR-0033）。
+/// User-oriented scopes (`openid` / `profile` / `email`) are rejected for this grant even if registered.
+/// Dropping them when omitted but accepting explicit requests would allow **tokens claiming user claims
+/// without any user** (ADR-0033).
 #[tokio::test]
 async fn rejects_a_user_bound_scope_request() {
     let Some(env) = support::setup("client_credentials").await else {
@@ -112,7 +112,7 @@ async fn rejects_a_user_bound_scope_request() {
     assert_eq!(body_json(response).await["error"], "invalid_scope");
 }
 
-/// `offline_access` は登録済みでも本 grant では拒否する（資格情報を出し直せるため不要）。
+/// `offline_access` is rejected for this grant even if registered (credentials can be presented again, so it is unnecessary).
 #[tokio::test]
 async fn rejects_offline_access() {
     let Some(env) = support::setup("client_credentials").await else {
@@ -137,7 +137,7 @@ async fn rejects_offline_access() {
     assert_eq!(body_json(response).await["error"], "invalid_scope");
 }
 
-/// `client_credentials` を登録していない confidential client は使えない（既定は無効）。
+/// A confidential client that has not registered `client_credentials` cannot use it (disabled by default).
 #[tokio::test]
 async fn rejects_a_client_without_the_grant_registered() {
     let Some(env) = support::setup("client_credentials").await else {
@@ -151,7 +151,7 @@ async fn rejects_a_client_without_the_grant_registered() {
     assert_eq!(body_json(response).await["error"], "unauthorized_client");
 }
 
-/// public client は資格情報を秘匿できないため本 grant を使えない。
+/// Public clients cannot keep credentials secret, so they cannot use this grant.
 #[tokio::test]
 async fn rejects_a_public_client() {
     let Some(env) = support::setup("client_credentials").await else {
@@ -176,8 +176,8 @@ async fn rejects_a_public_client() {
     assert_eq!(body_json(response).await["error"], "unauthorized_client");
 }
 
-/// `/userinfo` は利用者主体のトークンしか受け付けない。`/introspect` は active として扱い、
-/// `sub` にクライアント自身を返す。
+/// `/userinfo` accepts only user-subject tokens. `/introspect` treats it as active and
+/// returns the client itself as `sub`.
 #[tokio::test]
 async fn the_token_is_rejected_by_userinfo_but_accepted_by_introspection() {
     let Some(env) = support::setup("client_credentials").await else {
@@ -191,7 +191,7 @@ async fn the_token_is_rejected_by_userinfo_but_accepted_by_introspection() {
             .await;
     let access_token = tokens["access_token"].as_str().expect("access token");
 
-    // /userinfo: 利用者主体でないので 401（この grant のトークンは scope も持たない）。
+    // /userinfo: not a user subject, so 401 (tokens of this grant also have no scope).
     let response = send(
         &env.app,
         Request::builder()
@@ -205,10 +205,10 @@ async fn the_token_is_rejected_by_userinfo_but_accepted_by_introspection() {
     assert_eq!(
         response.status(),
         StatusCode::UNAUTHORIZED,
-        "client_credentials のトークンで /userinfo は取れない"
+        "/userinfo cannot be fetched with a client_credentials token"
     );
 
-    // /introspect: active。主体はクライアント自身。
+    // /introspect: active. The subject is the client itself.
     let response = send(
         &env.app,
         Request::builder()
@@ -227,7 +227,7 @@ async fn the_token_is_rejected_by_userinfo_but_accepted_by_introspection() {
     assert_eq!(introspection["client_id"], client_id);
 }
 
-/// Discovery は本 grant を広告する（RP のメタデータ検証が通るようにする）。
+/// Discovery advertises this grant (so RP metadata validation passes).
 #[tokio::test]
 async fn discovery_advertises_the_grant() {
     let Some(env) = support::setup("client_credentials").await else {

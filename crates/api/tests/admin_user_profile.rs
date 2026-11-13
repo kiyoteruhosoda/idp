@@ -1,16 +1,16 @@
-//! 管理者による利用者プロフィール編集 API（`PATCH /{tenant_id}/admin/users/{user_id}/profile`。
-//! MT25）の統合テスト（DB あり）。
+//! Integration tests (with DB) for the admin user profile edit API
+//! (`PATCH /{tenant_id}/admin/users/{user_id}/profile`; MT25).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test admin_user_profile
 //!
-//! 検証するのは:
+//! What is checked:
 //!
-//! 1. 認可（未認証 401 / 権限なし 403 / テナント越し・不存在 404）と、状態変更と違って
-//!    **自分自身も編集できる**こと（プロフィール変更はロックアウトを招かない）。
-//! 2. 部分更新（省略したフィールドは変更しない）と、`name` の空文字による解除。
-//! 3. テナント内の重複（email / preferred_username）が 409、書式・長さ違反が 400。
-//! 4. 監査には変更した項目名だけが残り、値（PII）が漏れないこと。
+//! 1. Authorization (unauthenticated 401 / no permission 403 / other tenant or nonexistent 404), and unlike state
+//!    changes, **one can edit oneself** (profile changes do not cause lockout).
+//! 2. Partial updates (omitted fields are unchanged) and clearing `name` with an empty string.
+//! 3. Duplicates within the tenant (email / preferred_username) are 409, format / length violations are 400.
+//! 4. Only the changed field names remain in the audit log; values (PII) do not leak.
 
 mod support;
 
@@ -19,7 +19,7 @@ use serde_json::json;
 use sqlx::{MySqlPool, Row};
 use support::{admin_token, body_json, create_plain_user, patch, send};
 
-/// この実行で作った対象に限定した監査行（共有テスト DB に過去実行の行が残るため）。
+/// Audit rows limited to the targets created in this run (the shared test DB keeps rows from past runs).
 async fn audit_reasons(pool: &MySqlPool, actor_id: &str, target_id: &str) -> Vec<String> {
     sqlx::query(
         "SELECT reason FROM audit_log \
@@ -40,7 +40,7 @@ async fn stored_profile(
     pool: &MySqlPool,
     user_id: &str,
 ) -> (String, Option<String>, Option<String>) {
-    // ユーザー名の置き場所は登録簿（AP15b）。`users` には残っていない。
+    // The username lives in the registry (AP15b). It is no longer in `users`.
     let row = sqlx::query("SELECT email, name FROM users WHERE id = ?")
         .bind(user_id)
         .fetch_one(pool)
@@ -64,7 +64,7 @@ async fn admin_edits_email_username_and_display_name() {
     let uri = format!("/{}/admin/users/{target}/profile", env.root_tenant_id);
     let unique = uuid::Uuid::now_v7().simple().to_string();
 
-    // ── 認可: トークン無しは 401、権限の無い利用者は 403。
+    // ── Authorization: no token is 401, a user without permission is 403.
     let res = send(
         &env.app,
         support::anonymous(axum::http::Method::PATCH, &uri, Some(json!({}))),
@@ -76,7 +76,7 @@ async fn admin_edits_email_username_and_display_name() {
     let res = send(&env.app, patch(&plain_token, &uri, json!({}))).await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "no admin perm -> 403");
 
-    // ── 3 項目まとめて更新。
+    // ── Update three fields at once.
     let email = format!("renamed-{unique}@example.com");
     let username = format!("renamed-{unique}");
     let res = send(
@@ -102,7 +102,7 @@ async fn admin_edits_email_username_and_display_name() {
         )
     );
 
-    // ── 部分更新: name のみ空文字 = 解除。email / preferred_username は現状維持。
+    // ── Partial update: only name as empty string = clear. email / preferred_username unchanged.
     let res = send(&env.app, patch(&admin_tok, &uri, json!({ "name": "" }))).await;
     assert_eq!(res.status(), StatusCode::OK);
     assert_eq!(
@@ -110,7 +110,7 @@ async fn admin_edits_email_username_and_display_name() {
         (email.clone(), Some(username.clone()), None)
     );
 
-    // ── 監査は「変更した項目名」だけを残し、値（PII）は出さない。
+    // ── The audit log keeps only "the changed field names", not the values (PII).
     let reasons = audit_reasons(&env.pool, &env.root_admin_id, &target).await;
     assert_eq!(reasons.len(), 2, "one row per change: {reasons:?}");
     assert!(
@@ -129,14 +129,14 @@ async fn admin_edits_email_username_and_display_name() {
     );
 }
 
-/// メールアドレスを変えると主メール行が追随する（ADR-0050 決定 1）。
+/// Changing the email address makes the primary email row follow (ADR-0050 decision 1).
 ///
-/// 追随しないと `users.email` と登録簿が割れ、変更前のアドレスが登録簿に居座る
-/// （その値は誰も取れないのに誰のものでもない）。
+/// Otherwise `users.email` and the registry diverge, and the old address squats in the registry
+/// (nobody can take that value, yet it belongs to nobody).
 ///
-/// **同じ値をユーザー名として持たせたときに行が消えることまで確かめる**（決定 6）。
-/// 同じ正規化値の行は 1 本しか作れないので、そこでは主メール行を作らないと決めてある。
-/// 消し損ねると、メールを戻したときに古い行が残って `users.email` と食い違う。
+/// **Also checks the row disappears when the same value is held as the username** (decision 6).
+/// Only one row per normalized value can exist, so it was decided not to create a primary email row there.
+/// If it is not deleted, reverting the email leaves an old row that disagrees with `users.email`.
 #[tokio::test]
 async fn changing_the_email_moves_the_primary_email_row() {
     let Some(env) = support::setup("primary email follows the profile").await else {
@@ -148,11 +148,11 @@ async fn changing_the_email_moves_the_primary_email_row() {
     let unique = uuid::Uuid::now_v7().simple().to_string();
     let first = format!("pe1-{unique}@example.com");
     let second = format!("pe2-{unique}@example.com");
-    // ⚠ ユーザー名を**メールの書式**にしておく。利用者をユーザー名の指定なしで作ると
-    //   ユーザー名にはメールアドレスがそのまま入る（ADR-0009 §8）ので、この形は実在する。
+    // ⚠ Make the username **email-shaped**. When a user is created without a username, the username
+    //   is the email address as is (ADR-0009 §8), so this shape exists in reality.
     let username = format!("pe-{unique}@example.com");
 
-    // ── 行が無いところから作られる（SQL で直接作った利用者は登録簿に行を持たない）。
+    // ── Created from nothing (users created directly with SQL have no registry row).
     let res = send(
         &env.app,
         patch(
@@ -168,7 +168,7 @@ async fn changing_the_email_moves_the_primary_email_row() {
         Some(first)
     );
 
-    // ── 変更で追随する（更新の分岐）。
+    // ── Follows on change (the update branch).
     let res = send(
         &env.app,
         patch(&admin_tok, &uri, json!({ "email": second })),
@@ -180,9 +180,9 @@ async fn changing_the_email_moves_the_primary_email_row() {
         Some(second)
     );
 
-    // ── メールを**自分のユーザー名と同じ値**にすると、主メール行は消える（決定 6）。
-    //    同じ正規化値の行は 1 本しか作れないので、ユーザー名の行が既にその値を握っている
-    //    ときは主メール行を作らない。消し損ねると `users.email` と登録簿が食い違う。
+    // ── Setting the email to **the same value as one's own username** deletes the primary email row (decision 6).
+    //    Only one row per normalized value can exist, so when the username row already holds that value
+    //    no primary email row is created. If not deleted, `users.email` and the registry disagree.
     let res = send(
         &env.app,
         patch(&admin_tok, &uri, json!({ "email": username })),
@@ -192,15 +192,15 @@ async fn changing_the_email_moves_the_primary_email_row() {
     assert_eq!(
         support::primary_email(&env.pool, &target).await,
         None,
-        "同じ値の行は 1 本だけ。ユーザー名の行が持っているので主メール行は作らない"
+        "only one row per value; the username row holds it, so no primary email row is created"
     );
     assert_eq!(
         support::primary_username(&env.pool, &target).await,
         Some(username),
-        "ユーザー名の行は残る"
+        "the username row remains"
     );
 
-    // ── メールを別の値へ戻すと、主メール行がまた作られる。
+    // ── Changing the email back to another value creates the primary email row again.
     let third = format!("pe3-{unique}@example.com");
     let res = send(&env.app, patch(&admin_tok, &uri, json!({ "email": third }))).await;
     assert_eq!(res.status(), StatusCode::OK);
@@ -210,13 +210,13 @@ async fn changing_the_email_moves_the_primary_email_row() {
     );
 }
 
-/// **他人がログイン識別子として持っている値へは、メールアドレスを変更できない**
-/// （ADR-0050 決定 1。要件「メールアドレスは一意にしたい」の核心）。
+/// **The email address cannot be changed to a value someone else holds as a login identifier**
+/// (ADR-0050 decision 1; the core of the requirement "email addresses should be unique").
 ///
-/// ⚠ この向きが今まで素通りだった。`update_profile` が見ていたのは `users` 側の一意制約
-/// （`(tenant_id, email)`）だけで、登録簿を見ていなかったため、**B がユーザー名や別名の
-/// メールとして持っている値を A のメールにできた**。メールでのログインを許すと、
-/// そのとき 1 つの入力が 2 人に当たる。
+/// ⚠ This direction used to pass unchecked. `update_profile` only looked at the unique constraint on `users`
+/// (`(tenant_id, email)`) and not at the registry, so **A's email could be set to a value B holds as a
+/// username or alias email**. With email login allowed, one input would then
+/// match two people.
 #[tokio::test]
 async fn an_email_held_by_another_user_as_an_identifier_is_rejected() {
     let Some(env) = support::setup("primary email uniqueness").await else {
@@ -227,7 +227,7 @@ async fn an_email_held_by_another_user_as_an_identifier_is_rejected() {
     let alice = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let bob = create_plain_user(&env.pool, &env.root_tenant_id).await;
 
-    // bob に別名のメールアドレスを足す（bob の `users.email` とは別の値）。
+    // Add an alias email address to bob (a different value from bob's `users.email`).
     let alias = format!("alias-{unique}@example.com");
     let res = send(
         &env.app,
@@ -243,7 +243,7 @@ async fn an_email_held_by_another_user_as_an_identifier_is_rejected() {
     .await;
     assert_eq!(res.status(), StatusCode::CREATED);
 
-    // alice のメールをその値へ変えようとすると 409。
+    // Changing alice's email to that value gives 409.
     let res = send(
         &env.app,
         patch(
@@ -256,14 +256,14 @@ async fn an_email_held_by_another_user_as_an_identifier_is_rejected() {
     assert_eq!(
         res.status(),
         StatusCode::CONFLICT,
-        "他人の識別子と同じ値はメールにできない"
+        "an email cannot equal someone else's identifier"
     );
 
-    // 断ったあとに `users` 側だけが書き換わっていないこと（同じトランザクションで失敗する）。
+    // After refusing, `users` alone must not have been rewritten (it fails in the same transaction).
     let (stored_email, _, _) = stored_profile(&env.pool, &alice).await;
     assert_ne!(
         stored_email, alias,
-        "断ったのに users 側だけ変わってはいけない"
+        "refused, so users alone must not change"
     );
 }
 
@@ -278,7 +278,7 @@ async fn profile_edit_rejects_duplicates_and_invalid_input() {
     let uri = format!("/{}/admin/users/{target}/profile", env.root_tenant_id);
     let (other_email, ..) = stored_profile(&env.pool, &other).await;
 
-    // 既に使われている email は 409。
+    // An email already in use is 409.
     let res = send(
         &env.app,
         patch(&admin_tok, &uri, json!({ "email": other_email })),
@@ -286,7 +286,7 @@ async fn profile_edit_rejects_duplicates_and_invalid_input() {
     .await;
     assert_eq!(res.status(), StatusCode::CONFLICT, "duplicate email -> 409");
 
-    // 書式違反・ログイン識別子の解除は 400。
+    // Format violations and clearing the login identifier are 400.
     for body in [
         json!({ "email": "not-an-email" }),
         json!({ "preferred_username": "" }),
@@ -296,7 +296,7 @@ async fn profile_edit_rejects_duplicates_and_invalid_input() {
         assert_eq!(res.status(), StatusCode::BAD_REQUEST, "body={body}");
     }
 
-    // 不存在・UUID 不正はいずれも 404（存在推測を防ぐ）。
+    // Nonexistent and invalid UUID are both 404 (prevents existence guessing).
     for unknown in [uuid::Uuid::now_v7().to_string(), "not-a-uuid".to_string()] {
         let uri = format!("/{}/admin/users/{unknown}/profile", env.root_tenant_id);
         let res = send(&env.app, patch(&admin_tok, &uri, json!({}))).await;
@@ -304,8 +304,8 @@ async fn profile_edit_rejects_duplicates_and_invalid_input() {
     }
 }
 
-/// 状態変更・削除・パスワード再発行・MFA 解除は自己操作を禁止するが、プロフィール編集は許す
-/// （ロックアウトを招かない。管理者が自分のメールを直せないと運用が詰まる）。
+/// State changes, deletion, password reissue and MFA reset forbid acting on oneself, but profile editing is allowed
+/// (it causes no lockout; operations get stuck if admins cannot fix their own email).
 #[tokio::test]
 async fn admin_can_edit_their_own_profile() {
     let Some(env) = support::setup("admin self profile").await else {
@@ -326,7 +326,7 @@ async fn admin_can_edit_their_own_profile() {
     let (_, _, name) = stored_profile(&env.pool, &env.root_admin_id).await;
     assert_eq!(name.as_deref(), Some("Root Operator"));
 
-    // 対照: 状態変更は自分自身に対して 403（既存の防御線が緩んでいないこと）。
+    // Contrast: state changes on oneself are 403 (the existing line of defence has not loosened).
     let status_uri = format!("/{}/admin/users/{}", env.root_tenant_id, env.root_admin_id);
     let res = send(
         &env.app,

@@ -1,10 +1,10 @@
-//! インメモリの TTL キャッシュ（ADR-0009 §7）。
+//! In-memory TTL cache (ADR-0009 §7).
 //!
-//! **api は単一インスタンスで動かす前提**（README「スケール前提」・G9）のためプロセス内メモリで
-//! 管理する。api を 2 プロセス以上にすると invalidation が他インスタンスへ伝わらない。
-//! 有効期限は挿入時刻 + TTL で判定し、
-//! `get` 時に期限切れエントリを遅延削除する。時刻は `Clock` 越しに取得し（テストで固定可能）、
-//! スケールアウト時は共有ストア実装へ差し替える（`Cache` trait が DIP 境界）。
+//! **The api is assumed to run as a single instance** (README "scaling assumptions", G9), so state is kept
+//! in process memory. With 2+ api processes, invalidation does not reach other instances.
+//! Expiry is judged by insertion time + TTL, and
+//! expired entries are lazily removed on `get`. Time comes via `Clock` (can be fixed in tests);
+//! when scaling out, swap in a shared-store implementation (the `Cache` trait is the DIP boundary).
 
 use crate::domain::cache::Cache;
 use crate::domain::clock::Clock;
@@ -18,7 +18,7 @@ struct Entry<V> {
     expires_at: DateTime<Utc>,
 }
 
-/// キー空間ごとに 1 インスタンスを注入して使う汎用 TTL キャッシュ。
+/// Generic TTL cache, injected as one instance per key space.
 pub struct InMemoryTtlCache<K, V> {
     ttl: Duration,
     clock: Arc<dyn Clock>,
@@ -49,7 +49,7 @@ where
         let mut map = self.entries.lock().expect("cache lock poisoned");
         match map.get(key) {
             Some(entry) if entry.expires_at > now => Some(entry.value.clone()),
-            // 期限切れは遅延削除する（キー空間の肥大化も防ぐ）。
+            // Lazily remove expired entries (also keeps the key space from growing).
             Some(_) => {
                 map.remove(key);
                 None
@@ -79,7 +79,7 @@ mod tests {
     use super::*;
     use std::sync::Mutex as StdMutex;
 
-    /// テスト内で任意に進められる Clock。
+    /// Clock that tests can advance at will.
     struct MutClock(StdMutex<DateTime<Utc>>);
     impl MutClock {
         fn new(t: DateTime<Utc>) -> Self {
@@ -110,11 +110,11 @@ mod tests {
         cache.insert("k".to_string(), 42);
         assert_eq!(cache.get(&"k".to_string()), Some(42));
 
-        // TTL 内は保持。
+        // Kept within the TTL.
         clock.advance(Duration::seconds(59));
         assert_eq!(cache.get(&"k".to_string()), Some(42));
 
-        // TTL 経過後は None（かつ遅延削除される）。
+        // None after the TTL has elapsed (and lazily removed).
         clock.advance(Duration::seconds(2));
         assert_eq!(cache.get(&"k".to_string()), None);
     }
@@ -136,7 +136,7 @@ mod tests {
             InMemoryTtlCache::new(Duration::seconds(60), clock.clone());
         cache.insert("k".to_string(), 1);
         clock.advance(Duration::seconds(59));
-        // 上書きで値と TTL を張り直す。
+        // Overwriting resets the value and the TTL.
         cache.insert("k".to_string(), 2);
         clock.advance(Duration::seconds(59));
         assert_eq!(cache.get(&"k".to_string()), Some(2));

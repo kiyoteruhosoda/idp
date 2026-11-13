@@ -1,11 +1,11 @@
-//! アプリの管理コンソール画面（`/{tenant_id}/admin/applications`。ADR-0054）。
+//! Admin console screen for apps (`/{tenant_id}/admin/applications`. ADR-0054).
 //!
-//! 一覧・登録・設定変更・削除・名乗り（binding）の付け外しと移し替え・使う主体（人・サービスアカウント）の
-//! 割り当てを提供する。名乗りの相手は ID の手入力ではなく候補の一覧から選ぶ（ADR-0067）。操作の実体は
-//! api の `/admin/applications/*` に SSO Cookie 転送で委譲する（web は sqlx に触らない。ADR-0007）。
+//! Provides list, registration, settings changes, deletion, attaching/detaching and moving bindings, and assigning
+//! the principals that use it (people, service accounts). Binding targets are picked from a candidate list, not typed IDs (ADR-0067).
+//! The actual operations are delegated to the api's `/admin/applications/*` by forwarding the SSO cookie (web does not touch sqlx. ADR-0007).
 //!
-//! ⚠ **この画面が締め出しの復旧経路である**（ADR-0054 の決定 4 の手順 4）。割り当てを足す操作が
-//! 数秒で終わること ——一覧から 1 件開いて、利用者 ID を貼って送る——を、切り替えの前に確かめる。
+//! ⚠ **This screen is the recovery path for lockouts** (step 4 of decision 4 in ADR-0054). Before switching, confirm that
+//! adding an assignment takes seconds — open one from the list, paste the user ID and submit.
 
 use super::locale;
 use crate::admin_dto::{
@@ -40,7 +40,7 @@ macro_rules! admin_or_return {
     };
 }
 
-/// アプリの一覧（`GET /{tenant_id}/admin/applications`）。
+/// App list (`GET /{tenant_id}/admin/applications`).
 pub async fn list(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -70,7 +70,7 @@ pub async fn list(
     }
 }
 
-/// アプリ 1 件の画面（`GET /{tenant_id}/admin/applications/{application_id}`）。
+/// Screen for one app (`GET /{tenant_id}/admin/applications/{application_id}`).
 pub async fn detail(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -95,13 +95,13 @@ pub async fn detail(
 pub struct CreateApplicationForm {
     pub display_name: String,
     pub assignment_mode: String,
-    /// チェックボックスは**チェックされたときだけ**送られる。未指定 = 割り当てない。
+    /// A checkbox is sent **only when checked**. Unspecified = do not assign.
     #[serde(default)]
     pub assign_creator: Option<String>,
     pub csrf_token: String,
 }
 
-/// アプリを登録する（`POST /{tenant_id}/admin/applications/create`）。
+/// Registers an app (`POST /{tenant_id}/admin/applications/create`).
 pub async fn create(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -136,8 +136,8 @@ pub async fn create(
         )
         .await;
     match result {
-        // 作った直後の画面へ送る。⚠ **一覧へ戻さない** ——「個別」で作った直後は、名簿と
-        // 認証方法がどちらも空で、そこから続けて設定する必要がある。
+        // Go to the screen of the newly created app. ⚠ **Do not return to the list** — right after creating as "individual",
+        // both the roster and authentication methods are empty and must be configured next.
         Ok(application) => redirect_detail(&tenant, &application.id),
         Err(AdminApiError::Validation(m) | AdminApiError::Conflict(m)) => {
             reload_list_with_error(&state, &correlation, &tenant, &admin, &headers, &sso, &m).await
@@ -157,7 +157,7 @@ pub struct UpdateApplicationForm {
     pub csrf_token: String,
 }
 
-/// アプリの設定を変える（`POST /{tenant_id}/admin/applications/{id}/update`）。
+/// Changes an app's settings (`POST /{tenant_id}/admin/applications/{id}/update`).
 pub async fn update(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -207,19 +207,19 @@ pub async fn update(
 
 #[derive(Deserialize)]
 pub struct BindForm {
-    /// 候補の一覧で選んだ相手（`<種類>:<相手>`。[`ApplicationBindingCandidateView::choice_value`]）。
+    /// The target chosen from the candidate list (`<kind>:<target>`. [`ApplicationBindingCandidateView::choice_value`]).
     #[serde(default)]
     pub candidate: String,
-    /// 「○○ から移す」を確かめたときだけ付く、今の持ち主のアプリ ID（ADR-0067）。
+    /// The current owner's app ID, attached only when "move from X" was confirmed (ADR-0067).
     #[serde(default)]
     pub move_from: Option<String>,
     pub csrf_token: String,
 }
 
-/// 名乗りを足す（`POST /{tenant_id}/admin/applications/{id}/bind`。ADR-0059 / ADR-0067）。
+/// Adds a binding (`POST /{tenant_id}/admin/applications/{id}/bind`. ADR-0059 / ADR-0067).
 ///
-/// 選んだ相手が別のアプリの名乗りなら、すぐには送らず「○○ から移す」確認を出す。確認から
-/// 送り直したとき（`move_from` 付き）だけ、api に移し替えを頼む ——外す＋結ぶは api が 1 回で行う。
+/// If the chosen target is another app's binding, it is not sent right away; a "move from X" confirmation is shown. Only when
+/// resent from the confirmation (with `move_from`) is the api asked to move it — the api does detach + bind in one go.
 pub async fn bind(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -260,9 +260,9 @@ pub async fn bind(
         .map(str::trim)
         .filter(|s| !s.is_empty());
     if move_from.is_none() {
-        // 選んだ相手の今の持ち主を引き直す（画面を出した時点の値を信じない）。別のアプリの名乗りなら
-        // 確認を出す。⚠ 候補を読めなかったときは確認を飛ばして送る ——持ち主が居れば api が
-        // そのアプリ名で 409 を返すので、黙って奪うことにはならない。
+        // Re-fetch the chosen target's current owner (do not trust the value from when the screen was shown). If it is another
+        // app's binding, show the confirmation. ⚠ If candidates could not be read, skip the confirmation and send — if there is an
+        // owner, the api returns 409 with that app's name, so nothing is silently taken.
         let candidates = state
             .api
             .application_binding_candidates(&correlation.0, &tenant.0, &sso, &application_id)
@@ -289,7 +289,7 @@ pub async fn bind(
             .await;
         }
     }
-    // 種類の検証は api がする（ここで書き写すと規則が 2 か所になる）。
+    // The kind is validated by the api (copying it here would put the rule in two places).
     let result = state
         .api
         .for_locale(locale(&headers))
@@ -320,10 +320,10 @@ pub struct DeleteApplicationForm {
     pub csrf_token: String,
 }
 
-/// アプリを消す（`POST /{tenant_id}/admin/applications/{id}/delete`）。
+/// Deletes an app (`POST /{tenant_id}/admin/applications/{id}/delete`).
 ///
-/// api の削除と同じく、名乗りと使う主体を外して消す（相手の登録は消えない）。何が外れるかは
-/// 画面が先に出し、送る前に確認を挟む。消したら一覧へ戻す（消したアプリの画面は 404 になる）。
+/// Like the api's deletion, removes bindings and principals and deletes (the targets' registrations remain). The screen shows
+/// what will be removed first, with a confirmation before sending. After deletion return to the list (the deleted app's screen is 404).
 pub async fn delete(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -377,7 +377,7 @@ pub struct BindingIdForm {
     pub csrf_token: String,
 }
 
-/// 名乗りを外す（`POST /{tenant_id}/admin/applications/{id}/unbind`）。
+/// Removes a binding (`POST /{tenant_id}/admin/applications/{id}/unbind`).
 pub async fn unbind(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -425,10 +425,10 @@ pub async fn unbind(
 
 #[derive(Deserialize)]
 pub struct AssignForm {
-    /// `user` / `service_account`。「いま入れている人」から写すときは `user` を送る。
+    /// `user` / `service_account`. When copying from "people currently in", `user` is sent.
     #[serde(default = "user_kind")]
     pub kind: String,
-    /// 人なら利用者 ID、サービスアカウントならクライアント ID。
+    /// User ID for a person, client ID for a service account.
     pub target: String,
     pub csrf_token: String,
 }
@@ -437,9 +437,9 @@ fn user_kind() -> String {
     "user".to_string()
 }
 
-/// 使う主体を足す（`POST /{tenant_id}/admin/applications/{id}/assign`。ADR-0059）。
+/// Adds a principal (`POST /{tenant_id}/admin/applications/{id}/assign`. ADR-0059).
 ///
-/// 入口は 1 つで、押した先で「人 / サービスアカウント」を選ぶ。種類の検証は api がする。
+/// One entry point; "person / service account" is chosen after pressing it. The kind is validated by the api.
 pub async fn assign(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -488,14 +488,14 @@ pub async fn assign(
 
 #[derive(Deserialize)]
 pub struct UnassignForm {
-    /// `user` / `service_account`（行ごとに種類が決まっている）。
+    /// `user` / `service_account` (each row has a fixed kind).
     pub kind: String,
-    /// 人なら利用者 ID、サービスアカウントならクライアント ID。
+    /// User ID for a person, client ID for a service account.
     pub target: String,
     pub csrf_token: String,
 }
 
-/// 使う主体を外す（`POST /{tenant_id}/admin/applications/{id}/unassign`）。行の種類に応じた api へ送る。
+/// Removes a principal (`POST /{tenant_id}/admin/applications/{id}/unassign`). Sent to the api matching the row's kind.
 pub async fn unassign(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -553,7 +553,7 @@ pub async fn unassign(
     .await
 }
 
-// ── ヘルパー ─────────────────────────────────────────────────────────────────
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
 async fn finish(
     state: &WebState,
@@ -565,14 +565,14 @@ async fn finish(
     result: Result<(), AdminApiError>,
 ) -> Response {
     match result {
-        // PRG。詳細を引き直して描くので、再読み込みで同じ操作が飛ばない。
+        // PRG. The details are re-fetched for rendering, so a reload does not repeat the operation.
         Ok(()) => redirect_detail(tenant, application_id),
         Err(AdminApiError::NotFound) => {
             let messages = Messages::new(locale(headers));
             not_found(&messages, tenant, admin)
         }
-        // 入力の誤り（400 / 409）は api の文言をそのまま出す。web 側で判定を書き写すと、
-        // 規則が 2 か所に分かれて必ず片方が古くなる。
+        // Input errors (400 / 409) show the api's message as is. Copying the checks into web would
+        // split the rules into two places and one would go stale.
         Err(AdminApiError::Validation(m) | AdminApiError::Conflict(m)) => {
             render_detail(
                 state,
@@ -592,7 +592,7 @@ async fn finish(
     }
 }
 
-/// 詳細を引き直して描く（必要ならエラー付き）。
+/// Re-fetches the details and renders (with an error if needed).
 async fn render_detail(
     state: &WebState,
     correlation: &CorrelationId,
@@ -615,7 +615,7 @@ async fn render_detail(
     .await
 }
 
-/// 詳細を引き直して描く。`pending_move` があれば「○○ から移す」確認を添える（ADR-0067）。
+/// Re-fetches the details and renders. If there is a `pending_move`, attaches the "move from X" confirmation (ADR-0067).
 #[allow(clippy::too_many_arguments)]
 async fn render_detail_with(
     state: &WebState,
@@ -643,8 +643,8 @@ async fn render_detail_with(
             return map_error(&messages, tenant, admin, headers, e);
         }
     };
-    // 「全員」のときだけ、いま入れている人を引く（写し元。ADR-0054 の決定 3）。
-    // ⚠ ここで失敗しても画面は出す ——設定を直せなくなる方が困る。
+    // Only for "everyone", fetch the people currently in (the copy source. Decision 3 of ADR-0054).
+    // ⚠ Even if this fails, show the screen — being unable to fix the settings would be worse.
     let current = if detail.application.is_individual() {
         None
     } else {
@@ -654,7 +654,7 @@ async fn render_detail_with(
             .await
             .ok()
     };
-    // 名乗りの候補（ADR-0067）。⚠ ここで失敗しても画面は出す（候補が読めないことは画面が言う）。
+    // Binding candidates (ADR-0067). ⚠ Even if this fails, show the screen (the screen says the candidates could not be read).
     let candidates = state
         .api
         .application_binding_candidates(&correlation.0, &tenant.0, &sso, application_id)
@@ -663,11 +663,11 @@ async fn render_detail_with(
     let candidates_unavailable = candidates.is_none();
     let candidate_groups =
         group_binding_candidates(candidates.map(|c| c.candidates).unwrap_or_default());
-    // Messages は await の後に作る（non-Send のため await をまたがない）。
+    // Build Messages after the await (it is non-Send, so it must not live across an await).
     let messages = Messages::new(locale(headers));
     let csrf = console_csrf_from(headers, state.config.csrf_secret());
     let delete_summary = delete_summary(&messages, &detail);
-    // 「個別」のアプリでは写し元が要らないので、空で描く（画面側が出し分ける）。
+    // "Individual" apps need no copy source, so render it empty (the screen decides what to show).
     let no_users: Vec<ApplicationCurrentUserView> = Vec::new();
     let body = render(&ApplicationDetail {
         messages: &messages,
@@ -696,8 +696,8 @@ async fn render_detail_with(
     }
 }
 
-/// 「このアプリを消す」で外れるものの要約。⚠ api の削除（`delete_application`）は名乗りと使う主体を
-/// **外して消す**（断らない）ので、件数は「外すもの」として言う。
+/// Summary of what "delete this app" removes. ⚠ The api's deletion (`delete_application`) **removes bindings and
+/// principals and deletes** (does not refuse), so the counts are phrased as "things to remove".
 fn delete_summary(messages: &Messages, detail: &ApplicationDetailView) -> String {
     let bindings = detail.application.bindings.len();
     let principals = detail.assigned.len() + detail.assigned_service_accounts.len();
@@ -713,7 +713,7 @@ fn delete_summary(messages: &Messages, detail: &ApplicationDetailView) -> String
     )
 }
 
-/// 一覧を引き直してエラー付きで描き直す（PRG に倒さないのは、理由を出すため）。
+/// Re-fetches the list and re-renders with an error (not PRG, so the reason can be shown).
 async fn reload_list_with_error(
     state: &WebState,
     correlation: &CorrelationId,
@@ -836,9 +836,9 @@ mod tests {
         }
     }
 
-    /// 「このアプリを使う主体」は人とサービスアカウントを 1 つの一覧に並べ、⚠ **アイコンだけにせず
-    /// 種類の文字を必ず添える**（読み上げでも見分けられるように。ADR-0048 / ADR-0059）。
-    /// 外す操作は行の種類に応じた値を送る。
+    /// "Principals using this app" lists people and service accounts in one list, and ⚠ **never icon-only:
+    /// the kind text is always attached** (distinguishable with screen readers too. ADR-0048 / ADR-0059).
+    /// The remove operation sends the value matching the row's kind.
     #[test]
     fn people_and_service_accounts_share_one_list_with_their_kind_spelled_out() {
         let messages = Messages::new(Locale::Ja);
@@ -903,8 +903,8 @@ mod tests {
         }
     }
 
-    /// 名乗りの相手は ID の手入力ではなく、種類ごとの候補から選ぶ（ADR-0067）。別のアプリの名乗りには
-    /// 持ち主が添えてあり、手入力の欄は無い。
+    /// Binding targets are chosen from per-kind candidates, not typed IDs (ADR-0067). Another app's binding has
+    /// its owner attached, and there is no free-input field.
     #[test]
     fn binding_targets_are_chosen_from_candidates_that_name_their_owner() {
         let messages = Messages::new(Locale::Ja);
@@ -943,7 +943,7 @@ mod tests {
             !html.contains(r#"id="bind-target""#),
             "the free-text target is gone: {html}"
         );
-        // 種類の順（ログイン → サービスアカウント → 宛名）に束ねる。
+        // Grouped in kind order (login → service account → audience).
         let login = html
             .find(r#"<optgroup label="ログイン（OIDC）">"#)
             .expect("login group");
@@ -962,7 +962,7 @@ mod tests {
         );
     }
 
-    /// 英語の画面では持ち主の注記を半角の括弧で添え、件数は複数形の崩れない形で言う。
+    /// On the English screen the owner note is attached in ASCII parentheses, and counts are phrased in a plural-safe form.
     #[test]
     fn english_owner_note_and_delete_summary_read_naturally() {
         let messages = Messages::new(Locale::En);
@@ -979,7 +979,7 @@ mod tests {
         );
     }
 
-    /// 選んだ相手が別のアプリの名乗りなら、「○○ から移す」確認を出す。送り直しは移す元を名指しする。
+    /// If the chosen target is another app's binding, a "move from X" confirmation is shown. The resend names the source.
     #[test]
     fn a_target_owned_elsewhere_asks_to_move_it_from_that_application() {
         let messages = Messages::new(Locale::Ja);
@@ -1016,7 +1016,7 @@ mod tests {
         assert!(html.contains("「wiki（自動）」から移す</button>"), "{html}");
     }
 
-    /// 消す前に、何が外れるかを画面で言う。ログインの名乗りがあれば、判定の外に出ることも言う。
+    /// Before deleting, the screen says what will be removed. If there is a login binding, it also says it leaves the check.
     #[test]
     fn deleting_says_what_comes_off_before_asking() {
         let messages = Messages::new(Locale::Ja);

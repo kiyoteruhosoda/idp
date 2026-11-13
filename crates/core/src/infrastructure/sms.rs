@@ -1,20 +1,20 @@
-//! `SmsSender` の HTTP ゲートウェイ実装（AP13）。
+//! HTTP gateway implementation of `SmsSender` (AP13).
 //!
-//! 送信要求を **JSON で 1 本 POST する**だけの汎用実装である。事業者ごとの API 差異は
-//! 運用側の中継（関数・Webhook）が吸収する（理由は [`crate::domain::sms`] のモジュール
-//! ドキュメント）。送る本文は次の形:
+//! A generic implementation that just **POSTs one JSON request** per send. Differences between providers' APIs
+//! are absorbed by an operator-side relay (function, webhook) (see the module documentation of [`crate::domain::sms`]
+//! for why). The body sent looks like:
 //!
 //! ```json
 //! { "to": "+819012345678", "text": "Your verification code is 123456.", "from": "IDP" }
 //! ```
 //!
-//! `from` は差出人表示（`sender_id`）が設定されているときだけ載せる。
+//! `from` is included only when a sender display (`sender_id`) is configured.
 //!
-//! # ログに出さないもの
+//! # What is not logged
 //!
-//! 宛先（PII）・本文（ワンタイムコード）・認証トークン。エラーには接続先の**ホスト名すら**
-//! 載せず、固定の文脈と下位のエラー種別だけを残す。送信の成否は監査イベント
-//! （`sms_otp.sent`）で追う。
+//! Destination (PII), body (one-time code) and auth token. Errors carry **not even the destination host name**;
+//! only a fixed context and the underlying error kind are kept. Send success/failure is tracked via the audit event
+//! (`sms_otp.sent`).
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::outbound_uri::{is_internal_destination, OutboundTrust};
@@ -23,7 +23,7 @@ use crate::infrastructure::outbound_http::guarded_client_builder;
 use async_trait::async_trait;
 use std::time::Duration;
 
-/// ゲートウェイへの接続・応答待ちの上限。ログイン中の利用者を待たせ続けないため短くする。
+/// Upper bound for connecting to and waiting on the gateway. Kept short so logging-in users are not kept waiting.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct HttpSmsGateway {
@@ -35,17 +35,17 @@ impl HttpSmsGateway {
         Self::with_trust(OutboundTrust::none())
     }
 
-    /// 名前を引いた結果が内部の住所でも送ってよい名前を指定して作る（task #740）。
+    /// Builds it with names that may be sent to even if they resolve to internal addresses (task #740).
     pub fn with_trust(trust: OutboundTrust) -> Self {
         Self {
-            // 繋ぐ直前に引いた住所を確かめる（内部なら送らない。`outbound_http`）。
+            // Check the addresses resolved right before connecting (don't send if internal; `outbound_http`).
             client: guarded_client_builder(trust)
                 .timeout(REQUEST_TIMEOUT)
-                // リダイレクトは追わない。設定した URL 以外へ宛先とワンタイムコードを渡さないため。
+                // Don't follow redirects, so the destination and one-time code are never handed to anything but the configured URL.
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
-                // 既定の TLS backend（rustls）で失敗する構成はビルド設定の誤りで、
-                // 実行時の入力では起きない。
+                // A configuration that fails with the default TLS backend (rustls) is a build configuration error
+                // and cannot be caused by runtime input.
                 .expect("reqwest client builds with the compiled-in TLS backend"),
         }
     }
@@ -57,7 +57,7 @@ impl Default for HttpSmsGateway {
     }
 }
 
-/// エラーに秘匿値・宛先が混ざらないよう、固定の文脈だけ付ける。
+/// Attach only a fixed context, so no secrets or destinations leak into the error.
 fn sms_err<E: std::fmt::Display>(context: &'static str) -> impl FnOnce(E) -> DomainError {
     move |e| DomainError::Repository(format!("sms gateway {context}: {e}"))
 }
@@ -66,9 +66,9 @@ fn sms_err<E: std::fmt::Display>(context: &'static str) -> impl FnOnce(E) -> Dom
 impl SmsSender for HttpSmsGateway {
     async fn send(&self, gateway: &SmsGatewayConfig, sms: &OutgoingSms) -> Result<()> {
         let url = gateway.endpoint_url.trim();
-        // 設定値の URL をそのまま叩くため、内部宛（localhost・私設アドレス・メタデータ
-        // エンドポイント）を拒む。クライアント登録の outbound URI と同じ判定を使う
-        // （設定を書き換えられる立場の攻撃者に、内部ネットワークへの POST を許さない）。
+        // The configured URL is called as is, so internal destinations (localhost, private addresses, metadata
+        // endpoints) are rejected. Uses the same check as client registration's outbound URI
+        // (doesn't let an attacker able to rewrite settings POST into the internal network).
         if is_internal_destination(url) {
             return Err(DomainError::InvalidValue(
                 "sms gateway url must not point at an internal destination".to_string(),
@@ -90,8 +90,8 @@ impl SmsSender for HttpSmsGateway {
 
         let response = request.send().await.map_err(sms_err("request failed"))?;
         if !response.status().is_success() {
-            // 本文はエラーへ載せない（事業者が要求内容を反射して返すと、宛先・コードが
-            // ログへ回り込む）。判断に要るのはステータスだけ。
+            // The body is not put in the error (if the provider reflects the request back, the destination and code would
+            // leak into logs). Only the status is needed for the decision.
             return Err(DomainError::Repository(format!(
                 "sms gateway rejected the request with status {}",
                 response.status()
@@ -123,7 +123,7 @@ mod tests {
         }
     }
 
-    /// 引いた先が内部の名前には繋がない（`localhost` は字面でも断るので、クライアントを直に確かめる）。
+    /// Doesn't connect to names resolving internally (`localhost` is also refused textually, so the client is checked directly).
     #[tokio::test]
     async fn the_client_refuses_a_name_that_resolves_inside() {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -137,7 +137,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// リダイレクトを追わない（追う先へ宛先とコードを渡さない）。
+    /// Doesn't follow redirects (the destination and code are not handed to the redirect target).
     #[tokio::test]
     async fn the_client_does_not_follow_redirects() {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -165,7 +165,7 @@ mod tests {
         server.await.expect("server task");
     }
 
-    /// 字面で内部と分かる URL は、信用する名前の指定があっても送らない。
+    /// Textually internal URLs are not sent to even if trusted names are specified.
     #[tokio::test]
     async fn an_internal_url_is_refused() {
         let sender = HttpSmsGateway::with_trust(OutboundTrust::parse("localhost"));

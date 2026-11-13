@@ -9,7 +9,7 @@
 {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
 
 {% if passkey_only %}
-{#- パスキーでしか確かめられない操作（端末の登録。task #872）。パスワードの欄は出さない。 -#}
+{#- Operations that can only be verified by passkey (device registration; task #872). No password field. -#}
 <p>{{ messages.get("step-up-passkey-only-lead") }}</p>
 {% if !passkey_available %}
 <div class="alert alert-warning" role="alert">{{ messages.get("step-up-passkey-only-unavailable") }}</div>
@@ -35,10 +35,10 @@
 {% endif %}
 
 {% if passkey_available %}
-{#- パスキーでの確認（T38）。**使えるパスキーを持っている利用者にだけ出す** —— 持っていない人に
-    見せると、ブラウザのダイアログが出てから失敗する。ログイン画面と同じスクリプトを共有し、
-    開始・完了のパスと、完了 API へ添える値（どの操作か・終わったらどこへ戻すか）を data 属性で
-    渡す。JS が動く環境でしか使えないので、初期状態は `hidden` でスクリプトが外す。 -#}
+{#- Passkey verification (T38). **Shown only to users who have a usable passkey** -- shown to those without one,
+    it fails after the browser dialog appears. Shares the script with the login screen and passes, via data
+    attributes, the start/complete paths and the values for the completion API (which operation, where to return).
+    Usable only where JS runs, so it is initially `hidden` and the script removes that. -#}
 <div id="passkey-login" hidden>
   {% if !passkey_only %}<p class="auth-or">{{ messages.get("login-passkey-or") }}</p>{% endif %}
   <div class="d-grid">

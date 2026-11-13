@@ -1,8 +1,8 @@
-//! 本人のログイン履歴（`POST /internal/account/sign-in-history`。task #879。ADR-0073）。
+//! The user's own sign-in history (`POST /internal/account/sign-in-history`, task #879, ADR-0073).
 //!
-//! web だけが呼ぶ内部の口（サービストークンの内側）。利用者は SSO セッションの持ち主で決まり、
-//! 利用者 id は受け取らない。判定は Application 層（`SignInHistoryService`）にあり、ここは DTO の
-//! 詰め替えだけを行う。
+//! Internal endpoint called only by web (behind the service token). The user is determined by the SSO session's owner;
+//! no user id is accepted. Decisions are in the application layer (`SignInHistoryService`); this only
+//! repacks DTOs.
 
 use crate::application::sign_in_history::{SignInHistoryEntry, SignInHistoryOutcome};
 use crate::domain::sign_in_history::{RefreshState, SIGN_IN_HISTORY_PAGE_MAX};
@@ -20,7 +20,7 @@ pub async fn account_sign_in_history(
     State(state): State<AppState>,
     Json(req): Json<InternalAccountSignInHistoryRequest>,
 ) -> Result<Json<InternalAccountSignInHistoryResponse>, Response> {
-    // テナントは必須（他の `/internal/account/*` と同じ fail-closed）。
+    // Tenant is required (fail-closed like the other `/internal/account/*`).
     let _tenant =
         require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let outcome = state

@@ -1,17 +1,17 @@
-//! 管理者による MFA 解除 API（`POST /{tenant_id}/admin/users/{user_id}/mfa-reset`。MT21）の
-//! 統合テスト（DB あり）。
+//! Integration tests (with DB) for the admin MFA reset API
+//! (`POST /{tenant_id}/admin/users/{user_id}/mfa-reset`; MT21).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test admin_mfa_reset
 //!
-//! 端末を失って本人では解除できない状態からの復旧手段。検証するのは:
+//! A recovery path for when a device is lost and the user cannot reset it themselves. What is checked:
 //!
-//! 1. 認可（未認証 401 / 権限なし 403 / テナント越し・不存在 404 / 自分自身 403）。
-//! 2. TOTP と Passkey を**両方**外すこと。片方でも残ると本人はログインできないままで、
-//!    復旧手段として成立しない。他人のクレデンシャルは巻き込まない。
-//! 3. 紛失端末が握っている SSO セッションが失効すること。
-//! 4. MFA 未設定でも成功し、「何も外さなかった」ことが応答で分かること。
-//! 5. 監査へ解除の粒度が残り、シークレットが漏れないこと。
+//! 1. Authorization (unauthenticated 401 / no permission 403 / other tenant or nonexistent 404 / oneself 403).
+//! 2. Removes **both** TOTP and Passkey. If either remains the user still cannot sign in, so it would not
+//!    work as recovery. Other people's credentials are not affected.
+//! 3. SSO sessions held by the lost device are revoked.
+//! 4. Succeeds even without MFA set up, and the response shows "nothing was removed".
+//! 5. The audit log records the granularity of the reset, and secrets do not leak.
 
 mod support;
 
@@ -20,9 +20,9 @@ use serde_json::json;
 use sqlx::{MySqlPool, Row};
 use support::{admin_token, body_json, create_plain_user, post, send};
 
-/// 対象ユーザーの TOTP を直接投入する（セットアップ API を通さずに「設定済み」を作る。
-/// 本テストの関心は解除であって登録フローではない）。秘密の置き場所は認証器の登録簿
-/// （`user_authenticators`。AP11b で一本化した）。
+/// Inserts the target user's TOTP directly (creates "configured" without the setup API;
+/// this test is about reset, not the registration flow). Secrets live in the authenticator registry
+/// (`user_authenticators`; unified in AP11b).
 async fn insert_totp(pool: &MySqlPool, user_id: &str) {
     sqlx::query(
         "INSERT INTO user_authenticators \
@@ -54,8 +54,8 @@ async fn insert_passkey(pool: &MySqlPool, user_id: &str) -> String {
     id
 }
 
-/// 「まだ使える」認証器の数。解除は行を消すのではなく**秘密を落として失効させる**ので、
-/// 行数ではなく秘密の有無で数える（残っていれば復旧手段として成立していない）。
+/// Number of authenticators "still usable". Reset does not delete rows but **drops the secret to invalidate**,
+/// so count by whether a secret exists, not by rows (if any remain, recovery has not succeeded).
 async fn count_usable(pool: &MySqlPool, user_id: &str, authenticator_type: &str) -> i64 {
     sqlx::query(
         "SELECT COUNT(*) AS c FROM user_authenticators \
@@ -87,7 +87,7 @@ async fn count_sso_sessions(pool: &MySqlPool, user_id: &str) -> i64 {
         .get::<i64, _>("c")
 }
 
-/// この実行で作った対象に限定した監査行（共有テスト DB に過去実行の行が残るため）。
+/// Audit rows limited to the targets created in this run (the shared test DB keeps rows from past runs).
 async fn audit_reasons(pool: &MySqlPool, actor_id: &str, target_id: &str) -> Vec<String> {
     sqlx::query(
         "SELECT reason FROM audit_log \
@@ -114,7 +114,7 @@ async fn admin_resets_both_mfa_factors_and_revokes_sessions() {
     let bystander = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let uri = format!("/{}/admin/users/{target}/mfa-reset", env.root_tenant_id);
 
-    // ── 認可: トークン無しは 401、権限の無い利用者は 403。
+    // ── Authorization: no token is 401, a user without permission is 403.
     let res = send(
         &env.app,
         support::anonymous(axum::http::Method::POST, &uri, None),
@@ -126,12 +126,12 @@ async fn admin_resets_both_mfa_factors_and_revokes_sessions() {
     let res = send(&env.app, post(&plain_token, &uri, json!({}))).await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "no admin perm -> 403");
 
-    // ── 対象に TOTP と Passkey 2 件、無関係な利用者にも Passkey を 1 件用意する。
+    // ── Give the target a TOTP and 2 Passkeys, and an unrelated user one Passkey.
     insert_totp(&env.pool, &target).await;
     insert_passkey(&env.pool, &target).await;
     insert_passkey(&env.pool, &target).await;
     insert_passkey(&env.pool, &bystander).await;
-    // 紛失端末が握っている想定の SSO セッション。
+    // An SSO session assumed to be held by the lost device.
     admin_token(&env.app, &env.pool, &env.root_tenant_id, &target).await;
     assert!(count_sso_sessions(&env.pool, &target).await > 0);
 
@@ -142,7 +142,7 @@ async fn admin_resets_both_mfa_factors_and_revokes_sessions() {
     assert_eq!(body["totp_removed"], true);
     assert_eq!(body["passkeys_removed"], 2);
 
-    // TOTP・Passkey が両方消え、無関係な利用者のものは残る。
+    // Both TOTP and Passkeys are gone; the unrelated user's remain.
     assert_eq!(count_totp(&env.pool, &target).await, 0);
     assert_eq!(count_passkeys(&env.pool, &target).await, 0);
     assert_eq!(
@@ -150,10 +150,10 @@ async fn admin_resets_both_mfa_factors_and_revokes_sessions() {
         1,
         "other users' passkeys must survive"
     );
-    // 紛失端末のセッションも失効している。
+    // The lost device's session is revoked too.
     assert_eq!(count_sso_sessions(&env.pool, &target).await, 0);
 
-    // 監査に粒度が残り、シークレットは漏れない。
+    // The audit log records the granularity and secrets do not leak.
     let reasons = audit_reasons(&env.pool, &env.root_admin_id, &target).await;
     assert_eq!(reasons.len(), 1, "one audit row: {reasons:?}");
     assert!(reasons[0].contains("totp=removed"), "{}", reasons[0]);
@@ -164,7 +164,7 @@ async fn admin_resets_both_mfa_factors_and_revokes_sessions() {
         reasons[0]
     );
 
-    // ── 2 回目は「何も外さなかった」で成功する（管理者は設定の有無を知らずに操作する）。
+    // ── The second time succeeds with "nothing removed" (admins operate without knowing whether it is set up).
     let res = send(&env.app, post(&admin_tok, &uri, json!({}))).await;
     assert_eq!(res.status(), StatusCode::OK);
     let body = body_json(res).await;
@@ -179,7 +179,7 @@ async fn mfa_reset_rejects_self_and_unknown_users() {
     };
     let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
 
-    // 自分自身は解除できない（セルフサービスを使う。誤操作によるロックアウト防止）。
+    // One cannot reset oneself (use self-service; prevents lockout by mistake).
     let self_uri = format!(
         "/{}/admin/users/{}/mfa-reset",
         env.root_tenant_id, env.root_admin_id
@@ -187,7 +187,7 @@ async fn mfa_reset_rejects_self_and_unknown_users() {
     let res = send(&env.app, post(&admin_tok, &self_uri, json!({}))).await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "self -> 403");
 
-    // 不存在・UUID 不正はいずれも 404（存在推測を防ぐ）。
+    // Nonexistent and invalid UUID are both 404 (prevents existence guessing).
     for target in [uuid::Uuid::now_v7().to_string(), "not-a-uuid".to_string()] {
         let uri = format!("/{}/admin/users/{target}/mfa-reset", env.root_tenant_id);
         let res = send(&env.app, post(&admin_tok, &uri, json!({}))).await;

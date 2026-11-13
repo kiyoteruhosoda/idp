@@ -19,24 +19,24 @@
         <input type="password" class="form-control" id="admin-login-password" name="password" autocomplete="current-password" required>
       </div>
       <button type="submit" class="btn btn-primary w-100">{{ messages.get("login-submit") }}</button>
-      {#- パスワードを忘れた管理者の自己復旧導線。利用者ログイン画面と同じ経路を使う
-          （SMTP 未設定時はリセット URL がサーバのコンソールへ出る）。 -#}
+      {#- Self-recovery path for admins who forgot their password. Uses the same route as the user login screen
+          (without SMTP configured, the reset URL goes to the server console). -#}
       <div class="text-center mt-3">
         <a class="text-decoration-none" href="{{ tenant_prefix }}/forgot-password">{{ messages.get("login-forgot-password") }}</a>
       </div>
     </form>
-    {#- パスキーは JS（WebAuthn）が動く環境でしか使えない。初期状態は隠しておき、
-        `assets/passkey-login.js` が「この環境で使える」と確かめたときだけ出す —— 先に描いてから
-        無効化すると、押しても何も起きないボタンが一瞬見えてしまう。 -#}
+    {#- Passkeys work only where JS (WebAuthn) runs. Hidden initially and shown only when
+        `assets/passkey-login.js` confirms "usable here" -- rendering first and then
+        disabling would briefly show a button that does nothing when pressed. -#}
     <div id="passkey-login" hidden>
       <p class="auth-or">{{ messages.get("login-passkey-or") }}</p>
       <div class="d-grid mb-3">
         <button type="button" class="btn btn-outline-secondary" id="btn-passkey-login"><i class="fa-solid fa-key me-2" aria-hidden="true"></i>{{ messages.get("login-passkey-button") }}</button>
       </div>
-      {# api のエラーコード → 表示文言の対応表。属性値はテンプレートが HTML エスケープし、
-         スクリプトは dataset 経由で復号済みの文言を読む（JS 文字列への直接埋め込みを避ける）。
-         開始・完了は管理コンソール用の経路を指す（既定は認可フロー用）。開始を分けるのは、放置された
-         認可フローの Cookie を拾わないため（ADR-0040 決定 4）。 #}
+      {# Map of api error codes -> display text. The template HTML-escapes attribute values, and
+         the script reads the decoded text via dataset (avoids embedding directly into JS strings).
+         Start and complete point at the admin console routes (the default is the authorization flow). Start is separated so
+         it never picks up the Cookie of an abandoned authorization flow (ADR-0040 decision 4). #}
       <div id="passkey-error" style="display:none"
            data-tenant-prefix="{{ tenant_prefix }}"
            data-begin-path="/passkey/login/direct/begin"

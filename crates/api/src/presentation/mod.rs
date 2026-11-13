@@ -1,7 +1,7 @@
-//! プレゼンテーション層（axum ハンドラ・ルータ・DTO）。
+//! Presentation layer (axum handlers, routers, DTOs).
 //!
-//! ルータ集約は `router`、各エンドポイントは `handlers` 配下、共有状態は `state`、
-//! 共通 DTO は `dto`、エラー変換は `error`。
+//! Routers are aggregated in `router`, endpoints live under `handlers`, shared state in `state`,
+//! common DTOs in `dto`, error conversion in `error`.
 
 pub mod admin;
 pub mod client_auth;

@@ -1,7 +1,7 @@
-//! 監査ログのユースケース（設計仕様 §7）。
+//! Audit log use case (design spec §7).
 //!
-//! すべての監査イベントを構造化ログ（`tracing`、JSON）へ出力し、同時に `audit_log` テーブルへ
-//! 書き込む。DB 書き込みの失敗で元の処理を失敗させない（エラーログのみ残す）。
+//! Writes every audit event to the structured log (`tracing`, JSON) and also to the `audit_log`
+//! table. A DB write failure does not fail the original operation (only an error log is left).
 
 use crate::domain::audit::{AuditEvent, AuditEventType, AuditResult};
 use crate::domain::clock::Clock;
@@ -11,7 +11,7 @@ use crate::domain::tenant::TenantId;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// リクエスト由来の監査コンテキスト（追跡キーと接続元情報）。
+/// Audit context derived from the request (trace key and client connection info).
 #[derive(Debug, Clone)]
 pub struct RequestContext {
     pub correlation_id: String,
@@ -29,8 +29,8 @@ impl AuditService {
         Self { sink, clock }
     }
 
-    /// 監査イベントを 1 件記録する。PII は渡さない（ユーザー識別は内部 UUID のみ）。
-    /// `tenant_id` はイベントが属するテナント（テナント単位の追跡。ADR-0009 §8）。
+    /// Records one audit event. Pass no PII (users are identified only by internal UUID).
+    /// `tenant_id` is the tenant the event belongs to (per-tenant tracing; ADR-0009 §8).
     #[allow(clippy::too_many_arguments)]
     pub async fn record(
         &self,
@@ -55,12 +55,12 @@ impl AuditService {
             correlation_id: ctx.correlation_id.clone(),
         };
 
-        // 監査イベントは「何が起きたか」のドメイン語彙そのものなので、メトリクスもここから
-        // 出す（G6）。ログイン成功率・トークン発行レート・鍵ローテーションの成否は、この 1 本の
-        // カウンタから導ける。計測器を各ユースケースへ散らすと、片方だけ増えて静かにずれる。
+        // Audit events are the domain vocabulary of "what happened", so metrics are emitted
+        // from here too (G6). Login success rate, token issuance rate and key rotation outcomes
+        // all derive from this one counter. Scattering meters across use cases lets one drift silently.
         //
-        // ラベルは有限の enum（`event_type` / `result`）だけにする。`tenant_id`・`user_id`・
-        // `client_id` を足すと時系列が利用者数に比例して増える（`crate::metrics` 参照）。
+        // Labels are only finite enums (`event_type` / `result`). Adding `tenant_id`, `user_id` or
+        // `client_id` grows the time series with the number of users (see `crate::metrics`).
         metrics::counter!(
             crate::metrics::AUDIT_EVENTS,
             "event_type" => event.event_type.as_str(),
@@ -89,11 +89,11 @@ impl AuditService {
         }
     }
 
-    /// 保持期間を過ぎた監査イベントを 1 バッチ削除し、削除件数を返す（G8）。
-    /// `retention_days` が 0 のときは何もしない（＝削除しない。既定）。
+    /// Deletes one batch of audit events past the retention period and returns the count (G8).
+    /// Does nothing when `retention_days` is 0 (i.e. never delete; the default).
     ///
-    /// 1 回の呼び出しで消し切るとは限らない（実装側でバッチ上限を置く）。呼び出し側は
-    /// 「削除件数が 0 になるまで」で消し切りを判断する。
+    /// One call does not necessarily delete everything (the implementation caps the batch). Callers
+    /// decide completion by "until the deleted count reaches 0".
     pub async fn purge_expired(&self, retention_days: u32) -> Result<u64, DomainError> {
         if retention_days == 0 {
             return Ok(0);

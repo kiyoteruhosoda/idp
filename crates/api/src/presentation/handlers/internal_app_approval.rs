@@ -1,7 +1,7 @@
-//! web が呼ぶ「アプリで続ける」と認証アプリの鍵の口（`/internal/app-approval/*`・
-//! `/internal/account/app-approver/*`。task #892。ADR-0077）。サービストークンの内側。
+//! Endpoints called by web for "continue with the app" and authenticator app keys (`/internal/app-approval/*`,
+//! `/internal/account/app-approver/*`, task #892, ADR-0077). Behind the service token.
 //!
-//! 判定は Application 層（`AppApprovalService`）。ここは DTO の詰め替えだけを行う。
+//! Decisions are in the application layer (`AppApprovalService`). This only repacks DTOs.
 
 use crate::application::app_approval::{
     ApproverKeysOutcome, CompleteApprovalOutcome, ConfirmEnrollmentOutcome, EnrollmentViewOutcome,
@@ -25,7 +25,7 @@ use axum::Json;
 use chrono::SecondsFormat;
 use uuid::Uuid;
 
-/// 「アプリで続ける」の依頼を始める（`POST /internal/app-approval/start`）。
+/// Starts a "continue with the app" request (`POST /internal/app-approval/start`).
 pub async fn start(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -70,7 +70,7 @@ pub async fn start(
     .into_response()
 }
 
-/// アプリが開いたブラウザで完了する（`POST /internal/app-approval/complete`）。
+/// Completes in the browser opened by the app (`POST /internal/app-approval/complete`).
 pub async fn complete(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -142,7 +142,7 @@ pub async fn complete(
     .into_response()
 }
 
-/// 登録の確認の画面の中身（`POST /internal/account/app-approver/enrollment`）。
+/// Contents of the enrollment confirmation screen (`POST /internal/account/app-approver/enrollment`).
 pub async fn account_enrollment(
     State(state): State<AppState>,
     Json(req): Json<InternalAccountApproverEnrollmentRequest>,
@@ -178,7 +178,7 @@ pub async fn account_enrollment(
     .into_response()
 }
 
-/// 登録を確かめる（`POST /internal/account/app-approver/confirm`）。
+/// Confirms enrollment (`POST /internal/account/app-approver/confirm`).
 pub async fn account_confirm(
     State(state): State<AppState>,
     Json(req): Json<InternalAccountApproverEnrollmentRequest>,
@@ -213,7 +213,7 @@ pub async fn account_confirm(
     .into_response()
 }
 
-/// 「認証アプリ」の一覧（`POST /internal/account/app-approver/keys`）。
+/// List of "authenticator apps" (`POST /internal/account/app-approver/keys`).
 pub async fn account_keys(
     State(state): State<AppState>,
     Json(req): Json<InternalAccountApproverKeysRequest>,
@@ -257,7 +257,7 @@ pub async fn account_keys(
     .into_response()
 }
 
-/// 鍵を取り消す（`POST /internal/account/app-approver/keys/revoke`）。
+/// Revokes a key (`POST /internal/account/app-approver/keys/revoke`).
 pub async fn account_revoke_key(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,

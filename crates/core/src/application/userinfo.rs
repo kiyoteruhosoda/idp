@@ -1,7 +1,7 @@
-//! UserInfo のユースケース（`GET /userinfo`、設計仕様 §4.7）。
+//! UserInfo use case (`GET /userinfo`, design spec §4.7).
 //!
-//! Bearer の Access Token（JWT / `typ=at+jwt`）を検証し、scope に応じたクレームのみ返す。
-//! `exp` はクロックスキュー（±60 秒）を許容して `Clock` トレイト経由の時刻で検証する。
+//! Verifies the Bearer Access Token (JWT / `typ=at+jwt`) and returns only the claims allowed by the scope.
+//! `exp` is verified against the time from the `Clock` trait, allowing clock skew (±60 seconds).
 
 use crate::application::access_token_verification::{AccessTokenRejection, AccessTokenVerifier};
 use crate::application::dpop_proof_verification::{DpopProofFailure, DpopProofVerifier};
@@ -12,7 +12,7 @@ use crate::domain::values::Scope;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// scope に応じて返却するクレーム（設計仕様 §4.7「scope制御」）。
+/// Claims returned according to scope (design spec §4.7 "scope control").
 #[derive(Debug, serde::Serialize)]
 pub struct UserInfoClaims {
     pub sub: String,
@@ -26,12 +26,12 @@ pub struct UserInfoClaims {
     pub name: Option<String>,
 }
 
-/// `/userinfo` に来たアクセストークンと、その出し方（RFC 9449 §7。ADR-0075 決定 8）。
+/// The access token presented to `/userinfo` and how it was presented (RFC 9449 §7. ADR-0075 decision 8).
 #[derive(Debug, Clone, Copy)]
 pub enum PresentedAccessToken<'a> {
-    /// `Authorization: Bearer <token>`。
+    /// `Authorization: Bearer <token>`.
     Bearer(&'a str),
-    /// `Authorization: DPoP <token>` と `DPoP` ヘッダーの証明（無ければ `None`）。
+    /// `Authorization: DPoP <token>` and the proof from the `DPoP` header (`None` if absent).
     Dpop {
         token: &'a str,
         proof: Option<&'a str>,
@@ -40,22 +40,22 @@ pub enum PresentedAccessToken<'a> {
 
 #[derive(Debug)]
 pub enum UserInfoError {
-    /// トークン不正（署名・typ・iss・aud・exp・ユーザー状態）→ 401。
+    /// Invalid token (signature, typ, iss, aud, exp, user state) -> 401.
     InvalidToken(&'static str),
-    /// DPoP の証明が無い・正しくない → 401（`WWW-Authenticate: DPoP error="invalid_dpop_proof"`）。
+    /// DPoP proof missing or invalid -> 401 (`WWW-Authenticate: DPoP error="invalid_dpop_proof"`).
     InvalidDpopProof(&'static str),
-    /// `openid` scope を含まない → 403。
+    /// Does not include the `openid` scope -> 403.
     InsufficientScope,
     Internal(String),
 }
 
 pub struct UserInfoService {
     users: Arc<dyn UserRepository>,
-    /// アクセストークンの検証（署名・typ・iss・aud・exp・失効。`access_token_verification`）。
+    /// Access token verification (signature, typ, iss, aud, exp, revocation. `access_token_verification`).
     access_tokens: Arc<AccessTokenVerifier>,
-    /// `cnf.jkt` のあるトークンの証明（ADR-0075 決定 8）。
+    /// Proof for tokens that carry `cnf.jkt` (ADR-0075 decision 8).
     dpop: Arc<DpopProofVerifier>,
-    /// 基底 issuer。証明の `htu` と比べる `{issuer}/userinfo` を組み立てる。
+    /// Base issuer. Used to build `{issuer}/userinfo`, compared with the proof's `htu`.
     base_issuer: String,
 }
 
@@ -91,8 +91,8 @@ impl UserInfoService {
                 other => UserInfoError::InvalidToken(other.reason()),
             })?;
 
-        // DPoP（ADR-0075 決定 8）: 結び付けたトークンは `DPoP` で出し、同じ鍵の証明が要る。
-        // 結び付けていないトークンを `DPoP` で出すのも断る（出し方とトークンが食い違っている）。
+        // DPoP (ADR-0075 decision 8): a bound token must be presented with `DPoP` and needs a proof from the same key.
+        // Presenting an unbound token with `DPoP` is also refused (the presentation and the token disagree).
         match (claims.dpop_jkt(), presented) {
             (None, PresentedAccessToken::Bearer(_)) => {}
             (None, PresentedAccessToken::Dpop { .. }) => {
@@ -136,8 +136,8 @@ impl UserInfoService {
             }
         }
 
-        // `client_credentials` で発行したトークンは利用者主体ではないため `/userinfo` では使えない
-        //（G4）。`sub` はクライアント自身で、返すべき利用者クレームが存在しない。
+        // Tokens issued via `client_credentials` have no user principal, so they cannot be used at `/userinfo`
+        // (G4). `sub` is the client itself, and there are no user claims to return.
         if claims.subject_is_client() {
             return Err(UserInfoError::InvalidToken(
                 "client_credentials tokens have no end-user subject",

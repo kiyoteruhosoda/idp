@@ -1,12 +1,12 @@
-// パスキー（WebAuthn）のセルフ登録画面（SEC12 で `passkey_register.html` のインライン script から切り出し）。
-// テナントプレフィクスと表示する文言は `#passkey-register` の data 属性から読む。
+// Passkey (WebAuthn) self-registration screen (split out of the inline script in `passkey_register.html` by SEC12).
+// The tenant prefix and displayed wording are read from the data attributes of `#passkey-register`.
 //
-// **画面に出す文言は必ず data 属性から採る。** api の結果コード（`duplicate_credential` 等）を
-// そのまま出すと識別子が画面に並び、ブラウザの例外の `message` をそのまま出すと利用者の言語に
-// 関係なく英語が並ぶ。どちらもテンプレートが渡す翻訳済みの文言へ写す。
+// **Wording shown on screen always comes from data attributes.** Showing api result codes (`duplicate_credential` etc.)
+// as is puts identifiers on screen, and showing a browser exception's `message` as is shows English regardless of
+// the user's language. Both are mapped to the translated wording the template passes.
 //
-// セッションが切れた（401）ときはログイン画面へ送る。この画面に留めても、再試行のたびに同じ
-// 失敗を繰り返すだけで抜け道が無い。
+// When the session has expired (401), send the user to the login screen. Staying here would only repeat the same
+// failure on every retry with no way out.
 (function () {
   const root = document.getElementById('passkey-register');
   const btnRegister = document.getElementById('btn-register');
@@ -15,25 +15,25 @@
   if (!root || !btnRegister || !btnRetry || !nameInput) { return; }
   const messages = root.dataset;
   const tenantPrefix = messages.tenantPrefix || '';
-  // 印が付かなくても登録そのものは通す（`button-pending.js` の読み込み順が崩れたとき）。
+  // Registration itself proceeds even without the mark (when the `button-pending.js` load order is broken).
   const pending = window.idpButtonPending || { mark: function () {}, clear: function () {} };
 
-  // 押してから WebAuthn のダイアログが出るまでにはサーバ往復があり、その間ボタンは何も変わらない。
-  // 押した直後に処理中の印を付け、結果が出たところで外す。**画面を離れる経路では付けたまま
-  // にする** —— 遷移の直前に押せる見た目へ戻すと、一瞬ちらついたうえに押せてしまう。
+  // There is a server round trip between pressing and the WebAuthn dialog appearing, during which the button doesn't change.
+  // Mark it busy right after the press and remove the mark when the result is in. **Keep the mark on paths that leave
+  // the screen** -- reverting to the pressable look just before navigating flickers and lets it be pressed.
   async function doRegister() {
     pending.mark(btnRegister);
     try {
       if (await register()) { return; }
     } catch (e) {
-      // fetch の失敗（オフライン・api 停止）はここへ来る。捕まえないと Promise が
-      // 拒否されたまま終わり、ボタンが回りっぱなしで固まる。
+      // fetch failures (offline, api down) land here. If not caught, the Promise ends
+      // rejected and the button freezes, spinning forever.
       showError(messages.msgServer, e);
     }
     pending.clear(btnRegister);
   }
 
-  // 登録を進める。画面を離れたときだけ true を返す（呼び出し元が印の扱いを変える）。
+  // Proceeds with registration. Returns true only when leaving the screen (the caller handles the mark differently).
   async function register() {
     document.getElementById('step-begin').style.display = '';
     document.getElementById('step-success').style.display = 'none';
@@ -47,8 +47,8 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name })
     });
-    // 本人確認が切れていたらサーバが誘導先を返す（403）。fetch はリダイレクトを黙って追って
-    // しまうため、遷移はここで行う。
+    // If identity verification has expired the server returns where to go (403). fetch silently follows
+    // redirects, so navigation is done here.
     if (beginRes.status === 403 && await goToStepUp(beginRes)) { return true; }
     if (beginRes.status === 401) { return goToLogin(); }
     if (!beginRes.ok) { showError(messages.msgServer, beginRes.status); return false; }
@@ -95,7 +95,7 @@
       document.getElementById('step-begin').style.display = 'none';
       document.getElementById('step-success').style.display = '';
     } else {
-      // api の結果コードを翻訳済みの文言へ写す（対応表に無いコードは既定の文言に落ちる）。
+      // Map api result codes to translated wording (codes not in the table fall back to the default wording).
       showError({
         'duplicate_credential': messages.msgDuplicateCredential,
         'invalid_credential': messages.msgInvalidCredential,
@@ -105,8 +105,8 @@
     return false;
   }
 
-  // ブラウザのセレモニーが投げた例外を文言へ写す。中止・時間切れは利用者の操作なので分ける。
-  // 既に登録済みの認証器で `create()` を呼ぶと `InvalidStateError` になる（除外リストの働き）。
+  // Map exceptions thrown by the browser ceremony to wording. Cancel/timeout are user actions, so they are separate.
+  // Calling `create()` with an already-registered authenticator gives `InvalidStateError` (the exclude list at work).
   function ceremonyMessage(e) {
     if (!e) { return messages.msgFailed; }
     if (e.name === 'NotAllowedError' || e.name === 'AbortError') { return messages.msgCancelled; }
@@ -114,7 +114,7 @@
     return messages.msgFailed;
   }
 
-  // step-up が要求されたら本人確認画面へ送る。遷移できたときだけ true を返す。
+  // When step-up is required, send to the identity verification screen. Returns true only if navigation happened.
   async function goToStepUp(res) {
     let body;
     try { body = await res.clone().json(); } catch (e) { return false; }
@@ -125,13 +125,13 @@
     return false;
   }
 
-  // SSO セッションが切れている。この画面で再試行しても通らないのでログインからやり直させる。
+  // The SSO session has expired. Retrying here won't succeed, so make the user start over from login.
   function goToLogin() {
     window.location.assign(tenantPrefix + '/login');
     return true;
   }
 
-  // 画面に出すのは翻訳済みの文言だけ。原因は握り潰さず、開発者向けにコンソールへ残す。
+  // Only translated wording goes on screen. The cause is not swallowed; it is left in the console for developers.
   function showError(text, cause) {
     if (cause) { console.warn('passkey registration failed', cause); }
     document.getElementById('js-error-msg').textContent = text || messages.msgFailed || 'Registration failed';

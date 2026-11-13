@@ -1,10 +1,10 @@
-//! ログイン状態の無い人には、サインアウトで RP の一覧を返さない（task #588）。
+//! People without a signed-in state are not given the RP list on sign-out (task #588).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test rp_logout_anonymous
 //!
-//! 以前は、終えるセッションが無くてもテナントの全クライアントの front-channel URI を返していたので、
-//! Cookie を持たない誰にでも RP の一覧が見えた。
+//! It used to return the front-channel URIs of every client in the tenant even with no session to end, so
+//! anyone without a cookie could see the RP list.
 
 mod support;
 

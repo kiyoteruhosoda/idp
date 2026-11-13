@@ -1,13 +1,13 @@
-// 画面の時刻を閲覧者のタイムゾーンで描き直す（ADR-0048）。
+// Re-renders times on the screen in the viewer's time zone (ADR-0048).
 //
-// サーバは UTC のまま返し、テンプレートは
+// The server returns UTC as is, and the template emits
 //   <time class="local-time" datetime="2026-09-09T11:20:04.512345Z">2026-09-09 11:20 UTC</time>
-// の形で出す。中身の文字は「スクリプトが動かなかったときに残る値」で、ここが動けば
-// 閲覧者の時刻へ差し替わる。差し替えても `datetime` 属性は触らないので、機械が読む値
-// （コピー・支援技術）は UTC のまま残る。
+// The inner text is "the value left when the script does not run"; when this runs it is
+// replaced with the viewer's time. The `datetime` attribute is not touched, so machine-read values
+// (copying, assistive technology) stay in UTC.
 //
-// ⚠ 言語は <html lang> から取る。ブラウザの言語ではない —— 画面の言語を利用者が
-// 選んでいる（ADR-0011 の決定チェーン）のに、日付だけ別の言語で出ると読み手が混乱する。
+// ⚠ The language comes from <html lang>, not the browser language -- the user chose the screen's
+// language (ADR-0011 decision chain), and dates in a different language would confuse readers.
 (function () {
   "use strict";
 
@@ -24,14 +24,14 @@
       timeStyle: "short",
     });
   } catch (e) {
-    return; // 整形できない環境ではサーバの表記をそのまま残す
+    return; // Keep the server's rendering where formatting is unavailable
   }
 
   for (var i = 0; i < nodes.length; i++) {
     var node = nodes[i];
     var parsed = new Date(node.getAttribute("datetime"));
     if (isNaN(parsed.getTime())) {
-      continue; // 読めない値には触らない
+      continue; // Leave unreadable values alone
     }
     node.textContent = format.format(parsed);
   }

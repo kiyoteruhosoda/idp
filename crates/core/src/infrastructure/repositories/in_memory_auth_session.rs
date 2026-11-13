@@ -1,8 +1,8 @@
-//! `AuthSessionRepository` のメモリ上の実装（Application 層の単体試験用）。
+//! In-memory implementation of `AuthSessionRepository` (for Application-layer unit tests).
 //!
-//! 書き込みは sqlx 実装の UPDATE と同じ規則で行う: 変更に含まれる**旧い id の行**を探し、
-//! 記録された列だけを書き換えて新しい id に付け替える。旧い id の行が無ければ何もしない
-//! （UPDATE が 0 行に当たったのと同じ）。
+//! Writes follow the same rule as the sqlx UPDATE: find the row with the **old id** contained in the change,
+//! rewrite only the recorded columns and move it to the new id. If no row has the old id, do nothing
+//! (same as the UPDATE hitting 0 rows).
 
 use crate::domain::auth_session::{
     AuthSession, AuthSessionIdHash, AuthSessionParts, AuthenticationCompletion, HandoffExchange,
@@ -27,12 +27,12 @@ impl InMemoryAuthSessions {
         }
     }
 
-    /// 保存されている行の写し（試験の検証用）。
+    /// A copy of the stored rows (for test verification).
     pub fn rows(&self) -> Vec<AuthSession> {
         self.rows.lock().unwrap().clone()
     }
 
-    /// `previous` の行を `rewrite` で書き換える。行が無ければ `false`。
+    /// Rewrites the `previous` row with `rewrite`. `false` if there is no row.
     fn rewrite(
         &self,
         previous: &AuthSessionIdHash,

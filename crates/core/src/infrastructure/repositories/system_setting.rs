@@ -1,4 +1,4 @@
-//! `SystemSettingsRepository` の sqlx 実装（MT14）。
+//! sqlx implementation of `SystemSettingsRepository` (MT14).
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::SystemSettingsRepository;

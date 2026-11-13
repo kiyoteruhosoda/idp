@@ -1,26 +1,26 @@
-//! テナント間分離・権限境界の E2E 統合テスト（MT16、ADR-0009 §1・§3・§4・§6・§8）。
+//! E2E integration test of tenant isolation and permission boundaries (MT16; ADR-0009 §1, §3, §4, §6, §8).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test tenant_isolation
 //!
-//! MariaDB に RLS はなく、アプリ層が唯一の分離防御線であるため、negative test を必須ケースとして
-//! 検証する（ADR-0009 §8）。検証する保証:
+//! MariaDB has no RLS and the app layer is the only isolation defense, so negative tests are verified
+//! as mandatory cases (ADR-0009 §8). Guarantees verified:
 //!
-//! 1. **root は作成できるが内部を操作できない**（§1・§4・§9）: `idp.system.admin`（scope = root）は
-//!    テナントを作成できるが、作成したテナントの管理 API には一律 403。内部を操作できるのは当該
-//!    テナント scope の `idp.tenant.admin` のみ。
-//! 2. **権限境界の完全一致**（§4）: `idp.tenant.admin` の scope は当該テナントのみに及び、他テナント
-//!    （root を含む）の管理 API・システム設定・テナント作成には一律 403。`idp.system.admin` の
-//!    scope = root は DB CHECK 制約でも強制される。
-//! 3. **テナント間データ分離**（§8）: 利用者・クライアントは他テナントの管理 API から見えない
-//!    （一覧に現れない・検索/取得は 404）。
-//! 4. **ゲスト保護**（§3）: 招待トークンは本人 + 当該テナントでのみ承諾でき、監査ログに漏れない。
-//!    参加先管理者はゲストの `users` レコードを操作できず、メンバーシップ解除と scope 権限の
-//!    後始末のみ行える。HOME メンバーシップは解除できない。
-//! 5. **OIDC フローのメンバーシップ判定と issuer 分離**（§6・§8）: メンバーシップのない SSO
-//!    セッションは当該テナントのフローで未認証扱い。テナント A 発行のアクセストークンは
-//!    テナント B の `/userinfo` で拒否される（`iss` 完全一致）。ゲストはメンバーシップ承諾後に
-//!    参加先テナントのフローへ SSO で参加できる。
+//! 1. **root can create but cannot operate inside** (§1, §4, §9): `idp.system.admin` (scope = root) can
+//!    create tenants, but gets a uniform 403 on the created tenant's admin API. Only `idp.tenant.admin`
+//!    scoped to that tenant can operate inside.
+//! 2. **Exact-match permission boundary** (§4): `idp.tenant.admin`'s scope covers only its tenant, and other tenants'
+//!    (including root's) admin API, system settings and tenant creation get a uniform 403. `idp.system.admin`'s
+//!    scope = root is also enforced by a DB CHECK constraint.
+//! 3. **Data isolation between tenants** (§8): users and clients are invisible from other tenants' admin API
+//!    (absent from lists; search/fetch is 404).
+//! 4. **Guest protection** (§3): an invitation token can be accepted only by the invitee in that tenant, and does not leak into audit logs.
+//!    The host admin cannot operate on the guest's `users` record and can only remove the membership and clean up
+//!    scoped permissions. A HOME membership cannot be removed.
+//! 5. **Membership checks and issuer isolation in the OIDC flow** (§6, §8): an SSO session without membership
+//!    is treated as unauthenticated in that tenant's flow. An access token issued by tenant A is
+//!    rejected at tenant B's `/userinfo` (exact `iss` match). After accepting membership, a guest can
+//!    join the host tenant's flow via SSO.
 
 mod support;
 
@@ -39,33 +39,33 @@ async fn setup() -> Option<TestEnv> {
     support_setup("tenant isolation").await
 }
 
-/// SSO セッションを、指定テナント向けの管理トークンへ交換する（ADR-0037）。
+/// Exchanges an SSO session for an admin token for the given tenant (ADR-0037).
 ///
-/// 管理トークンは `iss` / `aud` が per-tenant issuer に固定されるため、テナントを跨いで
-/// 使い回せない。本テストの主題（テナント境界）そのものなので、交換は都度その場で行う。
+/// Admin tokens have `iss` / `aud` fixed to the per-tenant issuer, so they cannot be reused across
+/// tenants. That is the very subject of this test (tenant boundaries), so the exchange is done on the spot each time.
 async fn tok(env: &TestEnv, sso: &str, tenant_id: &str) -> String {
     exchange_admin_token(&env.app, tenant_id, sso).await
 }
 
-/// API 経由で作成したテナントと、その正式な HOME 管理者。
+/// A tenant created via the API and its proper HOME admin.
 struct CreatedTenant {
     id: String,
     admin_id: String,
-    /// HOME 管理者の SSO セッション（平文 session_id）。管理 API を叩くときは、操作対象の
-    /// テナント向けの管理トークンへ [`tok`] で交換する（管理トークンはテナント毎。ADR-0037）。
+    /// SSO session of the HOME admin (plain session_id). When calling the admin API, exchange it with [`tok`]
+    /// for an admin token for the target tenant (admin tokens are per tenant; ADR-0037).
     admin_sso: String,
 }
 
-/// テナント作成のブートストラップフローを実行し、正式な HOME 管理者を用意する（ADR-0009 §4）。手順:
-///   1. root がテナントを作成 → root が新テナントの ACTIVE GUEST 管理者になる。
-///   2. root（ブートストラップ管理者）が正式な HOME 管理者を作成する。
-///   3. その HOME 管理者へ `idp.tenant.admin` を付与する。
+/// Runs the tenant creation bootstrap flow and prepares a proper HOME admin (ADR-0009 §4). Steps:
+///   1. root creates the tenant -> root becomes an ACTIVE GUEST admin of the new tenant.
+///   2. root (the bootstrap admin) creates the proper HOME admin.
+///   3. Grant `idp.tenant.admin` to that HOME admin.
 ///
-/// 返す `admin_id`/`admin_cookie` はこの HOME 管理者のもの。作成者（root）はこの時点でも当該テナントの
-/// ゲスト管理者のまま残る（各テストは HOME 管理者の Cookie で内部を操作する。root の離脱は
-/// [`root_leaves_tenant`] を明示的に呼ぶテストでのみ行い、共有 root 行に対する DELETE 競合を避ける）。
+/// The returned `admin_id`/`admin_cookie` belong to this HOME admin. The creator (root) still remains a guest admin of
+/// the tenant at this point (each test operates inside with the HOME admin's cookie; root leaves only in tests that
+/// explicitly call [`root_leaves_tenant`], avoiding DELETE races on the shared root row).
 async fn create_tenant(env: &TestEnv, root_sso: &str, name: &str) -> CreatedTenant {
-    // 1. root がテナントを作成（root が ACTIVE GUEST + idp.tenant.admin を得る）。
+    // 1. root creates the tenant (root gets ACTIVE GUEST + idp.tenant.admin).
     let res = send(
         &env.app,
         post(
@@ -81,7 +81,7 @@ async fn create_tenant(env: &TestEnv, root_sso: &str, name: &str) -> CreatedTena
         .expect("tenant id")
         .to_string();
 
-    // 2. root（ブートストラップ管理者）が正式な HOME 管理者を作成する。
+    // 2. root (the bootstrap admin) creates the proper HOME admin.
     let admin_email = format!("owner-{}@{}.example.com", unique(), name.to_lowercase());
     let res = send(
         &env.app,
@@ -98,7 +98,7 @@ async fn create_tenant(env: &TestEnv, root_sso: &str, name: &str) -> CreatedTena
         .expect("admin id")
         .to_string();
 
-    // 3. HOME 管理者へ idp.tenant.admin を付与する。
+    // 3. Grant idp.tenant.admin to the HOME admin.
     let res = send(
         &env.app,
         post(
@@ -119,8 +119,8 @@ async fn create_tenant(env: &TestEnv, root_sso: &str, name: &str) -> CreatedTena
     }
 }
 
-/// 作成者（root）が自身のゲストメンバーシップを解除して当該テナントから離脱する（解除時に当該テナント
-/// scope の権限行も後始末される。ADR-0009 §3・§4）。離脱後は root は当該テナント内部を操作できない。
+/// The creator (root) removes its own guest membership and leaves the tenant (on removal, permission rows scoped to
+/// that tenant are also cleaned up; ADR-0009 §3, §4). After leaving, root cannot operate inside the tenant.
 async fn root_leaves_tenant(env: &TestEnv, root_sso: &str, tenant_id: &str) {
     let res = send(
         &env.app,
@@ -137,7 +137,7 @@ async fn root_leaves_tenant(env: &TestEnv, root_sso: &str, tenant_id: &str) {
     );
 }
 
-/// テナント管理者として利用者を作成し `(user_id, email)` を返す。
+/// Creates a user as tenant admin and returns `(user_id, email)`.
 async fn create_user(env: &TestEnv, admin_sso: &str, tenant_id: &str) -> (String, String) {
     let email = format!("user-{}@example.com", unique());
     let res = send(
@@ -152,28 +152,28 @@ async fn create_user(env: &TestEnv, admin_sso: &str, tenant_id: &str) -> (String
     assert_eq!(res.status(), StatusCode::CREATED, "create user");
     let created = body_json(res).await;
     let user_id = created["user_id"].as_str().expect("user id").to_string();
-    // 作った人をそのまま登場人物にするので、仮登録を外す（本人が設定を終えた、の代わり。ADR-0064）。
+    // The created person is used directly as a test actor, so remove the provisional state (in place of the user finishing setup; ADR-0064).
     support::finish_setup(&env.pool, &user_id).await;
     (user_id, email)
 }
 
-/// `openid` のみの scope の public client を登録する（同意ステップ不要）。
+/// Registers a public client with only the `openid` scope (no consent step needed).
 async fn insert_public_client(pool: &sqlx::MySqlPool, tenant_id: &str) -> String {
     support::insert_public_client(pool, tenant_id, &["openid"]).await
 }
 
-/// 保証 1: root（idp.system.admin）はテナントを作成でき、ブートストラップ中は内部を操作できるが、
-/// 自身のゲストメンバーシップを解除して離脱したあとは、作成したテナントの内部（管理 API 全般）に
-/// 一律 403 で触れない。内部を操作できるのは当該テナント scope の idp.tenant.admin のみ。
+/// Guarantee 1: root (idp.system.admin) can create tenants and operate inside during bootstrap, but after
+/// removing its own guest membership and leaving, it gets a uniform 403 on the created tenant's internals (the whole admin API).
+/// Only idp.tenant.admin scoped to that tenant can operate inside.
 #[tokio::test]
 async fn root_can_create_but_cannot_operate_inside_created_tenant() {
     let Some(env) = setup().await else { return };
     let root_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
     let tenant = create_tenant(&env, &root_sso, "Inner").await;
-    // ブートストラップ完了後、作成者（root）は自身のゲストメンバーシップを解除して離脱する。
+    // After bootstrap, the creator (root) removes its own guest membership and leaves.
     root_leaves_tenant(&env, &root_sso, &tenant.id).await;
 
-    // 離脱後の root の system 管理者は、作成した子テナントの管理 API へ一切アクセスできない（§4・§9）。
+    // After leaving, root's system admin has no access at all to the created child tenant's admin API (§4, §9).
     let forbidden_requests = vec![
         get(
             &tok(&env, &root_sso, &tenant.id).await,
@@ -223,7 +223,7 @@ async fn root_can_create_but_cannot_operate_inside_created_tenant() {
             &tok(&env, &root_sso, &tenant.id).await,
             &format!("/{}/admin/members/{}", tenant.id, tenant.admin_id),
         ),
-        // 子テナント側でのテナント作成も root にはできない（system.admin の scope は root のみ）。
+        // root cannot create tenants on the child tenant side either (system.admin's scope is root only).
         post(
             &tok(&env, &root_sso, &tenant.id).await,
             &format!("/{}/admin/tenants", tenant.id),
@@ -240,7 +240,7 @@ async fn root_can_create_but_cannot_operate_inside_created_tenant() {
         );
     }
 
-    // 当該テナントの管理者（idp.tenant.admin）は内部を操作できる。
+    // The tenant's admin (idp.tenant.admin) can operate inside.
     let res = send(
         &env.app,
         get(
@@ -255,8 +255,8 @@ async fn root_can_create_but_cannot_operate_inside_created_tenant() {
         Some(tenant.admin_id.as_str())
     );
 
-    // システム設定は idp.system.admin（scope = root）のみ: root では 200、テナント管理者は自
-    // テナントでも 403（§9）。
+    // System settings are idp.system.admin (scope = root) only: 200 on root, 403 for a tenant admin even on its
+    // own tenant (§9).
     let res = send(
         &env.app,
         get(
@@ -281,8 +281,8 @@ async fn root_can_create_but_cannot_operate_inside_created_tenant() {
     );
 }
 
-/// 保証 2・3: idp.tenant.admin の権限境界は scope テナントとの完全一致で判定され、
-/// 他テナント（root を含む）へは一律 403。データ（利用者・クライアント）も他テナントから見えない。
+/// Guarantees 2 and 3: idp.tenant.admin's permission boundary is decided by exact match with the scope tenant,
+/// and other tenants (including root) get a uniform 403. Data (users, clients) is also invisible from other tenants.
 #[tokio::test]
 async fn tenant_admin_boundary_is_exact_match_and_data_is_isolated() {
     let Some(env) = setup().await else { return };
@@ -290,7 +290,7 @@ async fn tenant_admin_boundary_is_exact_match_and_data_is_isolated() {
     let a = create_tenant(&env, &root_sso, "AlphaCo").await;
     let b = create_tenant(&env, &root_sso, "BravoCo").await;
 
-    // A の管理者は B・root の管理 API に一切アクセスできない（完全一致。祖先・兄弟は無関係。§4）。
+    // A's admin has no access at all to B's or root's admin API (exact match; ancestors and siblings are irrelevant; §4).
     let cross_tenant_requests = vec![
         get(
             &tok(&env, &a.admin_sso, &b.id).await,
@@ -336,7 +336,7 @@ async fn tenant_admin_boundary_is_exact_match_and_data_is_isolated() {
         );
     }
 
-    // データ分離: A のクライアントは B の一覧に現れない（§8）。
+    // Data isolation: A's clients do not appear in B's list (§8).
     let res = send(
         &env.app,
         post(
@@ -365,7 +365,7 @@ async fn tenant_admin_boundary_is_exact_match_and_data_is_isolated() {
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
-    // 一覧はページング付きのオブジェクト（`{clients, total, limit, offset}`）を返す（G7）。
+    // The list returns a paged object (`{clients, total, limit, offset}`) (G7).
     let b_clients = body_json(res).await;
     assert!(
         b_clients["clients"]
@@ -375,7 +375,7 @@ async fn tenant_admin_boundary_is_exact_match_and_data_is_isolated() {
             .all(|c| c["client_id"].as_str() != Some(a_client_id.as_str())),
         "tenant A's client must not appear in tenant B's list"
     );
-    // B から A のクライアントを直接取得しても 404（存在を漏らさない）。
+    // Fetching A's client directly from B is also 404 (existence is not leaked).
     let res = send(
         &env.app,
         get(
@@ -390,7 +390,7 @@ async fn tenant_admin_boundary_is_exact_match_and_data_is_isolated() {
         "cross-tenant client -> 404"
     );
 
-    // データ分離: A の利用者は B から検索・取得できない（不存在と同じ 404。§8）。
+    // Data isolation: A's users cannot be searched or fetched from B (404, same as nonexistent; §8).
     let (a_user_id, a_user_email) = create_user(&env, &a.admin_sso, &a.id).await;
     let res = send(
         &env.app,
@@ -418,7 +418,7 @@ async fn tenant_admin_boundary_is_exact_match_and_data_is_isolated() {
         StatusCode::NOT_FOUND,
         "cross-tenant get -> 404"
     );
-    // 権限の付与・参照もテナント越しには不可（対象は所属元テナント限定）。
+    // Granting and viewing permissions across tenants is also impossible (targets are limited to the home tenant).
     let res = send(
         &env.app,
         post(
@@ -434,7 +434,7 @@ async fn tenant_admin_boundary_is_exact_match_and_data_is_isolated() {
         "cross-tenant permission grant -> 404"
     );
 
-    // idp.system.admin の付与は保有者のみ（テナント管理者は自テナントでも 403。§4）。
+    // Granting idp.system.admin is for holders only (a tenant admin gets 403 even on its own tenant; §4).
     let res = send(
         &env.app,
         post(
@@ -450,7 +450,7 @@ async fn tenant_admin_boundary_is_exact_match_and_data_is_isolated() {
         "tenant admin cannot grant idp.system.admin"
     );
 
-    // DB レベルの二重防御: idp.system.admin は root 以外の scope で存在できない（CHECK 制約。§4）。
+    // DB-level double defense: idp.system.admin cannot exist in a scope other than root (CHECK constraint; §4).
     let direct_insert = sqlx::query(
         "INSERT INTO user_permissions (user_id, permission_code, tenant_id) VALUES (?, 'idp.system.admin', ?)",
     )
@@ -463,7 +463,7 @@ async fn tenant_admin_boundary_is_exact_match_and_data_is_isolated() {
         "DB CHECK must reject idp.system.admin scoped to a non-root tenant"
     );
 
-    // 利用者・クライアントが残るテナントは root でも削除できない（ON DELETE RESTRICT → 409。§1）。
+    // A tenant that still has users or clients cannot be deleted even by root (ON DELETE RESTRICT -> 409; §1).
     let res = send(
         &env.app,
         delete(
@@ -479,9 +479,9 @@ async fn tenant_admin_boundary_is_exact_match_and_data_is_isolated() {
     );
 }
 
-/// 保証 4: 招待はトークン所持 + 被招待者本人のログイン済みセッション + 当該テナントの承諾経路が
-/// すべて揃って初めて成立する。参加先管理者はゲストの users レコードに触れず、解除時は scope 権限
-/// だけが後始末される（ゲストの本体・他テナント scope は残る）。HOME は解除できない。
+/// Guarantee 4: an invitation holds only when token possession + the invitee's own logged-in session + the tenant's
+/// acceptance route all line up. The host admin cannot touch the guest's users record, and on removal only scoped
+/// permissions are cleaned up (the guest itself and other tenants' scopes remain). HOME cannot be removed.
 #[tokio::test]
 async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions() {
     let Some(env) = setup().await else { return };
@@ -489,11 +489,11 @@ async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions()
     let host = create_tenant(&env, &root_sso, "HostCo").await;
     let home = create_tenant(&env, &root_sso, "HomeCo").await;
 
-    // ゲスト候補は所属元（home）テナントの利用者。
+    // The guest candidate is a user of the home tenant.
     let (guest_id, guest_email) = create_user(&env, &home.admin_sso, &home.id).await;
     let guest_sso = create_sso_session(&env.pool, &guest_id).await;
 
-    // host の管理者が招待を作成 → トークンは応答で一度だけ返り、監査ログに漏れない（§3）。
+    // The host admin creates an invitation -> the token is returned only once in the response and does not leak into audit logs (§3).
     let res = send(
         &env.app,
         post(
@@ -515,7 +515,7 @@ async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions()
         .get::<i64, _>("c");
     assert_eq!(leaked, 0, "invitation token must not appear in audit log");
 
-    // 承諾は被招待者本人のみ（他人のセッション → 403）。
+    // Only the invitee can accept (another person's session -> 403).
     let accept_uri = format!("/{}/invitations/accept", host.id);
     let res = send(
         &env.app,
@@ -524,7 +524,7 @@ async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions()
     .await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "non-invitee -> 403");
 
-    // 承諾は当該テナントの経路のみ（別テナントの accept へ提示 → 400）。
+    // Acceptance only via that tenant's route (presenting it to another tenant's accept -> 400).
     let res = send(
         &env.app,
         cookie_post(
@@ -536,7 +536,7 @@ async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions()
     .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST, "wrong tenant -> 400");
 
-    // 本人 + 正しいテナント → 204。メンバーシップが ACTIVE / GUEST になる。
+    // The invitee + correct tenant -> 204. The membership becomes ACTIVE / GUEST.
     let res = send(
         &env.app,
         cookie_post(&guest_sso, &accept_uri, json!({ "token": token })),
@@ -553,7 +553,7 @@ async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions()
     .expect("membership row");
     assert_eq!((mtype.as_str(), mstatus.as_str()), ("GUEST", "ACTIVE"));
 
-    // トークンの再利用（リプレイ）は不可。
+    // Token reuse (replay) is not possible.
     let res = send(
         &env.app,
         cookie_post(&guest_sso, &accept_uri, json!({ "token": token })),
@@ -561,7 +561,7 @@ async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions()
     .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST, "token replay -> 400");
 
-    // ゲストはメンバー一覧に GUEST として現れる。
+    // The guest appears in the member list as GUEST.
     let res = send(
         &env.app,
         get(
@@ -571,7 +571,7 @@ async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions()
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
-    // 一覧はページング付きのオブジェクト（`{members, total, limit, offset}`）を返す（MT22）。
+    // The list returns a paged object (`{members, total, limit, offset}`) (MT22).
     let body = body_json(res).await;
     let guest_entry = body["members"]
         .as_array()
@@ -581,7 +581,7 @@ async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions()
         .expect("guest appears in member list");
     assert_eq!(guest_entry["membership_type"], "GUEST");
 
-    // 参加先管理者はゲストの users レコードへ到達できない（取得・検索とも 404。§3）。
+    // The host admin cannot reach the guest's users record (404 for both fetch and search; §3).
     let res = send(
         &env.app,
         get(
@@ -609,7 +609,7 @@ async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions()
         "guest user search -> 404"
     );
 
-    // メンバーシップだけでは管理 API に触れない（権限なし → 403）。
+    // A membership alone does not grant the admin API (no permission -> 403).
     let res = send(
         &env.app,
         get(
@@ -624,7 +624,7 @@ async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions()
         "guest without perms -> 403"
     );
 
-    // HOME メンバーシップは解除できない（§3）。
+    // A HOME membership cannot be removed (§3).
     let res = send(
         &env.app,
         delete(
@@ -635,8 +635,8 @@ async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions()
     .await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "HOME revoke -> 403");
 
-    // ゲスト解除時は host scope の権限行だけが後始末され、ゲスト本体・他 scope は残る（§3）。
-    // （scope 権限は DB 直接投入で用意する。付与 API は所属元限定のため。）
+    // On guest removal only permission rows scoped to the host are cleaned up; the guest itself and other scopes remain (§3).
+    // (Scoped permissions are inserted directly into the DB, since the grant API is limited to the home tenant.)
     sqlx::query(
         "INSERT INTO user_permissions (user_id, permission_code, tenant_id) VALUES (?, 'idp.tenant.admin', ?), (?, 'idp.tenant.admin', ?)",
     )
@@ -690,11 +690,11 @@ async fn guest_invitation_protects_user_state_and_cleans_up_scoped_permissions()
     assert_eq!(status, "ACTIVE", "guest user state untouched by host admin");
 }
 
-/// 保証 5: OIDC フローはメンバーシップ判定と per-tenant issuer で分離される。
-/// - メンバーシップのない SSO セッションは当該テナントで未認証扱い（ログインへ）。
-/// - テナント A 発行のアクセストークンはテナント B の /userinfo で拒否される（iss 完全一致）。
-/// - クライアントもテナント境界を越えて解決されない。
-/// - ゲストは承諾後、参加先テナントのフローへ SSO で参加できる。
+/// Guarantee 5: the OIDC flow is isolated by membership checks and per-tenant issuers.
+/// - An SSO session without membership is treated as unauthenticated in that tenant (goes to login).
+/// - An access token issued by tenant A is rejected at tenant B's /userinfo (exact iss match).
+/// - Clients are not resolved across tenant boundaries either.
+/// - After accepting, a guest can join the host tenant's flow via SSO.
 #[tokio::test]
 async fn oidc_flow_enforces_membership_and_per_tenant_issuer() {
     let Some(env) = setup().await else { return };
@@ -704,12 +704,12 @@ async fn oidc_flow_enforces_membership_and_per_tenant_issuer() {
     let client_a = insert_public_client(&env.pool, &a.id).await;
     let client_b = insert_public_client(&env.pool, &b.id).await;
 
-    // テナント A の利用者（HOME メンバーシップ付き）と、その SSO セッション。
+    // A user of tenant A (with HOME membership) and their SSO session.
     let (user_a, _) = create_user(&env, &a.admin_sso, &a.id).await;
     let sso_cookie = create_sso_session(&env.pool, &user_a).await;
 
-    // メンバーシップのないテナント B のフローでは未認証扱い（code は出ずログインへ。§8）。
-    // ADR-0018 決定 2: SSO 判定は /authorize（Cookie）ではなく resume（web がボディで渡す）で行う。
+    // In tenant B's flow without membership it is treated as unauthenticated (no code; goes to login; §8).
+    // Decision 2 of ADR-0018: the SSO decision is made in resume (web passes it in the body), not in /authorize (cookie).
     let res = send(
         &env.app,
         Request::builder()
@@ -726,7 +726,7 @@ async fn oidc_flow_enforces_membership_and_per_tenant_issuer() {
         "SSO session without membership must not resume in tenant B: {body}"
     );
 
-    // 所属元テナント A では SSO で code が発行される。
+    // In home tenant A, a code is issued via SSO.
     let res = send(
         &env.app,
         Request::builder()
@@ -746,7 +746,7 @@ async fn oidc_flow_enforces_membership_and_per_tenant_issuer() {
     );
     let code = query_param(&callback, "code").expect("authorization code");
 
-    // A の code を B の /token で使うと client がテナント境界で解決されず拒否される。
+    // Using A's code at B's /token is rejected because the client is not resolved across the tenant boundary.
     let res = exchange_code(&env.app, &b.id, &client_a, &code).await;
     assert_eq!(
         res.status(),
@@ -754,13 +754,13 @@ async fn oidc_flow_enforces_membership_and_per_tenant_issuer() {
         "tenant A client must not resolve in tenant B token endpoint"
     );
 
-    // 正しいテナント A の /token では交換できる。
+    // It can be exchanged at the correct tenant A's /token.
     let res = exchange_code(&env.app, &a.id, &client_a, &code).await;
     assert_eq!(res.status(), StatusCode::OK, "token exchange in tenant A");
     let tokens = body_json(res).await;
     let access_token = tokens["access_token"].as_str().unwrap().to_string();
 
-    // A 発行のアクセストークンは B の /userinfo で拒否される（iss 完全一致。§6）。
+    // An access token issued by A is rejected at B's /userinfo (exact iss match; §6).
     let res = send(
         &env.app,
         Request::builder()
@@ -775,7 +775,7 @@ async fn oidc_flow_enforces_membership_and_per_tenant_issuer() {
         StatusCode::UNAUTHORIZED,
         "tenant A access token must be rejected by tenant B userinfo"
     );
-    // A の /userinfo では受理される。
+    // It is accepted at A's /userinfo.
     let res = send(
         &env.app,
         Request::builder()
@@ -787,7 +787,7 @@ async fn oidc_flow_enforces_membership_and_per_tenant_issuer() {
     .await;
     assert_eq!(res.status(), StatusCode::OK, "tenant A userinfo accepts");
 
-    // ゲスト参加: B が user_a を招待し、本人が承諾すると B のフローに SSO で参加できる（§8）。
+    // Guest join: B invites user_a, and once the user accepts they can join B's flow via SSO (§8).
     let res = send(
         &env.app,
         post(
@@ -832,7 +832,7 @@ async fn oidc_flow_enforces_membership_and_per_tenant_issuer() {
     let callback = body["redirect_to"].as_str().unwrap().to_string();
     let code_b = query_param(&callback, "code").expect("code for tenant B");
 
-    // ゲストのトークンも B の issuer で発行され、B の /userinfo で使える。
+    // The guest's token is also issued by B's issuer and usable at B's /userinfo.
     let res = exchange_code(&env.app, &b.id, &client_b, &code_b).await;
     assert_eq!(res.status(), StatusCode::OK, "guest token exchange in B");
     let guest_tokens = body_json(res).await;
@@ -849,10 +849,10 @@ async fn oidc_flow_enforces_membership_and_per_tenant_issuer() {
     assert_eq!(res.status(), StatusCode::OK, "guest userinfo in tenant B");
 }
 
-/// 署名鍵は全テナントで 1 組なので、子テナントの管理者には触らせない（task #580）。
+/// There is one signing key set for all tenants, so child tenant admins must not touch it (task #580).
 ///
-/// 以前は口が `idp.keys:write` だけを見ていて、どの子テナントの `idp.tenant.admin` でも
-/// 全体の鍵を作る・退役・削除できた（削除すると root を含む全テナントのトークンが検証できなくなる）。
+/// Previously the route only checked `idp.keys:write`, and any child tenant's `idp.tenant.admin` could
+/// create, retire or delete the global keys (deleting would make tokens of every tenant, root included, unverifiable).
 #[tokio::test]
 async fn child_tenant_admin_cannot_touch_the_global_signing_keys() {
     let Some(env) = setup().await else { return };
@@ -897,7 +897,7 @@ async fn child_tenant_admin_cannot_touch_the_global_signing_keys() {
         .get("n");
     assert_eq!(keys_before, keys_after, "child admin must not add keys");
 
-    // 子テナントでは鍵の権限を配れない（付けても行使できない権限を残さない）。
+    // Key permissions cannot be handed out in a child tenant (do not leave permissions that cannot be exercised).
     let (user_id, _) = create_user(&env, &tenant.admin_sso, &tenant.id).await;
     let res = send(
         &env.app,
@@ -910,7 +910,7 @@ async fn child_tenant_admin_cannot_touch_the_global_signing_keys() {
     .await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "grant idp.keys:write");
 
-    // 管理コンソールの出し分け: 子テナントでは鍵の権限が「行使できる一覧」に出ない。
+    // Admin console tailoring: in a child tenant, key permissions do not appear in the "exercisable" list.
     let res = send(
         &env.app,
         get(&child, &format!("/{}/admin/whoami", tenant.id)),
@@ -928,7 +928,7 @@ async fn child_tenant_admin_cannot_touch_the_global_signing_keys() {
         "{perms:?}"
     );
 
-    // root の管理者は今までどおり扱える。
+    // root's admin can handle them as before.
     let root = tok(&env, &root_sso, &env.root_tenant_id).await;
     let res = send(
         &env.app,

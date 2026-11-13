@@ -1,8 +1,8 @@
-//! `AuthorizationCodeRepository` の sqlx 実装。
+//! sqlx implementation of `AuthorizationCodeRepository`.
 //!
-//! one-time 消費は `UPDATE ... WHERE used_at IS NULL AND expires_at > ?` の affected rows で
-//! 原子的に判定する（設計仕様 §3.5。MariaDB 10.11 は UPDATE ... RETURNING 非対応のため、
-//! 消費成功時のみ続けて SELECT する）。
+//! One-time consumption is decided atomically by the affected rows of `UPDATE ... WHERE used_at IS NULL AND expires_at > ?`
+//! (design spec §3.5. MariaDB 10.11 doesn't support UPDATE ... RETURNING, so
+//! a SELECT follows only when consumption succeeds).
 
 use crate::domain::auth_session::Authentication;
 use crate::domain::authorization_code::{
@@ -30,7 +30,7 @@ impl SqlxAuthorizationCodeRepository {
         Self { pool }
     }
 
-    /// 期限切れ行の掃除（`expired_records` の `ExpiringRecordStore` 実装）が使う。
+    /// Used by expired-row cleanup (the `ExpiringRecordStore` implementation in `expired_records`).
     pub(super) fn pool(&self) -> &Db {
         &self.pool
     }
@@ -52,7 +52,7 @@ fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
 fn map_row(row: &MySqlRow) -> Result<AuthorizationCode> {
     let tenant_id: String = row.try_get("tenant_id").map_err(repo_err)?;
     let user_id: String = row.try_get("user_id").map_err(repo_err)?;
-    // MariaDB の JSON カラムは sqlx では BLOB として返るため、バイト列で受けて parse する。
+    // MariaDB JSON columns come back as BLOB in sqlx, so receive bytes and parse.
     let scope: Vec<u8> = row.try_get("scope").map_err(repo_err)?;
     let ccm: String = row.try_get("code_challenge_method").map_err(repo_err)?;
     let used_at: Option<NaiveDateTime> = row.try_get("used_at").map_err(repo_err)?;
@@ -154,7 +154,7 @@ impl AuthorizationCodeRepository for SqlxAuthorizationCodeRepository {
         tenant_id: TenantId,
         hash: &AuthorizationCodeHash,
     ) -> Result<Option<AuthorizationCode>> {
-        // `used_at IS NOT NULL` に限る（未消費・期限切れは「再利用」ではない。SEC8）。
+        // Limited to `used_at IS NOT NULL` (unconsumed or expired is not "reuse"; SEC8).
         let sql = format!(
             "SELECT {SELECT_COLUMNS} FROM authorization_codes \
              WHERE code_hash = ? AND tenant_id = ? AND used_at IS NOT NULL"

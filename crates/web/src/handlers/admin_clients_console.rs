@@ -1,9 +1,9 @@
-//! クライアント（RP）管理のサーバレンダリング画面（web。ADR-0007 §4）。
+//! Server-rendered screens for client (RP) management (web. ADR-0007 §4).
 //!
-//! api の JSON 管理 API（`/admin/clients*`、`RequirePerms<IdpAdmin>`）を管理者の SSO Cookie 転送で呼び、
-//! 結果を HTML に描画する。認可・データ操作・監査は api 側。web は画面と CSRF（`console_csrf_token`）のみ。
-//! HTML の描画は Askama テンプレート（`templates/console/`）で行い、利用者入力は自動エスケープされる。
-//! `client_secret` は作成・再発行時にその画面でのみ平文表示する。
+//! Calls the api's JSON admin APIs (`/admin/clients*`, `RequirePerms<IdpAdmin>`) by forwarding the admin's SSO cookie and
+//! renders the results as HTML. Authorization, data operations and auditing are on the api side; web only has screens and CSRF (`console_csrf_token`).
+//! HTML is rendered with Askama templates (`templates/console/`), and user input is auto-escaped.
+//! `client_secret` is shown in plaintext only on the screen at creation/reissue.
 
 use super::locale;
 use crate::admin_dto::{ClientCreatedView, ClientListView, ClientView};
@@ -31,17 +31,16 @@ use serde_json::json;
 
 const CLIENTS_SEGMENT: &str = "/admin/clients";
 
-/// 登録の系統（ADR-0038）。**同じ `clients` テーブルの行を、用途で 2 つの画面へ振り分ける。**
+/// Registration lineage (ADR-0038). **Rows of the same `clients` table are routed to two screens by purpose.**
 ///
-/// 連携先は `/admin/clients` の一覧と 1 件の画面、サービスアカウントはアカウントの一覧
-/// （`/admin/accounts?kind=service_account`）と `/admin/service-accounts/{client_id}` の画面に
-/// 置く（ADR-0065）。編集・シークレット再発行・削除・権限の経路は `/admin/clients/{client_id}/*` を
-/// 共有する。
+/// Integrations go in the `/admin/clients` list and single-item screen; service accounts go in the account list
+/// (`/admin/accounts?kind=service_account`) and the `/admin/service-accounts/{client_id}` screen
+/// (ADR-0065). Edit, secret reissue, delete and permission paths share `/admin/clients/{client_id}/*`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ClientKind {
-    /// 連携先（OIDC の RP）。`authorization_code` を持つ。
+    /// Integration (OIDC RP). Has `authorization_code`.
     RelyingParty,
-    /// サービスアカウント（機械の主体）。`client_credentials` を持つ。
+    /// Service account (a machine principal). Has `client_credentials`.
     ServiceAccount,
 }
 
@@ -60,7 +59,7 @@ impl ClientKind {
         }
     }
 
-    /// 登録済みクライアントがどちらの系統に属するか。判定は `client_credentials` の有無だけで足りる。
+    /// Which lineage a registered client belongs to. The presence of `client_credentials` alone decides it.
     fn of(client: &ClientView) -> Self {
         if is_system_client(client) {
             Self::ServiceAccount
@@ -69,7 +68,7 @@ impl ClientKind {
         }
     }
 
-    /// 用途の文字列（フォームの hidden 値）からの逆引き。未知の値は連携先へ倒す。
+    /// Reverse lookup from the purpose string (the form's hidden value). Unknown values fall back to integration.
     fn from_usage(usage: &str) -> Self {
         if usage == client_usage::SYSTEM {
             Self::ServiceAccount
@@ -78,7 +77,7 @@ impl ClientKind {
         }
     }
 
-    /// 新規登録の画面（フォームの送り先も同じ）。
+    /// The new registration screen (also the form's submit target).
     fn new_href(self, tenant: &WebTenant) -> String {
         match self {
             Self::RelyingParty => format!("{}{CLIENTS_SEGMENT}/new", tenant.prefix()),
@@ -86,7 +85,7 @@ impl ClientKind {
         }
     }
 
-    /// 戻り先の一覧。サービスアカウントはアカウントの一覧に並ぶ（ADR-0065）。
+    /// The list to return to. Service accounts are listed in the account list (ADR-0065).
     fn list_href(self, tenant: &WebTenant) -> String {
         match self {
             Self::RelyingParty => format!("{}{CLIENTS_SEGMENT}", tenant.prefix()),
@@ -97,7 +96,7 @@ impl ClientKind {
     }
 }
 
-/// 各ハンドラ冒頭の共通前処理: 管理者を解決し、user_id を返すか誘導 Response を返す。
+/// Common preprocessing at the start of each handler: resolves the admin and returns the user_id or a redirect Response.
 macro_rules! admin_or_return {
     ($state:expr, $correlation:expr, $tenant:expr, $headers:expr) => {
         match resolve_admin($state, $correlation, $tenant, $headers).await {
@@ -107,14 +106,14 @@ macro_rules! admin_or_return {
     };
 }
 
-// ── 一覧 ──────────────────────────────────────────────────────────────────────
+// ── List ──────────────────────────────────────────────────────────────────────
 
-/// 連携先（OIDC の RP）の一覧（`GET /{tenant_id}/admin/clients`）。
+/// List of integrations (OIDC RPs) (`GET /{tenant_id}/admin/clients`).
 ///
-/// ページングは api（DB）側で行う（G7）。web はページ位置をクエリで引き継ぎ、応答の `total` から
-/// ページャの前後リンクを組み立てるだけで、全件を受け取らない。サービスアカウントはここに並べない
-/// （アカウントの一覧に並ぶ。ADR-0065）。**絞り込みは api へ渡す** ——1 ページ受け取ってから web で
-/// 間引くと、総件数もページャも実際の件数と合わなくなる（ADR-0038）。
+/// Paging is done on the api (DB) side (G7). web carries over the page position in the query and only builds the pager's
+/// prev/next links from the response's `total`, never receiving all rows. Service accounts are not listed here
+/// (they are in the account list. ADR-0065). **Filtering is passed to the api** — receiving one page and thinning it
+/// in web would make the total and pager disagree with the actual counts (ADR-0038).
 pub async fn list(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -125,7 +124,7 @@ pub async fn list(
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
     let offset = query.offset.unwrap_or(0).max(0);
     let mut page_query = crate::pagination::page_query(offset);
-    // 両立は作れないので（ADR-0032 Revised）grant 1 つで排他に分かれる。
+    // Both together cannot be created (ADR-0032 Revised), so a single grant splits them exclusively.
     page_query.push(("grant_type", "authorization_code".to_string()));
     let result = state
         .api
@@ -138,16 +137,16 @@ pub async fn list(
     }
 }
 
-/// クライアント一覧のクエリ。ページ位置のみを引き継ぐ（絞り込みは無い）。
+/// Query of the client list. Only the page position is carried over (no filtering).
 #[derive(Debug, Default, Deserialize)]
 pub struct ListQuery {
     #[serde(default)]
     pub offset: Option<i64>,
 }
 
-// ── 新規登録フォーム ──────────────────────────────────────────────────────────
+// ── New registration form ──────────────────────────────────────────────────────────
 
-/// 連携先の新規登録フォーム（`/admin/clients/new`）。
+/// New registration form for integrations (`/admin/clients/new`).
 pub async fn new_form(
     state: State<WebState>,
     correlation: Extension<CorrelationId>,
@@ -164,7 +163,7 @@ pub async fn new_form(
     .await
 }
 
-/// サービスアカウントの新規登録フォーム（`/admin/service-accounts/new`）。
+/// New registration form for service accounts (`/admin/service-accounts/new`).
 pub async fn new_service_account_form(
     state: State<WebState>,
     correlation: Extension<CorrelationId>,
@@ -181,7 +180,7 @@ pub async fn new_service_account_form(
     .await
 }
 
-/// **用途は入口が決める**（ADR-0038）。フォームは選ばせず、hidden で持ち回る。
+/// **The entry point decides the purpose** (ADR-0038). The form offers no choice and carries it in a hidden field.
 async fn new_form_of_kind(
     kind: ClientKind,
     State(state): State<WebState>,
@@ -200,35 +199,35 @@ async fn new_form_of_kind(
     .into_response()
 }
 
-// ── 新規登録の実行 ────────────────────────────────────────────────────────────
+// ── Executing new registration ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 pub struct NewClientForm {
     pub app_name: String,
-    /// クライアント種別。システム用では入力欄を隠すため、送られてこなくても受け取れるようにする
-    /// （`client_type_for` が confidential へ寄せる。ADR-0032）。
+    /// Client type. The field is hidden for system use, so it must be accepted even when not sent
+    /// (`client_type_for` leans toward confidential. ADR-0032).
     #[serde(default)]
     pub client_type: String,
     pub redirect_uris: String,
-    /// scope はチェックボックスで受ける（受け付ける値が OIDC の 4 つに限られるため）。
-    /// チェックは「入れたときだけ送られる」ので `Option` で受ける。`openid` は必須なので
-    /// 入力欄を持たず、`selected_scopes` が必ず付ける。
+    /// Scopes are received as checkboxes (accepted values are limited to the 4 OIDC ones).
+    /// A check is "sent only when checked", so it is received as `Option`. `openid` is required, so it
+    /// has no field and `selected_scopes` always adds it.
     #[serde(default)]
     pub scope_profile: Option<String>,
     #[serde(default)]
     pub scope_email: Option<String>,
     #[serde(default)]
     pub scope_offline_access: Option<String>,
-    /// クライアントの用途（`client_usage`。ADR-0032）。api はこの値を持たないので、web が
-    /// `redirect_uris` の有無と `allow_client_credentials` へ翻訳して送る。
+    /// Client purpose (`client_usage`. ADR-0032). The api does not hold this value, so web
+    /// translates it into the presence of `redirect_uris` and `allow_client_credentials`.
     pub usage: String,
-    /// クライアント認証方式（G3）。select は confidential のときだけ描画されるため任意で受ける。
+    /// Client authentication method (G3). The select is rendered only for confidential, so it is optional.
     #[serde(default)]
     pub token_endpoint_auth_method: Option<String>,
-    /// `private_key_jwt` の検証鍵（JWK Set の JSON。ADR-0030）。同じく confidential のときだけ描画される。
+    /// Verification key for `private_key_jwt` (JWK Set JSON. ADR-0030). Likewise rendered only for confidential.
     #[serde(default)]
     pub jwks: Option<String>,
-    /// 管理者メモ（ADR-0065）。サービスアカウントの新規登録でだけ描く欄なので任意で受ける。
+    /// Admin note (ADR-0065). A field drawn only for new service account registrations, so it is optional.
     #[serde(default)]
     pub note: String,
     pub csrf_token: String,
@@ -259,7 +258,7 @@ pub async fn create(
         note: form.note.clone(),
     };
 
-    // Messages（FluentBundle）は Send でないため、api の await をまたいで保持しない（login.rs と同じ理由）。
+    // Messages (FluentBundle) is not Send, so it is not held across the api await (same reason as login.rs).
     if !console_csrf_valid_in(&headers, &form.csrf_token, state.config.csrf_secret()) {
         let messages = Messages::new(locale(&headers));
         let csrf = console_csrf_from(&headers, state.config.csrf_secret());
@@ -273,8 +272,8 @@ pub async fn create(
         ));
     }
 
-    // システム用では client_type の select を描画しないので、値が来なくても confidential
-    // として送る（public では `client_credentials` も `private_key_jwt` も成立しない）。
+    // For system use the client_type select is not rendered, so send confidential even if no value arrives
+    // (with public, neither `client_credentials` nor `private_key_jwt` can work).
     let client_type = client_type_for(&form.usage, &form.client_type);
     let body = json!({
         "app_name": form.app_name,
@@ -286,16 +285,16 @@ pub async fn create(
             &form.scope_offline_access,
         ),
         "allow_client_credentials": allows_client_credentials(&form.usage),
-        // 新規フォームは public を選んでいる間も方式・検証鍵の欄を DOM に残す（隠すだけ）。
-        // 隠れた欄も値は送信されるので、public では検証鍵を落としてから api へ渡す —— public に
-        // 鍵を送ると「この方式では登録できない」で拒まれる。方式のほうは api が public では
-        // 読まない（常に `none`）ため、そのまま渡してよい。
+        // The new form keeps the method/verification key fields in the DOM while public is selected (just hidden).
+        // Hidden fields are still submitted, so for public drop the verification key before passing to the api — sending a key
+        // with public is rejected as "cannot register with this method". The method itself is not read by the api for
+        // public (always `none`), so it can be passed as is.
         "token_endpoint_auth_method": form.token_endpoint_auth_method,
         "jwks": jwks_for_new_client(&client_type, &form.token_endpoint_auth_method, &form.jwks),
-        // メモはサービスアカウントにだけ送る（連携先に送ると api が 400 で断る。ADR-0065）。空は送らない。
+        // The note is sent only for service accounts (sending it for an integration makes the api refuse with 400. ADR-0065). Empty is not sent.
         "note": note_for_new_client(&form.usage, &form.note),
     });
-    // api のバリデーション/競合メッセージをこの画面へ出すため、決定言語を引き継ぐ（MT20）。
+    // Carry over the resolved language so the api's validation/conflict messages show on this screen (MT20).
     let result = state
         .api
         .for_locale(locale(&headers))
@@ -315,7 +314,7 @@ pub async fn create(
     }
 }
 
-// ── 詳細 ──────────────────────────────────────────────────────────────────────
+// ── Details ──────────────────────────────────────────────────────────────────────
 
 pub async fn detail(
     State(state): State<WebState>,
@@ -327,8 +326,8 @@ pub async fn detail(
 ) -> Response {
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
     let sso = sso(&headers);
-    // `Messages`（fluent バンドル）は Send ではないので、**すべての await を終えてから**組み立てる。
-    // await を跨いで持つとハンドラの future が Send でなくなり、axum の `Handler` を満たさない。
+    // `Messages` (the fluent bundle) is not Send, so build it **after all awaits are done**.
+    // Holding it across an await makes the handler's future non-Send, failing axum's `Handler`.
     let client = match state
         .api
         .get_client(&correlation.0, &tenant.0, &sso, &client_id)
@@ -345,8 +344,8 @@ pub async fn detail(
         let messages = Messages::new(locale(&headers));
         return not_found(&messages, &tenant, &admin);
     };
-    // サービスアカウントの 1 件の画面はアカウントの側にある（ADR-0065）。編集・権限の変更から
-    // ここへ戻ってきたときも、結果（`?error=`）を持ったまま送る。
+    // A service account's single-item screen is on the account side (ADR-0065). When returning here from an edit or
+    // permission change, send it there keeping the result (`?error=`).
     if is_system_client(&client) {
         let mut href = service_account_href(&tenant, &client_id);
         if let Some(error) = query.error.as_deref() {
@@ -355,8 +354,8 @@ pub async fn detail(
         return found(&href);
     }
 
-    // 管理権限（ADR-0037）。保有コードの取得に失敗したら画面ごと失敗させる —— 一覧が空なのか
-    // 読めなかったのかを取り違えると、「付いているはずの権限が無い」と誤って再付与しかねない。
+    // Admin permissions (ADR-0037). If fetching held codes fails, fail the whole screen — confusing an empty list with an
+    // unreadable one could wrongly lead to re-granting "missing" permissions that are actually there.
     let permission_codes = match state
         .api
         .list_client_permissions(&correlation.0, &tenant.0, &sso, &client_id)
@@ -368,8 +367,8 @@ pub async fn detail(
             return map_data_error(&messages, &tenant, &admin, &headers, e);
         }
     };
-    // ここへ来るのは連携先だけ（サービスアカウントは上で自分の画面へ送った）。連携先には管理トークンを
-    // 取る手段が無いので付与の候補は引かない ——保有が残っていれば剥奪だけを出す（ADR-0037）。
+    // Only integrations reach here (service accounts were sent to their own screen above). Integrations have no way to get
+    // an admin token, so grant candidates are not fetched — if any are still held, only revocation is shown (ADR-0037).
     let grantable: Vec<String> = Vec::new();
     let permissions_load_failed = false;
 
@@ -389,7 +388,7 @@ pub async fn detail(
     .into_response()
 }
 
-/// 詳細画面のクエリ。付与・剥奪の Post/Redirect/Get で戻ってきたときのエラー種別を運ぶ。
+/// Query of the details screen. Carries the error kind when returning via Post/Redirect/Get from grant/revoke.
 #[derive(Debug, Deserialize)]
 pub struct DetailQuery {
     #[serde(default)]
@@ -406,7 +405,7 @@ pub(crate) fn permission_error_key(error: &str) -> Option<&'static str> {
     }
 }
 
-// ── 管理権限の付与・剥奪（ADR-0037。Post/Redirect/Get）──────────────────────────
+// ── Granting/revoking admin permissions (ADR-0037. Post/Redirect/Get) ──────────────────────────
 
 #[derive(Debug, Deserialize)]
 pub struct PermissionForm {
@@ -500,15 +499,15 @@ async fn apply_permission_change(
         Ok(_) => found(&base),
         Err(AdminApiError::Unauthorized) => redirect_to_login(tenant),
         Err(AdminApiError::Forbidden) => forbidden_response(headers),
-        // 包括的な管理権限・未知のコードはここに来る（画面の選択肢からは出ないが、
-        // 直接 POST された場合に api が拒む。ADR-0037）。
+        // Blanket admin permissions and unknown codes end up here (they are not among the screen's options,
+        // but the api rejects them when POSTed directly. ADR-0037).
         Err(AdminApiError::Validation(_)) => found(&format!("{base}?error=code")),
         Err(AdminApiError::NotFound) => found(&format!("{base}?error=notfound")),
         Err(_) => found(&format!("{base}?error=internal")),
     }
 }
 
-// ── 編集フォーム ──────────────────────────────────────────────────────────────
+// ── Edit form ──────────────────────────────────────────────────────────────
 
 pub async fn edit_form(
     State(state): State<WebState>,
@@ -537,13 +536,13 @@ pub async fn edit_form(
     }
 }
 
-// ── 編集の実行 ────────────────────────────────────────────────────────────────
+// ── Executing the edit ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 pub struct EditClientForm {
     pub app_name: String,
     pub redirect_uris: String,
-    /// scope はチェックボックスで受ける（新規登録と同じ。`openid` は必須なので欄を持たない）。
+    /// Scopes are received as checkboxes (same as new registration; `openid` is required so it has no field).
     #[serde(default)]
     pub scope_profile: Option<String>,
     #[serde(default)]
@@ -551,13 +550,13 @@ pub struct EditClientForm {
     #[serde(default)]
     pub scope_offline_access: Option<String>,
     pub client_status: String,
-    /// クライアントの用途（`client_usage`。ADR-0032）。新規登録と同じ翻訳を通す。
+    /// Client purpose (`client_usage`. ADR-0032). Goes through the same translation as new registration.
     pub usage: String,
-    /// クライアント認証方式（G3）。confidential のときだけ送られる。
+    /// Client authentication method (G3). Sent only for confidential.
     #[serde(default)]
     pub token_endpoint_auth_method: Option<String>,
-    /// `private_key_jwt` の検証鍵（JWK Set の JSON。ADR-0030）。鍵ローテーションはこの欄の
-    /// 差し替えで行う。
+    /// Verification key for `private_key_jwt` (JWK Set JSON. ADR-0030). Key rotation is done by replacing
+    /// this field.
     #[serde(default)]
     pub jwks: Option<String>,
     pub csrf_token: String,
@@ -573,7 +572,7 @@ pub async fn update(
 ) -> Response {
     let admin = admin_or_return!(&state, &correlation, &tenant, &headers);
 
-    // 再表示に備え、現行 client を取得する（種別など読み取り専用表示のため）。ClientView は Send。
+    // Fetch the current client in case of re-display (for read-only display such as the type). ClientView is Send.
     let client = match state
         .api
         .get_client(&correlation.0, &tenant.0, &sso(&headers), &client_id)
@@ -650,14 +649,14 @@ pub async fn update(
     }
 }
 
-// ── secret 再発行 ─────────────────────────────────────────────────────────────
+// ── Secret reissue ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 pub struct CsrfForm {
     pub csrf_token: String,
 }
 
-/// クライアントを論理削除する（ADR-0035）。実体は残り、一覧から消えて認可・トークンが通らなくなる。
+/// Logically deletes a client (ADR-0035). The row remains, disappears from the list, and authorization/tokens stop working.
 pub async fn delete(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -672,8 +671,8 @@ pub async fn delete(
         let messages = Messages::new(locale(&headers));
         return bad_request_page(&messages, &tenant, &admin, "admin-error-csrf");
     }
-    // 戻り先の一覧は系統で違う（サービスアカウントはアカウントの一覧。ADR-0065）。消した後は
-    // 引けないので先に読む。読めなくても削除は進める（戻り先が連携先の一覧になるだけ）。
+    // The list to return to differs by lineage (service accounts go to the account list. ADR-0065). It cannot be looked up
+    // after deletion, so read it first. Deletion proceeds even if it cannot be read (the return just becomes the integration list).
     let kind = state
         .api
         .get_client(&correlation.0, &tenant.0, &sso(&headers), &client_id)
@@ -687,7 +686,7 @@ pub async fn delete(
         .await;
     let messages = Messages::new(locale(&headers));
     match result {
-        // 削除後は詳細ページが 404 になるので、一覧へ戻す。
+        // After deletion the details page is 404, so return to the list.
         Ok(()) => found(&kind.list_href(&tenant)),
         Err(AdminApiError::NotFound) => not_found(&messages, &tenant, &admin),
         Err(e) => map_data_error(&messages, &tenant, &admin, &headers, e),
@@ -715,7 +714,7 @@ pub async fn rotate_secret(
         .await;
     match rotated {
         Ok(secret) => {
-            // 再発行結果は詳細を取り直して表示する（ClientView は Send）。
+            // The reissue result is shown by re-fetching the details (ClientView is Send).
             let client = state
                 .api
                 .get_client(&correlation.0, &tenant.0, &sso(&headers), &client_id)
@@ -748,19 +747,19 @@ pub async fn rotate_secret(
     }
 }
 
-// ── フォームの共通表現・パース ────────────────────────────────────────────────
+// ── Shared form representation and parsing ────────────────────────────────────────────────
 
-/// 新規登録で api へ送るメモ。サービスアカウントで、空でないときだけ送る（ADR-0065）。
+/// Note sent to the api on new registration. Sent only for service accounts and only when not empty (ADR-0065).
 fn note_for_new_client(usage: &str, note: &str) -> Option<String> {
     (usage == client_usage::SYSTEM && !note.trim().is_empty()).then(|| note.to_string())
 }
 
-/// サービスアカウントの 1 件の画面（ADR-0065）。
+/// Single-item screen for a service account (ADR-0065).
 fn service_account_href(tenant: &WebTenant, client_id: &str) -> String {
     format!("{}/admin/service-accounts/{client_id}", tenant.prefix())
 }
 
-/// クエリ値の最小限のエンコード（`?error=` へ載せ直す値。英数と `-` 以外を %XX にする）。
+/// Minimal encoding of query values (values re-put into `?error=`; everything except alphanumerics and `-` becomes %XX).
 fn urlencoding(value: &str) -> String {
     value
         .bytes()
@@ -771,22 +770,22 @@ fn urlencoding(value: &str) -> String {
         .collect()
 }
 
-/// 用途が `client_credentials` を含むか（ADR-0032）。
+/// Whether the purpose includes `client_credentials` (ADR-0032).
 fn allows_client_credentials(usage: &str) -> bool {
     usage == client_usage::SYSTEM
 }
 
-/// 更新で api へ送る `allow_client_credentials`。
+/// `allow_client_credentials` sent to the api on update.
 ///
-/// ADR-0032 の猶予条項を外した 2026-08-27 以降、「両方」の姿（`client_credentials` + redirect_uri）は
-/// api が登録・更新のどちらでも拒むので、**用途は常に画面の値から一意に決まる**。以前はこの関数が
-/// `None`（＝触らない）を返して既存の両立を温存していたが、その入力が作れなくなった。
+/// Since the grace clause of ADR-0032 was removed on 2026-08-27, the "both" shape (`client_credentials` + redirect_uri) is
+/// rejected by the api on both registration and update, so **the purpose is always uniquely determined by the screen value**.
+/// This function used to return `None` (= leave alone) to preserve existing combinations, but that input can no longer be created.
 fn allow_client_credentials_update(usage: &str) -> bool {
     allows_client_credentials(usage)
 }
 
-/// 用途に応じた redirect_uri。システム用は持たないので、入力欄の残骸があっても送らない
-/// （用途を切り替えてから保存したとき、隠れた欄の値が生き残らないようにする）。
+/// redirect_uri according to the purpose. System use has none, so leftover field values are not sent
+/// (so hidden field values do not survive when saving after switching the purpose).
 fn redirect_uris_for(usage: &str, raw: &str) -> Vec<String> {
     if usage == client_usage::SYSTEM {
         Vec::new()
@@ -795,8 +794,8 @@ fn redirect_uris_for(usage: &str, raw: &str) -> Vec<String> {
     }
 }
 
-/// 用途に応じた client_type。システム用では select を描画しないため、値が来なくても
-/// confidential とする。
+/// client_type according to the purpose. For system use the select is not rendered, so it is confidential
+/// even if no value arrives.
 fn client_type_for(usage: &str, raw: &str) -> String {
     if usage == client_usage::SYSTEM {
         "confidential".to_string()
@@ -809,8 +808,8 @@ fn parse_uris(raw: &str) -> Vec<String> {
     raw.split_whitespace().map(str::to_string).collect()
 }
 
-/// 空欄（および空白のみ）は「未指定」として api へ送らない。空文字をそのまま送ると、api 側は
-/// 「値を指定した」と読んで検証に落ちる。
+/// Empty fields (and whitespace-only) are treated as "unspecified" and not sent to the api. Sending an empty string as is
+/// makes the api read it as "a value was specified" and fail validation.
 fn blank_to_none(raw: &Option<String>) -> Option<String> {
     raw.as_deref()
         .map(str::trim)
@@ -818,11 +817,11 @@ fn blank_to_none(raw: &Option<String>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// 検証鍵は `private_key_jwt` を選んでいるときだけ送る（ADR-0030）。
+/// The verification key is sent only when `private_key_jwt` is selected (ADR-0030).
 ///
-/// 編集フォームの入力欄には現在の鍵が入ったままなので、他の方式へ切り替える更新でそれを
-/// そのまま送ると、api は「鍵を指定した」と読んで `private_key_jwt` 以外では拒否する
-/// （＝画面からは方式を切り替えられなくなる）。方式に合わない値は送らない。
+/// The edit form's field still contains the current key, so sending it as is in an update switching to another method
+/// would make the api read "a key was specified" and reject it for anything but `private_key_jwt`
+/// (= the method could not be switched from the screen). Values not matching the method are not sent.
 fn jwks_for_method(method: &Option<String>, raw: &Option<String>) -> Option<String> {
     if method.as_deref() != Some("private_key_jwt") {
         return None;
@@ -830,12 +829,12 @@ fn jwks_for_method(method: &Option<String>, raw: &Option<String>) -> Option<Stri
     blank_to_none(raw)
 }
 
-/// 新規登録で api へ送る検証鍵。
+/// Verification key sent to the api on new registration.
 ///
-/// `jwks_for_method` に client type の判定を足したもの。新規フォームは public を選んでいる間も
-/// 検証鍵の欄を DOM に残す（描画をやめると、JS で confidential へ戻したときに欄が現れない）ため、
-/// public のまま送信されてきた値をここで落とす。編集フォームは public に方式・鍵の欄を出さないので
-/// この判定は要らない（client type は登録後に変えられない）。
+/// `jwks_for_method` plus the client type check. The new form keeps the verification key field in the DOM even while
+/// public is selected (if not rendered, the field would not reappear when JS switches back to confidential),
+/// so values submitted while still public are dropped here. The edit form does not show the method/key fields for public,
+/// so this check is not needed there (the client type cannot be changed after registration).
 fn jwks_for_new_client(
     client_type: &str,
     method: &Option<String>,
@@ -847,11 +846,11 @@ fn jwks_for_new_client(
     jwks_for_method(method, raw)
 }
 
-/// 入力エラーで新規登録フォームを描き直すときの認証方式。
+/// Authentication method when re-rendering the new registration form after an input error.
 ///
-/// 新規フォームの select は常に描画されるので通常は値が届くが、届かなかったときは新規フォームの
-/// 初期選択（`ClientFormValues::default_new`）・api の省略時（ADR-0036）と同じ `private_key_jwt`
-/// に揃える。3 か所が別々の既定を持つと、画面の初期表示と再描画で選択が変わる。
+/// The new form's select is always rendered so a value normally arrives, but if not, it is aligned to the same
+/// `private_key_jwt` as the new form's initial selection (`ClientFormValues::default_new`) and the api's default (ADR-0036).
+/// If the 3 places had separate defaults, the selection would change between the initial display and a re-render.
 fn auth_method_or_default(raw: &Option<String>) -> String {
     raw.as_deref()
         .filter(|s| !s.is_empty())
@@ -859,10 +858,10 @@ fn auth_method_or_default(raw: &Option<String>) -> String {
         .to_string()
 }
 
-/// チェックされた scope を、api へ送る配列にする。
+/// Turns the checked scopes into the array sent to the api.
 ///
-/// `openid` は登録時の必須項目（`validate_scopes`）なので、入力欄を持たず常に先頭へ付ける。
-/// 画面で外せる形にすると、外した瞬間に必ず 400 になる選択肢を見せることになる。
+/// `openid` is required at registration (`validate_scopes`), so it has no field and is always put first.
+/// Making it removable would show an option that always yields a 400 the moment it is removed.
 fn selected_scopes(
     profile: &Option<String>,
     email: &Option<String>,
@@ -887,7 +886,7 @@ fn sso(headers: &HeaderMap) -> String {
     cookies::get(headers, cookies::SSO_SESSION_COOKIE).unwrap_or_default()
 }
 
-// ── レンダリング ──────────────────────────────────────────────────────────────
+// ── Rendering ──────────────────────────────────────────────────────────────
 
 fn render_list(
     messages: &Messages,
@@ -1006,24 +1005,24 @@ fn render_detail(
         permission_codes,
         grantable_permissions,
         permissions_load_failed,
-        // 宛名のトークンを取れるのは `client_credentials` を使えるクライアントだけ。どの宛名を
-        // 取ってよいかはここではなく、宛名を名乗るアプリの「使う主体」で決める（ADR-0059）。
+        // Only clients that can use `client_credentials` can get tokens for an audience. Which audiences are allowed is
+        // decided not here but by the "principals" of the app claiming that audience (ADR-0059).
         shows_resources: is_system_client(client),
-        // 管理トークンを取れるのはシステム用クライアントだけ（ADR-0037）。それ以外に付けても
-        // 効かないので区画ごと出さない。ただし既に保有していれば、剥奪できるよう出す。
+        // Only system clients can get admin tokens (ADR-0037). Attaching to others would have no effect,
+        // so the whole section is hidden. However, if already held, it is shown so it can be revoked.
         shows_permissions: is_system_client(client) || !permission_codes.is_empty(),
-        // 付与フォームは剥奪と違い、システム用クライアントにしか出さない。用途を変えた後などに
-        // 権限が残っているだけのブラウザログイン用クライアントへ、効かない権限を足させない。
+        // Unlike revocation, the grant form is shown only for system clients. Do not let ineffective permissions be added to
+        // a browser-login client that merely still has permissions left after its purpose changed, etc.
         shows_grant_form: is_system_client(client),
         error_key,
         list_href: ClientKind::of(client).list_href(tenant),
     })
 }
 
-/// システム用クライアント（`client_credentials` を使える）か。管理トークン（`resource={issuer}/
-/// {tenant_id}/admin`）を取れるのはこの種別だけなので、管理権限が実際に効くのもここに限る
-/// （ADR-0037）。api 側が public クライアントに `client_credentials` を持たせないため、
-/// grant_types の有無だけで判定できる。
+/// Whether it is a system client (can use `client_credentials`). Only this kind can get admin tokens (`resource={issuer}/
+/// {tenant_id}/admin`), so admin permissions actually take effect only here
+/// (ADR-0037). The api does not let public clients have `client_credentials`, so
+/// the presence in grant_types alone decides it.
 fn is_system_client(client: &ClientView) -> bool {
     client.grant_types.iter().any(|g| g == "client_credentials")
 }
@@ -1089,9 +1088,9 @@ fn render_secret_page(
     })
 }
 
-// ── レスポンスの共通ヘルパー ──────────────────────────────────────────────────
+// ── Shared response helpers ──────────────────────────────────────────────────
 
-/// api の 401/403 を web の画面挙動へ写す（ログイン誘導 / 403 画面）。それ以外は 500。
+/// Maps the api's 401/403 to web screen behavior (lead to login / 403 screen). Anything else is 500.
 fn map_data_error(
     messages: &Messages,
     tenant: &WebTenant,
@@ -1182,7 +1181,7 @@ mod tests {
     use super::*;
     use crate::i18n::Locale;
 
-    /// 方式を切り替える更新で、入力欄に残っている鍵を送らない（送ると api が弾く）。
+    /// An update switching the method does not send the key left in the field (the api would reject it).
     #[test]
     fn the_jwks_field_is_only_sent_for_private_key_jwt() {
         let keys = Some(r#"{"keys":[]}"#.to_string());
@@ -1194,9 +1193,9 @@ mod tests {
             jwks_for_method(&Some("client_secret_basic".to_string()), &keys),
             None
         );
-        // 編集フォームで public のクライアントを開くと、方式そのものが送られない。
+        // Opening a public client in the edit form sends no method at all.
         assert_eq!(jwks_for_method(&None, &keys), None);
-        // 空欄は「未指定」。
+        // Empty means "unspecified".
         assert_eq!(
             jwks_for_method(
                 &Some("private_key_jwt".to_string()),
@@ -1206,8 +1205,8 @@ mod tests {
         );
     }
 
-    /// 新規登録では public を選んでいる間も検証鍵の欄が DOM に残る（隠れているだけ）。
-    /// 鍵を書いてから public へ切り替えた入力を、そのまま api へ送らない。
+    /// In new registration the verification key field stays in the DOM while public is selected (only hidden).
+    /// Input where a key was written and then switched to public is not sent to the api as is.
     #[test]
     fn a_new_public_client_never_carries_a_jwks() {
         let keys = Some(r#"{"keys":[]}"#.to_string());
@@ -1216,22 +1215,22 @@ mod tests {
         assert_eq!(jwks_for_new_client("confidential", &method, &keys), keys);
     }
 
-    /// ADR-0032: 画面の「用途」1 つを、api が持つ 2 つの値へ翻訳する。
+    /// ADR-0032: translates the screen's single "purpose" into the api's two values.
     #[test]
     fn usage_maps_to_the_two_values_the_api_actually_has() {
         let uris = "https://a.example.com/cb";
 
-        // 利用者ログイン: redirect_uri を持ち、client_credentials は無い。
+        // User login: has redirect_uri and no client_credentials.
         assert!(!allows_client_credentials(client_usage::USER_LOGIN));
         assert_eq!(redirect_uris_for(client_usage::USER_LOGIN, uris).len(), 1);
 
-        // システム用: client_credentials を持ち、redirect_uri は持たない。
+        // System use: has client_credentials and no redirect_uri.
         assert!(allows_client_credentials(client_usage::SYSTEM));
         assert!(redirect_uris_for(client_usage::SYSTEM, uris).is_empty());
     }
 
-    /// 用途を「システム」へ切り替えて保存したとき、隠れた入力欄の値を送らない。
-    /// （送ると api 側で `authorization_code` が付き、閉じたはずの経路が残る。）
+    /// When saving after switching the purpose to "system", hidden field values are not sent.
+    /// (Sending them would attach `authorization_code` on the api side, leaving a path that should be closed.)
     #[test]
     fn switching_to_a_system_client_drops_the_hidden_redirect_uris() {
         assert!(
@@ -1239,13 +1238,13 @@ mod tests {
         );
     }
 
-    /// 一覧の系統と、登録済みクライアントの振り分け（ADR-0038）。
+    /// List lineage and routing of registered clients (ADR-0038).
     ///
-    /// 絞り込みは api へ渡す grant で行う。ここが入れ替わると、連携先の一覧に
-    /// サービスアカウントが並ぶ。
+    /// Filtering is done by the grant passed to the api. If this were swapped, service accounts would appear
+    /// in the integration list.
     #[test]
     fn each_kind_has_its_own_list_and_entry() {
-        // サービスアカウントの一覧はアカウントの一覧（ADR-0065）。登録の入口は種別ごと。
+        // The service account list is the account list (ADR-0065). Registration entry points are per kind.
         let tenant = WebTenant("t".to_string());
         assert!(ClientKind::ServiceAccount
             .list_href(&tenant)
@@ -1257,30 +1256,30 @@ mod tests {
             .new_href(&tenant)
             .ends_with("/admin/clients/new"));
 
-        // 登録済みの 1 件は client_credentials の有無だけで系統が決まる。
+        // A registered item's lineage is decided by the presence of client_credentials alone.
         let rp = client_view(&["authorization_code"], &["https://a.example.com/cb"]);
         let sa = client_view(&["client_credentials"], &[]);
         assert!(ClientKind::of(&rp) == ClientKind::RelyingParty);
         assert!(ClientKind::of(&sa) == ClientKind::ServiceAccount);
     }
 
-    /// 新規登録フォームの用途は入口が決める（ADR-0038）。フォームには選択肢を出さない。
+    /// The purpose of the new registration form is decided by the entry point (ADR-0038). The form shows no choice.
     #[test]
     fn the_entry_point_decides_the_usage_of_a_new_client() {
         assert_eq!(ClientKind::RelyingParty.usage(), client_usage::USER_LOGIN);
         assert_eq!(ClientKind::ServiceAccount.usage(), client_usage::SYSTEM);
-        // hidden で持ち回った用途から、同じ系統へ戻れること（戻り先・action の出所）。
+        // From the purpose carried in a hidden field, it can return to the same lineage (source of the return target and action).
         assert!(ClientKind::from_usage(client_usage::SYSTEM) == ClientKind::ServiceAccount);
         assert!(ClientKind::from_usage(client_usage::USER_LOGIN) == ClientKind::RelyingParty);
-        // 未知の値は連携先へ倒す（redirect_uri の欄を消さない側）。
+        // Unknown values fall back to integration (the side that keeps the redirect_uri field).
         assert!(ClientKind::from_usage("nonsense") == ClientKind::RelyingParty);
     }
 
-    /// 用途から `allow_client_credentials` が一意に決まること（ADR-0032 Revised）。
+    /// `allow_client_credentials` is uniquely determined by the purpose (ADR-0032 Revised).
     ///
-    /// 猶予条項を外す前は、既に「両方」の姿で保存されたクライアントに限り `None`（＝触らない）を
-    /// 返していた。その姿は api が登録・更新のどちらでも拒むようになったので、**画面の用途だけで
-    /// 決まる**。ここが崩れると、用途を変えていない保存で許可が黙って変わる。
+    /// Before the grace clause was removed, it returned `None` (= leave alone) only for clients already saved in the
+    /// "both" shape. The api now rejects that shape on both registration and update, so **it is decided by the screen's purpose
+    /// alone**. If this broke, saving without changing the purpose would silently change the permission.
     #[test]
     fn the_usage_alone_decides_client_credentials() {
         assert!(!allow_client_credentials_update(client_usage::USER_LOGIN));
@@ -1305,7 +1304,7 @@ mod tests {
         }
     }
 
-    /// システム用では client_type の select を描画しないので、値が来なくても confidential にする。
+    /// For system use the client_type select is not rendered, so it is confidential even if no value arrives.
     #[test]
     fn system_clients_are_always_confidential() {
         assert_eq!(client_type_for(client_usage::SYSTEM, ""), "confidential");
@@ -1313,7 +1312,7 @@ mod tests {
             client_type_for(client_usage::SYSTEM, "public"),
             "confidential"
         );
-        // 他の用途では選ばれた値をそのまま通す。
+        // For other purposes the chosen value is passed through as is.
         assert_eq!(
             client_type_for(client_usage::USER_LOGIN, "public"),
             "public"
@@ -1333,8 +1332,8 @@ mod tests {
         assert!(parse_uris("   \n  ").is_empty());
     }
 
-    /// `openid` は入力欄を持たず常に付く。外せる形にすると、外した瞬間に必ず 400 になる
-    /// 選択肢を見せることになる（`validate_scopes` が必須としている）。
+    /// `openid` has no field and is always attached. Making it removable would show an option that always yields
+    /// a 400 the moment it is removed (`validate_scopes` requires it).
     #[test]
     fn openid_is_always_sent_and_the_rest_follow_the_checkboxes() {
         let on = || Some("on".to_string());
@@ -1381,12 +1380,12 @@ mod tests {
             &page,
             0,
         );
-        // Askama は HTML を数値文字参照でエスケープする（`<` → `&#60;`）。生タグが残らないことを確認する。
+        // Askama escapes HTML with numeric character references (`<` → `&#60;`). Verify no raw tags remain.
         assert!(html.contains("&#60;script&#62;Evil&#60;/script&#62;"));
         assert!(!html.contains("<script>Evil"));
     }
 
-    // ── 管理権限の区画（ADR-0037）─────────────────────────────────────────────
+    // ── Admin permissions section (ADR-0037) ─────────────────────────────────────────────
 
     fn detail_html(
         grant_types: &[&str],
@@ -1409,8 +1408,8 @@ mod tests {
         )
     }
 
-    /// システム用クライアント（`client_credentials`）にだけ管理権限の区画を出し、
-    /// 保有コードと付与フォームを描く。
+    /// The admin permissions section is shown only for system clients (`client_credentials`),
+    /// rendering held codes and the grant form.
     #[test]
     fn a_system_client_gets_the_management_permission_section() {
         let html = detail_html(
@@ -1425,8 +1424,8 @@ mod tests {
         assert!(html.contains("idp.audit:read"), "{html}");
     }
 
-    /// ブラウザログイン用クライアントには出さない。管理トークンを取る手段が無いので、
-    /// 付けても効かない操作を見せることになる。
+    /// Not shown for browser-login clients. They have no way to get an admin token, so it would show
+    /// operations that have no effect even when applied.
     #[test]
     fn a_browser_client_does_not_get_the_section() {
         let html = detail_html(&["authorization_code"], &[], &["idp.audit:read"], false);
@@ -1434,8 +1433,8 @@ mod tests {
         assert!(!html.contains("permissions/revoke"), "{html}");
     }
 
-    /// ただし既に保有していれば出す —— 出さないと剥奪する導線が無くなる
-    /// （用途を変えた後などに残り得る）。
+    /// However, if already held it is shown — otherwise there would be no path to revoke
+    /// (they can remain after the purpose changed, etc.).
     #[test]
     fn a_browser_client_that_still_holds_codes_can_revoke_them() {
         let html = detail_html(&["authorization_code"], &["idp.users:read"], &[], false);
@@ -1443,8 +1442,8 @@ mod tests {
         assert!(html.contains("idp.users:read"), "{html}");
     }
 
-    /// 剥奪の導線を出しても、付与フォームまでは出さない。ブラウザログイン用クライアントは
-    /// 管理トークンを取れないので、新たに付けた権限は永久に効かない（ADR-0037）。
+    /// Even when the revocation path is shown, the grant form is not. Browser-login clients
+    /// cannot get admin tokens, so newly added permissions would never take effect (ADR-0037).
     #[test]
     fn a_browser_client_holding_codes_still_cannot_be_granted_more() {
         let html = detail_html(
@@ -1458,7 +1457,7 @@ mod tests {
         assert!(!html.contains("idp.audit:read"), "{html}");
     }
 
-    /// 候補の取得に失敗したときは「候補が無い」と取り違えさせない。
+    /// When fetching candidates fails, do not let it be mistaken for "no candidates".
     #[test]
     fn a_failed_candidate_load_is_reported_as_a_failure_not_as_an_empty_list() {
         let messages = Messages::new(Locale::Ja);
@@ -1474,7 +1473,7 @@ mod tests {
         assert!(!html.contains("permissions/grant"), "{html}");
     }
 
-    /// 付与できるコードが残っていないときは、そう伝える（空の select を出さない）。
+    /// When no grantable codes remain, say so (do not show an empty select).
     #[test]
     fn nothing_left_to_grant_is_stated_plainly() {
         let messages = Messages::new(Locale::Ja);

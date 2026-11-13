@@ -1,8 +1,8 @@
-// ワンタイムリンクの受け渡し（ADR-0062）。
+// Handing over a one-time link (ADR-0062).
 //
-// 端末の共有シート（`navigator.share`）を開き、無い環境ではクリップボードへ写す。
-// ⚠ **共有シートは利用者の操作の中でしか開けない**ので、ボタンの click から直に呼ぶ。
-// ⚠ CSP が `script-src 'self'` なので、値は data 属性で受け取る（インライン JS は使えない）。
+// Opens the device share sheet (`navigator.share`), or copies to the clipboard where it is unavailable.
+// ⚠ **The share sheet can only be opened within a user action**, so call it directly from the button's click.
+// ⚠ CSP is `script-src 'self'`, so values are received via data attributes (no inline JS).
 (() => {
   const box = document.querySelector('[data-setup-link]');
   if (!box) return;
@@ -17,16 +17,16 @@
     if (status) status.textContent = text;
   };
 
-  // 共有シートを持つ端末でだけ出す（持たない環境で押せるボタンを置かない）。
+  // Show it only on devices with a share sheet (don't put a button that can be pressed where there is none).
   if (shareButton && typeof navigator.share === 'function') {
     shareButton.hidden = false;
     shareButton.addEventListener('click', async () => {
       try {
         await navigator.share({ title, url });
       } catch (error) {
-        // 利用者が共有シートを閉じただけのときは何も言わない（失敗ではない）。
+        // Say nothing when the user simply closed the share sheet (not a failure).
         if (error && error.name === 'AbortError') return;
-        // 共有できなかったときは写し取りへ倒す（本人は次の手を探さずに済む）。
+        // If sharing failed, fall back to copying (the user doesn't have to look for the next step).
         if (copyButton) copyButton.focus();
       }
     });
@@ -38,7 +38,7 @@
         await navigator.clipboard.writeText(url);
         if (copiedText) say(copiedText);
       } catch {
-        // クリップボードを断られたら、選択だけしてやる（本人が Ctrl+C で写せる）。
+        // If the clipboard is refused, just select the text (the user can copy it with Ctrl+C).
         const target = box.querySelector('[data-setup-link-text]');
         if (!target) return;
         const range = document.createRange();

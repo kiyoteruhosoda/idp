@@ -1,8 +1,8 @@
-{#- 本人へ渡すワンタイムリンク（ADR-0062）。作成の結果画面とパスワード再発行の結果画面が
-    同じ形で出す。⚠ **リンクは一度しか出ない**ので、閉じる前に渡し切ってもらう必要がある。
+{#- One-time link to hand to the person (ADR-0062). The creation result screen and the password reissue result
+    screen show it the same way. ⚠ **The link is shown only once**, so it must be handed over before closing.
 
-    渡し方を 2 つ置く ——端末の共有シート（スマホからチャットへ送る）と、写し取り。
-    共有シートしか無いと PC で詰まり、文字列しか無いとスマホで打ち写すことになる。 -#}
+    Two ways to hand it over -- the device share sheet (send from a phone to chat) and copying.
+    With only a share sheet PCs get stuck; with only a string, phones would have to retype it. -#}
 <div class="card mb-3"
      data-setup-link="{{ setup_url }}"
      data-share-title="{{ messages.get("admin-setup-link-share-title") }}"
@@ -11,7 +11,7 @@
     <p class="form-label mb-1">{{ messages.get("admin-setup-link-label") }}</p>
     <p class="text-break font-monospace small mb-2" data-setup-link-text>{{ setup_url }}</p>
     <div class="d-flex flex-wrap gap-2">
-      {#- 共有シートを持たない環境（多くの PC ブラウザ）では JS が出さないままにする。 -#}
+      {#- In environments without a share sheet (most PC browsers) JS leaves it hidden. -#}
       <button type="button" class="btn btn-primary" data-share-button hidden>
         <i class="fa-solid fa-share-nodes me-2" aria-hidden="true"></i>{{ messages.get("admin-setup-link-share") }}
       </button>

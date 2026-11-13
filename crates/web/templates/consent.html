@@ -7,9 +7,9 @@
   </div>
   <div class="card-body p-4">
     <p>{{ messages.get("consent-intro") }} <strong>{{ client_name }}</strong></p>
-    {#- 求められている範囲の明細。読める言葉を上に、実際にトークンへ載る scope 名を下へ小さく
-        置く（利用者は上だけ読めば済み、実装者は下で照合できる）。もとのチェックマークの列は
-        「全部に丸が付いている」以上のことを言っていなかった。 -#}
+    {#- Details of the requested scope. Readable words on top, the scope names actually put in the token below in
+        small type (users only need to read the top; implementers can match against the bottom). The old column of check marks
+        said nothing beyond "everything is ticked". -#}
     {% if !requested_scopes.is_empty() %}
     <ul class="grant-list">
       {% for scope in requested_scopes %}

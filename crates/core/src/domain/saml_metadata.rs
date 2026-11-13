@@ -1,20 +1,25 @@
-//! SAML メタデータ XML の解析（SP / 外部 IdP のメタデータ取り込み）と生成（自身の IdP メタデータ出力）。
+//! Parsing SAML metadata XML (importing SP / external IdP metadata) and generating it (our own IdP
+//! metadata).
 //!
-//! - 取り込み（SP）: SP（クライアント）が公開する `EntityDescriptor`（`SPSSODescriptor`）を解析し、登録に必要な
-//!   `entity_id` / `acs_url` / `x509_certificate` / NameID を抽出する。管理者の手入力を置き換える補助で、
-//!   検証（ACS URL のスキーム等）は登録ユースケース側（[`crate::domain::saml_service_provider`]）に委ねる。
-//! - 取り込み（外部 IdP）: 外部の SAML IdP が公開する `IDPSSODescriptor` を解析し、
-//!   `entity_id` / `sso_url` / 署名証明書を抽出する（AP12。[`crate::domain::external_idp`] の登録候補値）。
-//! - 出力: assay の `EntityDescriptor`（`IDPSSODescriptor`）を生成する。SP（クライアント）が assay を
-//!   信頼するために取り込むメタデータで、`.well-known/openid-configuration` の SAML 版に相当する。
+//! - Import (SP): parses the `EntityDescriptor` (`SPSSODescriptor`) published by an SP (client) and
+//!   extracts the `entity_id` / `acs_url` / `x509_certificate` / NameID needed for registration. A
+//!   helper replacing manual admin input; validation (ACS URL scheme etc.) is left to the
+//!   registration use case ([`crate::domain::saml_service_provider`]).
+//! - Import (external IdP): parses the `IDPSSODescriptor` published by an external SAML IdP and
+//!   extracts `entity_id` / `sso_url` / signing certificates (AP12; candidate values for
+//!   [`crate::domain::external_idp`]).
+//! - Output: generates assay's `EntityDescriptor` (`IDPSSODescriptor`). The metadata SPs (clients)
+//!   import to trust assay; the SAML counterpart of `.well-known/openid-configuration`.
 //!
-//! **取り込みは向きを取り違えない。** SP と IdP のメタデータは同じ `EntityDescriptor` で包まれ、
-//! 中の役割記述子（`SPSSODescriptor` / `IDPSSODescriptor`）だけが違う。役割を指定せずに読むと、
-//! IdP のメタデータを SP として（あるいはその逆で）登録でき、誤りは**利用者のログイン時**まで
-//! 表に出ない。そのため解析は役割（[`Role`]）を必ず伴い、目的の記述子が無い XML は失敗させる。
+//! **Import never confuses the direction.** SP and IdP metadata are wrapped in the same
+//! `EntityDescriptor`, differing only in the role descriptor inside (`SPSSODescriptor` /
+//! `IDPSSODescriptor`). Reading without a role would let IdP metadata be registered as an SP (or
+//! vice versa), and the mistake would not surface until **a user logs in**. So parsing always
+//! carries a role ([`Role`]), and XML without the target descriptor fails.
 //!
-//! 名前空間の接頭辞（`md:` / `saml:` 等）は実装依存のためローカル名で判定する。属性値・要素本文の
-//! アンエスケープと、出力時の属性値エスケープは `quick-xml` に委ねる（手書きのエスケープを設けない）。
+//! Namespace prefixes (`md:` / `saml:` etc.) are implementation-dependent, so local names are used.
+//! Unescaping attribute values / element text and escaping attribute values on output are left to
+//! `quick-xml` (no hand-written escaping).
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::xml_text;
@@ -22,48 +27,52 @@ use quick_xml::escape::escape;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 
-/// SAML 2.0 バインディング識別子。取り込み時の SSO URL 選好・出力時の ACS バインディングに使う。
+/// SAML 2.0 binding identifiers. Used for SSO URL preference on import and the ACS binding on
+/// output.
 const BINDING_HTTP_REDIRECT: &str = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect";
 const BINDING_HTTP_POST: &str = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST";
 
-/// SP（クライアント）メタデータから取り込んだ登録候補値。登録フォームの初期値として提示する。
+/// Candidate registration values imported from SP (client) metadata. Presented as the registration
+/// form's initial values.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportedSpMetadata {
     pub entity_id: String,
-    /// AssertionConsumerService の URL（アサーション送信先）。
+    /// URL of the AssertionConsumerService (assertion destination).
     pub acs_url: String,
-    /// 署名用証明書（`<ds:X509Certificate>` 本文。空白除去した base64）。無ければ空文字。
+    /// Signing certificate (`<ds:X509Certificate>` text; base64 with whitespace removed). Empty
+    /// string if absent.
     pub x509_certificate: String,
-    /// `NameIDFormat`（あれば先頭）。
+    /// `NameIDFormat` (the first one, if any).
     pub name_id_format: Option<String>,
-    /// `md:Organization` 由来の表示名（あれば）。
+    /// Display name from `md:Organization` (if any).
     pub display_name: Option<String>,
 }
 
-/// 外部 IdP のメタデータから取り込んだ登録候補値（AP12）。
+/// Candidate registration values imported from external IdP metadata (AP12).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportedIdpMetadata {
-    /// IdP の entityID。アサーションの `<Issuer>` と完全一致で照合する値になる。
+    /// The IdP's entityID. Becomes the value matched exactly against the assertion's `<Issuer>`.
     pub entity_id: String,
-    /// SingleSignOnService の URL（`AuthnRequest` の送信先）。
+    /// URL of the SingleSignOnService (destination of the `AuthnRequest`).
     pub sso_url: String,
-    /// 署名検証に使う証明書（空白除去した base64 DER）。**複数返す**——IdP の証明書更新期間は
-    /// 新旧 2 枚が同時に有効で、メタデータにも 2 枚並ぶ。1 枚に絞ると更新のたびにログインが止まる。
+    /// Certificates for signature verification (base64 DER with whitespace removed). **Returns
+    /// several** — during an IdP certificate rollover old and new are valid at once and both appear
+    /// in the metadata. Keeping one would stop logins at every rollover.
     pub certificates: Vec<String>,
-    /// `NameIDFormat`（あれば先頭）。
+    /// `NameIDFormat` (the first one, if any).
     pub name_id_format: Option<String>,
-    /// `md:Organization` 由来の表示名（あれば）。
+    /// Display name from `md:Organization` (if any).
     pub display_name: Option<String>,
 }
 
-/// 取り込み中に本文テキストを収集する対象。
+/// Targets whose text is collected during import.
 enum Capture {
     Certificate,
     DisplayName,
     NameIdFormat,
 }
 
-/// 取り込む役割記述子。SP と IdP でどの要素を読むかだけが違う。
+/// Role descriptor to import. SP and IdP differ only in which elements are read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Role {
     Sp,
@@ -71,7 +80,7 @@ enum Role {
 }
 
 impl Role {
-    /// 役割記述子のローカル名。
+    /// Local name of the role descriptor.
     fn descriptor(self) -> &'static str {
         match self {
             Self::Sp => "SPSSODescriptor",
@@ -79,7 +88,7 @@ impl Role {
         }
     }
 
-    /// エンドポイント要素のローカル名。
+    /// Local name of the endpoint element.
     fn endpoint(self) -> &'static str {
         match self {
             Self::Sp => "AssertionConsumerService",
@@ -87,16 +96,18 @@ impl Role {
         }
     }
 
-    /// 候補から使うエンドポイントを 1 件選ぶ。
+    /// Picks one endpoint to use from the candidates.
     ///
-    /// **IdP 側は HTTP-Redirect に限る。** ログイン開始は必ず HTTP-Redirect binding で
-    /// `AuthnRequest` を送る（[`crate::domain::saml_external_idp::redirect_binding_location`]）ため、
-    /// 他のバインディングのエンドポイントを取り込むと「登録は通るのに、ログインのたびに相手が
-    /// 受け付けない形式で送る」設定ができてしまう。誤りは**利用者のログイン時**まで表に出ない。
-    /// ここで落とせば、取り込んだ管理者がその場で気づける（手入力の道は残っている）。
+    /// **The IdP side is limited to HTTP-Redirect.** Login always starts by sending the
+    /// `AuthnRequest` with the HTTP-Redirect binding
+    /// ([`crate::domain::saml_external_idp::redirect_binding_location`]), so importing endpoints of
+    /// other bindings would allow a configuration where "registration succeeds, but every login
+    /// sends in a form the other side does not accept". The mistake would not surface until **a
+    /// user logs in**. Dropping it here lets the importing admin notice on the spot (manual input
+    /// remains available).
     ///
-    /// SP 側は POST → Redirect → 先頭の従来どおり。こちらは**相手が受け取る**側の URL で、
-    /// assay が送信方式を選べる（アサーションは POST で送る）。
+    /// The SP side stays POST → Redirect → first, as before. This is the URL on **the receiving
+    /// side**, and assay can choose how to send (assertions are sent by POST).
     fn pick_endpoint(self, candidates: &[(String, String)]) -> Option<String> {
         match self {
             Self::Sp => pick_by_binding(candidates, &[BINDING_HTTP_POST, BINDING_HTTP_REDIRECT]),
@@ -107,7 +118,7 @@ impl Role {
         }
     }
 
-    /// エンドポイントが見つからないときのメッセージ。
+    /// Message when no endpoint is found.
     fn missing_endpoint(self) -> &'static str {
         match self {
             Self::Sp => "SAML metadata is missing an SP AssertionConsumerService",
@@ -118,26 +129,29 @@ impl Role {
     }
 }
 
-/// 役割記述子から読み取った生の値。役割ごとの型（[`ImportedSpMetadata`] / [`ImportedIdpMetadata`]）へ
-/// 詰め替える前の中間表現。
+/// Raw values read from the role descriptor. An intermediate representation before repacking into
+/// per-role types ([`ImportedSpMetadata`] / [`ImportedIdpMetadata`]).
 struct ParsedEntity {
     entity_id: String,
     endpoint_url: String,
-    /// `use="signing"` が明示された証明書（出現順）。
+    /// Certificates explicitly marked `use="signing"` (in order of appearance).
     signing_certificates: Vec<String>,
-    /// `use` の無い証明書（出現順）。SAML メタデータで `use` を書かない鍵は**署名にも暗号化にも
-    /// 使える**意味なので、署名用の候補でもある。
+    /// Certificates without `use` (in order of appearance). In SAML metadata a key without `use`
+    /// **can be used for both signing and encryption**, so it is also a signing candidate.
     unspecified_certificates: Vec<String>,
     name_id_format: Option<String>,
     display_name: Option<String>,
 }
 
-/// SP（クライアント）の `EntityDescriptor`（`SPSSODescriptor`）XML を解析し、登録候補値を抽出する。
+/// Parses an SP (client) `EntityDescriptor` (`SPSSODescriptor`) XML and extracts candidate
+/// registration values.
 ///
-/// - `entityID` と ACS URL（`SPSSODescriptor/AssertionConsumerService`）は必須。欠落時は
-///   [`DomainError::InvalidValue`]。
-/// - ACS URL は HTTP-POST → HTTP-Redirect → 先頭、の優先順で 1 件を選ぶ（アサーションは POST 送信が基本）。
-/// - 証明書は `SPSSODescriptor` 内の署名用（`use="signing"` または `use` 無し）を優先して 1 件採用する。
+/// - `entityID` and the ACS URL (`SPSSODescriptor/AssertionConsumerService`) are required. If
+///   missing, [`DomainError::InvalidValue`].
+/// - One ACS URL is picked in the order HTTP-POST → HTTP-Redirect → first (assertions are normally
+///   sent by POST).
+/// - One certificate is taken, preferring signing ones in `SPSSODescriptor` (`use="signing"` or no
+///   `use`).
 pub fn parse_sp_metadata(xml: &str) -> Result<ImportedSpMetadata> {
     let parsed = parse_entity(xml, Role::Sp)?;
     Ok(ImportedSpMetadata {
@@ -154,18 +168,22 @@ pub fn parse_sp_metadata(xml: &str) -> Result<ImportedSpMetadata> {
     })
 }
 
-/// 外部 IdP の `EntityDescriptor`（`IDPSSODescriptor`）XML を解析し、登録候補値を抽出する（AP12）。
+/// Parses an external IdP's `EntityDescriptor` (`IDPSSODescriptor`) XML and extracts candidate
+/// registration values (AP12).
 ///
-/// - `entityID` と SSO URL（`IDPSSODescriptor/SingleSignOnService`）は必須。欠落時は
-///   [`DomainError::InvalidValue`]。
-/// - SSO URL は **HTTP-Redirect binding のもの**に限る（`AuthnRequest` はその形でしか送らない）。
-///   他のバインディングしか無いメタデータは取り込まない——登録は通るのにログインのたびに
-///   相手が受け付けない形式で送る設定になり、誤りが利用者のログイン時まで表に出ない。
-/// - 証明書は署名に使える鍵を**すべて**返す。`use="signing"` の明示があるものと、`use` の無いもの
-///   （SAML メタデータでは署名にも暗号化にも使える意味）を**両方**含め、`use="encryption"` だけを
-///   除く。片方に絞ると、更新期間に相手がもう一方の鍵で署名した瞬間にログインが止まる。
-/// - 証明書が 1 枚も無い XML も**ここでは失敗にしない**。必須かどうかを決めるのは登録ユースケース
-///   （[`crate::application::external_idp_management`]）であり、取り込みは「読めたものを渡す」に徹する。
+/// - `entityID` and the SSO URL (`IDPSSODescriptor/SingleSignOnService`) are required. If missing,
+///   [`DomainError::InvalidValue`].
+/// - The SSO URL is limited to **the HTTP-Redirect binding one** (`AuthnRequest` is only sent that
+///   way). Metadata with only other bindings is not imported — it would make a configuration where
+///   registration succeeds but every login sends in a form the other side does not accept, and the
+///   mistake would not surface until a user logs in.
+/// - Returns **all** keys usable for signing. Includes **both** those explicitly marked
+///   `use="signing"` and those without `use` (which in SAML metadata means usable for both signing
+///   and encryption), excluding only `use="encryption"`. Keeping only one kind would stop logins
+///   the moment the other side signs with the other key during a rollover.
+/// - XML with no certificate at all is **not a failure here**. Whether one is required is decided
+///   by the registration use case ([`crate::application::external_idp_management`]); import sticks
+///   to "passing on what could be read".
 pub fn parse_idp_metadata(xml: &str) -> Result<ImportedIdpMetadata> {
     let parsed = parse_entity(xml, Role::Idp)?;
     let certificates: Vec<String> = parsed
@@ -182,13 +200,14 @@ pub fn parse_idp_metadata(xml: &str) -> Result<ImportedIdpMetadata> {
     })
 }
 
-/// `EntityDescriptor` を 1 パスで読み、指定した役割の記述子の中だけを拾う。
+/// Reads the `EntityDescriptor` in one pass, picking up only what is inside the descriptor of the
+/// given role.
 fn parse_entity(xml: &str, role: Role) -> Result<ParsedEntity> {
     let mut reader = Reader::from_str(xml);
 
     let mut entity_id: Option<String> = None;
     let mut in_role = false;
-    // (binding, location) のエンドポイント候補。
+    // Endpoint candidates as (binding, location).
     let mut endpoints: Vec<(String, String)> = Vec::new();
     let mut key_use: Option<String> = None;
     let mut signing_certificates: Vec<String> = Vec::new();
@@ -318,15 +337,15 @@ fn parse_entity(xml: &str, role: Role) -> Result<ParsedEntity> {
     })
 }
 
-/// P-256 の曲線 URN（XMLDSIG11 `NamedCurve`）。
+/// URN of the P-256 curve (XMLDSIG11 `NamedCurve`).
 ///
-/// **曲線 URN の対応表はここが唯一の出所である。** メタデータの `KeyDescriptor` と
-/// アサーションの `KeyInfo` が同じ値を出さないと、SP は両者を突き合わせられない。
+/// **This is the only source of the curve URN mapping.** Unless the metadata's `KeyDescriptor` and
+/// the assertion's `KeyInfo` output the same value, the SP cannot match them.
 pub const NAMED_CURVE_P256: &str = "urn:oid:1.2.840.10045.3.1.7";
 const NAMED_CURVE_P384: &str = "urn:oid:1.3.132.0.34";
 const NAMED_CURVE_P521: &str = "urn:oid:1.3.132.0.35";
 
-/// JWK の `crv` を XMLDSIG11 `NamedCurve` の URN へ変換する。未対応の曲線は `None`。
+/// Converts a JWK `crv` to the XMLDSIG11 `NamedCurve` URN. `None` for unsupported curves.
 pub fn named_curve_uri(crv: &str) -> Option<&'static str> {
     match crv {
         "P-256" => Some(NAMED_CURVE_P256),
@@ -336,16 +355,17 @@ pub fn named_curve_uri(crv: &str) -> Option<&'static str> {
     }
 }
 
-/// IdP の署名鍵の公開表現（XML Signature の `KeyValue`）。現状の署名鍵基盤は X.509 証明書を持たず
-/// 生の公開鍵のみのため、`RSAKeyValue`（RS256）／`ECKeyValue`（ES256）で表現する。
+/// Public representation of the IdP's signing key (XML Signature `KeyValue`). The current signing
+/// key infrastructure has no X.509 certificates, only raw public keys, so it is expressed as
+/// `RSAKeyValue` (RS256) / `ECKeyValue` (ES256).
 pub enum IdpSigningKey {
-    /// RSA 公開鍵（XMLDSIG `RSAKeyValue`）。値は大端バイト列の base64。
+    /// RSA public key (XMLDSIG `RSAKeyValue`). Values are base64 of big-endian bytes.
     Rsa {
         modulus_b64: String,
         exponent_b64: String,
     },
-    /// EC 公開鍵（XMLDSIG11 `ECKeyValue`）。`named_curve_uri` は曲線の URN、`public_key_b64` は
-    /// 非圧縮点（`0x04 || X || Y`）の base64。
+    /// EC public key (XMLDSIG11 `ECKeyValue`). `named_curve_uri` is the curve URN, `public_key_b64`
+    /// is the base64 of the uncompressed point (`0x04 || X || Y`).
     Ec {
         named_curve_uri: String,
         public_key_b64: String,
@@ -353,14 +373,14 @@ pub enum IdpSigningKey {
 }
 
 impl IdpSigningKey {
-    /// 公開鍵そのものの XML 片（`KeyValue`）を生成する。
+    /// Generates the XML fragment of the public key itself (`KeyValue`).
     ///
-    /// **メタデータの `KeyDescriptor` と、アサーションの `KeyInfo` で同じものを使う。** 別々に
-    /// 書くと、SP が「メタデータで受け取った鍵」と「アサーションが名乗る鍵」を突き合わせられなく
-    /// なる形にいつでもずれ得る。
+    /// **The same thing is used for the metadata's `KeyDescriptor` and the assertion's `KeyInfo`.**
+    /// Writing them separately could at any time drift into a form where the SP cannot match "the
+    /// key received in metadata" with "the key the assertion claims".
     ///
-    /// 空要素タグ（`<e/>`）を使わないのは、`saml_response` が排他的正準形で XML を組み立てる
-    /// 規則に合わせるため（この片はそちらへも埋め込まれる）。
+    /// Empty-element tags (`<e/>`) are not used, to match the rule that `saml_response` builds XML
+    /// in exclusive canonical form (this fragment is embedded there too).
     pub(crate) fn to_key_value(&self) -> String {
         match self {
             IdpSigningKey::Rsa {
@@ -392,7 +412,7 @@ impl IdpSigningKey {
         }
     }
 
-    /// 署名用 `KeyDescriptor` の XML 片を生成する。
+    /// Generates the XML fragment of a signing `KeyDescriptor`.
     fn to_key_descriptor(&self) -> String {
         let key_value = self.to_key_value();
         format!(
@@ -406,21 +426,22 @@ impl IdpSigningKey {
     }
 }
 
-/// assay の SAML `EntityDescriptor`（`IDPSSODescriptor`）XML を生成する。
+/// Generates assay's SAML `EntityDescriptor` (`IDPSSODescriptor`) XML.
 ///
-/// `entity_id` は IdP のエンティティ ID（テナント issuer を用いる）、`sso_url` は SingleSignOnService の
-/// URL。SP（クライアント）はこの metadata を取り込んで assay を信頼する。
+/// `entity_id` is the IdP's entity ID (the tenant issuer is used), `sso_url` is the
+/// SingleSignOnService URL. SPs (clients) import this metadata to trust assay.
 ///
-/// # 公開中の鍵をすべて並べる（ADR-0039）
+/// # List all published keys (ADR-0039)
 ///
-/// `signing_keys` には**公開中の鍵をすべて**渡す（署名中の鍵と、まだ署名しない後継鍵、および
-/// 有効期間内の退役鍵）。SAML 2.0 のメタデータは `use="signing"` の `KeyDescriptor` を複数持てる。
-/// 1 本しか出さないと、署名が切り替わる瞬間に SP から見える証明書が入れ替わり、**取り込み直すまで
-/// 検証が落ちる** —— ADR-0039 が JWKS 側で無くした断絶が、SAML 側にだけ残る。
+/// Pass **all published keys** in `signing_keys` (the signing key, the successor not yet signing,
+/// and retired keys still within their validity). SAML 2.0 metadata can hold several
+/// `use="signing"` `KeyDescriptor`s. Emitting only one would swap the certificate SPs see the
+/// moment signing switches, and **verification fails until re-import** — the discontinuity ADR-0039
+/// removed on the JWKS side would remain only on the SAML side.
 ///
-/// **並び順は呼び出し側の責務で、署名中の鍵を先頭にする。** SP の実装には先頭の
-/// `KeyDescriptor` だけを読むものがあり、公開順（新しい鍵が先）のまま渡すと**まだ署名していない
-/// 後継鍵**を掴ませることになる。
+/// **Ordering is the caller's responsibility: the signing key goes first.** Some SP implementations
+/// read only the first `KeyDescriptor`, and passing them in publication order (newest first) would
+/// hand them **the successor key that is not signing yet**.
 pub fn build_idp_metadata_xml(
     entity_id: &str,
     sso_url: &str,
@@ -447,14 +468,14 @@ pub fn build_idp_metadata_xml(
     )
 }
 
-/// エンドポイント要素の Binding/Location を候補へ追加する（両方揃う場合のみ）。
+/// Adds an endpoint element's Binding/Location to the candidates (only when both are present).
 fn push_endpoint(e: &BytesStart, out: &mut Vec<(String, String)>) {
     if let (Some(binding), Some(location)) = (attribute(e, "Binding"), attribute(e, "Location")) {
         out.push((binding, location));
     }
 }
 
-/// `preferred` のバインディング順で URL を選び、いずれも無ければ先頭を返す。
+/// Picks a URL in the `preferred` binding order, returning the first if none match.
 fn pick_by_binding(candidates: &[(String, String)], preferred: &[&str]) -> Option<String> {
     for binding in preferred {
         if let Some((_, loc)) = candidates.iter().find(|(b, _)| b == binding) {
@@ -464,9 +485,10 @@ fn pick_by_binding(candidates: &[(String, String)], preferred: &[&str]) -> Optio
     candidates.first().map(|(_, loc)| loc.clone())
 }
 
-/// 開始/空要素のローカル名（名前空間接頭辞を除いた要素名）。
+/// Local name of a start/empty element (element name without the namespace prefix).
 fn local<'a>(e: &'a BytesStart<'a>) -> &'a str {
-    // `local_name()` の戻り値は一時値のため、ライフタイムを保つため名前バイト列から末尾を取り出す。
+    // The return value of `local_name()` is temporary, so the tail is taken from the name bytes to
+    // keep the lifetime.
     let name = e.name();
     let full = name.into_inner();
     strip_prefix(full)
@@ -477,12 +499,12 @@ fn local_end<'a>(e: &'a quick_xml::events::BytesEnd<'a>) -> &'a str {
     strip_prefix(name.into_inner())
 }
 
-/// `md:EntityDescriptor` → `EntityDescriptor` のように接頭辞を除く。
+/// Strips the prefix, e.g. `md:EntityDescriptor` → `EntityDescriptor`.
 fn strip_prefix(name: &str) -> &str {
     name.split_once(':').map_or(name, |(_, local)| local)
 }
 
-/// 属性値（ローカル名一致・アンエスケープ済み）を取り出す。
+/// Extracts an attribute value (local name match, unescaped).
 fn attribute(e: &BytesStart, name: &str) -> Option<String> {
     for attr in e.attributes().flatten() {
         if attr.key.local_name().as_ref() == name {
@@ -559,7 +581,7 @@ mod tests {
     fn parses_sp_entity_acs_cert_and_prefers_post_binding() {
         let parsed = parse_sp_metadata(SP_METADATA).expect("parse");
         assert_eq!(parsed.entity_id, "https://sp.example.test/saml/metadata");
-        // ACS は POST を優先する。
+        // ACS prefers POST.
         assert_eq!(parsed.acs_url, "https://sp.example.test/acs/post");
         assert_eq!(parsed.x509_certificate, "MIIBspCERTdata==");
         assert_eq!(
@@ -579,24 +601,25 @@ mod tests {
 
     #[test]
     fn sp_metadata_does_not_pick_idp_sso_service() {
-        // IdP メタデータ（SSO のみ・ACS 無し）を SP として取り込もうとすると失敗する。
+        // Trying to import IdP metadata (SSO only, no ACS) as an SP fails.
         assert!(parse_sp_metadata(IDP_METADATA).is_err());
     }
 
-    /// 外部 IdP のメタデータから entityID・SSO URL・署名証明書を取り込める。SSO URL は
-    /// HTTP-Redirect を優先する（`AuthnRequest` は Redirect binding で送るため）。
+    /// entityID, SSO URL, and signing certificates can be imported from external IdP metadata. The
+    /// SSO URL prefers HTTP-Redirect (because `AuthnRequest` is sent with the Redirect binding).
     #[test]
     fn parses_idp_entity_sso_and_signing_certificate() {
         let parsed = parse_idp_metadata(IDP_METADATA).expect("parse");
         assert_eq!(parsed.entity_id, "https://idp.example.test/metadata");
         assert_eq!(parsed.sso_url, "https://idp.example.test/sso/redirect");
-        // 暗号化用の証明書は署名検証に使わないので混ぜない。
+        // Encryption certificates are not used for signature verification, so they are not mixed
+        // in.
         assert_eq!(parsed.certificates, vec!["MIIBsigningCERTdata=="]);
         assert_eq!(parsed.display_name.as_deref(), Some("Example IdP"));
     }
 
-    /// 証明書更新期間のメタデータには署名用が 2 枚並ぶ。**両方**取り込めないと、
-    /// 切り替わった瞬間にログインが止まる。
+    /// Metadata during a certificate rollover lists two signing certificates. If **both** cannot be
+    /// imported, logins stop the moment it switches.
     #[test]
     fn keeps_every_signing_certificate_for_rotation() {
         let xml = r#"<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata"
@@ -612,9 +635,10 @@ mod tests {
         assert_eq!(parsed.certificates, vec!["CURRENT==", "NEXT=="]);
     }
 
-    /// `use` の無い `KeyDescriptor` は署名にも暗号化にも使える意味なので、**署名用と並べて**返す。
-    /// 明示された署名用があるからといって落とすと、更新期間に相手が `use` 無しの鍵で署名した
-    /// 瞬間にログインが止まる。`use="encryption"` だけは除く。
+    /// A `KeyDescriptor` without `use` means usable for both signing and encryption, so it is
+    /// returned **alongside the signing ones**. Dropping it just because an explicit signing one
+    /// exists would stop logins the moment the other side signs with the `use`-less key during a
+    /// rollover. Only `use="encryption"` is excluded.
     #[test]
     fn keeps_certificates_without_a_use_attribute_alongside_signing_ones() {
         let xml = r#"<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata"
@@ -632,9 +656,10 @@ mod tests {
         assert_eq!(parsed.sso_url, "https://idp.test/sso");
     }
 
-    /// **HTTP-Redirect binding の SSO しか取り込まない。** ログイン開始は必ず HTTP-Redirect で
-    /// `AuthnRequest` を送るので、他のバインディングの URL を取り込むと「登録は通るのに、
-    /// ログインのたびに相手が受け付けない形式で送る」設定ができる。取り込みの時点で落とす。
+    /// **Only SSO with the HTTP-Redirect binding is imported.** Login always starts by sending the
+    /// `AuthnRequest` with HTTP-Redirect, so importing URLs of other bindings would allow a
+    /// configuration where "registration succeeds, but every login sends in a form the other side
+    /// does not accept". It is dropped at import time.
     #[test]
     fn only_the_http_redirect_sso_endpoint_is_imported() {
         let with_both = r#"<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="urn:idp">
@@ -648,7 +673,7 @@ mod tests {
             "https://idp.test/sso/redirect"
         );
 
-        // POST しか無い・SOAP のような送れないバインディングしか無いメタデータは取り込まない。
+        // Metadata with only POST, or only unsendable bindings like SOAP, is not imported.
         for unusable in [
             r#"<SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="https://idp.test/sso"/>"#,
             r#"<SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:SOAP" Location="https://idp.test/soap"/>"#,
@@ -665,8 +690,9 @@ mod tests {
         }
     }
 
-    /// **向きを取り違えない。** SP のメタデータを外部 IdP として取り込もうとすると失敗する
-    /// （`IDPSSODescriptor` が無い）。ここを通してしまうと、誤りはログイン時まで表に出ない。
+    /// **Never confuse the direction.** Trying to import SP metadata as an external IdP fails
+    /// (there is no `IDPSSODescriptor`). Letting it through would hide the mistake until login
+    /// time.
     #[test]
     fn idp_metadata_does_not_accept_an_sp_descriptor() {
         assert!(parse_idp_metadata(SP_METADATA).is_err());
@@ -694,18 +720,18 @@ mod tests {
             std::slice::from_ref(&key),
         );
         assert!(xml.contains(r#"entityID="https://idp.example.com/tenant-1""#));
-        // IdP メタデータ（IDPSSODescriptor）であり、SP メタデータではない。
+        // It is IdP metadata (IDPSSODescriptor), not SP metadata.
         assert!(xml.contains("IDPSSODescriptor"));
         assert!(!xml.contains("SPSSODescriptor"));
         assert!(xml.contains("<md:SingleSignOnService"));
         assert!(!xml.contains("AssertionConsumerService"));
-        // 署名鍵は RSAKeyValue で埋め込まれる。
+        // The signing key is embedded as RSAKeyValue.
         assert!(xml.contains(r#"<md:KeyDescriptor use="signing">"#));
         assert!(xml.contains("<ds:Modulus>AQABmodulus==</ds:Modulus>"));
         assert!(xml.contains("<ds:Exponent>AQAB</ds:Exponent>"));
-        // クエリの `&` は属性値としてエスケープされる。
+        // The `&` in the query is escaped as an attribute value.
         assert!(xml.contains("saml/sso?x=1&amp;y=2"));
-        // 生成した XML は再パース可能（整形式）である。
+        // The generated XML is re-parsable (well-formed).
         let mut reader = Reader::from_str(&xml);
         while !matches!(reader.read_event().expect("well-formed"), Event::Eof) {}
     }
@@ -722,8 +748,8 @@ mod tests {
             std::slice::from_ref(&key),
         );
         assert!(xml.contains(r#"<md:KeyDescriptor use="signing">"#));
-        // XMLDSIG 1.1 の置き場所は `ds:KeyValue/ds11:ECKeyValue`。RSA 側と同じく `ds:KeyValue`
-        // で包まないと、`KeyInfo/KeyValue` の下だけを見る SP が EC 鍵を拾えない。
+        // XMLDSIG 1.1 places it at `ds:KeyValue/ds11:ECKeyValue`. Unless wrapped in `ds:KeyValue`
+        // like the RSA side, SPs that look only under `KeyInfo/KeyValue` cannot pick up EC keys.
         assert!(xml.contains("<ds:KeyValue>"));
         assert!(xml.contains("<ds11:ECKeyValue"));
         assert!(xml
@@ -743,10 +769,11 @@ mod tests {
         while !matches!(reader.read_event().expect("well-formed"), Event::Eof) {}
     }
 
-    /// 公開中の鍵をすべて並べる（ADR-0039 / T33）。
+    /// Lists all published keys (ADR-0039 / T33).
     ///
-    /// 1 本しか出さないと、署名が切り替わる瞬間に SP から見える証明書が入れ替わり、取り込み直す
-    /// まで検証が落ちる。ADR-0039 が JWKS 側で無くした断絶を、SAML 側にも無くすための本体。
+    /// Emitting only one would swap the certificate SPs see the moment signing switches, failing
+    /// verification until re-import. This is the core that removes, on the SAML side too, the
+    /// discontinuity ADR-0039 removed on the JWKS side.
     #[test]
     fn build_idp_metadata_lists_every_published_key_in_order() {
         let signing = IdpSigningKey::Rsa {
@@ -763,11 +790,11 @@ mod tests {
             xml.matches(r#"<md:KeyDescriptor use="signing">"#).count(),
             2
         );
-        // 渡された順にそのまま並ぶ（先頭の KeyDescriptor だけを読む SP があるため、
-        // 「署名中の鍵を先頭に」は呼び出し側が守る責務であり、ここは並べ替えない）。
+        // Listed in the given order as is (some SPs read only the first KeyDescriptor, so
+        // "signing key first" is the caller's responsibility; no reordering here).
         let first = xml.find("AAAAsigning==").expect("signing key present");
         let second = xml.find("BBBBsuccessor==").expect("successor present");
-        assert!(first < second, "渡した順序が保たれること: {xml}");
+        assert!(first < second, "the given order should be preserved: {xml}");
 
         let mut reader = Reader::from_str(&xml);
         while !matches!(reader.read_event().expect("well-formed"), Event::Eof) {}

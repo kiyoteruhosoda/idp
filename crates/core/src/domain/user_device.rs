@@ -1,20 +1,20 @@
-//! 利用者の端末（task #872。ADR-0071）。
+//! A user's devices (task #872, ADR-0071).
 //!
-//! 「自分の端末」の一覧を持ち、**それ以外の端末からのログインに気付けるようにする**ための型。
-//! 端末は、web がブラウザに置く長く残る Cookie（端末の印）で見分ける。印の平文は web とブラウザの
-//! 間だけにあり、assay は SHA-256（[`DeviceRef`]）だけを持つ。
+//! Type that holds the list of "my devices" so that **logins from other devices can be noticed**.
+//! Devices are told apart by a long-lived cookie (the device mark) that web places in the browser. The plaintext
+//! of the mark exists only between web and the browser; assay keeps only its SHA-256 ([`DeviceRef`]).
 //!
-//! # 端末の印で何が分かり、何が分からないか
+//! # What the device mark tells and what it does not
 //!
-//! 印は「同じブラウザのプロファイルから来た」ことしか示さない。Cookie を消した・シークレット
-//! ウィンドウ・別のブラウザは**新しい端末**になる。逆に、印を盗まれれば別の端末が登録済みの端末を
-//! 名乗れる（印を端末の鍵へ結び付けるのは task #875）。ここで気付けるのは、パスワードやパスキーを
-//! 盗まれて**別の端末で新しくログインされた**場合である。
+//! The mark only shows "came from the same browser profile". Clearing cookies, a private
+//! window or another browser all make a **new device**. Conversely, a stolen mark lets another device claim
+//! to be a registered one (binding the mark to a device key is task #875). What can be noticed here is the case where
+//! a password or passkey was stolen and **a new login was made from another device**.
 //!
-//! # 判定に使わないもの
+//! # What is not used for the decision
 //!
-//! ブラウザの名乗り（User-Agent）と国は表示と知らせのためだけに持つ。どちらも送る側が自由に書ける
-//! ので、「登録済みか」の判定は印だけで行う。
+//! The browser's self-description (User-Agent) and the country are kept only for display and notices. Both can be
+//! freely written by the sender, so "is it registered" is decided by the mark alone.
 
 use chrono::{DateTime, Duration, Utc};
 use uuid::Uuid;
@@ -23,32 +23,32 @@ use crate::domain::crypto;
 use crate::domain::sso_session::SsoSession;
 use crate::domain::values::AuthenticationMethod;
 
-/// 登録してから使われないまま、この日数が過ぎた端末は登録が切れる。
+/// A device that goes unused for this many days after registration has its registration expire.
 pub const UNUSED_DEVICE_EXPIRY_DAYS: i64 = 180;
 
-/// 端末を登録できるのは、パスキーで本人を確かめてからこの秒数のあいだだけ。
+/// A device can be registered only within this many seconds after verifying identity with a passkey.
 pub const REGISTRATION_PASSKEY_MAX_AGE_SECS: i64 = 300;
 
-/// ログイン状態が作られてから、端末を結び付けてよい秒数。
+/// Seconds after a login state is created during which a device may be bound to it.
 ///
-/// web はログインの応答を返すその場で結び付けを頼むので、通常は 1 秒もかからない。古いセッションへ
-/// 後から別の端末を結び付けさせない（他人のセッション id を知った者が、自分の印で上書きできない）。
+/// web requests the binding right as it returns the login response, so it normally takes under a second. Prevents
+/// binding another device to an old session later (someone who learned another's session id cannot overwrite it with their own mark).
 pub const OBSERVATION_WINDOW_SECS: i64 = 120;
 
-/// 端末の名前の長さの上限（文字数）。
+/// Maximum device name length (characters).
 pub const MAX_DEVICE_NAME_CHARS: usize = 100;
 
-/// 端末の印（Cookie の値）の平文の長さ（16 進の文字数）。web が [`crypto::random_hex`] の 32 バイトで作る。
+/// Plaintext length of the device mark (cookie value) in hex characters. web creates it from 32 bytes of [`crypto::random_hex`].
 pub const DEVICE_TOKEN_HEX_LEN: usize = 64;
 
-/// 端末の印の SHA-256（DB に置く値）。
+/// SHA-256 of the device mark (the value stored in the DB).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DeviceRef(String);
 
 impl DeviceRef {
-    /// web から届いた印の平文から作る。形が違う値（長さ・16 進以外）は受け付けない。
+    /// Built from the mark plaintext received from web. Values of the wrong shape (length, non-hex) are rejected.
     ///
-    /// ⚠ 平文は誰でも作れる乱数なので、形を確かめるのは「壊れた値や巨大な値を DB へ流さない」ためだけ。
+    /// ⚠ The plaintext is a random value anyone can make, so checking its shape is only to "keep broken or huge values out of the DB".
     pub fn from_token(token: &str) -> Option<Self> {
         let token = token.trim();
         if token.len() != DEVICE_TOKEN_HEX_LEN || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -57,7 +57,7 @@ impl DeviceRef {
         Some(Self(crypto::sha256_hex(&token.to_ascii_lowercase())))
     }
 
-    /// DB から読んだ指紋を包む。
+    /// Wraps a fingerprint read from the DB.
     pub fn from_hash(hash: String) -> Self {
         Self(hash)
     }
@@ -67,12 +67,12 @@ impl DeviceRef {
     }
 }
 
-/// 国コード（Cloudflare の `CF-IPCountry`。ISO 3166-1 alpha-2、`XX`＝不明、`T1`＝Tor）。
+/// Country code (Cloudflare `CF-IPCountry`; ISO 3166-1 alpha-2, `XX` = unknown, `T1` = Tor).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CountryCode(String);
 
 impl CountryCode {
-    /// 2 文字の英数字だけを受け付ける（大文字へ揃える）。それ以外と「不明」（`XX`）は `None`。
+    /// Accepts only 2 alphanumeric characters (upper-cased). Anything else and "unknown" (`XX`) give `None`.
     pub fn parse(raw: &str) -> Option<Self> {
         let raw = raw.trim();
         if raw.len() != 2 || !raw.bytes().all(|b| b.is_ascii_alphanumeric()) {
@@ -90,7 +90,7 @@ impl CountryCode {
     }
 }
 
-/// 名前を整える。前後の空白を落とし、空・長すぎ・制御文字入りは `None`。
+/// Normalizes a name. Trims surrounding whitespace; empty, too long or containing control characters gives `None`.
 pub fn normalize_device_name(raw: &str) -> Option<String> {
     let name = raw.trim();
     if name.is_empty()
@@ -102,7 +102,7 @@ pub fn normalize_device_name(raw: &str) -> Option<String> {
     Some(name.to_string())
 }
 
-/// 登録済みの端末。
+/// A registered device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserDevice {
     pub id: Uuid,
@@ -117,7 +117,7 @@ pub struct UserDevice {
 }
 
 impl UserDevice {
-    /// 新しく登録する端末。登録した時刻を「最後に使った時刻」とする。
+    /// A newly registered device. The registration time is used as the "last used" time.
     #[allow(clippy::too_many_arguments)]
     pub fn register(
         id: Uuid,
@@ -142,17 +142,17 @@ impl UserDevice {
         }
     }
 
-    /// 登録が切れる時刻（最後に使ってから [`UNUSED_DEVICE_EXPIRY_DAYS`] 日）。
+    /// When the registration expires ([`UNUSED_DEVICE_EXPIRY_DAYS`] days after last use).
     pub fn expires_at(&self) -> DateTime<Utc> {
         self.last_used_at + Duration::days(UNUSED_DEVICE_EXPIRY_DAYS)
     }
 }
 
-/// パスキーで本人を確かめてから [`REGISTRATION_PASSKEY_MAX_AGE_SECS`] 秒以内か。
+/// Whether within [`REGISTRATION_PASSKEY_MAX_AGE_SECS`] seconds of verifying identity with a passkey.
 ///
-/// パスキーでログインした直後（セッションの方式に `WebAuthn` があり `auth_time` が新しい）か、
-/// 後からパスキーで確かめた直後（`passkey_verified_at`）。⚠ `step_up_at` は見ない ——パスワードの
-/// 再確認でも進むので、そこからは「パスキーで確かめたか」が分からない。
+/// Either right after logging in with a passkey (the session methods include `WebAuthn` and `auth_time` is recent),
+/// or right after a later passkey verification (`passkey_verified_at`). ⚠ `step_up_at` is not consulted -- it also
+/// advances on password re-verification, so it cannot tell "was it verified with a passkey".
 pub fn passkey_verified_recently(
     session: &SsoSession,
     passkey_verified_at: Option<DateTime<Utc>>,
@@ -163,31 +163,31 @@ pub fn passkey_verified_recently(
         || passkey_verified_at.is_some_and(|at| now - at <= max_age)
 }
 
-/// この時刻より前から使われていない端末は登録が切れている。
+/// Devices not used since before this time have expired registrations.
 pub fn unused_device_cutoff(now: DateTime<Utc>) -> DateTime<Utc> {
     now - Duration::days(UNUSED_DEVICE_EXPIRY_DAYS)
 }
 
-/// ログインした端末の判定。
+/// Verdict on the device used to log in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SignInDevice {
-    /// 登録済みの端末（名前）。
+    /// A registered device (name).
     Registered { device_id: Uuid, name: String },
-    /// 登録していない端末（印はある）。
+    /// An unregistered device (has a mark).
     Unregistered,
-    /// 印が届かなかった（web が置けなかった・壊れた値）。登録していない端末として扱う。
+    /// No mark arrived (web could not set it, or the value was broken). Treated as an unregistered device.
     Unknown,
 }
 
-/// 今の要求のブラウザの端末の印（web が内部の呼び出しに添えた平文。task #916）。
+/// Device mark of the current request's browser (plaintext web attached to the internal call; task #916).
 ///
-/// 登録した端末に限る組織で、ログインを成立させてよいかを決める所（[`crate::application::device_enrollment::DeviceGate`]）
-/// が引く。要求の外（見回りなど）や、外から直接 api に来た要求では `None`。
+/// Looked up by what decides whether a login may complete in organizations limited to registered devices
+/// ([`crate::application::device_enrollment::DeviceGate`]). `None` outside a request (sweeps etc.) or for requests that hit the api directly.
 pub trait RequestDevice: Send + Sync {
     fn current(&self) -> Option<DeviceRef>;
 }
 
-/// 端末の印を持たない（試験・要求の外）。
+/// No device mark (tests, outside a request).
 pub struct NoRequestDevice;
 
 impl RequestDevice for NoRequestDevice {

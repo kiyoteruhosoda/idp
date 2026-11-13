@@ -1,17 +1,17 @@
-//! アカウント設定リンクの画面（web。ADR-0062）。
+//! Account setup link screens (web. ADR-0062).
 //!
-//! 管理者が利用者を作った・パスワードを再発行したときに渡すワンタイムリンクの着地点。
-//! 本人はまだログインしていないので、**本人性の根拠はトークンだけ**である（未ログイン経路。
-//! 忘失時のパスワード再設定と同じ立て付け）。
+//! Landing point of the one-time link handed out when an admin creates a user or reissues a password.
+//! The person is not signed in yet, so **the token is the only proof of identity** (unauthenticated path;
+//! same setup as resetting a forgotten password).
 //!
-//! - `GET /{tenant_id}/account-setup?token=...` — 何ができるかを出す。⚠ **開いただけでは
-//!   消費しない**（チャットのプレビュー bot が先に取りに来ても、リンクは生きたまま）。
-//! - `POST /{tenant_id}/account-setup` — パスワードを設定する（実体は再設定と同じ api）。
-//! - `POST /{tenant_id}/account-setup/passkey/begin|complete` — パスキーを登録する（JS から）。
-//! - `GET /{tenant_id}/account-setup/done` — 完了の表示（パスキー登録の着地点）。
+//! - `GET /{tenant_id}/account-setup?token=...` — shows what can be done. ⚠ **Merely opening it does not
+//!   consume it** (even if a chat preview bot fetches it first, the link stays alive).
+//! - `POST /{tenant_id}/account-setup` — sets the password (same api as the reset).
+//! - `POST /{tenant_id}/account-setup/passkey/begin|complete` — registers a passkey (from JS).
+//! - `GET /{tenant_id}/account-setup/done` — completion view (landing point of passkey registration).
 //!
-//! フォームに CSRF トークンを付けないのは再設定画面と同じ理由である —— セッションを持たない
-//! 画面で、実行の根拠はトークンの所持そのものであり、第三者が強制しても得られる状態変化がない。
+//! The forms carry no CSRF token for the same reason as the reset screen — the screen has no session,
+//! execution relies on possessing the token itself, and a third party forcing it gains no state change.
 
 use super::locale;
 use crate::client_ip::ClientIp;
@@ -58,7 +58,7 @@ pub struct PasskeyCompleteBody {
     pub credential: serde_json::Value,
 }
 
-/// リンクを開いた画面（`GET /{tenant_id}/account-setup`）。
+/// Screen opened from the link (`GET /{tenant_id}/account-setup`).
 pub async fn setup_page(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -66,8 +66,8 @@ pub async fn setup_page(
     headers: HeaderMap,
     Query(query): Query<SetupQuery>,
 ) -> Response {
-    // ⚠ `Messages`（fluent のバンドル）は `Send` ではないので、**api を待つ前に作らない**。
-    // 作ってしまうと await を跨いで持つことになり、ハンドラが axum に載らなくなる。
+    // ⚠ `Messages` (the fluent bundle) is not `Send`, so **do not create it before awaiting the api**.
+    // Doing so would hold it across the await, and the handler could no longer be used with axum.
     let token = query.token.unwrap_or_default();
     if token.is_empty() {
         let messages = Messages::new(locale(&headers));
@@ -112,16 +112,16 @@ pub async fn setup_page(
     }
 }
 
-/// 完了の表示（`GET /{tenant_id}/account-setup/done`）。パスキー登録の着地点。
+/// Completion view (`GET /{tenant_id}/account-setup/done`). Landing point of passkey registration.
 pub async fn done_page(Extension(tenant): Extension<WebTenant>, headers: HeaderMap) -> Response {
     let messages = Messages::new(locale(&headers));
     view(&messages, &tenant, Done, "", None, false, None)
 }
 
-/// パスワードを設定する（`POST /{tenant_id}/account-setup`）。
+/// Sets the password (`POST /{tenant_id}/account-setup`).
 ///
-/// 実体は忘失時の再設定と同じ api（同じ表のトークンなのでそのまま通る）。ポリシー検証・
-/// セッション失効・監査を二重に持たないため、専用の口は作らない。
+/// Uses the same api as the forgotten-password reset (tokens in the same table, so they pass as is). No
+/// dedicated endpoint, so policy validation, session revocation and auditing are not duplicated.
 pub async fn set_password(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -187,7 +187,7 @@ pub async fn set_password(
     }
 }
 
-/// パスキー登録の開始（`POST /{tenant_id}/account-setup/passkey/begin`）。JS から呼ぶ。
+/// Starts passkey registration (`POST /{tenant_id}/account-setup/passkey/begin`). Called from JS.
 pub async fn passkey_begin(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -217,7 +217,7 @@ pub async fn passkey_begin(
     }
 }
 
-/// パスキー登録の完了（`POST /{tenant_id}/account-setup/passkey/complete`）。JS から呼ぶ。
+/// Completes passkey registration (`POST /{tenant_id}/account-setup/passkey/complete`). Called from JS.
 pub async fn passkey_complete(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -255,7 +255,7 @@ pub async fn passkey_complete(
     }
 }
 
-/// 画面の状態。**リンクが死んでいる（`Fatal`）ときは理由を言い分けない**（ADR-0062）。
+/// Screen state. **When the link is dead (`Fatal`), the reason is not distinguished** (ADR-0062).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Stage {
     Open,

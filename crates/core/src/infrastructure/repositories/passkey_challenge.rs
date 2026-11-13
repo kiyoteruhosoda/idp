@@ -1,4 +1,4 @@
-//! `PasskeyChallengeRepository` の sqlx 実装。
+//! sqlx implementation of `PasskeyChallengeRepository`.
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::passkey_challenge::{PasskeyChallenge, PasskeyChallengeType};

@@ -1,30 +1,30 @@
-//! `authentication_methods` 列（JSON の文字列配列）の読み書き。
+//! Reading and writing the `authentication_methods` column (JSON string array).
 //!
-//! 同じ列を 4 つの表が持つ（`sso_sessions` / `auth_sessions` / `authorization_codes` /
-//! `refresh_tokens`）。表ごとに書くと、未知の値の扱いや NULL の意味が表ごとにずれる。
+//! Four tables have the same column (`sso_sessions` / `auth_sessions` / `authorization_codes` /
+//! `refresh_tokens`). Writing it per table would make the handling of unknown values and the meaning of NULL drift per table.
 //!
-//! **NULL の意味は表によって違う。** `sso_sessions` では「AP4 導入前に確立したセッション」＝
-//! 記録なしとして空配列で扱ってよいが、`authorization_codes` では記録なしと「単一要素で
-//! 認証した」を区別しなければならない（区別しないと、分からないものを `acr` で
-//! `single_factor` と名乗ってしまう）。前者は [`from_json`]、後者は [`from_json_opt`]。
+//! **The meaning of NULL differs by table.** In `sso_sessions`, "a session established before AP4" =
+//! no record, which may be treated as an empty array, but `authorization_codes` must distinguish no record from
+//! "authenticated with a single factor" (otherwise something unknown would be asserted as
+//! `single_factor` in `acr`). The former is [`from_json`], the latter [`from_json_opt`].
 
 use crate::domain::values::AuthenticationMethod;
 
-/// 認証方式の配列を JSON 文字列へ落とす（保存形式は許可値の文字列配列）。
+/// Serializes an array of authentication methods to a JSON string (stored as an array of allowed-value strings).
 pub(crate) fn to_json(methods: &[AuthenticationMethod]) -> String {
     let values: Vec<&str> = methods.iter().map(|m| m.as_str()).collect();
     serde_json::to_string(&values).unwrap_or_else(|_| "[]".to_string())
 }
 
-/// 保存済み JSON から認証方式の配列を復元する（NULL・壊れた値は空配列）。
+/// Restores an array of authentication methods from stored JSON (NULL or broken values become an empty array).
 ///
-/// 未知の値は無視する（将来の版で追加された方式を持つ行を、古い版のプロセスが読んでも
-/// 壊れないようにする）。
+/// Unknown values are ignored (so an old-version process reading a row with methods added in a newer version
+/// doesn't break).
 pub(crate) fn from_json(raw: Option<Vec<u8>>) -> Vec<AuthenticationMethod> {
     from_json_opt(raw).unwrap_or_default()
 }
 
-/// 保存済み JSON から復元する。**NULL は `None`**（記録が無いことを保つ）。
+/// Restores from stored JSON. **NULL is `None`** (preserves the absence of a record).
 pub(crate) fn from_json_opt(raw: Option<Vec<u8>>) -> Option<Vec<AuthenticationMethod>> {
     let bytes = raw?;
     let values: Vec<String> = match serde_json::from_slice(&bytes) {

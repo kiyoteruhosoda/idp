@@ -1,9 +1,9 @@
-//! JWT（RS256 / ES256）の署名と、JWKS 用の公開鍵表現。
+//! JWT (RS256 / ES256) signing and the public key representation for JWKS.
 //!
-//! - 署名: `jsonwebtoken` の `EncodingKey`（秘密鍵 PEM から）で RS256 または ES256 署名する。
-//!   ヘッダに `kid` と `typ`（ID Token=`JWT` / Access Token=`at+jwt`）を付与する。
-//! - JWKS: RSA は `n`/`e`、EC は `crv`/`x`/`y` を base64url で取り出して `Jwk` を構築する。
-//! - 検証: JWKS の各フィールドから `DecodingKey` を作る（`/userinfo`・テストで使用）。
+//! - Signing: signs RS256 or ES256 with `jsonwebtoken`'s `EncodingKey` (from a private key PEM).
+//!   Adds `kid` and `typ` (ID Token=`JWT` / Access Token=`at+jwt`) to the header.
+//! - JWKS: builds a `Jwk` by extracting `n`/`e` for RSA, `crv`/`x`/`y` for EC, in base64url.
+//! - Verification: builds a `DecodingKey` from JWKS fields (used by `/userinfo` and tests).
 #![allow(dead_code)]
 
 use crate::domain::crypto::base64url;
@@ -18,7 +18,7 @@ use p256::pkcs8::{
 use pkcs8::der::pem;
 use serde::{Deserialize, Serialize};
 
-/// JWK（RSA または EC 公開鍵）。JWKS エンドポイントの 1 要素。
+/// JWK (RSA or EC public key). One element of the JWKS endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Jwk {
     pub kty: String,
@@ -26,19 +26,19 @@ pub struct Jwk {
     pub use_: String,
     pub kid: String,
     pub alg: String,
-    /// RSA: modulus。EC: x 座標。
+    /// RSA: modulus. EC: x coordinate.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub n: Option<String>,
-    /// RSA: exponent。
+    /// RSA: exponent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub e: Option<String>,
-    /// EC: 曲線名（例 `P-256`）。
+    /// EC: curve name (e.g. `P-256`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub crv: Option<String>,
-    /// EC: x 座標。
+    /// EC: x coordinate.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub x: Option<String>,
-    /// EC: y 座標。
+    /// EC: y coordinate.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub y: Option<String>,
 }
@@ -48,10 +48,11 @@ pub struct Jwks {
     pub keys: Vec<Jwk>,
 }
 
-/// RSA-2048 の鍵ペアを生成し、`(秘密鍵 PKCS#1 PEM, 公開鍵 SPKI PEM)` を返す。
+/// Generates an RSA-2048 key pair and returns `(private key PKCS#1 PEM, public key SPKI PEM)`.
 ///
-/// aws-lc-rs は秘密鍵を PKCS#8 でしか書き出さないので、その中身（`privateKey` の OCTET STRING が
-/// そのまま PKCS#1 の `RSAPrivateKey`）を取り出して PKCS#1 で包み直す。保存済みの鍵と同じ形に揃える。
+/// aws-lc-rs writes private keys only as PKCS#8, so its content (the `privateKey` OCTET STRING is
+/// exactly the PKCS#1 `RSAPrivateKey`) is extracted and rewrapped as PKCS#1, matching the stored
+/// keys' form.
 pub fn generate_rsa_keypair() -> anyhow::Result<(String, String)> {
     let pair = RsaKeyPair::generate(KeySize::Rsa2048)
         .map_err(|e| anyhow::anyhow!("RSA keygen failed: {e}"))?;
@@ -78,7 +79,8 @@ pub fn generate_rsa_keypair() -> anyhow::Result<(String, String)> {
     Ok((private_pem, public_pem))
 }
 
-/// NIST P-256（ES256 用）の鍵ペアを生成し、`(秘密鍵 PKCS#8 PEM, 公開鍵 SPKI PEM)` を返す。
+/// Generates a NIST P-256 (for ES256) key pair and returns
+/// `(private key PKCS#8 PEM, public key SPKI PEM)`.
 pub fn generate_ec_keypair() -> anyhow::Result<(String, String)> {
     use p256::ecdsa::SigningKey;
     let secret = SigningKey::generate_from_rng(&mut rand::rng());
@@ -93,9 +95,9 @@ pub fn generate_ec_keypair() -> anyhow::Result<(String, String)> {
     Ok((private_pem, public_pem))
 }
 
-/// 秘密鍵 PEM で RS256 または ES256 署名した JWT を返す。
-/// `typ` は `JWT`（ID Token）または `at+jwt`（Access Token）。
-/// `algorithm` は `RS256` または `ES256`。
+/// Returns a JWT signed RS256 or ES256 with the private key PEM.
+/// `typ` is `JWT` (ID Token) or `at+jwt` (Access Token).
+/// `algorithm` is `RS256` or `ES256`.
 pub fn sign<T: Serialize>(
     private_pem: &str,
     kid: &str,
@@ -124,7 +126,7 @@ pub fn sign<T: Serialize>(
     encode(&header, claims, &key).map_err(|e| anyhow::anyhow!("jwt encode: {e}"))
 }
 
-/// 公開鍵 PEM から `kid` 付きの RSA JWK を構築する。
+/// Builds an RSA JWK with `kid` from a public key PEM.
 pub fn rsa_public_jwk(kid: &str, public_pem: &str) -> anyhow::Result<Jwk> {
     let (_, spki_der) = pem::decode_vec(public_pem.as_bytes())
         .map_err(|e| anyhow::anyhow!("parse RSA public PEM: {e}"))?;
@@ -147,7 +149,7 @@ pub fn rsa_public_jwk(kid: &str, public_pem: &str) -> anyhow::Result<Jwk> {
     })
 }
 
-/// 公開鍵 PEM（SPKI）から `kid` 付きの EC JWK（P-256 / ES256）を構築する。
+/// Builds an EC JWK (P-256 / ES256) with `kid` from a public key PEM (SPKI).
 pub fn ec_public_jwk(kid: &str, public_pem: &str) -> anyhow::Result<Jwk> {
     use p256::elliptic_curve::sec1::ToSec1Point;
     let public: p256::PublicKey = p256::PublicKey::from_public_key_pem(public_pem)
@@ -172,7 +174,7 @@ pub fn ec_public_jwk(kid: &str, public_pem: &str) -> anyhow::Result<Jwk> {
     })
 }
 
-/// algorithm に応じた JWK を構築する（`RS256` / `ES256` を判別）。
+/// Builds the JWK matching the algorithm (distinguishes `RS256` / `ES256`).
 pub fn public_jwk(kid: &str, algorithm: &str, public_pem: &str) -> anyhow::Result<Jwk> {
     match algorithm {
         "RS256" => rsa_public_jwk(kid, public_pem),
@@ -181,7 +183,7 @@ pub fn public_jwk(kid: &str, algorithm: &str, public_pem: &str) -> anyhow::Resul
     }
 }
 
-/// JWK（`n`/`e`）から RSA 検証用の `DecodingKey` を作る。
+/// Builds an RSA verification `DecodingKey` from a JWK (`n`/`e`).
 pub fn decoding_key_from_jwk(jwk: &Jwk) -> anyhow::Result<DecodingKey> {
     match jwk.kty.as_str() {
         "RSA" => {
@@ -212,16 +214,18 @@ pub fn decoding_key_from_jwk(jwk: &Jwk) -> anyhow::Result<DecodingKey> {
     }
 }
 
-/// 公開鍵 PEM（SPKI / RSA SPKI）から RSA 検証用の `DecodingKey` を作る（`/userinfo` で使用）。
+/// Builds an RSA verification `DecodingKey` from a public key PEM (SPKI / RSA SPKI) (used by
+/// `/userinfo`).
 pub fn decoding_key_from_public_pem(public_pem: &str) -> anyhow::Result<DecodingKey> {
     DecodingKey::from_rsa_pem(public_pem.as_bytes())
         .map_err(|e| anyhow::anyhow!("build decoding key from PEM: {e}"))
 }
 
-/// 署名鍵レコード（algorithm 文字列 + 公開鍵 PEM）から検証用の `DecodingKey` と `Algorithm` を作る。
+/// Builds a verification `DecodingKey` and `Algorithm` from a signing key record
+/// (algorithm string + public key PEM).
 ///
-/// `decoding_key_from_public_pem` と違い ES256 の鍵も扱える。退役済みの鍵で署名された古い
-/// トークン（`id_token_hint` 等）を検証する経路は、鍵の algorithm を決め打ちにできない。
+/// Unlike `decoding_key_from_public_pem`, it also handles ES256 keys. The path verifying old tokens
+/// signed with a retired key (`id_token_hint` etc.) cannot hard-code the key's algorithm.
 pub fn decoding_key_for(
     algorithm: &str,
     public_pem: &str,

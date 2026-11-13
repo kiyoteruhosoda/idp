@@ -1,58 +1,62 @@
-//! SMS 送信のポート（DIP 境界。AP13。SMS OTP が使う）。
+//! Port for sending SMS (DIP boundary; AP13; used by SMS OTP).
 //!
-//! メール配送（[`crate::domain::mailer`]）と同じ形にしてある: 接続情報はシステム設定
-//! （`system_settings`）で実行時に変わるため、構築時ではなく**送信ごと**に受け取る。
+//! Shaped like mail delivery ([`crate::domain::mailer`]): connection info changes at runtime via
+//! system settings (`system_settings`), so it is received **per send** rather than at construction.
 //!
-//! # 送信事業者を選ばない
+//! # Not choosing a carrier
 //!
-//! SMS ゲートウェイの API は事業者ごとに違い、どれを使うかは配置ごとの判断（国・料金・
-//! 到達率・契約）である。ここで特定の事業者に寄せると、選び直すたびにコードが変わる。
-//! そこで assay は **JSON を 1 本 POST するだけ**の汎用ゲートウェイを口とし、事業者固有の
-//! 差異は運用側に置いた小さな中継（関数・Webhook）へ追い出す。中継が受け取る形は
-//! [`OutgoingSms`] のとおりで、事業者の SDK をこのリポジトリへ持ち込まない。
+//! SMS gateway APIs differ per provider, and which to use is a per-deployment decision (country,
+//! price, deliverability, contract). Leaning on one provider here would change the code every time
+//! we re-choose. So assay's interface is a generic gateway that **just POSTs one JSON**, and
+//! provider-specific differences are pushed out to a small relay (function / webhook) on the
+//! operations side. The relay receives the shape of [`OutgoingSms`]; provider SDKs are not brought
+//! into this repository.
 //!
 //! # PII
 //!
-//! 電話番号は PII である。ログ・監査・エラーメッセージへ出さない（`Debug` を実装しないのは
-//! `{:?}` 経由の漏れを型で防ぐため）。保存先は認証器の登録簿の `target` 列で、メール OTP の
-//! 送信先アドレスと同じ扱いにする。
+//! Phone numbers are PII. Never put them in logs, audit records, or error messages (`Debug` is not
+//! implemented to prevent leaks via `{:?}` by type). They are stored in the `target` column of the
+//! authenticator registry, treated like the destination address of email OTP.
 
 use crate::domain::error::Result;
 use async_trait::async_trait;
 
-/// SMS ゲートウェイの接続情報（送信時に使う実体。トークンは復号済みの平文）。
+/// SMS gateway connection info (the values used at send time; the token is decrypted plaintext).
 ///
-/// `Debug` を意図的に実装しない（`{:?}` 経由でトークンがログへ漏れることを型で防ぐ）。
+/// Deliberately does not implement `Debug` (the type prevents the token leaking into logs via
+/// `{:?}`).
 #[derive(Clone)]
 pub struct SmsGatewayConfig {
-    /// 送信要求を POST する URL。
+    /// URL to POST send requests to.
     pub endpoint_url: String,
-    /// 認証ヘッダ名（例 `Authorization`）。空文字列 = 認証ヘッダを付けない。
+    /// Auth header name (e.g. `Authorization`). Empty string = no auth header.
     pub auth_header: String,
-    /// 認証ヘッダの値（例 `Bearer xxx`）。空文字列 = 認証ヘッダを付けない。
+    /// Auth header value (e.g. `Bearer xxx`). Empty string = no auth header.
     pub auth_token: String,
-    /// 差出人表示（事業者が `sender id` / `from` として扱う値）。空文字列 = 指定しない。
+    /// Sender display (the value a provider treats as `sender id` / `from`). Empty string =
+    /// unspecified.
     pub sender_id: String,
 }
 
 impl SmsGatewayConfig {
-    /// 送信できる設定か（URL が空なら SMS 送信は無効）。
+    /// Whether sending is configured (SMS sending is disabled when the URL is empty).
     pub fn is_usable(&self) -> bool {
         !self.endpoint_url.trim().is_empty()
     }
 }
 
-/// 送信する SMS 1 通。
+/// One SMS to send.
 ///
-/// `Debug` を実装しない（宛先が PII、本文にワンタイムコードが載るため）。
+/// Does not implement `Debug` (the recipient is PII and the body carries a one-time code).
 #[derive(Clone)]
 pub struct OutgoingSms {
-    /// 宛先電話番号（E.164 正規化済み）。
+    /// Recipient phone number (E.164-normalized).
     pub to: String,
     pub body_text: String,
 }
 
-/// SMS 送信のポート。実装はブロッキングせずに送信し、恒久的な失敗はエラーで返す。
+/// Port for sending SMS. Implementations send without blocking and return permanent failures as
+/// errors.
 #[async_trait]
 pub trait SmsSender: Send + Sync {
     async fn send(&self, gateway: &SmsGatewayConfig, sms: &OutgoingSms) -> Result<()>;

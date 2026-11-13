@@ -1,8 +1,8 @@
 {% extends "console/layout.html" %}
 {% block content %}
-{# 登録の入口。プロトコルを先に決めてもらう —— OIDC と SAML は「同じものの設定違い」ではなく、
-   相手から何を受け取り、何で真正性を確かめるかが別である。1 枚のフォームに両方を並べると、
-   埋めるべき欄と埋めなくてよい欄の区別が画面から読み取れない。 #}
+{# Registration entry point. Decide the protocol first -- OIDC and SAML are not "different settings of the same thing":
+   what is received from the counterpart and how authenticity is checked differ. Putting both in one form makes it
+   impossible to read from the screen which fields must be filled and which need not. #}
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
   <h2 class="h4 mb-0">{{ messages.get("admin-external-idps-choose-title") }}</h2>
   <a class="btn btn-outline-secondary" href="{{ tenant }}/admin/external-idps">{{ messages.get("admin-external-idps-back") }}</a>
@@ -34,7 +34,7 @@
   </div>
 </div>
 
-{# プロトコルは登録後に変えられない（api が拒否する。同じ provider_code のまま切り替えると、
-   既存の連携が別プロトコルの識別子を指したまま残る）。選ぶ前にそう言っておく。 #}
+{# The protocol cannot be changed after registration (the api rejects it; switching while keeping the same provider_code
+   would leave existing links pointing at another protocol's identifiers). Say so before the choice. #}
 <p class="text-muted small mt-3">{{ messages.get("admin-external-idps-field-protocol-hint") }}</p>
 {% endblock %}

@@ -1,31 +1,31 @@
-//! 管理操作の実行主体（ADR-0037）。
+//! The principal performing an admin operation (ADR-0037).
 //!
-//! 管理 API を呼べるのは利用者（管理コンソールにログインした人）だけではなくなり、システム用
-//! クライアント（`client_credentials`）自身も主体になり得る。「主体 = 利用者 ID」という前提が
-//! 崩れるため、**主体をひとつの型で表す**。
+//! The admin API can now be called not only by users (people signed in to the admin console) but also by
+//! system clients (`client_credentials`) themselves. Since the assumption "principal = user ID"
+//! no longer holds, **the principal is represented by a single type**.
 //!
-//! 監査ログは元から `user_id` と `client_id` の 2 列を持つ（`audit_log`）。本 enum はその 2 列へ
-//! そのまま写る形にしてあり、[`AdminActor::user_id`] / [`AdminActor::client_id`] が写像を担う。
-//! 「機械が実行した操作の `user_id` を何で埋めるか」を各所で考えずに済ませるための型である。
+//! The audit log already has two columns, `user_id` and `client_id` (`audit_log`). This enum is shaped to map
+//! directly onto those two columns, and [`AdminActor::user_id`] / [`AdminActor::client_id`] do the mapping.
+//! It is a type that saves every call site from deciding "what to put in `user_id` for an operation a machine performed".
 
 use uuid::Uuid;
 
-/// 管理操作を実行した主体。
+/// The principal that performed an admin operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdminActor {
-    /// 管理コンソールにログインした利用者。
+    /// A user signed in to the admin console.
     User(Uuid),
-    /// システム用クライアント自身（`client_credentials` で取得した管理トークン）。
+    /// A system client itself (an admin token obtained via `client_credentials`).
     Client {
-        /// `clients.id`（代理キー）。権限行の参照に使う。
+        /// `clients.id` (surrogate key). Used to look up permission rows.
         id: Uuid,
-        /// 発行された `client_id`（監査ログに残す値）。
+        /// The issued `client_id` (the value recorded in the audit log).
         client_id: String,
     },
 }
 
 impl AdminActor {
-    /// 利用者主体なら内部 ID。クライアント主体なら `None`（監査ログの `user_id` 列へ写る）。
+    /// The internal ID for a user principal. `None` for a client principal (maps to the audit log's `user_id` column).
     pub fn user_id(&self) -> Option<Uuid> {
         match self {
             Self::User(id) => Some(*id),
@@ -33,7 +33,7 @@ impl AdminActor {
         }
     }
 
-    /// クライアント主体なら `client_id`。利用者主体なら `None`（監査ログの `client_id` 列へ写る）。
+    /// `client_id` for a client principal. `None` for a user principal (maps to the audit log's `client_id` column).
     pub fn client_id(&self) -> Option<&str> {
         match self {
             Self::User(_) => None,
@@ -41,7 +41,7 @@ impl AdminActor {
         }
     }
 
-    /// クライアント主体なら `clients.id`（権限行の参照キー）。
+    /// `clients.id` for a client principal (the key for looking up permission rows).
     pub fn client_row_id(&self) -> Option<Uuid> {
         match self {
             Self::User(_) => None,
@@ -49,16 +49,16 @@ impl AdminActor {
         }
     }
 
-    /// 主体がクライアント自身か。
+    /// Whether the principal is a client itself.
     pub fn is_client(&self) -> bool {
         matches!(self, Self::Client { .. })
     }
 
-    /// 監査ログの理由欄へ添える主体表記（クライアント主体のときだけ `Some`）。
+    /// Principal notation appended to the audit log's reason field (`Some` only for a client principal).
     ///
-    /// 監査ログの `client_id` 列が**操作対象**のクライアントで既に埋まっている記録（クライアントの
-    /// 登録・更新・削除）で使う。そこへ実行主体を書くと対象と主体が同じ列で混ざるため、主体は
-    /// 理由欄へ回す。利用者主体は `user_id` 列に出るので `None`。
+    /// Used for records whose `client_id` column is already filled with the **target** client (client
+    /// registration, update, deletion). Writing the principal there would mix target and principal in the same column,
+    /// so the principal goes to the reason field. A user principal appears in the `user_id` column, so `None`.
     pub fn audit_note(&self) -> Option<String> {
         self.client_id().map(|id| format!("actor_client={id}"))
     }

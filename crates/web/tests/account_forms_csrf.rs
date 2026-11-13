@@ -1,8 +1,8 @@
-//! 設定画面の表示名・パスワードの変更と、TOTP の設定・削除は CSRF トークンを要る（task #118）。
+//! Changing the display name and password on the settings screen, and TOTP setup/removal, require a CSRF token (task #118).
 //!
-//! 以前はどれもトークンを持たず、SSO Cookie の `SameSite=Lax` だけで守られていた。利用者向けの
-//! 他の画面（セッション一覧・認証器）と同じ `console_csrf_token`（SSO セッション id 由来）を
-//! フォームへ埋め、合わなければ api へ何も送らずに戻す。
+//! Previously none had a token and they were protected only by the SSO Cookie's `SameSite=Lax`. The form now embeds
+//! the same `console_csrf_token` (derived from the SSO session id) as other user-facing screens (session list,
+//! authenticators); on mismatch nothing is sent to the api and the user is sent back.
 
 mod support;
 
@@ -25,7 +25,7 @@ fn csrf() -> String {
     assay_web::csrf::console_csrf_token(SSO, TEST_CSRF_SECRET)
 }
 
-/// 無い・空・でたらめ・別のセッションのもの。どれも「合わない」。
+/// Missing, empty, garbage, or another session's. All of them "do not match".
 fn wrong_tokens() -> Vec<Option<String>> {
     vec![
         None,
@@ -38,7 +38,7 @@ fn wrong_tokens() -> Vec<Option<String>> {
     ]
 }
 
-/// `fields` に（あれば）トークンを足した POST。
+/// POST with the token (if any) added to `fields`.
 async fn post_with_token(
     env: &WebEnv,
     target: &str,
@@ -82,7 +82,7 @@ async fn stub_step_up_satisfied(env: &WebEnv) {
         .await;
 }
 
-// ── 表示名 ───────────────────────────────────────────────────────────────────
+// ── Display name ───────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn the_display_name_is_changed_only_with_the_right_token() {
@@ -113,7 +113,7 @@ async fn the_display_name_is_changed_only_with_the_right_token() {
     assert_eq!(calls_to(&env, "/internal/account/update-name").await, 1);
 }
 
-/// 管理コンソールから開いた文脈は、トークンが合わずに戻したときも保つ。
+/// The context of being opened from the admin console is kept even when sent back on token mismatch.
 #[tokio::test]
 async fn a_rejected_change_keeps_the_console_context() {
     let env = setup().await;
@@ -130,7 +130,7 @@ async fn a_rejected_change_keeps_the_console_context() {
     );
 }
 
-// ── パスワード ───────────────────────────────────────────────────────────────
+// ── Password ───────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn the_password_is_changed_only_with_the_right_token() {
@@ -166,7 +166,7 @@ async fn the_password_is_changed_only_with_the_right_token() {
 
 // ── TOTP ─────────────────────────────────────────────────────────────────────
 
-/// 確認コードの送信（有効化）はトークンが合わなければ api へ送らず、設定画面を取り直させる。
+/// Submitting the confirmation code (enabling) is not sent to the api on token mismatch; the settings screen is fetched again.
 #[tokio::test]
 async fn the_totp_setup_is_confirmed_only_with_the_right_token() {
     let env = setup().await;
@@ -194,7 +194,7 @@ async fn the_totp_setup_is_confirmed_only_with_the_right_token() {
     assert_eq!(calls_to(&env, "/internal/mfa/totp/confirm").await, 1);
 }
 
-/// 設定画面はトークンを埋め、`?error=csrf` で戻ったときはバナーを出す。
+/// The settings screen embeds the token and shows a banner when returned with `?error=csrf`.
 #[tokio::test]
 async fn the_totp_setup_page_carries_the_token_and_shows_the_banner() {
     let env = setup().await;
@@ -229,7 +229,7 @@ async fn the_totp_setup_page_carries_the_token_and_shows_the_banner() {
     assert!(html.contains(r#"class="alert alert-danger""#), "{html}");
 }
 
-/// 削除（MFA を外す）も同じ。トークンが合わなければ認証器の画面へ戻してバナーで伝える。
+/// Removal (turning MFA off) too. On token mismatch, back to the authenticator screen with a banner.
 #[tokio::test]
 async fn the_totp_is_deleted_only_with_the_right_token() {
     let env = setup().await;
@@ -259,7 +259,7 @@ async fn the_totp_is_deleted_only_with_the_right_token() {
     assert_eq!(calls_to(&env, "/internal/mfa/totp/delete").await, 1);
 }
 
-/// パスキーの削除も同じ（task #587）。トークンが合わなければ一覧へ戻してバナーで伝え、api を呼ばない。
+/// Passkey removal too (task #587). On token mismatch, back to the list with a banner, without calling the api.
 #[tokio::test]
 async fn a_passkey_is_deleted_only_with_the_right_token() {
     let env = setup().await;

@@ -1,5 +1,5 @@
-// パスワード入力欄の表示切り替え（SEC12 で `password_visibility.html` のインライン script から切り出し）。
-// 文言は `#password-visibility-labels` の data 属性から読む（翻訳はテンプレートが埋め込む）。
+// Password field visibility toggle (split out of the inline script in `password_visibility.html` by SEC12).
+// Wording is read from the data attributes of `#password-visibility-labels` (the template embeds translations).
 (function () {
   if (window.__idpPasswordVisibilityReady) return;
   window.__idpPasswordVisibilityReady = true;
@@ -11,7 +11,7 @@
       if (input.dataset.passwordVisibility === 'ready') return;
       input.dataset.passwordVisibility = 'ready';
       if (!input.id) input.id = 'password-field-' + index;
-      // photonest と同じ入力欄+目アイコンのフォーマット（Bootstrap の input-group）に組み替える
+      // Rearrange into the same input + eye icon layout as photonest (Bootstrap input-group)
       const group = document.createElement('div');
       group.className = 'input-group';
       input.insertAdjacentElement('beforebegin', group);

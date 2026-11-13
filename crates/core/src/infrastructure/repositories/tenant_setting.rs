@@ -1,4 +1,4 @@
-//! `TenantSettingsRepository` の sqlx 実装（ADR-0058）。
+//! sqlx implementation of `TenantSettingsRepository` (ADR-0058).
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::TenantSettingsRepository;
@@ -37,9 +37,9 @@ fn map_row(tenant_id: TenantId, row: &MySqlRow) -> Result<TenantSetting> {
 
 #[async_trait]
 impl TenantSettingsRepository for SqlxTenantSettingsRepository {
-    /// 主キー `(tenant_id, setting_key)` の前方一致 1 本。⚠ **テナントをまたいで読まない**
-    /// ——テナント分離はアプリ層が唯一の防御線であり（ADR-0009 §8）、設定の読みは
-    /// リクエストごとのホットパスなので、ここを緩めると気付けない。
+    /// A single prefix match on the primary key `(tenant_id, setting_key)`. ⚠ **Never reads across tenants**
+    /// -- the app layer is the only line of defense for tenant isolation (ADR-0009 §8), and reading settings
+    /// is a per-request hot path, so loosening this would go unnoticed.
     async fn load_for_tenant(&self, tenant_id: TenantId) -> Result<Vec<TenantSetting>> {
         let rows = sqlx::query(
             "SELECT setting_key, setting_value, is_secret FROM tenant_settings \
@@ -69,7 +69,7 @@ impl TenantSettingsRepository for SqlxTenantSettingsRepository {
         Ok(())
     }
 
-    /// 上書きを消す（＝そのキーは全体に従う状態へ戻る）。不存在は冪等に無視する。
+    /// Removes the override (= the key goes back to following the global value). Nonexistence is idempotently ignored.
     async fn delete(&self, tenant_id: TenantId, key: &str) -> Result<()> {
         sqlx::query("DELETE FROM tenant_settings WHERE tenant_id = ? AND setting_key = ?")
             .bind(tenant_id.to_string())
@@ -85,7 +85,7 @@ impl TenantSettingsRepository for SqlxTenantSettingsRepository {
             .fetch_one(&self.pool)
             .await
             .map_err(repo_err)?;
-        // 秘匿値は SQL の時点で落とす（暗号文を全体の画面へ運ばない）。
+        // Secret values are dropped at the SQL level (ciphertext is not carried to the global screen).
         let rows = sqlx::query(
             "SELECT s.tenant_id, t.name, s.setting_key, s.setting_value \
              FROM tenant_settings s JOIN tenants t ON t.id = s.tenant_id \

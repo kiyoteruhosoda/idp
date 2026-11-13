@@ -1,23 +1,23 @@
-//! 認証ポリシー管理 API と、ログインフローでのポリシー適用の統合テスト
-//! （ユーザー認証・認証ポリシー仕様書 §7〜§9・§24）。
+//! Integration tests for the auth policy admin API and policy enforcement in the login flow
+//! (user authentication / auth policy spec §7–§9, §24).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test admin_authentication_policies
 //!
-//! 検証すること:
-//! - CRUD が `idp.tenant.admin` で保護されること（401 / 403）
-//! - 作成・更新・削除が動き、`policy_code` 重複が 409 になること
-//! - `deny` ポリシーが一致するとパスワードログインが拒否され、監査に記録されること
-//! - `require_mfa` ポリシーが一致し TOTP 未設定だとログインが完了しないこと（仕様 §24.4）
-//! - 無効化されたポリシーは適用されないこと
-//! - RP が予約語 `urn:assay:ac:mfa` を要求すると、ポリシーが 1 件も無くても MFA になること（ADR-0043）
+//! What is checked:
+//! - CRUD is protected by `idp.tenant.admin` (401 / 403)
+//! - Create, update and delete work, and a duplicate `policy_code` is 409
+//! - A matching `deny` policy rejects password login and is recorded in the audit log
+//! - A matching `require_mfa` policy without TOTP set up does not complete login (spec §24.4)
+//! - Disabled policies are not applied
+//! - When an RP requests the reserved `urn:assay:ac:mfa`, MFA applies even with no policies (ADR-0043)
 
 mod support;
 
 use axum::body::Body;
 
-/// 実在しないアプリの id。条件の往復（保存 → 読み出し → 置換）だけを見るテストで使う
-/// ——存在確認は行われないので、実在させる必要は無い。
+/// Id of a nonexistent app. Used by tests that only look at the condition round trip (save → read → replace)
+/// — existence is not checked, so it need not exist.
 const LEGACY_APPLICATION_ID: &str = "01990000-0000-7000-8000-00000000beef";
 
 use axum::http::header::CONTENT_TYPE;
@@ -30,7 +30,7 @@ use support::{
     force_password_change, get, post, put, send, SERVICE_TOKEN, SERVICE_TOKEN_HEADER,
 };
 
-/// `acr_values` 付きの `/authorize` URI（予約語の要求を送る RP を模す）。
+/// `/authorize` URI with `acr_values` (mimics an RP sending the reserved value).
 fn authorize_uri_with_acr(tenant: &str, client_id: &str, acr_values: &str) -> String {
     format!(
         "{}&acr_values={}",
@@ -43,7 +43,7 @@ fn login_csrf(auth_session: &str, csrf_secret: &[u8; 32]) -> String {
     assay_api::application::login::csrf_token(auth_session, csrf_secret)
 }
 
-/// api の内部認証（`POST /internal/authenticate`）で資格情報検証を駆動する。
+/// Drives credential verification through api's internal authentication (`POST /internal/authenticate`).
 async fn internal_authenticate(
     app: &axum::Router,
     tenant: &str,
@@ -74,7 +74,7 @@ async fn internal_authenticate(
     body_json(response).await
 }
 
-/// 自己登録でユーザーを作成し、メール検証まで済ませる（ログイン可能な状態にする）。
+/// Creates a user by self-registration and completes email verification (so it can sign in).
 async fn register_verified_user(
     app: &axum::Router,
     pool: &MySqlPool,
@@ -120,7 +120,7 @@ async fn admin_can_manage_authentication_policies() {
     let uri = format!("/{}/admin/authentication-policies", env.root_tenant_id);
     let code = format!("it-deny-{}", support::unique());
 
-    // 未認証（トークン無し）→ 401。
+    // Unauthenticated (no token) → 401.
     let res = send(
         &env.app,
         Request::builder()
@@ -132,13 +132,13 @@ async fn admin_can_manage_authentication_policies() {
     .await;
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "no cookie -> 401");
 
-    // 権限の無い利用者 → 403。
+    // User without permission → 403.
     let plain = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let plain_token = admin_token(&env.app, &env.pool, &env.root_tenant_id, &plain).await;
     let res = send(&env.app, get(&plain_token, &uri)).await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "no permission -> 403");
 
-    // effect 不正 → 400。
+    // Invalid effect → 400.
     let res = send(
         &env.app,
         post(
@@ -155,7 +155,7 @@ async fn admin_can_manage_authentication_policies() {
     .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST, "bad effect -> 400");
 
-    // 作成 → 200・監査記録。
+    // Create → 200, audited.
     let res = send(
         &env.app,
         post(
@@ -186,7 +186,7 @@ async fn admin_can_manage_authentication_policies() {
         1
     );
 
-    // policy_code 重複 → 409。
+    // Duplicate policy_code → 409.
     let res = send(
         &env.app,
         post(
@@ -203,7 +203,7 @@ async fn admin_can_manage_authentication_policies() {
     .await;
     assert_eq!(res.status(), StatusCode::CONFLICT, "duplicate code -> 409");
 
-    // 一覧に載る。
+    // Appears in the list.
     let res = send(&env.app, get(&admin_tok, &uri)).await;
     assert_eq!(res.status(), StatusCode::OK);
     let listed = body_json(res).await;
@@ -216,7 +216,7 @@ async fn admin_can_manage_authentication_policies() {
         "created policy is listed: {listed}"
     );
 
-    // 更新（全項目置換）→ 200・監査記録。
+    // Update (replace all fields) → 200, audited.
     let res = send(
         &env.app,
         put(
@@ -247,7 +247,7 @@ async fn admin_can_manage_authentication_policies() {
         1
     );
 
-    // 不存在 ID の更新・削除 → 404。
+    // Update / delete of a nonexistent ID → 404.
     let ghost = uuid::Uuid::new_v4();
     let res = send(
         &env.app,
@@ -265,7 +265,7 @@ async fn admin_can_manage_authentication_policies() {
     .await;
     assert_eq!(res.status(), StatusCode::NOT_FOUND, "unknown id -> 404");
 
-    // 削除 → 204・一覧から消える・監査記録。
+    // Delete → 204, disappears from the list, audited.
     let res = send(&env.app, delete(&admin_tok, &format!("{uri}/{policy_id}"))).await;
     assert_eq!(res.status(), StatusCode::NO_CONTENT, "delete -> 204");
     let res = send(&env.app, get(&admin_tok, &uri)).await;
@@ -297,8 +297,8 @@ async fn deny_policy_blocks_password_login_until_disabled() {
     let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let client_id =
         support::insert_public_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
-    // ポリシーの宛先はアプリ（ADR-0054 の決定 5）。直接入れた client にはアプリが付かないので、
-    // 移行と同じ形（アプリ 1 件 ＋ OIDC binding 1 件）へ開いてから id を使う。
+    // The policy target is an app (ADR-0054 decision 5). A client inserted directly has no app, so open it
+    // in the migrated shape (one app + one OIDC binding) before using the id.
     let application_id =
         support::open_client_as_application(&env.pool, &env.root_tenant_id, &client_id).await;
     let username = format!("policy-user-{}", support::unique());
@@ -312,7 +312,7 @@ async fn deny_policy_blocks_password_login_until_disabled() {
     )
     .await;
 
-    // 対象アプリ限定の deny ポリシーを作成する。
+    // Create a deny policy limited to the target app.
     let uri = format!("/{}/admin/authentication-policies", env.root_tenant_id);
     let code = format!("it-deny-login-{}", support::unique());
     let res = send(
@@ -336,7 +336,7 @@ async fn deny_policy_blocks_password_login_until_disabled() {
         .expect("policy id")
         .to_string();
 
-    // 正しい資格情報でも policy_denied で拒否され、監査に記録される。
+    // Even correct credentials are rejected with policy_denied and audited.
     let authorize_uri = authorize_uri_openid_only(&env.root_tenant_id, &client_id);
     let auth_session = begin_login(&env.app, &env.root_tenant_id, &authorize_uri).await;
     let csrf = login_csrf(&auth_session, &env.csrf_secret);
@@ -355,7 +355,7 @@ async fn deny_policy_blocks_password_login_until_disabled() {
         1
     );
 
-    // ポリシーを無効化するとログインできる（一致するポリシー無し → 既定 allow）。
+    // Disabling the policy allows login (no matching policy → default allow).
     let res = send(
         &env.app,
         put(
@@ -410,7 +410,7 @@ async fn require_mfa_policy_blocks_single_factor_login_without_enrollment() {
     )
     .await;
 
-    // このユーザー限定の require_mfa ポリシーを作成する。
+    // Create a require_mfa policy limited to this user.
     let user_id = support::find_user_id_by_username(&env.pool, &env.root_tenant_id, &username)
         .await
         .expect("find user");
@@ -433,7 +433,7 @@ async fn require_mfa_policy_blocks_single_factor_login_without_enrollment() {
     .await;
     assert_eq!(res.status(), StatusCode::OK, "create require_mfa policy");
 
-    // TOTP 未設定のため、単一要素（パスワードのみ）ではログインを完了できない（仕様 §24.4）。
+    // TOTP is not set up, so login cannot complete with a single factor (password only) (spec §24.4).
     let authorize_uri = authorize_uri_openid_only(&env.root_tenant_id, &client_id);
     let auth_session = begin_login(&env.app, &env.root_tenant_id, &authorize_uri).await;
     let csrf = login_csrf(&auth_session, &env.csrf_secret);
@@ -451,7 +451,7 @@ async fn require_mfa_policy_blocks_single_factor_login_without_enrollment() {
         "single factor must not complete: {body}"
     );
 
-    // 対象外のユーザーには適用されない（条件は AND・user_ids 限定）。
+    // Not applied to users outside the target (conditions are AND, limited by user_ids).
     let other = format!("other-user-{}", support::unique());
     register_verified_user(&env.app, &env.pool, &env.root_tenant_id, &other, password).await;
     let auth_session = begin_login(&env.app, &env.root_tenant_id, &authorize_uri).await;
@@ -471,9 +471,9 @@ async fn require_mfa_policy_blocks_single_factor_login_without_enrollment() {
     );
 }
 
-/// レビュー修正の回帰テスト: `must_change_password`（管理者作成・パスワード再発行）ユーザーに
-/// `require_mfa` ポリシーが一致する場合、強制パスワード変更フローの完了で SSO・code を発行しない
-/// （TOTP 未設定なら単一要素での成立を拒否する。仕様 §24.4）。
+/// Regression test for a review fix: when a `require_mfa` policy matches a `must_change_password` user
+/// (admin-created, password reissued), finishing the forced password change flow issues no SSO or code
+/// (without TOTP set up, single-factor completion is refused; spec §24.4).
 #[tokio::test]
 async fn require_mfa_policy_is_enforced_after_forced_password_change() {
     let Some(env) = support::setup("require_mfa after forced change").await else {
@@ -483,7 +483,7 @@ async fn require_mfa_policy_is_enforced_after_forced_password_change() {
     let client_id =
         support::insert_public_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
 
-    // 管理者が利用者を作成する（自動生成パスワード・must_change_password 付き）。
+    // The admin creates a user (auto-generated password, with must_change_password).
     let username = format!("forced-{}", support::unique());
     let res = send(
         &env.app,
@@ -500,13 +500,13 @@ async fn require_mfa_policy_is_enforced_after_forced_password_change() {
     assert_eq!(res.status(), StatusCode::CREATED, "admin creates user");
     let created = body_json(res).await;
     let user_id = created["user_id"].as_str().expect("user id").to_string();
-    // ⚠ 作成も再発行も、もうパスワードを返さない（ADR-0062。本人が設定リンクで決める）。
-    // この試験が要るのは「`must_change_password` が立った状態で入れる資格情報」なので、
-    // その状態を直に作る。
+    // ⚠ Neither creation nor reissue returns a password anymore (ADR-0062; the user sets it via the setup link).
+    // This test needs "credentials that can sign in with `must_change_password` set", so
+    // that state is created directly.
     let generated_password = format!("ForcedChange-{}!", support::unique());
     force_password_change(&env.pool, &user_id, &generated_password).await;
 
-    // このユーザー限定の require_mfa ポリシーを作成する。
+    // Create a require_mfa policy limited to this user.
     let res = send(
         &env.app,
         post(
@@ -524,7 +524,7 @@ async fn require_mfa_policy_is_enforced_after_forced_password_change() {
     .await;
     assert_eq!(res.status(), StatusCode::OK, "create policy");
 
-    // ログイン → password_change_required。
+    // Login → password_change_required.
     let authorize_uri = authorize_uri_openid_only(&env.root_tenant_id, &client_id);
     let auth_session = begin_login(&env.app, &env.root_tenant_id, &authorize_uri).await;
     let csrf = login_csrf(&auth_session, &env.csrf_secret);
@@ -541,15 +541,15 @@ async fn require_mfa_policy_is_enforced_after_forced_password_change() {
         body["result"], "password_change_required",
         "generated password forces change: {body}"
     );
-    // パスワード検証を通った時点で `auth_session_id` は再生成される（SEC7）。以降は応答が返した
-    // 新しい値を使う（web も Cookie を差し替える）。CSRF トークンも新しい id から導出し直す。
+    // `auth_session_id` is regenerated once password verification passes (SEC7). From here on use the new
+    // value the response returned (web swaps the cookie too). The CSRF token is re-derived from the new id.
     let auth_session = body["auth_session_id"]
         .as_str()
         .expect("rotated auth_session_id")
         .to_string();
     let csrf = login_csrf(&auth_session, &env.csrf_secret);
 
-    // 強制パスワード変更を完了しても、SSO・code は発行されず MFA 設定を要求される。
+    // Even after the forced password change completes, no SSO or code is issued and MFA setup is required.
     let change_body = json!({
         "tenant_id": env.root_tenant_id,
         "auth_session_id": auth_session,
@@ -576,9 +576,9 @@ async fn require_mfa_policy_is_enforced_after_forced_password_change() {
     );
 }
 
-/// **未知のキーを黙って捨てない。** 条件名のタイポや未対応の条件（`country` など）を書いた要求が
-/// 200 で返ると、その制限が掛かっていないポリシーが保存されるのに、送った側は絞ったつもりでいる
-/// —— 認証ポリシーでは「設定できたのに効いていない」が最も危ない壊れ方である（ADR-0028）。
+/// **Unknown keys are not silently dropped.** If a request with a typo in a condition name or an unsupported
+/// condition (`country` etc.) returned 200, a policy without that restriction would be saved while the sender
+/// believes it narrowed things — for auth policies "configured but not in effect" is the most dangerous failure (ADR-0028).
 #[tokio::test]
 async fn an_unknown_condition_key_is_rejected_instead_of_being_dropped() {
     let Some(env) = support::setup("auth policy unknown key").await else {
@@ -588,9 +588,9 @@ async fn an_unknown_condition_key_is_rejected_instead_of_being_dropped() {
     let uri = format!("/{}/admin/authentication-policies", env.root_tenant_id);
 
     for unknown in [
-        // 未対応の条件（実装しないと決めたもの。ADR-0028）。
+        // Unsupported condition (decided not to implement; ADR-0028).
         json!({"country": ["JP"]}),
-        // 実在する条件のタイポ。無視されると「全ネットワークに一致する deny」になる。
+        // Typo of an existing condition. If ignored it becomes "a deny matching every network".
         json!({"ip_cidr": ["10.0.0.0/8"]}),
     ] {
         let mut body = json!({
@@ -602,8 +602,8 @@ async fn an_unknown_condition_key_is_rejected_instead_of_being_dropped() {
         for (key, value) in unknown.as_object().expect("object") {
             body[key] = value.clone();
         }
-        // 422（`Json` 抽出器の拒否）。近くの「effect 不正 → 400」と違うのは、あちらが
-        // 読めたうえで業務検証に落ちるのに対し、こちらは**本文が読めない**ためである。
+        // 422 (rejected by the `Json` extractor). It differs from the nearby "invalid effect → 400" because that one
+        // parses and then fails business validation, whereas here **the body cannot be parsed**.
         let res = send(&env.app, post(&admin_tok, &uri, body.clone())).await;
         assert_eq!(
             res.status(),
@@ -612,7 +612,7 @@ async fn an_unknown_condition_key_is_rejected_instead_of_being_dropped() {
         );
     }
 
-    // 取りこぼしが無いこと（弾かれた要求で行ができていない）。
+    // Nothing slipped through (the rejected requests created no rows).
     let res = send(&env.app, get(&admin_tok, &uri)).await;
     let listed = body_json(res).await;
     let policies = listed["policies"].as_array().expect("policies");
@@ -624,10 +624,10 @@ async fn an_unknown_condition_key_is_rejected_instead_of_being_dropped() {
     );
 }
 
-/// ADR-0043 決定 1。**ポリシーを 1 件も作らずに**予約語だけで MFA になる。
+/// ADR-0043 decision 1. MFA applies by the reserved value alone, **without creating any policy**.
 ///
-/// ここが効かないと「この値を送れば MFA になる」と discovery で公開できない
-/// ——テナントが対応するポリシーを書いたときだけ効く仕様は、RP へ伝えられない。
+/// Without this, "send this value to get MFA" cannot be published in discovery
+/// — a behaviour that only works when the tenant writes a matching policy cannot be communicated to RPs.
 #[tokio::test]
 async fn the_reserved_acr_value_requires_mfa_without_a_policy() {
     let Some(env) = support::setup("acr_values requires mfa").await else {
@@ -646,7 +646,7 @@ async fn the_reserved_acr_value_requires_mfa_without_a_policy() {
     )
     .await;
 
-    // 予約語を要求すると、TOTP 未設定の利用者は単一要素で完了できない（仕様 §24.4 と同じ扱い）。
+    // Requesting the reserved value prevents users without TOTP from completing with a single factor (same as spec §24.4).
     let uri = authorize_uri_with_acr(&env.root_tenant_id, &client_id, "urn:assay:ac:mfa");
     let auth_session = begin_login(&env.app, &env.root_tenant_id, &uri).await;
     let csrf = login_csrf(&auth_session, &env.csrf_secret);
@@ -664,7 +664,7 @@ async fn the_reserved_acr_value_requires_mfa_without_a_policy() {
         "the reserved word must require MFA on its own: {body}"
     );
 
-    // 知らない値は従来どおり何も強制しない（テナントが独自の文字列を条件に書く使い方を壊さない）。
+    // Unknown values enforce nothing, as before (do not break tenants using their own strings as conditions).
     let uri = authorize_uri_with_acr(&env.root_tenant_id, &client_id, "urn:example:loa2");
     let auth_session = begin_login(&env.app, &env.root_tenant_id, &uri).await;
     let csrf = login_csrf(&auth_session, &env.csrf_secret);

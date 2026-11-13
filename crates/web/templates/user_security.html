@@ -21,7 +21,7 @@
     <p class="mb-3"><span class="badge text-bg-success">{{ messages.get("user-security-devices-current-registered") }}</span></p>
     {% else if current_device_identified %}
     {%- let resuming = passkey_fresh && resume_device_name.is_some() -%}
-    {#- パスキーでの本人確認から戻ったところ（task #916）。打った名前のまま自動で送る（`auto-submit.js`）。 -#}
+    {#- Just returned from passkey verification (task #916). Auto-submits with the typed name (`auto-submit.js`). -#}
     <form method="post" action="{{ tenant }}/settings/security/register-device" class="row g-2 align-items-end mb-3"{% if resuming %} data-auto-submit{% endif %}>
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <div class="col-sm-8">
@@ -73,8 +73,8 @@
       </table>
     </div>
     {% endif %}
-    {#- 認証アプリ（task #892・ADR-0077）。アプリの中でパスキーでログインし直して登録した鍵。取り消すと、
-        その鍵で承認したログイン状態も終わる。 -#}
+    {#- Authenticator app (task #892, ADR-0077). A key registered by signing in again with a passkey inside the app. Revoking it
+        also ends sign-in states approved with that key. -#}
     {% if !approver_keys.is_empty() %}
     <h2 class="h6 mt-4">{{ messages.get("user-security-approver-heading") }}</h2>
     <div class="table-responsive">
@@ -188,7 +188,7 @@
 </div>
 
 {% if ssh_keys_enabled %}
-{#- SSH の鍵（task #885）。sk 型の公開鍵だけを登録でき、登録・取り消しはパスキーで確かめてから 5 分以内だけ。 -#}
+{#- SSH keys (task #885). Only sk-type public keys can be registered; registering/revoking only within 5 minutes after passkey verification. -#}
 <div class="card mb-4" id="ssh-keys">
   <div class="card-header d-flex align-items-center"><i class="fa-solid fa-terminal me-2" aria-hidden="true"></i>{{ messages.get("user-security-ssh-keys-heading") }}</div>
   <div class="card-body">
@@ -278,7 +278,7 @@
               <span class="d-block text-break">{{ session.user_agent }}</span>
               {% if session.current %}<span class="badge text-bg-primary">{{ messages.get("user-security-session-current") }}</span>{% endif %}
               {% if session.multi_factor %}<span class="badge text-bg-success">{{ messages.get("user-security-session-mfa") }}</span>{% endif %}
-              {#- 端末・結び付け・入り方（task #896）。 -#}
+              {#- Device, binding, sign-in method (task #896). -#}
               {% if let Some(st) = session.status.as_ref() %}
               <span class="d-block small" data-session-status="device">{% if !st.device_name.is_empty() %}<span class="badge text-bg-success">{{ messages.get("user-security-signins-device-registered") }}</span> {{ st.device_name }}{% else if st.device_identified %}<span class="badge text-bg-secondary">{{ messages.get("user-security-signins-device-unregistered") }}</span>{% else %}<span class="text-muted">{{ messages.get("user-security-status-device-unidentified-short") }}</span>{% endif %}</span>
               <span class="d-block small" data-session-status="binding">{{ messages.get(st.binding_key) }}{% if !st.approver_device_name.is_empty() %}（{{ st.approver_device_name }}）{% endif %}</span>

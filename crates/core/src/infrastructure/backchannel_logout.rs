@@ -1,18 +1,18 @@
-//! `BackchannelLogoutSender` の reqwest 実装（G5）。
+//! reqwest implementation of `BackchannelLogoutSender` (G5).
 //!
-//! RP の `backchannel_logout_uri` へ `application/x-www-form-urlencoded` の
-//! `logout_token=<JWT>` を POST する（OpenID Connect Back-Channel Logout 1.0 §2.5）。
-//! 失敗理由は**運用言語（英語）**で組み立てる（`last_error` に保存され、監査ではなく運用情報として
-//! 読まれるため。CLAUDE.md「国際化」の対象外）。
+//! POSTs `application/x-www-form-urlencoded` `logout_token=<JWT>` to the RP's
+//! `backchannel_logout_uri` (OpenID Connect Back-Channel Logout 1.0 §2.5).
+//! Failure reasons are built in the **operational language (English)** (they are stored in `last_error` and read as
+//! operational information, not audit; outside the scope of CLAUDE.md "Internationalization").
 
 use crate::application::backchannel_logout::BackchannelLogoutSender;
 use crate::domain::outbound_uri::OutboundTrust;
 use crate::infrastructure::outbound_http::guarded_client_builder;
 use async_trait::async_trait;
 
-/// RP のエンドポイントが応答しないまま待ち続けないための上限。
+/// Upper bound so we don't wait forever on an unresponsive RP endpoint.
 const REQUEST_TIMEOUT_SECS: u64 = 5;
-/// `last_error` に載せる応答本文の最大文字数（RP が長大な HTML を返しても行を膨らませない）。
+/// Maximum number of response body characters put in `last_error` (keeps the row small even if the RP returns huge HTML).
 const BODY_SNIPPET_MAX_CHARS: usize = 200;
 
 pub struct ReqwestBackchannelLogoutSender {
@@ -24,14 +24,14 @@ impl ReqwestBackchannelLogoutSender {
         Self::with_trust(OutboundTrust::none())
     }
 
-    /// 名前を引いた結果が内部の住所でも送ってよい名前を指定して作る（task #585）。
+    /// Builds it with names that may be sent to even if they resolve to internal addresses (task #585).
     pub fn with_trust(trust: OutboundTrust) -> Self {
         Self {
-            // 繋ぐ直前に引いた住所を確かめる（内部なら送らない。`outbound_http`）。
+            // Check the addresses resolved right before connecting (don't send if internal; `outbound_http`).
             client: guarded_client_builder(trust)
                 .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
-                // リダイレクトは追わない。登録済み URI 以外へ logout_token を渡さないため
-                //（RP がリダイレクトを設定していれば、それは登録内容の誤りとして失敗させる）。
+                // Don't follow redirects, so the logout_token is never handed to anything but the registered URI
+                // (if the RP has a redirect configured, it fails as a misconfiguration of the registration).
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap_or_default(),
@@ -45,11 +45,11 @@ impl Default for ReqwestBackchannelLogoutSender {
     }
 }
 
-/// エラーを原因まで繋いで 1 行にする（task #585）。
+/// Joins an error with its causes into one line (task #585).
 ///
-/// reqwest の `Display` は一番外側（`error sending request for url (...)`）しか言わないので、
-/// 名前を引いた結果が内部の住所だった（`outbound_http` の resolver が断った）のか、繋がらなかった
-/// のかが `last_error` から見分けられない。原因の連なりを `: ` で繋いで残す。
+/// reqwest's `Display` only gives the outermost layer (`error sending request for url (...)`), so
+/// `last_error` can't tell whether the name resolved to an internal address (refused by the `outbound_http` resolver)
+/// or the connection failed. The chain of causes is kept, joined with `: `.
 fn error_chain(error: &dyn std::error::Error) -> String {
     let mut message = error.to_string();
     let mut source = error.source();
@@ -79,7 +79,7 @@ impl BackchannelLogoutSender for ReqwestBackchannelLogoutSender {
         if status.is_success() {
             return Ok(());
         }
-        // 本文は診断の手掛かりになるので先頭だけ残す（取得に失敗しても状態コードは記録する）。
+        // The body is a diagnostic clue, so keep only its start (the status code is recorded even if reading it fails).
         let snippet = response
             .text()
             .await
@@ -98,7 +98,7 @@ mod error_chain_tests {
     use super::*;
     use crate::domain::outbound_uri::OutboundTrust;
 
-    /// 名前を引いた結果が内部の住所で断ったとき、その理由まで `last_error` に残る（task #585）。
+    /// When refused because the name resolved to an internal address, the reason is kept in `last_error` too (task #585).
     #[tokio::test]
     async fn a_refused_internal_destination_says_why() {
         let sender = ReqwestBackchannelLogoutSender::with_trust(OutboundTrust::none());

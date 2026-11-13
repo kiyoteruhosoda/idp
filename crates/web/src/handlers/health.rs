@@ -1,10 +1,10 @@
-//! ヘルスチェック（ADR-0007 §8・ADR-0031）。
+//! Health checks (ADR-0007 §8, ADR-0031).
 //!
-//! `/healthz` は liveness（依存を見ない）。`/readyz` は api への到達性を確認する
-//! （web は DB を持たないため、readiness は api の可用性で判断する）。どちらも**無認証**。
+//! `/healthz` is liveness (ignores dependencies). `/readyz` checks reachability of the api
+//! (web has no DB, so readiness is judged by the api's availability). Both are **unauthenticated**.
 //!
-//! 詳細（版数・稼働時間・サーバー時刻）は `/internal/health` に置き、内部トークンの内側でしか
-//! 読めないようにする（ADR-0031 決定 1）。
+//! Details (version, uptime, server time) are in `/internal/health`, readable only behind the
+//! internal token (ADR-0031 decision 1).
 
 use crate::state::WebState;
 use assay_contracts::health::{service, HealthCheck, LivenessResponse, ServiceHealth};
@@ -13,22 +13,22 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
 
-// version 画面は web のビルド情報に加え、api から取得した DB スキーマの適用状態も表示する。
+// The version screen shows, besides web's build info, the DB schema migration state fetched from the api.
 
-/// liveness: プロセスが生きていれば 200。依存先は見ない。
+/// liveness: 200 if the process is alive. Dependencies are not checked.
 ///
-/// 本文に `service` を載せるのは、domain-split（ADR-0019）で web（`idp.*`）と api（`identity.*`）が
-/// 別ホストになった以上、「叩いたつもりのサービスと違う方が答えている」取り違えが起こり得るため。
-/// 以前は本文が空だったので、200 が返っても**どちらが答えたのか分からなかった**。
+/// The body carries `service` because, since domain-split (ADR-0019) put web (`idp.*`) and api (`identity.*`)
+/// on separate hosts, a mix-up where "a different service answers than the one you meant to hit" can happen.
+/// The body used to be empty, so even on 200 **you could not tell which one answered**.
 pub async fn liveness() -> (StatusCode, Json<LivenessResponse>) {
     (StatusCode::OK, Json(LivenessResponse::ok(service::WEB)))
 }
 
-/// 内部向けの詳細ヘルス（`/internal/health`）。ルータが `require_service_token` の内側に置く。
+/// Detailed internal health (`/internal/health`). The router places it inside `require_service_token`.
 ///
-/// web が依存するのは api だけなので、検査もそれ 1 つ。`server_time` を返すのは、時計ずれの
-/// 切り分けに要るため（`private_key_jwt` の assertion は `exp` 5 分・許容 60 秒で判定するため、
-/// ずれは「理由の分からない `invalid_client`」として現れる。ADR-0030）。
+/// web depends only on the api, so that is the only check. `server_time` is returned because it is needed
+/// to diagnose clock skew (`private_key_jwt` assertions are judged with `exp` 5 minutes and 60 s tolerance,
+/// so skew shows up as an "unexplained `invalid_client`"; ADR-0030).
 pub async fn internal_health(State(state): State<WebState>) -> Json<ServiceHealth> {
     let checks = vec![if state.api.is_api_reachable().await {
         HealthCheck::pass("api")
@@ -46,7 +46,7 @@ pub async fn internal_health(State(state): State<WebState>) -> Json<ServiceHealt
     ))
 }
 
-/// readiness: api に到達できれば 200、できなければ 503。
+/// readiness: 200 if the api is reachable, otherwise 503.
 pub async fn readiness(State(state): State<WebState>) -> StatusCode {
     if state.api.is_api_reachable().await {
         StatusCode::OK

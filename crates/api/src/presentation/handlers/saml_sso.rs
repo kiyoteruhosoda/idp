@@ -1,10 +1,10 @@
-//! SAML SSO エンドポイント（`GET/POST /{tenant_id}/saml/sso`）と再開 API
-//! （`POST /internal/saml/resume`）。
+//! SAML SSO endpoint (`GET/POST /{tenant_id}/saml/sso`) and resume API
+//! (`POST /internal/saml/resume`).
 //!
-//! メタデータ（[`super::discovery::saml_idp_metadata`]）が広告する SingleSignOnService の実装。
-//! ブラウザ Cookie は読み書きせず、OIDC の `/authorize` と同じ単回・短命ハンドルで web へ
-//! ハンドオフする（ADR-0018 決定 2）。SSO 判定・応答発行は web が呼ぶ `/internal/saml/resume`
-//! で行い、web が ACS への自動 POST フォームを描画する。
+//! Implements the SingleSignOnService advertised by the metadata ([`super::discovery::saml_idp_metadata`]).
+//! Does not read or write browser cookies; hands off to web with the same single-use, short-lived handle as
+//! OIDC's `/authorize` (ADR-0018 decision 2). SSO decisions and response issuance happen in `/internal/saml/resume`
+//! called by web, and web renders the auto-POST form to the ACS.
 
 use crate::application::audit::RequestContext;
 use crate::application::saml_sso::{
@@ -22,7 +22,7 @@ use axum::{Form, Json};
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
 
-/// HTTP-Redirect binding のクエリパラメータ（SAML Bindings §3.4。パラメータ名は大文字始まり）。
+/// Query parameters of the HTTP-Redirect binding (SAML Bindings §3.4; parameter names are capitalized).
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct SamlSsoQuery {
     #[serde(rename = "SAMLRequest")]
@@ -31,7 +31,7 @@ pub struct SamlSsoQuery {
     pub relay_state: Option<String>,
 }
 
-/// HTTP-POST binding のフォームパラメータ（SAML Bindings §3.5）。
+/// Form parameters of the HTTP-POST binding (SAML Bindings §3.5).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SamlSsoForm {
     #[serde(rename = "SAMLRequest")]
@@ -40,8 +40,8 @@ pub struct SamlSsoForm {
     pub relay_state: Option<String>,
 }
 
-/// SAML SSO（HTTP-Redirect binding）。AuthnRequest を検証し、単回ハンドル付きで web の
-/// `/saml/continue` へ 302 する。
+/// SAML SSO (HTTP-Redirect binding). Validates the AuthnRequest and 302s to web's
+/// `/saml/continue` with a single-use handle.
 #[utoipa::path(
     get,
     path = "/{tenant_id}/saml/sso",
@@ -71,7 +71,7 @@ pub async fn sso_redirect(
     .await
 }
 
-/// SAML SSO（HTTP-POST binding）。挙動は Redirect binding と同じ。
+/// SAML SSO (HTTP-POST binding). Behaves the same as the Redirect binding.
 #[utoipa::path(
     post,
     path = "/{tenant_id}/saml/sso",
@@ -111,7 +111,7 @@ async fn begin(
     relay_state: Option<String>,
 ) -> Response {
     let Some(saml_request) = saml_request.filter(|s| !s.is_empty()) else {
-        // プロトコルエラーは RP（SP）開発者向けの固定英語文言（CLAUDE.md「翻訳の対象外」）。
+        // Protocol errors are fixed English text for RP (SP) developers (CLAUDE.md "翻訳の対象外").
         return (StatusCode::BAD_REQUEST, "SAMLRequest is required").into_response();
     };
     let ctx = request_context(
@@ -132,8 +132,8 @@ async fn begin(
         )
         .await;
     match outcome {
-        // ログイン・自動 POST フォームは web が描画する。ハンドルは web が受領後ただちに
-        // 交換し URL から除去する（単回・短命。ADR-0018 決定 2・3）。
+        // web renders the login and auto-POST forms. On receipt web immediately exchanges the handle
+        // and strips it from the URL (single-use, short-lived; ADR-0018 decisions 2, 3).
         SamlBeginOutcome::HandoffToWeb { handle } => found(&format!(
             "{}/{}/saml/continue?handle={}",
             state.config.public_web_base_url(),
@@ -150,16 +150,16 @@ async fn begin(
     }
 }
 
-/// SAML SSO フローの再開（`POST /internal/saml/resume`）。
+/// Resumes the SAML SSO flow (`POST /internal/saml/resume`).
 ///
-/// web がハンドル（初回）または `saml_request_id`（ログイン後）と、自ドメインの host-only
-/// `sso_session_id` Cookie の値を転送する。SSO 有効なら署名付き SAML Response を返す。
+/// web forwards the handle (first time) or `saml_request_id` (after login) and the value of its own domain's
+/// host-only `sso_session_id` cookie. If SSO is valid, returns a signed SAML Response.
 pub async fn saml_resume(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
     Json(req): Json<InternalSamlResumeRequest>,
 ) -> Result<Json<InternalSamlResumeResponse>, Response> {
-    // 接続元情報は web が転送する（api はプロキシ直下ではないため自前で X-Forwarded-For を見ない）。
+    // Client connection info is forwarded by web (the api is not directly behind the proxy, so it doesn't read X-Forwarded-For itself).
     let ctx = RequestContext {
         correlation_id: correlation.0,
         ip_address: req.ip_address,

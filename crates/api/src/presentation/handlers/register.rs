@@ -1,4 +1,4 @@
-//! ユーザー登録エンドポイント（`POST /auth/register`、設計仕様 §4.1）。
+//! User registration endpoint (`POST /auth/register`, design spec §4.1).
 
 use crate::application::email_verification::VerifyEmailOutcome;
 use crate::application::register::{RegisterCommand, RegisterError};
@@ -52,8 +52,8 @@ pub async fn register(
         .await
         .map_err(|e| map_error(e, locale))?;
 
-    // 検証メールを送る（best-effort。SMTP 未設定・送信失敗でも登録自体は成立する。SEC6b）。
-    // 自己登録アカウントは `email_verified = false` で作られ、確認リンクを踏むまでログインできない。
+    // Send the verification email (best-effort; registration still succeeds without SMTP or on send failure, SEC6b).
+    // Self-registered accounts are created with `email_verified = false` and cannot sign in until the link is followed.
     let email_verification_required = state
         .email_verification
         .send_verification(

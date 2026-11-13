@@ -1,10 +1,10 @@
-//! 招待承諾画面（web。`/{tenant_id}/invitations/accept`。ADR-0009 §3・MT17）。
+//! Invitation acceptance screen (web. `/{tenant_id}/invitations/accept`. ADR-0009 §3, MT17).
 //!
-//! 被招待者が招待メールのリンク（`?token=...`）から開く。承諾には**所属元テナントでログイン済み**の
-//! SSO セッションが必要（本人性はトークンの所持 + ログイン済みセッション。§3）。未ログインなら
-//! 「所属元テナントでログインしてから開き直す」案内を表示する（被招待者の所属元テナントは本画面では
-//! 分からないため、ログイン画面へのリダイレクトはしない）。承諾の実体は api の
-//! `POST /{tenant_id}/invitations/accept` へ SSO Cookie を転送して委ねる。
+//! The invitee opens it from the link (`?token=...`) in the invitation email. Accepting requires an SSO session
+//! **signed in at the home tenant** (identity = token possession + signed-in session; §3). If not signed in,
+//! it shows guidance to "sign in at your home tenant and reopen" (this screen cannot know the invitee's
+//! home tenant, so it does not redirect to a login screen). The actual acceptance is delegated to the api's
+//! `POST /{tenant_id}/invitations/accept` by forwarding the SSO cookie.
 
 use crate::api_client::AdminApiError;
 use crate::cookies;
@@ -31,8 +31,8 @@ pub struct AcceptForm {
     pub csrf_token: String,
 }
 
-/// 承諾ページ（`GET /{tenant_id}/invitations/accept?token=...`）。ログイン済みなら確認フォーム、
-/// 未ログインなら案内のみ表示する。
+/// Acceptance page (`GET /{tenant_id}/invitations/accept?token=...`). Shows the confirm form when signed in,
+/// otherwise only the guidance.
 pub async fn page(
     State(state): State<WebState>,
     Extension(_tenant): Extension<WebTenant>,
@@ -53,8 +53,8 @@ pub async fn page(
     }
 }
 
-/// 承諾の実行（`POST /{tenant_id}/invitations/accept`）。
-/// （`Messages` は `Send` でないため、api 呼び出しの await を跨がないよう分岐ごとに生成する。）
+/// Performs the acceptance (`POST /{tenant_id}/invitations/accept`).
+/// (`Messages` is not `Send`, so it is created per branch to avoid living across the api call's await.)
 pub async fn submit(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -93,11 +93,11 @@ pub async fn submit(
             error_key: None,
         }))
         .into_response(),
-        // SSO 期限切れ等 → ログインし直しの案内（フォームは出さない）。
+        // SSO expired etc. → guidance to sign in again (no form).
         Err(AdminApiError::Unauthorized) => {
             Html(render_page(&messages, false, &form.token, "", None)).into_response()
         }
-        // 別ユーザーのセッションで承諾しようとした。
+        // Tried to accept with another user's session.
         Err(AdminApiError::Forbidden) => bad_request(render_page(
             &messages,
             true,
@@ -105,7 +105,7 @@ pub async fn submit(
             &csrf,
             Some("invitation-accept-error-forbidden"),
         )),
-        // トークン無効・期限切れ・別テナントの招待。
+        // Invalid/expired token, or an invitation for another tenant.
         Err(AdminApiError::Validation(_)) | Err(AdminApiError::Conflict(_)) => {
             bad_request(render_page(
                 &messages,

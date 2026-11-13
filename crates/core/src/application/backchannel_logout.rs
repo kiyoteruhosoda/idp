@@ -1,13 +1,13 @@
-//! Back-channel logout の送信（OpenID Connect Back-Channel Logout 1.0。G5）。
+//! Sending back-channel logout (OpenID Connect Back-Channel Logout 1.0. G5).
 //!
-//! ログアウト処理は「誰へ何を送るか」を永続キューへ積むだけで終わり（[`enqueue`]）、実際の HTTP
-//! 送信はバックグラウンドのワーカー（[`BackchannelLogoutDeliveryService::deliver_due`]）が行う。
-//! 従来は `tokio::spawn` の撃ちっぱなしで、非 2xx は WARN を出すだけ・プロセス再起動で未送信分が
-//! 消えていた（RP 側のログアウトが黙って落ち、ログアウトしたはずのセッションが RP に残る）。
+//! Logout processing ends by putting "what to send to whom" in a persistent queue ([`enqueue`]); the actual HTTP
+//! sending is done by a background worker ([`BackchannelLogoutDeliveryService::deliver_due`]).
+//! Previously it was fire-and-forget via `tokio::spawn`: non-2xx only logged a WARN, and unsent ones were lost
+//! on process restart (RP-side logout silently dropped, leaving supposedly logged-out sessions at the RP).
 //!
-//! `logout_token` は送信の**直前**に署名する。署名済み JWT を DB に残すと、RP へ提示すれば
-//! ログアウトが成立する値が長期間残り、再試行のたびに `iat` / `exp` も古いままになる。`jti` だけは
-//! 行の作成時に確定させ、再試行でも変えない（RP は `jti` で重複配送を弾ける）。
+//! `logout_token` is signed **right before** sending. Keeping a signed JWT in the DB would leave, for a long time,
+//! a value that completes a logout when presented to the RP, and `iat` / `exp` would stay stale on every retry. Only `jti`
+//! is fixed when the row is created and kept across retries (the RP can reject duplicate deliveries by `jti`).
 
 use crate::domain::backchannel_logout::{
     retry_backoff, BackchannelLogoutDelivery, NewBackchannelLogoutDelivery,
@@ -24,15 +24,15 @@ use serde::Serialize;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// `logout_token` の TTL（秒）。OIDC Back-Channel Logout 1.0 は短命であることを求める
-/// （仕様上の固定値ではないが、配送遅延を吸収できる範囲で最小にする）。
+/// TTL of `logout_token` (seconds). OIDC Back-Channel Logout 1.0 asks for it to be short-lived
+/// (not a fixed value in the spec, but as small as possible while absorbing delivery delay).
 const LOGOUT_TOKEN_TTL_SECS: i64 = 300;
 
-/// back-channel logout token のクレーム（OpenID Back-Channel Logout 1.0 §2.4）。
+/// Claims of the back-channel logout token (OpenID Back-Channel Logout 1.0 §2.4).
 ///
-/// `exp` は必須ではないが、付けないと RP 側は「いつまで有効な通知か」を判断できず、傍受された
-/// トークンを無期限に再送されうる。`sid` はセッション単位のログアウトに必須（無いと RP は `sub`
-/// 単位でしか失効できず、同一利用者の別デバイスのセッションまで巻き添えになる）。
+/// `exp` is not required, but without it the RP cannot tell "until when the notice is valid", and an intercepted
+/// token could be replayed indefinitely. `sid` is required for per-session logout (without it the RP can only
+/// revoke per `sub`, taking down the same user's sessions on other devices too).
 #[derive(Debug, Serialize)]
 pub struct LogoutTokenClaims {
     pub iss: String,
@@ -63,27 +63,27 @@ impl LogoutTokenClaims {
     }
 }
 
-/// 1 クライアントへの通知要求（Application 層が組み立てる入力）。
+/// One notification request to one client (input built by the Application layer).
 #[derive(Debug, Clone)]
 pub struct LogoutNotification {
     pub client_id: String,
     pub backchannel_logout_uri: String,
 }
 
-/// 署名鍵の取得（`KeyService` への依存を Application 層内で閉じるための最小ポート）。
+/// Gets the signing key (a minimal port to keep the dependency on `KeyService` inside the Application layer).
 ///
-/// `KeyService` は具象（`Arc<KeyService>`）だが、本サービスが必要とするのは「今の署名鍵」だけ
-/// なので、テストで差し替えられるようトレイトで受ける。
+/// `KeyService` is concrete (`Arc<KeyService>`), but this service only needs "the current signing key",
+/// so it takes a trait so tests can swap it.
 #[async_trait::async_trait]
 pub trait LogoutTokenSigner: Send + Sync {
-    /// クレームへ署名して `logout+jwt` を返す。
+    /// Signs the claims and returns a `logout+jwt`.
     async fn sign(&self, claims: &LogoutTokenClaims) -> anyhow::Result<String>;
 }
 
-/// `logout_token` を RP の `backchannel_logout_uri` へ POST する出口。
+/// The outlet that POSTs `logout_token` to the RP's `backchannel_logout_uri`.
 #[async_trait::async_trait]
 pub trait BackchannelLogoutSender: Send + Sync {
-    /// 送信結果を返す。`Ok(())` = 2xx。`Err` = 接続失敗・非 2xx（理由は運用言語＝英語で書く）。
+    /// Returns the send result. `Ok(())` = 2xx. `Err` = connection failure or non-2xx (reason written in the operations language, English).
     async fn post(&self, uri: &str, logout_token: &str) -> std::result::Result<(), String>;
 }
 
@@ -93,11 +93,11 @@ pub struct BackchannelLogoutDeliveryService {
     sender: Arc<dyn BackchannelLogoutSender>,
     ids: Arc<dyn IdGenerator>,
     clock: Arc<dyn Clock>,
-    /// 基底 issuer。`logout_token` の `iss` はテナント毎に合成する（ADR-0009 §6）。
+    /// Base issuer. The `iss` of `logout_token` is composed per tenant (ADR-0009 §6).
     base_issuer: String,
-    /// 試行の打ち切り回数。これに達した行はもう送らない（打ち切りの記録は残す）。
+    /// Attempt limit. Rows that reach it are no longer sent (the give-up is recorded).
     max_attempts: i32,
-    /// 1 回のワーカー起動で扱う最大件数。
+    /// Maximum number of items handled per worker run.
     batch_size: u32,
 }
 
@@ -125,10 +125,10 @@ impl BackchannelLogoutDeliveryService {
         }
     }
 
-    /// ログアウト通知をキューへ積む（同期区間はここまで。HTTP 送信は行わない）。
+    /// Puts logout notifications in the queue (the synchronous part ends here; no HTTP is sent).
     ///
-    /// `sid` はセッション単位のログアウトのための識別子。ログアウト対象のセッションが特定できな
-    /// かった場合のみ `None`（RP は `sub` 単位の失効に落とす）。
+    /// `sid` identifies the session for per-session logout. `None` only when the session being logged out
+    /// could not be identified (the RP falls back to per-`sub` revocation).
     pub async fn enqueue(
         &self,
         tenant_id: TenantId,
@@ -160,7 +160,7 @@ impl BackchannelLogoutDeliveryService {
         self.deliveries.enqueue(&rows).await
     }
 
-    /// 送信期限が来た要求を処理する（ワーカーが定期的に呼ぶ）。処理した件数を返す。
+    /// Processes requests whose send time has come (called periodically by the worker). Returns the number processed.
     pub async fn deliver_due(&self) -> Result<usize> {
         let now = self.clock.now();
         let due = self
@@ -175,7 +175,7 @@ impl BackchannelLogoutDeliveryService {
         Ok(handled)
     }
 
-    /// 決着済み（送信成功・試行打ち切り）の古い行を削除する。
+    /// Deletes old settled rows (sent successfully or attempts given up).
     pub async fn purge_settled(&self, retention: chrono::Duration) -> Result<u64> {
         let cutoff = self.clock.now() - retention;
         self.deliveries
@@ -184,9 +184,9 @@ impl BackchannelLogoutDeliveryService {
     }
 
     async fn deliver_one(&self, delivery: &BackchannelLogoutDelivery) {
-        // 送信直前にも宛先を検査する（SEC2）。登録時の検証だけでは、検証導入より前に登録された行や
-        // DB を直接編集された行が素通りしてしまう。宛先が不正な要求は再試行しても直らないので、
-        // 打ち切り扱い（`max_attempts` まで進めて）にする。
+        // Check the destination right before sending too (SEC2). Validation at registration alone lets through rows
+        // registered before validation was introduced or edited directly in the DB. A request with an invalid
+        // destination won't be fixed by retrying, so give it up (advance to `max_attempts`).
         if is_internal_destination(&delivery.target_uri) {
             tracing::warn!(
                 client_id = %delivery.client_id,
@@ -202,8 +202,8 @@ impl BackchannelLogoutDeliveryService {
         let token = match self.signer.sign(&claims).await {
             Ok(t) => t,
             Err(e) => {
-                // 署名できないのは鍵側の問題で、宛先を変えても直らないが一時的な可能性はある。
-                // 再試行に載せる（バックオフは通常の失敗と同じ）。
+                // Failing to sign is a key-side problem that changing the destination won't fix, but it may be transient.
+                // Put it up for retry (same backoff as a normal failure).
                 self.record_failure(delivery, &format!("failed to sign logout token: {e}"))
                     .await;
                 return;
@@ -241,10 +241,10 @@ impl BackchannelLogoutDeliveryService {
         }
     }
 
-    /// 再試行しても直らない要求を打ち切る（次回時刻は動かさず、試行回数を上限まで進める）。
+    /// Gives up a request that retrying won't fix (next time is unchanged; attempts advance to the limit).
     async fn abandon(&self, delivery: &BackchannelLogoutDelivery, reason: &str) {
-        // `claim_due` は `attempts < max_attempts` の行しか拾わないため、上限まで進めれば
-        // 二度と選ばれない。理由は行に残して運用から追えるようにする。
+        // `claim_due` only picks rows with `attempts < max_attempts`, so advancing to the limit means
+        // it is never picked again. The reason stays on the row so operations can trace it.
         let far_future = self.clock.now() + chrono::Duration::days(3_650);
         if let Err(e) = self
             .deliveries
@@ -256,7 +256,7 @@ impl BackchannelLogoutDeliveryService {
     }
 }
 
-/// `KeyService` を [`LogoutTokenSigner`] として使うアダプタ。
+/// Adapter that uses `KeyService` as a [`LogoutTokenSigner`].
 pub struct KeyServiceLogoutTokenSigner {
     keys: Arc<crate::application::key_service::KeyService>,
 }
@@ -281,8 +281,8 @@ impl LogoutTokenSigner for KeyServiceLogoutTokenSigner {
     }
 }
 
-/// `Uuid` を返す ID ジェネレータのうち、`jti` 用に v4 を使いたい箇所のための補助。
-/// （`IdGenerator` は UUIDv7 を返す。`jti` は時刻の推測余地を残さない v4 が望ましい。）
+/// Helper for places that want v4 for `jti` among ID generators returning `Uuid`.
+/// (`IdGenerator` returns UUIDv7. For `jti`, v4 is preferable as it leaves no room to guess the time.)
 pub fn new_jti() -> Uuid {
     Uuid::new_v4()
 }
@@ -426,7 +426,7 @@ mod tests {
         }
     }
 
-    /// ログアウトの同期区間では HTTP を打たず、行を積むだけで終わる。
+    /// The synchronous part of logout sends no HTTP; it only queues rows.
     #[tokio::test]
     async fn enqueue_persists_one_row_per_client_and_sends_nothing() {
         let repo = Arc::new(RecordingRepo::default());
@@ -458,11 +458,11 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().all(|r| r.sid.as_deref() == Some("sid-1")));
         assert!(rows.iter().all(|r| r.attempts == 0));
-        // jti は行ごとに異なる（RP 側の冪等判定が別の通知を同一視しないため）。
+        // jti differs per row (so the RP's idempotency check does not treat different notices as the same).
         assert_ne!(rows[0].jti, rows[1].jti);
         assert!(
             sender.sent.lock().unwrap().is_empty(),
-            "同期区間では送らない"
+            "nothing is sent in the synchronous part"
         );
     }
 
@@ -482,7 +482,7 @@ mod tests {
         assert_eq!(svc.deliver_due().await.unwrap(), 1);
         assert_eq!(repo.delivered.lock().unwrap().len(), 1);
         assert!(repo.failed.lock().unwrap().is_empty());
-        // logout_token に sid と exp が載っている（G5 の要）。
+        // logout_token carries sid and exp (the core of G5).
         let (_, token) = sender.sent.lock().unwrap()[0].clone();
         let claims: serde_json::Value = serde_json::from_str(&token).unwrap();
         assert_eq!(claims["sid"], "sid-1");
@@ -493,7 +493,7 @@ mod tests {
         );
     }
 
-    /// 非 2xx・接続失敗は失敗として記録し、バックオフ後に再試行できる状態にする。
+    /// Non-2xx and connection failures are recorded as failures and become retryable after backoff.
     #[tokio::test]
     async fn failed_delivery_is_rescheduled_with_backoff() {
         let repo = Arc::new(RecordingRepo::default());
@@ -515,7 +515,7 @@ mod tests {
         assert_eq!(failed[0].2, "connection refused");
     }
 
-    /// 内部宛先は送信せず打ち切る（SSRF 防止。再試行しても直らない）。
+    /// Internal destinations are not sent to and are given up (SSRF prevention; retrying won't fix it).
     #[tokio::test]
     async fn internal_destinations_are_abandoned_without_sending() {
         let repo = Arc::new(RecordingRepo::default());
@@ -534,7 +534,7 @@ mod tests {
         assert!(repo.delivered.lock().unwrap().is_empty());
         let failed = repo.failed.lock().unwrap();
         assert_eq!(failed.len(), 1);
-        // 再試行の対象から外れるよう、次回時刻がはるか先へ倒れている。
+        // The next time is pushed far ahead so it drops out of retries.
         assert!(failed[0].1 > now() + chrono::Duration::days(3_000));
     }
 }

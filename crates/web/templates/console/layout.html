@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-{#- 配色は最初の描画より前に確定させる（`assets/theme.js`）。`defer` を付けず、スタイルシートより
-    先に置く —— 遅らせると白い画面が描かれてから黒へ塗り替わる。 -#}
+{#- Settle the color scheme before the first paint (`assets/theme.js`). No `defer`, and place it before the
+    stylesheets -- delaying it paints a white screen and then repaints it black. -#}
 <script src="/assets/theme.js?v={{ crate::templates::asset_version() }}"></script>
 <meta name="color-scheme" content="light dark">
 <link rel="stylesheet" href="/assets/vendor/bootstrap.min.css?v={{ crate::templates::asset_version() }}">
@@ -12,9 +12,9 @@
 <link rel="stylesheet" href="/assets/app.css?v={{ crate::templates::asset_version() }}">
 <link rel="icon" href="/assets/assay.svg?v={{ crate::templates::asset_version() }}" type="image/svg+xml">
 {% let manifest_prefix = tenant %}{% include "console/web_app_head.html" %}
-{#- タブ名は「開いている画面 · 管理コンソール」。全画面が同じ「管理コンソール」だと、タブを
-    並べたときも履歴でも見分けられない。画面の名前はメニューの項目から引く
-    （`templates::current_console_nav_item`。ホームやログインのように項目に属さない画面は付けない）。 -#}
+{#- The tab title is "open screen · Admin console". If every screen were just "Admin console", tabs
+    side by side and history entries could not be told apart. The screen name comes from the menu item
+    (`templates::current_console_nav_item`; screens belonging to no item, like home or login, get none). -#}
 <title>{% if let Some(current) = crate::templates::current_console_nav_item() %}{{ messages.get(current.label) }} · {% endif %}{{ messages.get("admin-console-title") }}</title>
 </head>
 <body class="d-flex flex-column min-vh-100">
@@ -27,21 +27,21 @@
       <a class="navbar-brand" href="{{ tenant }}/admin">{{ messages.get("admin-console-title") }}</a>
     </div>
     <div class="d-flex align-items-center gap-2">
-      {#- 操作中テナントの常時表示。取り違えた操作を防ぐため、ログイン中は全画面のヘッダに出す
-          （名前は api の whoami 応答由来。切替画面への導線も兼ねる）。 -#}
+      {#- Always-visible current tenant. To prevent operating on the wrong one, shown in every screen's header while logged in
+          (the name comes from the api's whoami response; it doubles as the link to the switch screen). -#}
       {% if let Some(chrome) = admin %}{% if let Some(name) = chrome.tenant_name %}
       <a class="navbar-tenant d-flex align-items-center text-decoration-none badge text-bg-secondary" href="{{ tenant }}/admin/switch-tenant" title="{{ messages.get("admin-current-tenant") }}: {{ name }}">
         <i class="fa-solid fa-building me-1" aria-hidden="true"></i><span class="visually-hidden">{{ messages.get("admin-current-tenant") }}: </span><span class="text-truncate navbar-tenant-label">{{ name }}</span>
       </a>
       {% endif %}{% endif %}
-      {#- 言語切替（MT20）。**ログイン中は保存する POST、未ログインは一時切替の GET**（task #79）。
-          GET の `?lang=` は一時切替（その画面の表示と Cookie）だけで、ユーザー設定（DB）へ書くのは
-          CSRF トークン付きの `POST /{tenant_id}/settings/display` に限る（外部のリンクで保存済みの
-          設定を書き換えさせない）。トークンは `ConsoleAdmin` 経由で全コンソール画面に届く。
-          戻り先（`return_to`）は `assets/console.js` がいまの画面の URL で埋める —— このドロップダウンは
-          Bootstrap の JS が無いと開かないので、JS 前提で困らない。空・不正なら設定画面へ戻る。
-          未ログインの GET フォームは `action` を持たず、現在のパスへ `?lang=` だけを付けて送信する
-          （絞り込み・ページ位置のクエリは失われる）。 -#}
+      {#- Language switch (MT20). **A saving POST while logged in, a temporary GET while logged out** (task #79).
+          GET `?lang=` is only a temporary switch (that screen's display and the Cookie); writing to the user setting (DB) is
+          limited to the CSRF-protected `POST /{tenant_id}/settings/display` (so external links cannot rewrite saved
+          settings). The token reaches every console screen via `ConsoleAdmin`.
+          The return target (`return_to`) is filled by `assets/console.js` with the current screen's URL -- this dropdown
+          does not open without Bootstrap's JS, so relying on JS is fine. If empty or invalid it returns to the settings screen.
+          The logged-out GET form has no `action` and submits to the current path with only `?lang=`
+          (filter and page queries are lost). -#}
       {% if let Some(chrome) = admin %}
       <form method="post" action="{{ tenant }}/settings/display" class="dropdown">
         <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}">
@@ -67,7 +67,7 @@
           <li><a class="dropdown-item" href="{{ tenant }}/admin/switch-tenant">{{ messages.get("admin-switch-tenant-menu") }}</a></li>
           <li><hr class="dropdown-divider"></li>
           <li>
-            {#- ログアウトも CSRF トークンを要る（task #143。外部のページからのログアウトの強制を防ぐ）。 -#}
+            {#- Logout also requires a CSRF token (task #143; prevents forced logout from external pages). -#}
             <form method="post" action="{{ tenant }}/admin/logout">
               <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}">
               <button type="submit" class="dropdown-item">{{ messages.get("admin-logout") }}</button>
@@ -87,13 +87,13 @@
       <button type="button" class="btn-close" data-bs-dismiss="offcanvas" data-bs-target="#console-sidebar" aria-label="Close"></button>
     </div>
     <div class="offcanvas-body p-3 d-md-flex flex-column">
-      {#- ホームのカードと同じ定義（`templates::CONSOLE_NAV`）から描く。⚠ **両方を手で書かない**
-          ——書いていた頃は、ここにだけ「外部 IdP」が、ホームにだけ「認証ポリシー」が載っていた。
-          ⚠ **ここに説明は出さない。** サイドバーは行き先を選ぶ場所で、1 行ずつ説明を足すと
-          縦に伸びて選びにくくなる（説明が要る人はホームを見る）。
+      {#- Rendered from the same definition as the home cards (`templates::CONSOLE_NAV`). ⚠ **Do not hand-write both**
+          -- back then, "External IdP" was only here and "Authentication policies" only on home.
+          ⚠ **No descriptions here.** The sidebar is for choosing a destination; adding a description per row makes it
+          tall and harder to pick from (people who need descriptions look at home).
 
-          開いている画面の項目に `aria-current="page"` を付ける（見た目は `assets/app.css` の金の条）。
-          メニューに載らない画面（利用者の作成・メンバーの詳細など）は、開いた元の項目に付く。 -#}
+          The open screen's item gets `aria-current="page"` (shown as the gold bar in `assets/app.css`).
+          Screens not in the menu (creating users, member details, etc.) mark the item they were opened from. -#}
       <nav class="nav flex-column" aria-label="{{ messages.get("admin-nav-label") }}">
         <a class="nav-link d-flex align-items-center py-2" href="{{ tenant }}/admin"{% if crate::templates::console_home_is_current() %} aria-current="page"{% endif %}><i class="fa-solid fa-house fa-fw me-2" aria-hidden="true"></i><span class="sidebar-label">{{ messages.get("admin-nav-home-short") }}</span></a>
         {% for group in crate::templates::CONSOLE_NAV %}
@@ -113,10 +113,10 @@
 {% block content %}{% endblock %}
   </main>
 </div>
-{#- 新しいバージョンの知らせ。この画面を描いたビルド（`data-build`）と、いま稼働している
-    ビルド（`data-build-check` の口）を `assets/console.js` が比べ、違えば出す。押すまで消さない。
-    管理コンソールは service worker を持たない（`handlers::web_app_manifest`）ので、開いたままの
-    画面はこれが無いと配られたことに気付けない。ログイン済みの画面にだけ置く（ADR-0034）。 -#}
+{#- New-version notice. `assets/console.js` compares the build that rendered this screen (`data-build`) with the
+    build running now (the `data-build-check` endpoint) and shows it if they differ. It stays until pressed.
+    The admin console has no service worker (`handlers::web_app_manifest`), so a screen left open
+    could not otherwise notice a new deploy. Placed only on logged-in screens (ADR-0034). -#}
 {% if admin.is_some() %}
 <div class="update-notice" role="status" hidden data-update-notice data-build="{{ crate::templates::footer_version() }}" data-build-check="{{ tenant }}/admin/version/current">
   <span>{{ messages.get("update-notice-message") }}</span>
@@ -127,8 +127,8 @@
 <script src="/assets/vendor/bootstrap.bundle.min.js?v={{ crate::templates::asset_version() }}"></script>
 <script src="/assets/console.js?v={{ crate::templates::asset_version() }}"></script>
 <script src="/assets/button-pending.js?v={{ crate::templates::asset_version() }}"></script>
-<!-- 送信中の目印は console.js（確認ダイアログ）より後に読み込む。取り消された送信へ
-     印を付けないため、リスナの登録順に依存する（submit-feedback.js のコメント参照）。 -->
+<!-- Load the submitting marker after console.js (confirmation dialog). To avoid marking cancelled
+     submissions it depends on listener registration order (see the comment in submit-feedback.js). -->
 <script src="/assets/local-time.js?v={{ crate::templates::asset_version() }}" defer></script>
 <script src="/assets/submit-feedback.js?v={{ crate::templates::asset_version() }}"></script>
 {% include "react_bootstrap.html" %}

@@ -1,8 +1,8 @@
-//! アカウント一覧と 1 件の画面（人・サービスアカウント）を**ルータ経由で**通す（api は wiremock で差し替える）。
+//! Runs the account list and single-item screens (people, service accounts) **through the router** (api replaced by wiremock).
 //!
-//! ⚠ **描画の単体テストだけでは足りなかった。** テンプレートを直接描く試験は通っていたのに、
-//! 実際の経路は 500 を返していた（E2E が捕まえた）。ハンドラと api クライアントの結線まで
-//! 通しておかないと、同じ形の見落としが繰り返される。
+//! ⚠ **Rendering unit tests alone were not enough.** Tests rendering templates directly passed while
+//! the real route returned 500 (caught by E2E). Unless the wiring between handlers and the api client is
+//! exercised, the same kind of oversight repeats.
 
 mod support;
 
@@ -52,8 +52,8 @@ fn service_account() -> serde_json::Value {
     })
 }
 
-/// 一覧は探す場所。人とサービスアカウントが 1 つに並び、各行からその 1 件の画面へ行ける
-/// （ADR-0065）。
+/// The list is where you find. People and service accounts are in one list, and each row leads to its single-item screen
+/// (ADR-0065).
 #[tokio::test]
 async fn the_account_list_renders_both_kinds_and_links_into_each() {
     let env = setup().await;
@@ -83,23 +83,23 @@ async fn the_account_list_renders_both_kinds_and_links_into_each() {
     assert_eq!(
         response.status(),
         StatusCode::OK,
-        "アカウント一覧が描けません"
+        "account list does not render"
     );
     let html = body_text(response).await;
     assert!(
         html.contains(&format!("{}/admin/members/{USER_ID}", env.prefix())),
-        "一覧に 1 人の画面への導線がありません: {html}"
+        "list has no link to the single-person screen: {html}"
     );
     assert!(
         html.contains(&format!(
             "{}/admin/service-accounts/{CLIENT_ID}",
             env.prefix()
         )),
-        "一覧にサービスアカウントの画面への導線がありません: {html}"
+        "list has no link to the service account screen: {html}"
     );
 }
 
-/// 旧来のメンバー一覧は、人に絞ったアカウントの一覧へ転送する（ブックマークを壊さない）。
+/// The old member list redirects to the account list filtered to people (do not break bookmarks).
 #[tokio::test]
 async fn the_old_member_list_forwards_to_the_account_list() {
     let env = setup().await;
@@ -124,7 +124,7 @@ async fn the_old_member_list_forwards_to_the_account_list() {
     );
 }
 
-/// サービスアカウント 1 件の画面を**ルータ経由で**描く（api 5 本の結線を通す）。
+/// Renders a single service account screen **through the router** (exercises the wiring of 5 api calls).
 #[tokio::test]
 async fn the_service_account_page_renders_the_same_cards_as_a_member() {
     let env = setup().await;
@@ -183,7 +183,7 @@ async fn the_service_account_page_renders_the_same_cards_as_a_member() {
     let base = format!("{}/admin/service-accounts/{CLIENT_ID}", env.prefix());
     assert!(
         html.contains(&format!("{base}/note")),
-        "メモの欄がありません: {html}"
+        "note section is missing: {html}"
     );
     assert!(html.contains("経緯のメモ"), "{html}");
     assert!(
@@ -195,8 +195,8 @@ async fn the_service_account_page_renders_the_same_cards_as_a_member() {
     );
 }
 
-/// ⚠ **これが 500 を返していた。** 経路には `{tenant_id}` と `{user_id}` の 2 つがあるのに
-/// api 側が `Path<Uuid>` 1 つで受けており、先頭のテナント ID を取っていた。
+/// ⚠ **This used to return 500.** The route has two params, `{tenant_id}` and `{user_id}`, but
+/// the api side took a single `Path<Uuid>` and got the leading tenant ID.
 #[tokio::test]
 async fn the_member_page_renders_the_actions() {
     let env = setup().await;
@@ -220,7 +220,7 @@ async fn the_member_page_renders_the_actions() {
     assert_eq!(
         st,
         StatusCode::OK,
-        "1 人の画面が描けません: {}",
+        "single-person screen does not render: {}",
         &html[..html.len().min(900)]
     );
     for action in ["reset-mfa", "reset-password", "reissue-tokens", "delete"] {
@@ -229,12 +229,12 @@ async fn the_member_page_renders_the_actions() {
                 "{}/admin/members/{USER_ID}/{action}",
                 env.prefix()
             )),
-            "{action} が出ていません: {html}"
+            "{action} is not shown: {html}"
         );
     }
 }
 
-/// メンバーでない相手は一覧へ戻す（他テナントのメンバーの存在を推測させない）。
+/// Non-members are sent back to the list (do not let others infer the existence of members of other tenants).
 #[tokio::test]
 async fn an_unknown_member_goes_back_to_the_list() {
     let env = setup().await;
@@ -253,11 +253,11 @@ async fn an_unknown_member_goes_back_to_the_list() {
         ),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::FOUND, "一覧へ戻しません");
+    assert_eq!(response.status(), StatusCode::FOUND, "not redirected");
 }
 
-/// task #83: 1 人の画面は api の `active-tokens` を引いて、いま有効な refresh token の本数を出す。
-/// ゲストは所属元テナントの管理者しか数えられない（api は 404）ので、そもそも聞きに行かない。
+/// task #83: the single-person screen fetches the api's `active-tokens` and shows the number of currently valid refresh tokens.
+/// Guests can only be counted by admins of their home tenant (the api returns 404), so it does not ask at all.
 #[tokio::test]
 async fn the_member_page_shows_the_active_token_count_for_home_members_only() {
     let env = setup().await;
@@ -290,7 +290,7 @@ async fn the_member_page_shows_the_active_token_count_for_home_members_only() {
     assert_eq!(st, StatusCode::OK, "{}", &html[..html.len().min(900)]);
     assert!(
         html.contains("data-active-refresh-tokens=\"2\""),
-        "本数が出ていません: {html}"
+        "token count is not shown: {html}"
     );
 }
 

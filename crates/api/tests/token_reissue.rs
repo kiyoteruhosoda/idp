@@ -1,17 +1,17 @@
-//! 発行済みトークンの再発行（ADR-0047）の統合テスト（DB あり）。
+//! Integration test for reissuing issued tokens (ADR-0047) (with DB).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test token_reissue
 //!
-//! **単体テストでは証明できない**。失効は `refresh_tokens` への 1 本の UPDATE で、それが
-//! 効いたかどうかは「更新が断られるか」でしか分からない。発行 → 更新 → 再発行 → 更新が
-//! 断られる、までを実 DB で通して初めて経路が繋がっている確証になる。
+//! **This cannot be proven by unit tests.** Revocation is one UPDATE on `refresh_tokens`, and whether it
+//! worked shows only in "is refresh refused". Only running issue -> refresh -> reissue -> refresh refused
+//! against a real DB proves the path is wired up.
 //!
-//! 何を守っているか:
+//! What this protects:
 //!
-//! この操作は**トークンだけ**を入れ替える。セッションまで切れると、押した本人がその場で
-//! 締め出され「アプリの鍵を替えたいだけ」の利用者が使えなくなる。逆にトークンが生き残れば
-//! 何も替わっていない。どちらでもないことを、同じテストの中で確かめる。
+//! This operation swaps **only the tokens**. If the session were cut too, the person pressing it would be
+//! locked out on the spot, and a user who "just wants to change the app's key" could no longer use it. Conversely, if
+//! tokens survived, nothing changed. The same test checks it is neither.
 
 mod support;
 
@@ -28,7 +28,7 @@ use support::{
 
 const PASSWORD: &str = "correct-horse-battery";
 
-/// ログイン 1 回ぶんの成果物。
+/// Artifacts of one login.
 struct LoggedIn {
     refresh_token: String,
     sso_cookie: String,
@@ -45,7 +45,7 @@ fn unique_username() -> String {
     format!("tr{}", &uuid::Uuid::new_v4().simple().to_string()[..10])
 }
 
-/// `offline_access` 付きで一通り通し、refresh token と SSO Cookie を得る。
+/// Runs through once with `offline_access` and obtains a refresh token and the SSO cookie.
 async fn log_in_with_offline_access(
     env: &TestEnv,
     client_id: &str,
@@ -94,7 +94,7 @@ async fn log_in_with_offline_access(
     let body = body_json(response).await;
     let sso_cookie = body["sso_session_id"].as_str().unwrap().to_string();
 
-    // `offline_access` は同意を挟む。挟まれたら承諾する。
+    // `offline_access` interposes consent. Accept it if interposed.
     let callback = match body["result"].as_str() {
         Some("consent_required") => {
             let consent_session = body["auth_session_id"].as_str().unwrap().to_string();
@@ -142,13 +142,13 @@ async fn log_in_with_offline_access(
     LoggedIn {
         refresh_token: tokens["refresh_token"]
             .as_str()
-            .expect("refresh_token（offline_access を要求している）")
+            .expect("refresh_token (offline_access was requested)")
             .to_string(),
         sso_cookie,
     }
 }
 
-/// refresh grant を 1 回叩く。成功したら回転後の refresh token を返す。
+/// Calls the refresh grant once. On success returns the rotated refresh token.
 async fn refresh(
     env: &TestEnv,
     client_id: &str,
@@ -175,7 +175,7 @@ async fn refresh(
     (status, rotated)
 }
 
-/// セキュリティ画面が開けるか（＝ SSO セッションが生きているか）を返す。
+/// Returns whether the security screen opens (= whether the SSO session is alive).
 async fn security_screen_result(env: &TestEnv, sso_cookie: &str) -> String {
     let response = send(
         &env.app,
@@ -196,7 +196,7 @@ async fn security_screen_result(env: &TestEnv, sso_cookie: &str) -> String {
         .to_string()
 }
 
-/// 本人による再発行を 1 回。落とした本数を返す。
+/// One reissue by the user. Returns the number dropped.
 async fn reissue_own_tokens(env: &TestEnv, sso_cookie: &str) -> u64 {
     let response = send(
         &env.app,
@@ -216,7 +216,7 @@ async fn reissue_own_tokens(env: &TestEnv, sso_cookie: &str) -> u64 {
     body["revoked"].as_u64().expect("revoked")
 }
 
-/// **本人が再発行すると、発行済みトークンは使えなくなる。ただしログイン状態は残る。**
+/// **When the user reissues, issued tokens become unusable. The login state remains, though.**
 #[tokio::test]
 async fn reissuing_your_tokens_stops_the_refresh_grant_and_keeps_you_signed_in() {
     let Some(env) = support::setup("self-service token reissue").await else {
@@ -230,39 +230,39 @@ async fn reissuing_your_tokens_stops_the_refresh_grant_and_keeps_you_signed_in()
     .await;
     let logged_in = log_in_with_offline_access(&env, &client_id, &secret, &unique_username()).await;
 
-    // 再発行の前は更新が通る（この前提が崩れていると、以降の assert は何も証明しない）。
+    // Before reissuing, refresh succeeds (if this premise breaks, the following asserts prove nothing).
     let (status, rotated) = refresh(&env, &client_id, &secret, &logged_in.refresh_token).await;
-    assert_eq!(status, StatusCode::OK, "再発行前の更新は通る");
-    let rotated = rotated.expect("回転後の refresh token");
+    assert_eq!(status, StatusCode::OK, "refresh before reissue succeeds");
+    let rotated = rotated.expect("rotated refresh token");
 
     assert_eq!(
         reissue_own_tokens(&env, &logged_in.sso_cookie).await,
         1,
-        "生きていた 1 本を落とす"
+        "drops the one live token"
     );
 
-    // **回転後のトークン**で試す。rotation を引き継いだ子まで落ちていないと、
-    // 「再発行の直前に一度更新したアプリ」だけが生き残る。
+    // Try with **the rotated token**. Unless children inherited through rotation are dropped too,
+    // only "apps that refreshed once right before the reissue" would survive.
     let (status, _) = refresh(&env, &client_id, &secret, &rotated).await;
     assert_eq!(
         status,
         StatusCode::BAD_REQUEST,
-        "再発行後の更新は断られる（通るなら鍵は替わっていない）"
+        "refresh after reissue is refused (if it passes, the key was not changed)"
     );
 
-    // セッションは残る。ここが切れていると、押した本人がその場で締め出される。
+    // The session remains. If it were cut, the person pressing it would be locked out on the spot.
     assert_eq!(
         security_screen_result(&env, &logged_in.sso_cookie).await,
         "ok",
-        "再発行してもログイン状態は続く"
+        "the login state continues after reissue"
     );
 
-    // 2 回目は落とすものが無い（冪等。0 件でも成功する）。
+    // The second time there is nothing to drop (idempotent; succeeds with 0).
     assert_eq!(reissue_own_tokens(&env, &logged_in.sso_cookie).await, 0);
 }
 
-/// **管理者が対象を指定して再発行できる。** 「あのアプリに配った鍵が心配だ」に対して、
-/// 無効化（業務が止まる）もパスワード再発行（本人に再設定を強いる）も持ち出さずに応える。
+/// **An admin can reissue for a specified target.** Answers "I worry about the key handed to that app"
+/// without resorting to disabling (stops work) or a password reissue (forces the user to reset).
 #[tokio::test]
 async fn an_administrator_reissues_another_users_tokens() {
     let Some(env) = support::setup("admin token reissue").await else {
@@ -283,8 +283,8 @@ async fn an_administrator_reissues_another_users_tokens() {
     let uri = format!("/{}/admin/users/{target}/token-reissue", env.root_tenant_id);
 
     let (status, rotated) = refresh(&env, &client_id, &secret, &logged_in.refresh_token).await;
-    assert_eq!(status, StatusCode::OK, "再発行前の更新は通る");
-    let rotated = rotated.expect("回転後の refresh token");
+    assert_eq!(status, StatusCode::OK, "refresh before reissue succeeds");
+    let rotated = rotated.expect("rotated refresh token");
 
     let response = send(&env.app, post(&admin_tok, &uri, json!({}))).await;
     assert_eq!(response.status(), StatusCode::OK, "admin can reissue");
@@ -293,15 +293,19 @@ async fn an_administrator_reissues_another_users_tokens() {
     assert_eq!(body["revoked"], 1);
 
     let (status, _) = refresh(&env, &client_id, &secret, &rotated).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "再発行後の更新は断られる");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "refresh after reissue is refused"
+    );
 
-    // 対象のログイン状態は切らない（切りたいなら無効化を使う。この操作は鍵だけを替える）。
+    // The target's login state is not cut (use disabling for that; this operation only swaps keys).
     assert_eq!(
         security_screen_result(&env, &logged_in.sso_cookie).await,
         "ok"
     );
 
-    // 監査に対象と本数が残り、トークンの値は残らない。
+    // The audit keeps the target and the count, not the token values.
     let reasons: Vec<String> = sqlx::query_scalar(
         "SELECT reason FROM audit_log WHERE event_type = 'refresh_token.revoked' \
            AND user_id = ? AND reason LIKE ?",
@@ -318,14 +322,14 @@ async fn an_administrator_reissues_another_users_tokens() {
         "token values must not leak into the audit log"
     );
 
-    // 2 回目は 0 件で成功する（管理者は本数を知らずに操作する）。
+    // The second time succeeds with 0 (admins operate without knowing the count).
     let response = send(&env.app, post(&admin_tok, &uri, json!({}))).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(body_json(response).await["revoked"], 0);
 }
 
-/// 認可: 未認証は 401、権限の無い利用者は 403、不存在は 404。
-/// 自分自身には実行できる（締め出しにならないため。無効化・MFA 解除と違う点）。
+/// Authorization: unauthenticated is 401, a user without permission is 403, nonexistent is 404.
+/// It can be run on oneself (it causes no lockout; unlike disabling and MFA reset).
 #[tokio::test]
 async fn token_reissue_checks_authorization_and_allows_yourself() {
     let Some(env) = support::setup("admin token reissue guards").await else {
@@ -357,14 +361,14 @@ async fn token_reissue_checks_authorization_and_allows_yourself() {
         "no admin perm -> 403"
     );
 
-    // 不存在・UUID 不正はいずれも 404（存在推測を防ぐ）。
+    // Nonexistent and invalid UUID are both 404 (prevents inferring existence).
     for target in [uuid::Uuid::now_v7().to_string(), "not-a-uuid".to_string()] {
         let uri = format!("/{}/admin/users/{target}/token-reissue", env.root_tenant_id);
         let response = send(&env.app, post(&admin_tok, &uri, json!({}))).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND, "target={target}");
     }
 
-    // 自分自身は許す（この操作はログイン状態を切らないので、ロックアウトが起きない）。
+    // Oneself is allowed (this operation does not cut the login state, so no lockout happens).
     let self_uri = format!(
         "/{}/admin/users/{}/token-reissue",
         env.root_tenant_id, env.root_admin_id
@@ -373,10 +377,10 @@ async fn token_reissue_checks_authorization_and_allows_yourself() {
     assert_eq!(response.status(), StatusCode::OK, "self -> 200");
 }
 
-// --- いま有効なトークンの本数（task #83） ------------------------------------------------------
+// --- Number of currently valid tokens (task #83) ------------------------------------------------------
 
-/// `refresh_tokens` へ 1 行を直に入れる。`(tenant_id, client_id)` の複合外部キーがあるので
-/// 発行元クライアントは実在させる。`expires_in_days` を負にすれば期限切れ、`revoked` で失効済み。
+/// Inserts one row directly into `refresh_tokens`. There is a composite FK on `(tenant_id, client_id)`, so
+/// the issuing client must exist. A negative `expires_in_days` makes it expired; `revoked` makes it revoked.
 async fn insert_refresh_token_row(
     pool: &sqlx::MySqlPool,
     tenant_id: &str,
@@ -402,7 +406,7 @@ async fn insert_refresh_token_row(
     .expect("insert refresh token");
 }
 
-/// 子テナントを 1 つ作って ID を返す。
+/// Creates a child tenant and returns its ID.
 async fn create_child_tenant(env: &TestEnv) -> String {
     let id = uuid::Uuid::now_v7().to_string();
     sqlx::query("INSERT INTO tenants (id, parent_tenant_id, name) VALUES (?, ?, ?)")
@@ -422,9 +426,9 @@ async fn active_refresh_tokens(env: &TestEnv, token: &str, target: &str) -> (Sta
     (status, body_json(response).await)
 }
 
-/// **押す前に本数が分かる。** 数えるのは未失効かつ期限内の refresh token だけで、失効済み・
-/// 期限切れは数えない。数える範囲は再発行が落とす範囲（テナントを問わない。ADR-0047）に揃え、
-/// 再発行の後は 0 になる。
+/// **The count is known before pressing.** Only unrevoked, unexpired refresh tokens are counted; revoked and
+/// expired ones are not. The counted scope matches what reissue drops (any tenant; ADR-0047), and
+/// after reissue it is 0.
 #[tokio::test]
 async fn an_administrator_sees_how_many_refresh_tokens_are_alive_before_reissuing() {
     let Some(env) = support::setup("admin active token count").await else {
@@ -437,13 +441,13 @@ async fn an_administrator_sees_how_many_refresh_tokens_are_alive_before_reissuin
     )
     .await;
     let username = unique_username();
-    // 実際の往復で 1 本（DB の直挿しだけだと、発行経路が書く行を数えている保証にならない）。
+    // One from a real round trip (direct DB inserts alone would not guarantee counting the rows the issuance path writes).
     log_in_with_offline_access(&env, &client_id, &secret, &username).await;
     let target = support::find_user_id_by_username(&env.pool, &env.root_tenant_id, &username)
         .await
         .expect("target user");
 
-    // 数えないもの: 失効済み・期限切れ。
+    // Not counted: revoked and expired.
     insert_refresh_token_row(
         &env.pool,
         &env.root_tenant_id,
@@ -462,12 +466,12 @@ async fn an_administrator_sees_how_many_refresh_tokens_are_alive_before_reissuin
         false,
     )
     .await;
-    // 数えるもの: 同じ人が別のテナントのアプリへ渡している鍵（再発行はこれも落とす）。
+    // Counted: keys the same person handed to an app in another tenant (reissue drops these too).
     let child = create_child_tenant(&env).await;
     let (child_client, _) =
         support::insert_confidential_client(&env.pool, &child, &["openid"]).await;
     insert_refresh_token_row(&env.pool, &child, &target, &child_client, 30, false).await;
-    // 別の人の鍵は数えない。
+    // Another person's keys are not counted.
     let bystander = support::create_plain_user(&env.pool, &env.root_tenant_id).await;
     insert_refresh_token_row(
         &env.pool,
@@ -485,19 +489,16 @@ async fn an_administrator_sees_how_many_refresh_tokens_are_alive_before_reissuin
     assert_eq!(body["user_id"], target);
     assert_eq!(
         body["active_refresh_tokens"], 2,
-        "往復の 1 本 + 別テナントの 1 本（失効済み・期限切れ・他人の分は数えない）: {body}"
+        "one from the round trip + one in another tenant (revoked, expired and others' are not counted): {body}"
     );
 
     let reissue = format!("/{}/admin/users/{target}/token-reissue", env.root_tenant_id);
     let response = send(&env.app, post(&admin_tok, &reissue, json!({}))).await;
     assert_eq!(response.status(), StatusCode::OK);
     let (_, body) = active_refresh_tokens(&env, &admin_tok, &target).await;
-    assert_eq!(
-        body["active_refresh_tokens"], 0,
-        "再発行の後は 0 本: {body}"
-    );
+    assert_eq!(body["active_refresh_tokens"], 0, "0 after reissue: {body}");
 
-    // 読み取りは監査に残さない（再発行の 1 行だけ）。
+    // Reads are not audited (only the one reissue row).
     let rows: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM audit_log WHERE user_id = ? AND reason LIKE ?")
             .bind(&env.root_admin_id)
@@ -508,8 +509,8 @@ async fn an_administrator_sees_how_many_refresh_tokens_are_alive_before_reissuin
     assert_eq!(rows, 1);
 }
 
-/// **テナント境界: 他テナントの利用者は数えない。** 所属元が子テナントの利用者を、親（root）の
-/// 管理者が指しても 404（不存在と同じ。存在も推測させない）。再発行と同じ判定。
+/// **Tenant boundary: users of other tenants are not counted.** Even if a parent (root) admin points at a user
+/// whose home is a child tenant, it is 404 (same as nonexistent; existence is not revealed). Same decision as reissue.
 #[tokio::test]
 async fn the_active_token_count_does_not_reach_another_tenants_user() {
     let Some(env) = support::setup("admin active token count tenant boundary").await else {
@@ -526,13 +527,13 @@ async fn the_active_token_count_does_not_reach_another_tenants_user() {
     assert_eq!(
         status,
         StatusCode::NOT_FOUND,
-        "他テナントの利用者の本数は返さない: {body}"
+        "no count is returned for another tenant's user: {body}"
     );
     assert!(body.get("active_refresh_tokens").is_none(), "{body}");
 }
 
-/// 認可: 資格情報なしは 401、権限の無い利用者は 403、不存在・UUID 不正は 404。
-/// 権限は利用者の**読み取り**（`idp.users:read`）で足りる（書き込みまでは要らない）。
+/// Authorization: no credentials is 401, a user without permission is 403, nonexistent or invalid UUID is 404.
+/// Read permission on users (`idp.users:read`) is enough (write is not needed).
 #[tokio::test]
 async fn the_active_token_count_needs_only_the_user_read_permission() {
     let Some(env) = support::setup("admin active token count guards").await else {
@@ -557,7 +558,7 @@ async fn the_active_token_count_needs_only_the_user_read_permission() {
     let (status, _) = active_refresh_tokens(&env, &plain_token, &target).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "no perm -> 403");
 
-    // `idp.users:read` だけを持つシステム用クライアントで数えられる。
+    // A system client holding only `idp.users:read` can count.
     let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let (m2m, m2m_secret) =
         support::insert_m2m_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
@@ -585,7 +586,7 @@ async fn the_active_token_count_needs_only_the_user_read_permission() {
         .expect("management token")
         .to_string();
     let (status, body) = active_refresh_tokens(&env, &read_only, &target).await;
-    assert_eq!(status, StatusCode::OK, "idp.users:read で足りる: {body}");
+    assert_eq!(status, StatusCode::OK, "idp.users:read is enough: {body}");
     assert_eq!(body["active_refresh_tokens"], 0);
 
     for missing in [uuid::Uuid::now_v7().to_string(), "not-a-uuid".to_string()] {
@@ -594,9 +595,9 @@ async fn the_active_token_count_needs_only_the_user_read_permission() {
     }
 }
 
-// --- 再発行が数える本数と、画面の本数を揃える（task #123） --------------------------------------
+// --- Align the count reissue reports with the count on screen (task #123) --------------------------------------
 
-/// 管理者の再発行を 1 回。応答の `revoked`（落とした本数）を返す。
+/// One admin reissue. Returns the response's `revoked` (number dropped).
 async fn admin_reissue(env: &TestEnv, token: &str, target: &str) -> Value {
     let uri = format!("/{}/admin/users/{target}/token-reissue", env.root_tenant_id);
     let response = send(&env.app, post(token, &uri, json!({}))).await;
@@ -604,9 +605,9 @@ async fn admin_reissue(env: &TestEnv, token: &str, target: &str) -> Value {
     body_json(response).await["revoked"].clone()
 }
 
-/// **期限切れの行は再発行の本数に入らない。** 押す前に見せた本数（有効な本数）と、押した結果の
-/// 本数が同じ範囲を指す。以前は期限切れで失効印の無い行まで落として数えたので、画面で 0 本でも
-/// 「無効にしました」と出た。
+/// **Expired rows are not included in the reissue count.** The count shown before pressing (valid count) and
+/// the count resulting from pressing refer to the same scope. Previously expired rows without a revoked mark were
+/// dropped and counted, so even with 0 on screen it said "Revoked".
 #[tokio::test]
 async fn reissue_counts_only_the_tokens_the_console_showed_as_alive() {
     let Some(env) = support::setup("admin token reissue skips expired rows").await else {
@@ -617,7 +618,7 @@ async fn reissue_counts_only_the_tokens_the_console_showed_as_alive() {
     let target = support::create_plain_user(&env.pool, &env.root_tenant_id).await;
     let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
 
-    // 期限切れで失効印の無い行だけがある: 画面は 0 本、押しても 0 本。
+    // Only an expired row without a revoked mark exists: the screen shows 0, pressing gives 0.
     for days in [-1, -30] {
         insert_refresh_token_row(
             &env.pool,
@@ -635,10 +636,10 @@ async fn reissue_counts_only_the_tokens_the_console_showed_as_alive() {
     assert_eq!(
         admin_reissue(&env, &admin_tok, &target).await,
         0,
-        "期限切れの行は落とした本数に入らない（画面の 0 本と揃う）"
+        "expired rows are not included in the dropped count (matches the 0 on screen)"
     );
 
-    // 生きている行が加わると、画面の本数と押した結果の本数が一致する。
+    // Once a live row is added, the count on screen and the count from pressing match.
     for _ in 0..2 {
         insert_refresh_token_row(
             &env.pool,
@@ -656,10 +657,10 @@ async fn reissue_counts_only_the_tokens_the_console_showed_as_alive() {
     assert_eq!(
         admin_reissue(&env, &admin_tok, &target).await,
         shown,
-        "押した結果の本数 = 押す前に見せた本数"
+        "count from pressing = count shown before pressing"
     );
 
-    // 期限切れの行には失効印を付けていない（触っていない）。
+    // The expired row has no revoked mark (it was not touched).
     let untouched: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM refresh_tokens \
          WHERE user_id = ? AND revoked_at IS NULL AND expires_at <= UTC_TIMESTAMP(6)",
@@ -670,8 +671,5 @@ async fn reissue_counts_only_the_tokens_the_console_showed_as_alive() {
     .expect("expired rows");
     assert_eq!(untouched, 2);
     let (_, body) = active_refresh_tokens(&env, &admin_tok, &target).await;
-    assert_eq!(
-        body["active_refresh_tokens"], 0,
-        "再発行の後は 0 本: {body}"
-    );
+    assert_eq!(body["active_refresh_tokens"], 0, "0 after reissue: {body}");
 }

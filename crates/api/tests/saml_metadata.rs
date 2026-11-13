@@ -1,6 +1,6 @@
-//! SAML IdP メタデータ出力（公開）の統合テスト（DB あり）。
+//! Integration tests (with DB) for SAML IdP metadata output (public).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test saml_metadata
 
 mod support;
@@ -9,8 +9,8 @@ use axum::http::header::CONTENT_TYPE;
 use axum::http::{Method, StatusCode};
 use support::{anonymous, send};
 
-/// IdP メタデータは認証不要で公開され、テナント issuer を entityID とし、ACTIVE 署名鍵を含む
-/// 整形式 XML を返す。
+/// IdP metadata is published without authentication, uses the tenant issuer as entityID, and returns
+/// well-formed XML containing the ACTIVE signing key.
 #[tokio::test]
 async fn idp_metadata_is_public_and_tenant_scoped() {
     let Some(env) = support::setup("saml idp metadata").await else {
@@ -35,14 +35,14 @@ async fn idp_metadata_is_public_and_tenant_scoped() {
         xml.contains(&format!("entityID=\"{tenant_issuer}\"")),
         "entityID must be the tenant issuer: {xml}"
     );
-    // IdP メタデータ（IDPSSODescriptor + SSO）であり、SP メタデータではない。
+    // It is IdP metadata (IDPSSODescriptor + SSO), not SP metadata.
     assert!(xml.contains("IDPSSODescriptor"), "IDPSSODescriptor: {xml}");
     assert!(!xml.contains("SPSSODescriptor"));
     assert!(
         xml.contains(&format!("{tenant_issuer}/saml/sso")),
         "SSO URL"
     );
-    // ブートストラップ済み ACTIVE 署名鍵が RSAKeyValue で埋め込まれる。
+    // The bootstrapped ACTIVE signing key is embedded as RSAKeyValue.
     assert!(
         xml.contains("<md:KeyDescriptor use=\"signing\">"),
         "signing KeyDescriptor: {xml}"
@@ -50,13 +50,13 @@ async fn idp_metadata_is_public_and_tenant_scoped() {
     assert!(xml.contains("<ds:RSAKeyValue>"));
 }
 
-/// 公開中の鍵をすべて `KeyDescriptor` として並べる（ADR-0039 / T33）。
+/// Lists every published key as a `KeyDescriptor` (ADR-0039 / T33).
 ///
-/// ADR-0039 は「公開してから署名」で JWKS 側の断絶を無くしたが、SAML のメタデータは
-/// `KeyDescriptor` を 1 本しか出していなかった。**SP からは署名が切り替わる瞬間に証明書が
-/// 入れ替わって見え、取り込み直すまで検証が落ちる。**
+/// ADR-0039 removed the JWKS-side gap with "publish, then sign", but SAML metadata was emitting
+/// only one `KeyDescriptor`. **To SPs the certificate appeared to swap at the moment signing switched,
+/// and verification failed until they re-imported.**
 ///
-/// JWKS と同じ集合になっていること（＝どちらか片方だけ古くならないこと）を見る。
+/// Checks it is the same set as JWKS (= neither side goes stale alone).
 #[tokio::test]
 async fn idp_metadata_publishes_every_key_the_jwks_does() {
     let Some(env) = support::setup("saml idp metadata key window").await else {
@@ -71,7 +71,7 @@ async fn idp_metadata_publishes_every_key_the_jwks_does() {
         .expect("body");
     let jwks: serde_json::Value = serde_json::from_slice(&bytes).expect("jwks json");
     let published = jwks["keys"].as_array().expect("keys").len();
-    assert!(published >= 1, "少なくとも 1 本は公開されている");
+    assert!(published >= 1, "at least one key is published");
 
     let uri = format!("/{}/saml/metadata", env.root_tenant_id);
     let response = send(&env.app, anonymous(Method::GET, &uri, None)).await;
@@ -84,6 +84,6 @@ async fn idp_metadata_publishes_every_key_the_jwks_does() {
     let descriptors = xml.matches("<md:KeyDescriptor use=\"signing\">").count();
     assert_eq!(
         descriptors, published,
-        "JWKS と同じ本数を並べること（JWKS {published} 本 / metadata {descriptors} 本）: {xml}"
+        "lists as many as JWKS (JWKS {published} / metadata {descriptors}): {xml}"
     );
 }

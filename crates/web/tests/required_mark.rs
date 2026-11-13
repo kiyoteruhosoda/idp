@@ -1,18 +1,18 @@
-//! 必須の印（`templates/required_mark.html`）が、全画面で `required` 属性と表裏で一致していること。
+//! The required marker (`templates/required_mark.html`) matches the `required` attribute on every screen.
 //!
-//! 印は**目で拾うためだけ**のもので、必須かどうかを決めているのは入力欄の `required` である
-//! （支援技術はそちらを読む。印は `aria-hidden`）。この 2 つがずれると、画面は 2 通りの嘘をつく:
+//! The marker is **only for the eye**; what decides whether a field is required is the input's `required`
+//! (assistive technology reads that; the marker is `aria-hidden`). If the two drift, the screen lies in two ways:
 //!
-//! - **印が無い必須欄** —— 送ってから「入力してください」で戻される。どれが必須かは、
-//!   弾かれて初めて分かる。
-//! - **印だけの任意欄** —— 埋めなくてよいものを埋めさせる。入力を諦める理由にもなる。
+//! - **Required fields without the marker** -- sent back with "please fill in" after submitting. Which is required
+//!   is only learned by being rejected.
+//! - **Optional fields with only the marker** -- makes users fill in what they need not. Also a reason to give up.
 //!
-//! 画面は 60 近くあり、新しいフォームは今後も増える。⚠ **一度そろえても、次に足される
-//! 1 つがずれる**ので、そろっていること自体を試験で持つ。
+//! There are nearly 60 screens and more forms will be added. ⚠ **Even once aligned, the next one
+//! added drifts**, so the alignment itself is held by a test.
 //!
-//! 例外は 1 つだけ:**ラベルを `visually-hidden` で伏せているフォーム**には印を出さない
-//! （見えないラベルの中に見える印は置けない）。いずれも項目が 1 つだけの行内編集で、
-//! そのボタンが送るのはその欄だけである。
+//! Only one exception: **forms whose label is hidden with `visually-hidden`** get no marker
+//! (a visible marker cannot be put inside an invisible label). All are single-field inline edits, and
+//! their button submits only that field.
 
 mod support;
 
@@ -25,15 +25,15 @@ use wiremock::{Mock, ResponseTemplate};
 
 const INCLUDE: &str = r#"{% include "required_mark.html" %}"#;
 
-/// 実際に描かれた HTML に印が出ること。
+/// The marker appears in actually rendered HTML.
 ///
-/// 上の 2 つはテンプレートの**文字列**を読むだけなので、`{% include %}` が描画時に
-/// 解決できなくても緑になる（`messages` を持たないテンプレートへ置いたときなど）。
-/// ルータ越しに 1 画面だけ引いて、印が本当に出ることを見る。
+/// The two above only read template **strings**, so they are green even if `{% include %}` cannot be
+/// resolved at render time (e.g. placed in a template without `messages`).
+/// Fetch one screen through the router and check the marker really appears.
 #[tokio::test]
 async fn the_mark_is_rendered_into_the_page() {
     let env = setup().await;
-    // 外部 IdP ボタンの取得（ログイン画面の描画に要る。失敗してもパスワード欄は出る）。
+    // Fetching external IdP buttons (needed to render the login screen; the password field appears even on failure).
     Mock::given(method("POST"))
         .and(path("/internal/external/providers"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -46,12 +46,12 @@ async fn the_mark_is_rendered_into_the_page() {
     let response = send(&env.app, get(&format!("{}/login", env.prefix()))).await;
     let html = body_text(response).await;
 
-    // ユーザー名・パスワードの 2 欄とも必須。
+    // Both username and password fields are required.
     let marks = html.matches(r#"<span class="form-required""#).count();
-    assert_eq!(marks, 2, "描かれた印が 2 つではない: {marks}");
+    assert_eq!(marks, 2, "rendered markers are not 2: {marks}");
     assert!(
         html.contains(r#"<span class="form-required" aria-hidden="true" title="必須">*</span>"#),
-        "印の形が変わっている（読み上げから伏せる aria-hidden と、意味を伝える title を落とさない）",
+        "marker shape changed (keep aria-hidden hiding it from screen readers and the title carrying the meaning)",
     );
 }
 
@@ -64,24 +64,24 @@ fn every_required_field_shows_the_mark() {
                 continue;
             }
             let Some(id) = attribute(tag, "id") else {
-                panic!("{name}: `required` の欄に id が無く、ラベルと結び付いていない: {tag}");
+                panic!("{name}: `required` field has no id and is not tied to a label: {tag}");
             };
             let Some(label) = label_for(&text, id) else {
-                panic!("{name}: `required` の欄 `{id}` に <label for> が無い");
+                panic!("{name}: `required` field `{id}` has no <label for>");
             };
             if label.hidden {
                 continue;
             }
             assert!(
                 label.inner.contains(INCLUDE),
-                "{name}: `required` の欄 `{id}` のラベルに必須の印が無い。\
-                 ラベルの文言の直後に {INCLUDE} を置く",
+                "{name}: label of `required` field `{id}` has no required marker; \
+                 put {INCLUDE} right after the label text",
             );
             checked += 1;
         }
     }
-    // 走査が壊れて「1 件も見つからないから緑」になるのを防ぐ。2026-09-21 時点で 53 件。
-    assert!(checked >= 50, "必須の欄が {checked} 件しか見つからない");
+    // Prevents the scan from breaking into "green because nothing was found". 53 as of 2026-09-21.
+    assert!(checked >= 50, "only {checked} required fields found");
 }
 
 #[test]
@@ -89,11 +89,11 @@ fn the_mark_is_never_shown_on_an_optional_field() {
     for (name, text) in templates() {
         for (at, _) in text.match_indices(INCLUDE) {
             let Some(label) = label_around(&text, at) else {
-                panic!("{name}: 必須の印が <label> の外にある（印はラベルの文言の直後に置く）");
+                panic!("{name}: required marker is outside <label> (put it right after the label text)");
             };
             let Some(id) = attribute(label.open_tag, "for") else {
                 panic!(
-                    "{name}: 必須の印を持つラベルに for が無い: {}",
+                    "{name}: label with a required marker has no for: {}",
                     label.open_tag
                 );
             };
@@ -101,24 +101,24 @@ fn the_mark_is_never_shown_on_an_optional_field() {
                 .into_iter()
                 .find(|tag| attribute(tag, "id") == Some(id));
             let Some(control) = control else {
-                panic!("{name}: 必須の印を持つラベル `{id}` に対応する入力欄が無い");
+                panic!("{name}: label `{id}` with a required marker has no matching input");
             };
             assert!(
                 has_attribute(control, "required"),
-                "{name}: `{id}` は必須の印が付いているのに `required` が無い",
+                "{name}: `{id}` has a required marker but no `required`",
             );
         }
     }
 }
 
-// ── 走査（テンプレートは Askama なので、素の HTML パーサには掛けられない） ──────────
+// ── Scan (templates are Askama, so a plain HTML parser cannot be used) ──────────
 
-/// `templates/` 以下の全テンプレート（`(表示用の名前, 中身)`）。印そのものの定義は除く。
+/// All templates under `templates/` (`(display name, content)`). Excludes the marker's own definition.
 fn templates() -> Vec<(String, String)> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates");
     let mut files = Vec::new();
     collect(&root, &mut files);
-    assert!(!files.is_empty(), "テンプレートが 1 つも見つからない");
+    assert!(!files.is_empty(), "no templates found");
     files.sort();
     files
         .into_iter()
@@ -129,15 +129,15 @@ fn templates() -> Vec<(String, String)> {
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .into_owned();
-            let text = fs::read_to_string(&path).expect("テンプレートを読めない");
+            let text = fs::read_to_string(&path).expect("cannot read template");
             (name, text)
         })
         .collect()
 }
 
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
-    for entry in fs::read_dir(dir).expect("templates/ を読めない") {
-        let path = entry.expect("ディレクトリ項目を読めない").path();
+    for entry in fs::read_dir(dir).expect("cannot read templates/") {
+        let path = entry.expect("cannot read directory entry").path();
         if path.is_dir() {
             collect(&path, out);
         } else if path.extension().is_some_and(|ext| ext == "html") {
@@ -146,10 +146,10 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// `<input …>` `<select …>` `<textarea …>` の開始タグ。
+/// Opening tags of `<input …>` `<select …>` `<textarea …>`.
 ///
-/// ⚠ 属性値に `>` を含むテンプレートはこのやり方で切れない。そのため `&gt;` で書く
-/// （`placeholder="&lt;EntityDescriptor …&gt;"`）ことが前提になっている。
+/// ⚠ Templates with `>` in attribute values cannot be split this way. Hence the premise that they are written as `&gt;`
+/// (`placeholder="&lt;EntityDescriptor …&gt;"`).
 fn control_tags(text: &str) -> Vec<&str> {
     let mut tags = Vec::new();
     for (start, _) in text.match_indices('<') {
@@ -171,7 +171,7 @@ fn control_tags(text: &str) -> Vec<&str> {
 struct Label<'a> {
     open_tag: &'a str,
     inner: &'a str,
-    /// 目に見えないラベル（行内編集の 1 項目フォーム）。印を出す場所が無い。
+    /// Invisible labels (single-field inline edit forms). There is nowhere to put the marker.
     hidden: bool,
 }
 
@@ -180,7 +180,7 @@ fn label_for<'a>(text: &'a str, id: &str) -> Option<Label<'a>> {
     label_around(text, at)
 }
 
-/// `at` を含む `<label>…</label>`。
+/// The `<label>…</label>` containing `at`.
 fn label_around(text: &str, at: usize) -> Option<Label<'_>> {
     let start = text[..at].rfind("<label")?;
     let open_end = text[start..].find('>')? + start + 1;
@@ -192,7 +192,7 @@ fn label_around(text: &str, at: usize) -> Option<Label<'_>> {
     })
 }
 
-/// タグに（値の無い）属性が書かれているか。`data-required` や `placeholder="required"` には当たらない。
+/// Whether the tag has the (valueless) attribute. Does not match `data-required` or `placeholder="required"`.
 fn has_attribute(tag: &str, name: &str) -> bool {
     tag.match_indices(name).any(|(at, _)| {
         let before = tag[..at].chars().next_back();
@@ -202,7 +202,7 @@ fn has_attribute(tag: &str, name: &str) -> bool {
     })
 }
 
-/// `name="…"` の値。
+/// Value of `name="…"`.
 fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
     let needle = format!(r#"{name}=""#);
     let at = tag.match_indices(&needle).find(|(at, _)| {

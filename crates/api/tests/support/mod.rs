@@ -1,14 +1,14 @@
-//! 統合テストの共通支援モジュール（REF1）。
+//! Shared support module for integration tests (REF1).
 //!
-//! 各テストバイナリは `mod support;` で取り込む（cargo は `tests/` 直下の `.rs` のみを
-//! テストバイナリとしてビルドし、サブディレクトリはモジュールとして共有できる）。
+//! Each test binary pulls it in with `mod support;` (cargo builds only `.rs` files directly under `tests/`
+//! as test binaries, and subdirectories can be shared as modules).
 //!
-//! ここに集約しているもの:
-//! - DB 接続・マイグレーション・署名鍵ブートストラップ（いずれもプロセス内で一度だけ。
-//!   新規 DB へ複数テストの setup が並走したときの seed 競合・ACTIVE 鍵の複数本化を防ぐ）
-//! - `AppState` / ルータの組み立て（`TestEnv`）
-//! - SSO セッション・利用者・クライアントのテストデータ生成
-//! - リクエストビルダとレスポンス読み取り
+//! What is gathered here:
+//! - DB connection, migrations and signing key bootstrap (each only once per process, preventing
+//!   seed races and multiple ACTIVE keys when several tests' setups run in parallel against a fresh DB)
+//! - Building `AppState` / the router (`TestEnv`)
+//! - Generating test data for SSO sessions, users and clients
+//! - Request builders and response readers
 #![allow(dead_code)]
 
 use assay_api::config::Config;
@@ -31,20 +31,20 @@ use tower::ServiceExt;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
 
-/// マイグレーションはプロセス内で一度だけ実行する（seed INSERT の並走競合を防ぐ）。
+/// Migrations run only once per process (prevents races between parallel seed INSERTs).
 static MIGRATIONS: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
 
-/// 署名鍵ブートストラップもプロセス内で一度だけ行う（`insert_if_no_active` が排他だとしても、
-/// テスト毎に呼ぶ必要はない）。
+/// Signing key bootstrap also runs only once per process (even if `insert_if_no_active` is exclusive,
+/// there is no need to call it per test).
 static KEY_BOOTSTRAP: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
 
-/// 内部認証エンドポイント（`/internal/*`）のサービストークン（ADR-0007 §5）。
-/// `setup()` が `INTERNAL_SERVICE_TOKEN` へ固定注入する。
-// 32 文字以上（`assay_contracts::deployment::INTERNAL_SERVICE_TOKEN_MIN_LEN`）。SEC11。
+/// Service token for the internal auth endpoints (`/internal/*`) (ADR-0007 §5).
+/// `setup()` injects it into `INTERNAL_SERVICE_TOKEN` as a fixed value.
+// 32 characters or more (`assay_contracts::deployment::INTERNAL_SERVICE_TOKEN_MIN_LEN`). SEC11.
 pub const SERVICE_TOKEN: &str = "test-internal-service-token-0123456789";
 pub const SERVICE_TOKEN_HEADER: &str = "x-internal-auth-token";
 
-// RFC 7636 Appendix B のテストベクタ（S256）。
+// Test vector from RFC 7636 Appendix B (S256).
 pub const CODE_VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
 pub const CODE_CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 pub const REDIRECT_URI: &str = "http://localhost:3000/callback";
@@ -57,43 +57,43 @@ impl Clock for SystemClock {
     }
 }
 
-/// 組み立て済みのテスト環境。
+/// An assembled test environment.
 pub struct TestEnv {
     pub app: axum::Router,
     pub pool: MySqlPool,
-    /// 基底 issuer（`config.issuer()`）。per-tenant issuer は `<issuer>/<tenant_id>`。
+    /// Base issuer (`config.issuer()`). The per-tenant issuer is `<issuer>/<tenant_id>`.
     pub issuer: String,
-    /// web 画面の公開ベース URL（`config.public_web_base_url()`）。`/authorize` のログイン・同意
-    /// リダイレクトは ADR-0012 §4 でこの絶対 URL 基点になった（既定は issuer と同一オリジン）。
+    /// Public base URL of the web screens (`config.public_web_base_url()`). The login and consent redirects of
+    /// `/authorize` became based on this absolute URL in ADR-0012 §4 (by default the same origin as the issuer).
     pub public_web_base_url: String,
-    /// seed 済み root テナントの UUID（固定値だが構造 `parent_tenant_id IS NULL` で DB から引く）。
+    /// UUID of the seeded root tenant (a fixed value, but fetched from the DB by the structure `parent_tenant_id IS NULL`).
     pub root_tenant_id: String,
-    /// seed の初期管理者（root 所属・idp.system.admin 保有）の内部 ID。
+    /// Internal ID of the seeded initial admin (in root, holds idp.system.admin).
     pub root_admin_id: String,
-    /// LoginService が検証に使う CSRF HMAC 鍵（CI の `CSRF_SECRET` 上書きに追従）。
+    /// CSRF HMAC key LoginService verifies with (follows CI's `CSRF_SECRET` override).
     pub csrf_secret: [u8; 32],
 }
 
-/// テストプールの既定接続上限（sqlx の既定値と同じ）。並走数がこれを超えるテストは
-/// `connect_pool_with_max_connections` で枠を明示する。
+/// Default connection limit of the test pool (same as sqlx's default). Tests whose parallelism exceeds this
+/// set the limit explicitly with `connect_pool_with_max_connections`.
 pub const DEFAULT_POOL_MAX_CONNECTIONS: u32 = 10;
 
-/// `TEST_DATABASE_URL` の DB へ接続し、マイグレーションをプロセス内で一度だけ適用する。
-/// 既定では未設定を失敗にする（CI/--check で DB テストをスキップ不能にする）。
-/// ローカルで意図的に DB 統合テストだけを省略する場合のみ `IDP_ALLOW_DB_TEST_SKIP=1` を指定する。
+/// Connects to the `TEST_DATABASE_URL` DB and applies migrations only once per process.
+/// By default, unset fails (so CI/--check cannot skip DB tests).
+/// Set `IDP_ALLOW_DB_TEST_SKIP=1` only to deliberately skip DB integration tests locally.
 pub async fn connect_pool(test_name: &str) -> Option<MySqlPool> {
     connect_pool_with_max_connections(test_name, DEFAULT_POOL_MAX_CONNECTIONS).await
 }
 
-/// DB を使うテストが共通で行う環境変数の準備。**すべてのテストバイナリで同じ値になる**ように、
-/// `setup()` ではなく接続関数（どのテストも必ず通る）で行う。
+/// Environment variable preparation shared by DB tests. Done in the connect function (which every test goes
+/// through), not in `setup()`, so that **every test binary gets the same values**.
 ///
-/// - `INTERNAL_SERVICE_TOKEN`: `/internal/*` を叩くテスト向けの既知値。32 文字以上（SEC11）。
-/// - `KEY_ENCRYPTION_KEY` / `CSRF_SECRET`: **未設定のときだけ**、開発用既定値と同じバイト列を
-///   base64 で明示注入する。ループバック以外のホスト名を使うテスト（`e2e_domain_split`）は
-///   本番相当と判定され、開発用既定のままでは起動できないため（SEC11）。実効値を変えないので、
-///   共有テスト DB 上の署名鍵をどのテストバイナリからも復号できる状態が保たれる（CI のように
-///   環境変数で与えられている場合はそちらを尊重する）。
+/// - `INTERNAL_SERVICE_TOKEN`: a known value for tests hitting `/internal/*`. 32 characters or more (SEC11).
+/// - `KEY_ENCRYPTION_KEY` / `CSRF_SECRET`: **only when unset**, explicitly injects the same bytes as the development
+///   defaults in base64. Tests using a non-loopback host name (`e2e_domain_split`) are judged
+///   production-like and cannot start with development defaults (SEC11). The effective value does not change, so
+///   signing keys in the shared test DB remain decryptable from every test binary (when given by
+///   environment variables, as in CI, those are respected).
 fn prepare_test_env() {
     std::env::set_var("INTERNAL_SERVICE_TOKEN", SERVICE_TOKEN);
     set_env_if_unset(
@@ -112,8 +112,8 @@ fn set_env_if_unset(key: &str, value: &str) {
     }
 }
 
-/// 接続上限を明示して接続する（同時実行数とプール枠の予算を突き合わせたいテスト向け）。
-/// 枠が並走数を下回ると、接続を保持したまま進む処理（例: advisory lock 区間）で acquire 待ちが発生する。
+/// Connects with an explicit connection limit (for tests that match concurrency against the pool budget).
+/// If the limit is below the parallelism, work that holds a connection while proceeding (e.g. an advisory lock section) waits on acquire.
 pub async fn connect_pool_with_max_connections(
     test_name: &str,
     max_connections: u32,
@@ -141,13 +141,13 @@ pub async fn connect_pool_with_max_connections(
     Some(pool)
 }
 
-/// アプリ全体（AppState + ルータ）を組み立てる。署名鍵はプロセス内で一度だけブートストラップする。
+/// Assembles the whole app (AppState + router). Signing keys are bootstrapped only once per process.
 pub async fn setup(test_name: &str) -> Option<TestEnv> {
     setup_with(test_name, |_| {}).await
 }
 
-/// `setup` と同じだが、ルータを組む前に `AppState` の部品を差し替えられる（外への HTTP を
-/// 出す部品を偽物にする等）。
+/// Same as `setup`, but `AppState` parts can be swapped before building the router (e.g. faking parts that
+/// make outbound HTTP).
 pub async fn setup_with(test_name: &str, customize: impl FnOnce(&mut AppState)) -> Option<TestEnv> {
     let pool = connect_pool(test_name).await?;
 
@@ -164,8 +164,8 @@ pub async fn setup_with(test_name: &str, customize: impl FnOnce(&mut AppState)) 
     .await
     .expect("initial admin seeded");
 
-    // 自己登録は既定 OFF（SEC6）。register を使うテストフローが動くよう root テナントでは有効化する
-    // （無効時の挙動は register テストが明示的に OFF へ切り替えて検証する）。
+    // Self-registration is OFF by default (SEC6). Enable it on the root tenant so test flows using register work
+    // (the disabled behavior is verified by register tests that explicitly switch it OFF).
     sqlx::query("UPDATE tenants SET self_registration_enabled = 1 WHERE id = ?")
         .bind(&root_tenant_id)
         .execute(&pool)
@@ -198,24 +198,24 @@ pub async fn setup_with(test_name: &str, customize: impl FnOnce(&mut AppState)) 
     })
 }
 
-/// SMTP 設定（`system_settings` の `smtp.*`）を触るテストを**バイナリを跨いで**直列化する助言ロック。
+/// Advisory lock serializing tests that touch SMTP settings (`smtp.*` in `system_settings`) **across binaries**.
 ///
-/// 宛先はテナント別ではなくシステムに 1 組しか無い。設定を書き換えるテストが並行に走ると、
-/// 片方が向けた配送先へもう片方のメールが飛び、待っている側は永久に受け取れない。
+/// There is only one destination set for the system, not per tenant. If tests rewriting the setting run in parallel,
+/// one side's mail goes to the destination the other set, and the waiting side never receives it.
 ///
-/// ⚠ **プロセス内の `Mutex` では足りない。** `cargo test` はテストバイナリを**別プロセスとして
-/// 並行に**走らせるため、`password_reset` の中だけで直列化しても、別のバイナリ
-/// （`admin_smtp_settings`）が同じ設定を書き換えれば同じことが起きる（2026-09-13 に実際に踏んだ）。
-/// DB の助言ロックは接続＝セッション単位なので、プロセスを跨いで効く。
+/// ⚠ **An in-process `Mutex` is not enough.** `cargo test` runs test binaries **as separate processes in
+/// parallel**, so serializing only within `password_reset` still breaks when another binary
+/// (`admin_smtp_settings`) rewrites the same setting (actually hit on 2026-09-13).
+/// A DB advisory lock is per connection = session, so it works across processes.
 ///
-/// ⚠ **`Drop` では解放しない**（解放は非同期のため）。`release()` を呼ぶこと。呼ばずに panic した
-/// 場合も、プロセスが終われば接続が閉じて解放される（他バイナリはそれまで待つ）。
+/// ⚠ **Not released on `Drop`** (release is async). Call `release()`. If it panics without calling it,
+/// the connection closes and releases it when the process ends (other binaries wait until then).
 pub struct SmtpSettingsLock {
     conn: sqlx::pool::PoolConnection<sqlx::MySql>,
 }
 
 impl SmtpSettingsLock {
-    /// 取れるまで待つ（上限 60 秒）。
+    /// Waits until acquired (up to 60 seconds).
     pub async fn acquire(pool: &MySqlPool) -> Self {
         let mut conn = pool
             .acquire()
@@ -238,7 +238,7 @@ impl SmtpSettingsLock {
     }
 }
 
-/// `smtp.*` の行をそのまま控える（暗号文のパスワードも含め、値を解釈せずに戻せる形で持つ）。
+/// Saves the `smtp.*` rows as is (including the encrypted password; kept in a form that can be restored without interpreting values).
 pub async fn snapshot_smtp_settings(pool: &MySqlPool) -> Vec<(String, String, bool)> {
     sqlx::query("SELECT setting_key, setting_value, is_secret FROM system_settings WHERE setting_key LIKE 'smtp.%'")
         .fetch_all(pool)
@@ -255,7 +255,7 @@ pub async fn snapshot_smtp_settings(pool: &MySqlPool) -> Vec<(String, String, bo
         .collect()
 }
 
-/// [`snapshot_smtp_settings`] で控えた状態へ戻す（控えに無い行は消す）。
+/// Restores the state saved by [`snapshot_smtp_settings`] (rows not in the snapshot are deleted).
 pub async fn restore_smtp_settings(pool: &MySqlPool, snapshot: &[(String, String, bool)]) {
     sqlx::query("DELETE FROM system_settings WHERE setting_key LIKE 'smtp.%'")
         .execute(pool)
@@ -274,15 +274,15 @@ pub async fn restore_smtp_settings(pool: &MySqlPool, snapshot: &[(String, String
     }
 }
 
-/// 登録 API で作った利用者をメール検証済みにする。
-/// OIDC / internal auth の既存フロー検証ではメール検証ゲートではなく同意・CSRF・token 発行を検証したいため、
-/// テストデータだけ明示的に検証済みに寄せる。
+/// Marks a user created by the registration API as email-verified.
+/// Existing OIDC / internal auth flow tests want to verify consent, CSRF and token issuance rather than the email
+/// verification gate, so only the test data is explicitly set to verified.
 ///
-/// ⚠ **引いてから主キーで更新する（JOIN した UPDATE にしない）。** 結合したまま更新すると、
-/// この UPDATE が `user_login_identifiers_primary_uk` を走査して共有ロックを取りながら
-/// `users` の行の排他ロックを待つ。同時に走る登録は逆の順（`users` の行を握ったまま
-/// 登録簿へ INSERT する）で進むため、**並列実行でデッドロックする**（実測。登録が 500 を返す）。
-/// 2 文に分けると、どちらの文も 1 つの表しか触らないので循環が作れない。
+/// ⚠ **Look up first, then update by primary key (not an UPDATE with a JOIN).** Updating while joined makes
+/// this UPDATE scan `user_login_identifiers_primary_uk` taking shared locks while waiting for the exclusive lock
+/// on the `users` row. A concurrent registration proceeds in the opposite order (holding the `users` row while
+/// INSERTing into the registry), so **parallel runs deadlock** (observed; registration returns 500).
+/// Split into 2 statements, each touches only one table, so no cycle can form.
 pub async fn mark_email_verified(pool: &MySqlPool, tenant_id: &str, username: &str) {
     let user_id = find_user_id_by_username(pool, tenant_id, username)
         .await
@@ -299,10 +299,10 @@ pub async fn mark_email_verified(pool: &MySqlPool, tenant_id: &str, username: &s
     );
 }
 
-/// 主たるログイン識別子（ユーザー名）から利用者 id を引く。
+/// Looks up a user id by the primary login identifier (username).
 ///
-/// AP15b で置き場所が `users.preferred_username` から登録簿
-/// （`user_login_identifiers.primary_of_user`）へ移ったので、テストもそちらを見る。
+/// AP15b moved its location from `users.preferred_username` to the registry
+/// (`user_login_identifiers.primary_of_user`), so tests look there too.
 pub async fn find_user_id_by_username(
     pool: &MySqlPool,
     tenant_id: &str,
@@ -320,7 +320,7 @@ pub async fn find_user_id_by_username(
     .expect("find user by username")
 }
 
-/// 主たるログイン識別子（表示値）。未設定なら `None`。
+/// The primary login identifier (display value). `None` if unset.
 pub async fn primary_username(pool: &MySqlPool, user_id: &str) -> Option<String> {
     sqlx::query_scalar("SELECT display_value FROM user_login_identifiers WHERE primary_of_user = ?")
         .bind(user_id)
@@ -329,8 +329,8 @@ pub async fn primary_username(pool: &MySqlPool, user_id: &str) -> Option<String>
         .expect("read primary login identifier")
 }
 
-/// 主メール行の表示値（ADR-0050）。`None` は行が無い —— 同じ値を本人が別の行
-/// （多くはユーザー名）で持っているときは主メール行を作らない（決定 6）。
+/// Display value of the primary email row (ADR-0050). `None` means there is no row: when the user holds the same
+/// value in another row (usually the username), no primary email row is created (decision 6).
 pub async fn primary_email(pool: &MySqlPool, user_id: &str) -> Option<String> {
     sqlx::query_scalar(
         "SELECT display_value FROM user_login_identifiers WHERE primary_email_of_user = ?",
@@ -341,9 +341,9 @@ pub async fn primary_email(pool: &MySqlPool, user_id: &str) -> Option<String> {
     .expect("read primary email identifier")
 }
 
-// ── テストデータ生成 ─────────────────────────────────────────────────────────
+// ── Test data generation ─────────────────────────────────────────────────────────
 
-/// 指定ユーザーの有効な SSO セッションを作成し、Cookie 用の平文 session_id を返す。
+/// Creates a valid SSO session for the given user and returns the plain session_id for the cookie.
 pub async fn create_sso_session(pool: &MySqlPool, user_id: &str) -> String {
     let session_id = crypto::random_hex(32);
     let session_hash = crypto::sha256_hex(&session_id);
@@ -362,11 +362,11 @@ pub async fn create_sso_session(pool: &MySqlPool, user_id: &str) -> String {
     session_id
 }
 
-/// SSO セッションを作り、`POST /internal/admin/token` で**管理トークン**へ交換して返す
-/// （ADR-0037）。管理コンソール（web）がリクエスト毎に行う交換を、テストでも同じ経路で通す。
+/// Creates an SSO session, exchanges it for an **admin token** via `POST /internal/admin/token` and returns it
+/// (ADR-0037). The exchange the admin console (web) does per request goes through the same path in tests.
 ///
-/// トークンは `tenant_id` に紐づく（`iss` / `aud` が per-tenant issuer）。同じ利用者でも
-/// テナントが違えば別のトークンが要る。
+/// The token is tied to `tenant_id` (`iss` / `aud` are the per-tenant issuer). Even for the same user,
+/// a different tenant needs a different token.
 pub async fn admin_token(
     app: &axum::Router,
     pool: &MySqlPool,
@@ -377,10 +377,10 @@ pub async fn admin_token(
     exchange_admin_token(app, tenant_id, &sso).await
 }
 
-/// 既存の SSO セッション（平文 session_id）を管理トークンへ交換する。
+/// Exchanges an existing SSO session (plain session_id) for an admin token.
 ///
-/// 交換自体の失敗（401 等）を検証したいテストは `post_internal` を直接使う。ここは
-/// 「交換できる前提」の呼び出し側向けで、失敗したら panic する。
+/// Tests that want to verify failures of the exchange itself (401 etc.) use `post_internal` directly. This is
+/// for callers that "assume the exchange succeeds", and it panics on failure.
 pub async fn exchange_admin_token(
     app: &axum::Router,
     tenant_id: &str,
@@ -408,11 +408,11 @@ pub async fn exchange_admin_token(
         .to_string()
 }
 
-/// 権限を持たない利用者を指定テナントへ直接作成し、その内部 ID を返す。
-/// 自己登録 API（`POST /{tenant}/auth/register`）で利用者を 1 人作る。
+/// Creates a user without permissions directly in the given tenant and returns its internal ID.
+/// Creates one user via the self-registration API (`POST /{tenant}/auth/register`).
 ///
-/// 通常の作成経路を通すため、`users` だけでなく HOME メンバーシップ・ログイン識別子の登録簿
-/// （AP8）も本番と同じ形で埋まる。
+/// Going through the normal creation path fills not only `users` but also the HOME membership and the login
+/// identifier registry (AP8) in the same shape as production.
 pub async fn register_user(app: &axum::Router, tenant: &str, username: &str, password: &str) {
     let payload = serde_json::json!({
         "email": format!("{username}@example.com"),
@@ -437,16 +437,16 @@ pub async fn register_user(app: &axum::Router, tenant: &str, username: &str, pas
     );
 }
 
-/// 既知のパスワードを入れ、`must_change_password` を立てる（**強制変更の状態**を作る）。
+/// Sets a known password and raises `must_change_password` (creates **the forced-change state**).
 ///
-/// ⚠ **管理 API では作れない状態である**（ADR-0062）。管理者による再発行は「誰も知らない値」で
-/// 置き換えてリンクを渡すようになったので、**値を知ったうえで強制変更に当たる**には、
-/// この試験用の口から入れるしかない。実装（argon2）と同じハッシュ器を通す。
+/// ⚠ **This state cannot be created via the admin API** (ADR-0062). Admin reissue now replaces it with
+/// "a value nobody knows" and hands over a link, so **hitting a forced change while knowing the value**
+/// is only possible through this test route. It goes through the same hasher as the implementation (argon2).
 pub async fn force_password_change(pool: &MySqlPool, user_id: &str, password: &str) {
     let hash = Argon2PasswordHasher::new()
         .hash(password)
         .expect("hash the password");
-    // 「既知のパスワードを持つ」＝本人は一度設定を終えている（仮登録ではない。ADR-0064）。
+    // "Has a known password" = the user has finished setup once (not provisional; ADR-0064).
     sqlx::query(
         "UPDATE users SET password_hash = ?, must_change_password = 1, pending_setup = 0 WHERE id = ?",
     )
@@ -457,10 +457,10 @@ pub async fn force_password_change(pool: &MySqlPool, user_id: &str, password: &s
         .expect("force a password change");
 }
 
-/// 管理 API で作った利用者の仮登録を外す（本人が設定リンクで資格情報を決めた、の代わり。ADR-0064）。
+/// Removes the provisional state of a user created via the admin API (in place of the user setting credentials via the setup link; ADR-0064).
 ///
-/// 管理 API で作った利用者は仮登録なので、そのまま SSO セッションを直に作っても管理トークンに
-/// 交換できない（`is_active` が断る）。その人を「使える人」として試験の登場人物にするときに呼ぶ。
+/// A user created via the admin API is provisional, so even an SSO session created directly cannot be exchanged
+/// for an admin token (`is_active` refuses). Call this to use that person as a "usable" test actor.
 pub async fn finish_setup(pool: &MySqlPool, user_id: &str) {
     sqlx::query("UPDATE users SET pending_setup = 0 WHERE id = ?")
         .bind(user_id)
@@ -482,8 +482,8 @@ pub async fn create_plain_user(pool: &MySqlPool, tenant_id: &str) -> String {
     .execute(pool)
     .await
     .expect("insert plain user");
-    // 実運用のユーザー作成と同様に HOME メンバーシップ（ACTIVE）も投影する。権限の付与・剥奪は
-    // 当該テナントの ACTIVE メンバーであることを要求する（ADR-0009 §4）ため、これが無いと 404 になる。
+    // Project the HOME membership (ACTIVE) too, as real user creation does. Granting and revoking permissions
+    // requires being an ACTIVE member of the tenant (ADR-0009 §4), so without it the result is 404.
     sqlx::query(
         "INSERT INTO tenant_memberships (tenant_id, user_id, membership_type, status) \
          VALUES (?, ?, 'HOME', 'ACTIVE')",
@@ -496,8 +496,8 @@ pub async fn create_plain_user(pool: &MySqlPool, tenant_id: &str) -> String {
     id
 }
 
-/// 一意な public client を指定テナントへ直接登録して client_id を返す。
-/// `scopes` は許可 scope（例: `&["openid"]`、`&["openid", "profile", "email"]`）。
+/// Registers a unique public client directly in the given tenant and returns the client_id.
+/// `scopes` are the allowed scopes (e.g. `&["openid"]`, `&["openid", "profile", "email"]`).
 pub async fn insert_public_client(pool: &MySqlPool, tenant_id: &str, scopes: &[&str]) -> String {
     let client_id = format!("it-public-{}", unique());
     sqlx::query(
@@ -518,11 +518,11 @@ pub async fn insert_public_client(pool: &MySqlPool, tenant_id: &str, scopes: &[&
     client_id
 }
 
-/// 直接登録した client を**アプリ 1 件 ＋ OIDC binding 1 件**として開き、アプリの id を返す
-/// （ADR-0054）。移行（`0054_applications`）と、管理 API 経由の登録がするのと同じ形。
+/// Opens a directly registered client as **one app + one OIDC binding** and returns the app id
+/// (ADR-0054). The same shape the migration (`0054_applications`) and registration via the admin API produce.
 ///
-/// `insert_*_client` は表へ直接入れる（サービスを通さない）ので、アプリは付いてこない。認証
-/// ポリシーの `application_ids` を試すテストは、ここで明示的に開いてから id を使う。
+/// `insert_*_client` inserts directly into the table (not through the service), so no app comes with it. Tests
+/// of an authentication policy's `application_ids` explicitly open it here and then use the id.
 pub async fn open_client_as_application(
     pool: &MySqlPool,
     tenant_id: &str,
@@ -559,7 +559,7 @@ pub async fn open_client_as_application(
     application_id
 }
 
-/// 一意な confidential client を指定テナントへ直接登録して `(client_id, client_secret)` を返す。
+/// Registers a unique confidential client directly in the given tenant and returns `(client_id, client_secret)`.
 pub async fn insert_confidential_client(
     pool: &MySqlPool,
     tenant_id: &str,
@@ -589,9 +589,9 @@ pub async fn insert_confidential_client(
     (client_id, secret.to_string())
 }
 
-/// `client_credentials` grant を許可した confidential client を登録して
-/// `(client_id, client_secret)` を返す（G4）。`grant_types` に `client_credentials` を含める点だけが
-/// [`insert_confidential_client`] と異なる。
+/// Registers a confidential client allowing the `client_credentials` grant and
+/// returns `(client_id, client_secret)` (G4). It differs from [`insert_confidential_client`] only in
+/// including `client_credentials` in `grant_types`.
 pub async fn insert_m2m_client(
     pool: &MySqlPool,
     tenant_id: &str,
@@ -600,7 +600,7 @@ pub async fn insert_m2m_client(
     insert_m2m_client_with_auth_method(pool, tenant_id, scopes, "client_secret_basic").await
 }
 
-/// [`insert_m2m_client`] と同じだが、クライアント認証方式を指定する（G3）。
+/// Same as [`insert_m2m_client`], but specifies the client authentication method (G3).
 pub async fn insert_m2m_client_with_auth_method(
     pool: &MySqlPool,
     tenant_id: &str,
@@ -632,11 +632,11 @@ pub async fn insert_m2m_client_with_auth_method(
     (client_id, secret.to_string())
 }
 
-/// サービスアカウント（`client_credentials` **だけ**を使う confidential client。ADR-0038）を
-/// 登録して `(client_id, client_secret)` を返す。
+/// Registers a service account (a confidential client using **only** `client_credentials`; ADR-0038) and
+/// returns `(client_id, client_secret)`.
 ///
-/// [`insert_m2m_client`] は `authorization_code` も持つので、アプリの名乗りとしては
-/// サービスアカウントにならない（`Client::is_service_account`。ADR-0059）。
+/// [`insert_m2m_client`] also has `authorization_code`, so as an app identity it is not a
+/// service account (`Client::is_service_account`; ADR-0059).
 pub async fn insert_service_account(pool: &MySqlPool, tenant_id: &str) -> (String, String) {
     let client_id = format!("it-svc-{}", unique());
     let secret = "e2e-super-secret-value";
@@ -660,8 +660,8 @@ pub async fn insert_service_account(pool: &MySqlPool, tenant_id: &str) -> (Strin
     (client_id, secret.to_string())
 }
 
-/// `client_credentials` + `resource={issuer}/{tenant}/admin` で管理トークンを取りに行き、応答を返す
-/// （成否は呼び出し側が見る）。
+/// Fetches an admin token with `client_credentials` + `resource={issuer}/{tenant}/admin` and returns the response
+/// (the caller checks success).
 pub async fn request_management_token(
     app: &axum::Router,
     issuer: &str,
@@ -692,10 +692,10 @@ pub async fn request_management_token(
     .await
 }
 
-/// `private_key_jwt` の M2M クライアントを作り、`(client_id, 秘密鍵 PEM, kid)` を返す（ADR-0030）。
+/// Creates a `private_key_jwt` M2M client and returns `(client_id, private key PEM, kid)` (ADR-0030).
 ///
-/// secret は発行しない（この方式のクライアントは共有秘密を持たない）。鍵ペアはテストごとに
-/// 生成し、公開鍵だけを `clients.jwks` へ登録する。
+/// No secret is issued (clients of this method hold no shared secret). A key pair is generated per test,
+/// and only the public key is registered in `clients.jwks`.
 pub async fn insert_private_key_jwt_client(
     pool: &MySqlPool,
     tenant_id: &str,
@@ -728,10 +728,10 @@ pub async fn insert_private_key_jwt_client(
     (client_id, private_pem, kid)
 }
 
-/// 登録 API へ渡せる検証鍵（JWK Set の JSON 文字列）を 1 つ作る。
+/// Makes one verification key (a JWK Set JSON string) that can be passed to the registration API.
 ///
-/// `insert_private_key_jwt_client` は DB へ直接入れる版。こちらは `POST /admin/clients` の
-/// `jwks` フィールドに載せて、登録経路そのものを通すために使う。
+/// `insert_private_key_jwt_client` is the version that inserts into the DB directly. This one is put in the
+/// `jwks` field of `POST /admin/clients` to go through the registration path itself.
 pub fn sample_client_jwks() -> String {
     let kid = format!("kid-{}", unique());
     let (_private_pem, public_pem) =
@@ -741,18 +741,18 @@ pub fn sample_client_jwks() -> String {
         .expect("serialize jwks")
 }
 
-/// ランダムな識別子片（メール・名前の一意化に使う。12 文字の hex）。
+/// A random identifier fragment (used to make emails and names unique; 12 hex chars).
 pub fn unique() -> String {
     uuid::Uuid::new_v4().simple().to_string()[..12].to_string()
 }
 
-// ── リクエスト・レスポンスヘルパー ───────────────────────────────────────────
+// ── Request and response helpers ───────────────────────────────────────────
 
 pub async fn send(app: &axum::Router, request: Request<Body>) -> axum::response::Response {
     app.clone().oneshot(request).await.expect("send request")
 }
 
-/// 本文をそのまま文字列で読む（JSON でない応答—— Prometheus のテキスト形式など）。
+/// Reads the body as a string as is (non-JSON responses, such as Prometheus text format).
 pub async fn body_text(response: axum::response::Response) -> String {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
@@ -767,11 +767,11 @@ pub async fn body_json(response: axum::response::Response) -> Value {
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
 }
 
-/// 管理トークン付きのリクエストを組み立てる（JSON ボディは `Some` のときのみ付与）。
+/// Builds a request with an admin token (the JSON body is added only when `Some`).
 ///
-/// 管理 API の資格情報は Bearer だけである（ADR-0037）。`token` は [`admin_token`] が
-/// `POST /internal/admin/token` から得たもので、**テナント毎に別のトークン**になる
-/// （`iss` / `aud` が per-tenant issuer で固定されるため、他テナントのパスへ持ち込むと 401）。
+/// The admin API's only credential is Bearer (ADR-0037). `token` is what [`admin_token`] got from
+/// `POST /internal/admin/token`, and **differs per tenant**
+/// (`iss` / `aud` are fixed to the per-tenant issuer, so carrying it to another tenant's path gives 401).
 pub fn request(method: Method, token: &str, uri: &str, body: Option<Value>) -> Request<Body> {
     let mut builder = Request::builder()
         .method(method)
@@ -793,7 +793,7 @@ pub fn post(token: &str, uri: &str, body: Value) -> Request<Body> {
     request(Method::POST, token, uri, Some(body))
 }
 
-/// 本文を取らない POST（`/unlock`・`/mfa-reset` のようなコマンド系エンドポイント）。
+/// A POST without a body (command-style endpoints such as `/unlock` and `/mfa-reset`).
 pub fn post_empty(token: &str, uri: &str) -> Request<Body> {
     request(Method::POST, token, uri, None)
 }
@@ -810,11 +810,11 @@ pub fn delete(token: &str, uri: &str) -> Request<Body> {
     request(Method::DELETE, token, uri, None)
 }
 
-/// SSO Cookie を資格情報にするリクエスト（`AuthenticatedUser` の経路。招待の承諾）。
+/// A request using the SSO cookie as the credential (the `AuthenticatedUser` path; invitation acceptance).
 ///
-/// 管理 API は Bearer だけを見る（ADR-0037）が、招待の承諾は「ログイン済みであること」だけを
-/// 要求するブラウザ経路で、資格情報は今も Cookie である。両者を別のヘルパにしておくことで、
-/// テストがどちらの経路を叩いているかがコードから読める。
+/// The admin API looks only at Bearer (ADR-0037), but invitation acceptance is a browser path that only requires
+/// "being logged in", and its credential is still the cookie. Keeping separate helpers makes it readable from the
+/// code which path a test is hitting.
 pub fn cookie_request(
     method: Method,
     sso_session_id: &str,
@@ -837,7 +837,7 @@ pub fn cookie_post(sso_session_id: &str, uri: &str, body: Value) -> Request<Body
     cookie_request(Method::POST, sso_session_id, uri, Some(body))
 }
 
-/// Cookie 無し・SSO 不要のリクエスト（未認証 401 の検証等に使う）。
+/// A request with no cookie and no SSO (used to verify unauthenticated 401 etc.).
 pub fn anonymous(method: Method, uri: &str, body: Option<Value>) -> Request<Body> {
     let mut builder = Request::builder().method(method).uri(uri);
     if body.is_some() {
@@ -848,7 +848,7 @@ pub fn anonymous(method: Method, uri: &str, body: Option<Value>) -> Request<Body
         .unwrap()
 }
 
-/// `/internal/*` への POST（サービストークンは `Some` のときのみ付与）。
+/// POST to `/internal/*` (the service token is added only when `Some`).
 pub fn post_internal(uri: &str, token: Option<&str>, payload: Value) -> Request<Body> {
     let mut builder = Request::builder()
         .method("POST")
@@ -860,7 +860,7 @@ pub fn post_internal(uri: &str, token: Option<&str>, payload: Value) -> Request<
     builder.body(Body::from(payload.to_string())).unwrap()
 }
 
-/// `Set-Cookie` ヘッダ群から `name` の値を取り出す。
+/// Extracts the value of `name` from `Set-Cookie` headers.
 pub fn cookie_value(response: &axum::response::Response, name: &str) -> Option<String> {
     response.headers().get_all(SET_COOKIE).iter().find_map(|v| {
         let raw = v.to_str().ok()?;
@@ -887,15 +887,15 @@ pub fn query_param(url: &str, name: &str) -> Option<String> {
         .map(|(_, v)| v.into_owned())
 }
 
-/// `openid` のみの scope（同意ステップ不要）で認可リクエスト URI を組み立てる。
+/// Builds an authorization request URI with only the `openid` scope (no consent step needed).
 pub fn authorize_uri_openid_only(tenant: &str, client_id: &str) -> String {
     format!(
         "/{tenant}/authorize?response_type=code&client_id={client_id}&redirect_uri={REDIRECT_URI_ENC}&scope=openid&state=st&nonce=no&code_challenge={CODE_CHALLENGE}&code_challenge_method=S256"
     )
 }
 
-/// `/authorize` のハンドオフ 302 から単回ハンドル（`?auth_session=`）を取り出す（ADR-0018 決定 2）。
-/// 併せて「api がブラウザ Cookie を一切発行しない」ことも検証する。
+/// Extracts the single-use handle (`?auth_session=`) from the `/authorize` handoff 302 (decision 2 of ADR-0018).
+/// Also verifies that "api issues no browser cookies at all".
 pub fn handoff_handle(response: &axum::response::Response) -> String {
     assert!(
         response
@@ -909,8 +909,8 @@ pub fn handoff_handle(response: &axum::response::Response) -> String {
     query_param(&location(response), "auth_session").expect("auth_session handle in Location")
 }
 
-/// `/internal/authorize/resume` を呼ぶ（web の代わり）。`sso_session_id` は `Some` で SSO 判定を伴う。
-/// 応答は `result` タグ付き JSON。
+/// Calls `/internal/authorize/resume` (in place of web). `sso_session_id` being `Some` involves the SSO decision.
+/// The response is JSON tagged with `result`.
 pub async fn resume_authorize(
     app: &axum::Router,
     tenant: &str,
@@ -938,7 +938,7 @@ pub async fn resume_authorize(
     body_json(response).await
 }
 
-/// `/authorize` → resume（SSO なし）で `auth_session_id` を得るショートカット（旧 Set-Cookie 相当）。
+/// Shortcut to get `auth_session_id` via `/authorize` -> resume (no SSO) (equivalent to the old Set-Cookie).
 pub async fn begin_login(app: &axum::Router, tenant: &str, authorize_uri: &str) -> String {
     let response = send(
         app,
@@ -962,7 +962,7 @@ pub async fn begin_login(app: &axum::Router, tenant: &str, authorize_uri: &str) 
         .to_string()
 }
 
-/// 認可コードをトークンへ交換する（public client・PKCE）。
+/// Exchanges an authorization code for tokens (public client, PKCE).
 pub async fn exchange_code(
     app: &axum::Router,
     tenant: &str,

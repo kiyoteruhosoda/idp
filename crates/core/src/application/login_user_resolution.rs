@@ -1,65 +1,65 @@
-//! ログイン欄の入力から「このテナントで認証してよい利用者」を解決する（ADR-0009 §8）。
+//! Resolves "the user who may be authenticated in this tenant" from the login field input (ADR-0009 §8).
 //!
-//! パスワードを受け付ける経路は 3 つある（OIDC ログイン [`crate::application::login`]・ポータル
-//! ログイン [`crate::application::portal_login`]・管理ログイン [`crate::application::admin_login`]。
-//! 強制パスワード変更の再検証を数えると 5 か所）。どれも「ログイン画面に入力された値は誰を指すか」
-//! という同じ問いを解くので、規則をここに 1 本化する。各経路に書くと、一つ書き忘れた経路だけが
-//! 別の集合を認証してしまう。
+//! There are three paths that accept passwords (OIDC login [`crate::application::login`], portal
+//! login [`crate::application::portal_login`], admin login [`crate::application::admin_login`];
+//! five places counting re-verification on forced password change). All solve the same question, "whom does the value
+//! entered on the login screen refer to", so the rule is unified here. Writing it in each path would let just the one
+//! that was forgotten authenticate a different set.
 //!
-//! # 対象は「当該テナントの ACTIVE なメンバー」
+//! # Targets are "ACTIVE members of the tenant"
 //!
-//! 認証してよいのは、そのテナントに **ACTIVE なメンバーシップを持つ利用者**（HOME または GUEST）
-//! である。所属元（HOME）だけに限らないのは、ゲストが参加先テナントのログイン画面から入れないと
-//! 詰まるため —— 参加先の画面には「所属元はどこか」を尋ねる手がかりが無く、利用者は自分の所属元
-//! テナント ID を URL に打ち込まない限りどこからも入れない。パスキー認証は既にこの規則で動いており
-//! （[`crate::application::passkey_authentication`] の `ensure_active_member`）、パスワードだけが
-//! 所属元限定に残っていた。
+//! Users who may be authenticated are those with an **ACTIVE membership in the tenant** (HOME or GUEST).
+//! It isn't limited to the home tenant (HOME) because guests would get stuck if they couldn't sign in from the host
+//! tenant's login screen —— the host's screen has no clue to ask "where is your home", and users can't get in
+//! anywhere unless they type their home tenant ID into the URL. Passkey authentication already works by this rule
+//! (`ensure_active_member` in [`crate::application::passkey_authentication`]); only passwords were still
+//! limited to the home tenant.
 //!
-//! # 解決の順序（所属元 → ドメインで決まった所属元 → 参加先のゲスト）
+//! # Resolution order (home tenant -> home tenant decided by domain -> guest in host tenant)
 //!
-//! 1. 要求テナントの登録簿（[`UserRepository::find_by_login_identifier`]）。
-//! 2. 空振りで、入力が `local@domain` の形をしていてそのドメインが 1 つのテナントに割り当てられて
-//!    いるなら、**そのテナントの登録簿だけ**を引く（ADR-0029 の home realm discovery。
-//!    [`UserRepository::find_member_by_login_identifier`]）。
-//! 3. なお空振りなら、要求テナントに ACTIVE な GUEST メンバーシップを持つ利用者を、その利用者の
-//!    所属元テナントの登録簿で解決する
-//!    （[`UserRepository::find_active_guest_by_login_identifier`]）。**所属元テナントが `DISABLED`
-//!    なら解決しない** —— 所属元の無効化はその組織の利用者を止める操作であって、参加先テナント
-//!    経由の裏口を残す意味ではない（ADR-0009 §8。同じ規則をメンバーシップ側から見たものが
-//!    [`crate::domain::repositories::TenantMembershipRepository::is_active_member`] で、パスキー
-//!    認証・SSO 復元・管理コンソールのアクセス判定はそちらを通る）。
+//! 1. The requested tenant's registry ([`UserRepository::find_by_login_identifier`]).
+//! 2. If that misses and the input has the form `local@domain` with the domain assigned to one tenant,
+//!    look up **only that tenant's registry** (ADR-0029's home realm discovery.
+//!    [`UserRepository::find_member_by_login_identifier`]).
+//! 3. If it still misses, resolve users with an ACTIVE GUEST membership in the requested tenant via the registry
+//!    of their home tenant
+//!    ([`UserRepository::find_active_guest_by_login_identifier`]). **Not resolved if the home tenant is
+//!    `DISABLED`** —— disabling the home tenant is an operation that stops that organization's users, not one meant to
+//!    leave a back door via host tenants (ADR-0009 §8. The same rule seen from the membership side is
+//!    [`crate::domain::repositories::TenantMembershipRepository::is_active_member`], which passkey
+//!    authentication, SSO restore and the admin console access check go through).
 //!
-//! **順序に意味がある。** 1 と 3 をまとめて 1 回で引くと、同じユーザー名のゲストが参加してきた
-//! だけで「曖昧な入力」になり、そのテナントの HOME 利用者まで締め出される。所属元を先に決めれば、
-//! 参加先で名前が衝突しても割を食うのはゲスト側だけで済む（ゲストは所属元テナントの画面から
-//! 従来どおり入れる）。
+//! **The order matters.** Looking up 1 and 3 together in one go would make the input "ambiguous" just because a guest
+//! with the same user name joined, locking out even that tenant's HOME users. Deciding the home tenant first means
+//! that if names collide in a host tenant, only the guest side loses out (guests can still sign in from their home
+//! tenant's screen as before).
 //!
-//! 2 が 3 より先なのは、ドメイン修飾された入力が「どの組織の誰か」まで言い切っているためである。
-//! 言い切っていない入力（裸のユーザー名）のための走査より precise で、しかも**曖昧さが原理的に
-//! 起きない**（引くのは 1 テナントの登録簿だけで、その中では 1 正規化値が 1 人のもの）。
-//! 3 を残すのは、裸のユーザー名と未割り当てのドメイン（`gmail.com` 等）が 2 に掛からないためで、
-//! 落とすとゲストの多くが参加先の画面から入れなくなる。**2 は加算であって置き換えではない。**
+//! 2 comes before 3 because a domain-qualified input states outright "who in which organization".
+//! It is more precise than the scan for inputs that don't (bare user names), and **ambiguity can't arise in
+//! principle** (only one tenant's registry is looked up, and within it one normalized value belongs to one person).
+//! 3 remains because bare user names and unassigned domains (`gmail.com` etc.) don't hit 2;
+//! dropping it would stop many guests from signing in from host tenants' screens. **2 is additive, not a replacement.**
 //!
-//! # 曖昧な入力はそこで止める（MT25）
+//! # Ambiguous input stops there (MT25)
 //!
-//! 1 が**曖昧**（複数人に当たった）だったときに 2 へ進んではいけない。ここは以前
-//! `Option<User>` を返しており、「不在」と「曖昧」がどちらも `None` に潰れていたため、所属元で
-//! 曖昧だった入力がそのままゲスト解決へ落ちていた。なりすましは起きない（ゲストは自分の
-//! パスワードで自分として入る）が、「曖昧なら通さない」「所属元がテナント内の名前の取り合いに
-//! 勝つ」という 2 つの決めごとが、まさにそれが要る場面で破れていた。
+//! When 1 is **ambiguous** (hit several people), it must not proceed to 2. This used to
+//! return `Option<User>`, with "missing" and "ambiguous" both collapsed to `None`, so input that was ambiguous
+//! in the home tenant fell straight into guest resolution. No impersonation happened (a guest signs in as themselves
+//! with their own password), but the two rules "don't let ambiguous through" and "the home tenant wins name contention
+//! within the tenant" broke exactly where they were needed.
 //!
-//! [`LoginIdentifierMatch`] が 2 つを型で分けるので、`Unresolved(NotFound)` のときだけ次の段へ進む。
-//! これは 2 段目（ドメイン経路）についても同じで、決まった所属元テナントの中で曖昧なら走査へは
-//! 落とさない。
+//! [`LoginIdentifierMatch`] separates the two by type, so only `Unresolved(NotFound)` proceeds to the next step.
+//! The same goes for step 2 (the domain path): if ambiguous within the decided home tenant, it doesn't fall
+//! into the scan.
 //!
-//! # ここで決めないこと
+//! # What is not decided here
 //!
-//! 認証ポリシー（AP2）・ロック・パスワードポリシーの評価対象は変わらない。ポリシーは
-//! **要求テナント**のものを引き（`list_enabled_for_tenant`）、ロックとパスワードは利用者の属性
-//! （`users` の列）である。ゲストが参加先の画面から入るときも、その画面のテナントのポリシーが
-//! 掛かる —— パスキー認証・認可フローの復元判定
-//! （[`crate::application::authorize`]）と同じ扱いで、参加先の管理者が自テナントのログインに
-//! 掛けた条件が、ゲストにだけ素通りすることはない。
+//! What authentication policies (AP2), locks and password policies apply to doesn't change. Policies are
+//! looked up for **the requested tenant** (`list_enabled_for_tenant`), and locks and passwords are user attributes
+//! (columns of `users`). When a guest signs in from a host tenant's screen, that screen's tenant's policies
+//! apply —— the same as passkey authentication and the authorization flow's restore check
+//! ([`crate::application::authorize`]), so conditions the host admin put on their tenant's login never
+//! pass through just for guests.
 
 use crate::domain::error::Result;
 use crate::domain::login_identifier::{LoginIdentifierMatch, UnresolvedReason};
@@ -67,7 +67,7 @@ use crate::domain::repositories::{TenantDomainRepository, UserRepository};
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_domain::split_qualified_identifier;
 
-/// 次の段へ進んでよいか（＝「不在」だったか）。解決できた場合も曖昧だった場合も、そこで打ち切る。
+/// Whether it may proceed to the next step (= whether it was "missing"). Both resolved and ambiguous stop there.
 fn should_continue(m: &LoginIdentifierMatch) -> bool {
     matches!(
         m,
@@ -75,60 +75,60 @@ fn should_continue(m: &LoginIdentifierMatch) -> bool {
     )
 }
 
-/// ログイン欄の入力から、`tenant_id` で認証してよい利用者を解決する。
+/// Resolves, from the login field input, the user who may be authenticated in `tenant_id`.
 ///
-/// 解決できなかったときの応答は呼び出し側で一律に資格情報エラーへ倒すが（不存在を露呈させない）、
-/// 理由は [`UnresolvedReason`] として返す —— 監査に残す値が違う。
+/// The caller uniformly turns a failure to resolve into a credential error (without revealing nonexistence),
+/// but the reason is returned as [`UnresolvedReason`] —— the value recorded in the audit differs.
 pub async fn resolve_login_user(
     users: &dyn UserRepository,
     tenant_domains: &dyn TenantDomainRepository,
     tenant_id: TenantId,
     input: &str,
 ) -> Result<LoginIdentifierMatch> {
-    // 1. 要求テナントの登録簿。
+    // 1. The requested tenant's registry.
     let found = users.find_by_login_identifier(tenant_id, input).await?;
     if !should_continue(&found) {
         return Ok(found);
     }
 
-    // 2. ドメインで所属元テナントが決まるなら、そのテナントだけを引く。
+    // 2. If the domain decides the home tenant, look up only that tenant.
     if let Some(found) = resolve_by_domain(users, tenant_domains, tenant_id, input).await? {
         return Ok(found);
     }
 
-    // 3. 参加中のゲストを横断走査する。
+    // 3. Scan across joined guests.
     users
         .find_active_guest_by_login_identifier(tenant_id, input)
         .await
 }
 
-/// ドメインから所属元テナントを決めて解決する（ADR-0029）。掛からなければ `None` を返し、
-/// 呼び出し側は次の段へ進む。
+/// Decides the home tenant from the domain and resolves (ADR-0029). Returns `None` if it doesn't apply, and
+/// the caller proceeds to the next step.
 ///
-/// 決まったテナントの中を **2 通りの読み方**で引く。順序に意味がある:
+/// Within the decided tenant it looks up **two readings**. The order matters:
 ///
-/// 1. **入力そのまま**（`alice@corp.example`）。メール種別の識別子を明示的に登録している利用者に
-///    当たる。
-/// 2. **ローカル部**（`alice`）。UPN 形式の解釈で、ドメインを割り当てたこと自体が
-///    「`<識別子>@corp.example` はこのテナントの利用者を指す」という宣言にあたる。
+/// 1. **The input as-is** (`alice@corp.example`). Hits users who explicitly registered an email-kind
+///    identifier.
+/// 2. **The local part** (`alice`). The UPN-style interpretation: assigning the domain is itself a
+///    declaration that "`<identifier>@corp.example` refers to a user of this tenant".
 ///
-/// 1 を先に引くのは、メール種別の識別子を持っている利用者を UPN 解釈で**別人へ振り替えない**
-/// ため。テナントの中で `alice@corp.example` を持つ人と `alice` を持つ人は別人であり得る。
+/// 1 is looked up first so users holding email-kind identifiers are **not redirected to someone else** by the UPN
+/// interpretation. Within a tenant, the person holding `alice@corp.example` and the one holding `alice` may be different.
 ///
-/// ただし**所属元が要求テナント自身**（ADR-0029 §4）のときは 1 を省く。この段へ来た時点で
-/// 1 段目（同じ登録簿を、メンバーシップ条件無しで引く＝ここより広い範囲）が入力そのままで
-/// 空振りしているので、同じ問い合わせは必ず空振りする。ホットパスに無駄な往復を足さない。
+/// However, when **the home tenant is the requested tenant itself** (ADR-0029 §4), 1 is skipped. By the time this
+/// step is reached, step 1 (the same registry looked up without the membership condition = a wider scope than here)
+/// has already missed with the input as-is, so the same query always misses. No wasted round trip on the hot path.
 ///
-/// 2 は「メールでのログインはテナントが明示的に有効化したときだけ」（ADR-0025 §5）と矛盾しない。
-/// `alice@corp.example` はそのアドレスにメールが届くことを意味せず、`users.email` も引かない。
-/// 引くのは登録簿だけで、増えるのは principal ではなく**綴り方**である（パスワードは従来どおり要る）。
+/// 2 doesn't contradict "email login only when the tenant explicitly enables it" (ADR-0025 §5).
+/// `alice@corp.example` doesn't mean mail reaches that address, and `users.email` isn't looked up.
+/// Only the registry is looked up; what increases is **spellings**, not principals (the password is still required as before).
 async fn resolve_by_domain(
     users: &dyn UserRepository,
     tenant_domains: &dyn TenantDomainRepository,
     tenant_id: TenantId,
     input: &str,
 ) -> Result<Option<LoginIdentifierMatch>> {
-    // 形が合わない入力では DB を引きすらしない（裸のユーザー名がホットパスを増やさない）。
+    // Input of the wrong shape doesn't even hit the DB (bare user names don't add to the hot path).
     let Some((local_part, domain)) = split_qualified_identifier(input) else {
         return Ok(None);
     };
@@ -136,7 +136,7 @@ async fn resolve_by_domain(
         return Ok(None);
     };
 
-    // 上の doc コメント参照。所属元＝要求テナントなら入力そのままは引き直さない。
+    // See the doc comment above. If home tenant = requested tenant, the input as-is isn't looked up again.
     let candidates: &[&str] = if home_tenant_id == tenant_id {
         &[local_part]
     } else {
@@ -194,14 +194,14 @@ mod tests {
         }
     }
 
-    /// 所属元での解決とゲストでの解決を独立に差し替えられるフェイク。`home_fails` は
-    /// リポジトリ障害の再現に使う。
+    /// A fake where resolution in the home tenant and as a guest can be swapped independently. `home_fails` is
+    /// used to reproduce a repository failure.
     ///
-    /// `find_by_login_identifier` の既定実装（`find_by_username` へ委譲）は「不在」しか表せない
-    /// ので、曖昧を試す回のためにこちらを直接上書きする。
+    /// The default implementation of `find_by_login_identifier` (delegating to `find_by_username`) can only express
+    /// "missing", so for the ambiguous cases this is overridden directly.
     ///
-    /// `by_home_tenant` はドメイン経路（ADR-0029）用で、「所属元テナントを固定して引いた入力 →
-    /// 結果」の対応表。入力そのままとローカル部の 2 通りで引かれることを、この表で観測できる。
+    /// `by_home_tenant` is for the domain path (ADR-0029): a table of "input looked up with the home tenant fixed ->
+    /// result". This table lets us observe that lookups happen with both the input as-is and the local part.
     struct FakeUsers {
         home: LoginIdentifierMatch,
         guest: LoginIdentifierMatch,
@@ -224,7 +224,7 @@ mod tests {
         }
     }
 
-    /// ドメインを 1 つだけ割り当てているフェイク。
+    /// A fake with exactly one domain assigned.
     struct FakeDomains {
         domain: String,
         tenant_id: TenantId,
@@ -237,7 +237,7 @@ mod tests {
         }
     }
 
-    /// ドメインを 1 つも割り当てていないフェイク（既定実装のまま）。
+    /// A fake with no domain assigned (default implementation).
     struct NoDomains;
 
     #[async_trait]
@@ -246,7 +246,7 @@ mod tests {
     #[async_trait]
     impl UserRepository for FakeUsers {
         async fn find_by_username(&self, _t: TenantId, _name: &str) -> Result<Option<User>> {
-            unreachable!("解決は find_by_login_identifier を通る")
+            unreachable!("resolution goes through find_by_login_identifier")
         }
         async fn find_by_login_identifier(
             &self,
@@ -328,13 +328,13 @@ mod tests {
         }
     }
 
-    /// 解決された利用者 id を取り出す（曖昧・不在は `None`）。
+    /// Extracts the resolved user id (`None` for ambiguous or missing).
     fn resolved_id(m: LoginIdentifierMatch) -> Option<Uuid> {
         m.into_user().map(|u| u.id)
     }
 
-    /// 所属元で解決できた利用者は従来どおり返り、ゲストの検索は行われない（参加してきた同名の
-    /// ゲストが HOME 利用者を「曖昧」にしないための順序）。
+    /// A user resolved in the home tenant is returned as before, and no guest lookup happens (the order that keeps a
+    /// joined guest with the same name from making the HOME user "ambiguous").
     #[tokio::test]
     async fn resolves_home_member_without_consulting_guests() {
         let tenant: TenantId = Uuid::now_v7().into();
@@ -352,7 +352,7 @@ mod tests {
         assert_eq!(repo.guest_calls.load(Ordering::SeqCst), 0);
     }
 
-    /// 所属元が空振りなら、当該テナントの ACTIVE な GUEST として解決する。
+    /// If the home tenant misses, resolve as an ACTIVE GUEST of the tenant.
     #[tokio::test]
     async fn falls_back_to_active_guest_of_the_requested_tenant() {
         let tenant: TenantId = Uuid::now_v7().into();
@@ -369,8 +369,8 @@ mod tests {
         assert_eq!(repo.guest_calls.load(Ordering::SeqCst), 1);
     }
 
-    /// **所属元で曖昧なら、そこで止める**（MT25 の本体）。ゲスト解決へ落ちると、同じ値を持つ
-    /// ゲストが入れてしまい、「曖昧なら通さない」「所属元が名前の取り合いに勝つ」の両方が破れる。
+    /// **If ambiguous in the home tenant, stop there** (the core of MT25). Falling into guest resolution would let a guest
+    /// with the same value in, breaking both "don't let ambiguous through" and "the home tenant wins name contention".
     #[tokio::test]
     async fn ambiguous_home_identifier_does_not_fall_through_to_guests() {
         let tenant: TenantId = Uuid::now_v7().into();
@@ -390,8 +390,8 @@ mod tests {
         assert_eq!(repo.guest_calls.load(Ordering::SeqCst), 0);
     }
 
-    /// ゲスト側で曖昧だった場合も理由を保ったまま返す（同じ値を持つゲストが 2 人参加している
-    /// 状態。どちらかを選ばず拒否する）。
+    /// Ambiguity on the guest side is also returned with its reason (two guests with the same value have joined;
+    /// refuse without picking one).
     #[tokio::test]
     async fn ambiguous_guest_identifier_is_reported_as_ambiguous() {
         let repo = FakeUsers {
@@ -408,7 +408,7 @@ mod tests {
         ));
     }
 
-    /// どちらでも解決できなければ `NotFound`（呼び出し側は資格情報エラーに倒す）。
+    /// `NotFound` if neither resolves (the caller turns it into a credential error).
     #[tokio::test]
     async fn returns_not_found_when_neither_resolves() {
         let tenant: TenantId = Uuid::now_v7().into();
@@ -422,7 +422,7 @@ mod tests {
         ));
     }
 
-    // ── ドメイン経路（ADR-0029）─────────────────────────────────────────────
+    // ── Domain path (ADR-0029) ─────────────────────────────────────────────────────
 
     fn domains(tenant_id: TenantId) -> FakeDomains {
         FakeDomains {
@@ -431,15 +431,15 @@ mod tests {
         }
     }
 
-    /// ドメイン修飾された入力は、**ゲストの横断走査を通らずに**解決される（本 ADR の主眼）。
-    /// 走査を通らないので、同名のゲストが何人参加していても互いに干渉しない。
+    /// Domain-qualified input is resolved **without going through the guest scan** (the main point of this ADR).
+    /// It doesn't go through the scan, so however many guests with the same name join, they don't interfere.
     #[tokio::test]
     async fn a_domain_qualified_identifier_resolves_without_scanning_guests() {
         let host: TenantId = Uuid::now_v7().into();
         let home: TenantId = Uuid::now_v7().into();
         let member = user(home);
         let repo = FakeUsers {
-            // 走査側には別人が居る。ドメイン経路が先に決めるので、こちらは参照されない。
+            // Someone else is on the scan side. The domain path decides first, so this isn't consulted.
             guest: LoginIdentifierMatch::Resolved(user(Uuid::now_v7().into())),
             by_home_tenant: vec![(
                 "alice".to_string(),
@@ -455,8 +455,8 @@ mod tests {
         assert_eq!(repo.guest_calls.load(Ordering::SeqCst), 0);
     }
 
-    /// 決まったテナントの中は「入力そのまま → ローカル部」の順で引く。メール種別の識別子を
-    /// 明示的に登録している利用者を、UPN 解釈で別人へ振り替えないための順序。
+    /// Within the decided tenant, lookups go "input as-is -> local part". This order keeps users who explicitly
+    /// registered an email-kind identifier from being redirected to someone else by the UPN interpretation.
     #[tokio::test]
     async fn the_full_input_wins_over_the_local_part() {
         let host: TenantId = Uuid::now_v7().into();
@@ -481,14 +481,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resolved_id(resolved), Some(by_email.id));
-        // ローカル部までは引きに行かない。
+        // It doesn't go on to look up the local part.
         assert_eq!(
             *repo.member_lookups.lock().unwrap(),
             vec!["alice@corp.example".to_string()]
         );
     }
 
-    /// 入力そのままが空振りならローカル部で引く（UPN 形式。`alice@corp.example` → `alice`）。
+    /// If the input as-is misses, look up the local part (UPN form. `alice@corp.example` -> `alice`).
     #[tokio::test]
     async fn falls_back_to_the_local_part_as_a_upn() {
         let host: TenantId = Uuid::now_v7().into();
@@ -512,8 +512,8 @@ mod tests {
         );
     }
 
-    /// 割り当てられていないドメイン（`gmail.com` 等）は経路に掛からず、従来の走査へ落ちる。
-    /// **ドメイン経路は加算であって置き換えではない。**
+    /// Unassigned domains (`gmail.com` etc.) don't hit the path and fall into the existing scan.
+    /// **The domain path is additive, not a replacement.**
     #[tokio::test]
     async fn an_unassigned_domain_falls_through_to_the_guest_scan() {
         let host: TenantId = Uuid::now_v7().into();
@@ -535,7 +535,7 @@ mod tests {
         assert!(repo.member_lookups.lock().unwrap().is_empty());
     }
 
-    /// 裸のユーザー名ではドメインを引きすらしない（認証のホットパスを増やさない）。
+    /// A bare user name doesn't even look up domains (doesn't add to the authentication hot path).
     #[tokio::test]
     async fn a_bare_identifier_never_consults_the_domain_registry() {
         let host: TenantId = Uuid::now_v7().into();
@@ -544,7 +544,7 @@ mod tests {
         #[async_trait]
         impl TenantDomainRepository for ExplodingDomains {
             async fn find_tenant_by_domain(&self, _domain: &str) -> Result<Option<TenantId>> {
-                panic!("裸の入力でドメインを引いてはいけない");
+                panic!("must not look up domains for bare input");
             }
         }
 
@@ -557,7 +557,7 @@ mod tests {
         ));
     }
 
-    /// 決まったテナントの中で曖昧なら、そこで打ち切る（走査へ落とさない。MT25 と同じ規則）。
+    /// If ambiguous within the decided tenant, stop there (don't fall into the scan; same rule as MT25).
     #[tokio::test]
     async fn an_ambiguous_result_in_the_resolved_home_tenant_stops_the_chain() {
         let host: TenantId = Uuid::now_v7().into();
@@ -581,7 +581,7 @@ mod tests {
         assert_eq!(repo.guest_calls.load(Ordering::SeqCst), 0);
     }
 
-    /// 要求テナントの登録簿で解決できるなら、ドメイン経路は走らない（段の順序）。
+    /// If the requested tenant's registry resolves it, the domain path doesn't run (step order).
     #[tokio::test]
     async fn the_requested_tenants_registry_still_wins() {
         let host: TenantId = Uuid::now_v7().into();
@@ -602,9 +602,9 @@ mod tests {
         assert!(repo.member_lookups.lock().unwrap().is_empty());
     }
 
-    /// 要求テナント自身がドメインを持つ場合（ADR-0029 §4）。`alice@x.example` は 1 段目で
-    /// 空振りしたあと、ローカル部の解釈で拾われる。**入力そのままは引き直さない** —— 1 段目が
-    /// 同じ登録簿をより広い条件で引いて空振りしている以上、必ず空振りするためである。
+    /// When the requested tenant itself has a domain (ADR-0029 §4). `alice@x.example` misses at step 1
+    /// and is then picked up by the local-part interpretation. **The input as-is isn't looked up again** —— step 1
+    /// already looked up the same registry with a wider condition and missed, so it always misses.
     #[tokio::test]
     async fn the_requesting_tenants_own_domain_only_looks_up_the_local_part() {
         let host: TenantId = Uuid::now_v7().into();
@@ -628,8 +628,8 @@ mod tests {
         assert_eq!(repo.guest_calls.load(Ordering::SeqCst), 0);
     }
 
-    /// リポジトリ障害は握り潰さずそのまま伝える（`NotFound` に丸めると障害が「利用者不在」に
-    /// 化け、ゲスト検索という余計な問い合わせまで走る）。
+    /// Repository failures are propagated as-is rather than swallowed (rounding to `NotFound` would turn a failure into
+    /// "user missing" and also trigger the unnecessary guest lookup).
     #[tokio::test]
     async fn propagates_repository_errors_without_falling_back() {
         let repo = FakeUsers {

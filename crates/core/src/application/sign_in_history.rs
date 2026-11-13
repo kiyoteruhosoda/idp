@@ -1,19 +1,19 @@
-//! 本人が見る「ログイン履歴」（task #879。ADR-0073）。
+//! The "sign-in history" the user sees (task #879. ADR-0073).
 //!
-//! # 何をどこで写すか
+//! # What is recorded where
 //!
-//! | 出来事 | 写す所 |
+//! | Event | Recorded at |
 //! |---|---|
-//! | 成功したログイン | web がログイン状態の Cookie を置いた応答（`/internal/devices/observe`。端末の判定と同じ所） |
-//! | 断ったログイン | 監査ログへ書く所（[`SignInFailureRecordingSink`]）。経路が 7 つあるので 1 か所で拾う |
-//! | アプリへトークンを出した・更新した・使い回しを検知した | `TokenService`（`/token`） |
+//! | Successful sign-in | The web response that set the signed-in Cookie (`/internal/devices/observe`. Same place as the device check) |
+//! | Rejected sign-in | Where the audit log is written ([`SignInFailureRecordingSink`]). There are 7 paths, so it is caught in one place |
+//! | Issued, refreshed a token to an app, or detected reuse | `TokenService` (`/token`) |
 //!
-//! 成功を web の応答で拾うのは、そこでしか国（`CF-IPCountry`）が分からないから。国は web が
-//! `TRUST_FORWARDED_HEADERS` のときだけ読み、家の中からの通信では入口が消す（task #872 と同じ扱い）。
+//! Successes are caught from the web response because only there is the country (`CF-IPCountry`) known. The web reads the country
+//! only with `TRUST_FORWARDED_HEADERS`, and the entrance strips it for traffic from inside the home (same handling as task #872).
 //!
-//! # 本人だけ
+//! # Only the user themselves
 //!
-//! 履歴はログイン状態（SSO セッション）の持ち主のものしか返さない。利用者 id を外から受け取らない。
+//! The history returned is only that of the owner of the signed-in state (SSO session). No user id is accepted from outside.
 
 use crate::domain::audit::AuditEvent;
 use crate::domain::clock::Clock;
@@ -32,19 +32,19 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use std::sync::Arc;
 
-/// 履歴の 1 行と、成功したログインならそのアプリでの使われ方。
+/// One history row and, for a successful sign-in, how it was used by that app.
 #[derive(Debug, Clone)]
 pub struct SignInHistoryEntry {
     pub record: SignInRecord,
     pub apps: Vec<SignInAppUse>,
-    /// 今見ているログイン状態そのものか。
+    /// Whether this is the very signed-in state currently being viewed.
     pub current: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct SignInHistoryPage {
     pub entries: Vec<SignInHistoryEntry>,
-    /// もっと古い行があれば、次のページを頼むときに渡す値。
+    /// If there are older rows, the value to pass when requesting the next page.
     pub next_before: Option<i64>,
 }
 
@@ -77,9 +77,9 @@ impl SignInHistoryService {
         }
     }
 
-    /// 作られたばかりのログイン状態を履歴へ写す。同じログインの 2 回目の頼みは何もしない。
+    /// Records a freshly created signed-in state into the history. A second request for the same sign-in does nothing.
     ///
-    /// 古いログイン状態は写さない（端末の結び付けと同じ 2 分の窓。後から別の国を書かせない）。
+    /// Old signed-in states are not recorded (same 2-minute window as device binding. Prevents writing a different country later).
     pub async fn record_sign_in(
         &self,
         sso_session_id: &str,
@@ -114,7 +114,7 @@ impl SignInHistoryService {
             .await
     }
 
-    /// ログイン状態の持ち主の履歴を新しい順に返す。
+    /// Returns the history of the signed-in state's owner, newest first.
     pub async fn history(
         &self,
         sso_session_id: &str,
@@ -151,7 +151,7 @@ impl SignInHistoryService {
         now: DateTime<Utc>,
     ) -> Result<SignInHistoryPage> {
         let limit = limit.clamp(1, SIGN_IN_HISTORY_PAGE_MAX);
-        // 1 行多く引いて、次のページがあるかを決める。
+        // Fetch one extra row to decide whether there is a next page.
         let mut records = self
             .history
             .list_for_user(user_id, before, limit + 1)
@@ -187,15 +187,15 @@ impl SignInHistoryService {
     }
 }
 
-/// 監査ログへ書くついでに、断ったログインを本人の履歴へ写す（[`AuditLogSink`] を包む）。
+/// While writing to the audit log, also records rejected sign-ins into the user's history (wraps [`AuditLogSink`]).
 ///
-/// ログインの経路（パスワード・確認コード・パスキー・外部 IdP・管理コンソール・パスワード変更）は
-/// どれも監査ログへ `login.failed` 等を書く。経路ごとに写しを足すと漏れるので、書き込みの口で拾う。
-/// 写しに失敗しても監査ログの書き込みは成否を変えない。
+/// Every sign-in path (password, verification code, passkey, external IdP, admin console, password change)
+/// writes `login.failed` etc. to the audit log. Adding a copy per path would miss some, so it is caught at the write point.
+/// A failure to copy does not change whether the audit log write succeeds.
 pub struct SignInFailureRecordingSink {
     inner: Arc<dyn AuditLogSink>,
     history: Arc<dyn SignInHistoryRepository>,
-    /// 今の要求の国（task #895）。監査イベントには国が無いので、写すときにここから添える。
+    /// The current request's country (task #895). Audit events have no country, so it is added from here when copying.
     country: Arc<dyn RequestCountry>,
 }
 
@@ -231,7 +231,7 @@ impl AuditLogSink for SignInFailureRecordingSink {
     }
 }
 
-/// 履歴の写しの失敗はログに残して続ける（トークンの発行を止めない）。
+/// A failure to copy to the history is logged and processing continues (token issuance is not stopped).
 pub fn log_history_error(result: std::result::Result<(), DomainError>, what: &'static str) {
     if let Err(e) = result {
         tracing::error!(error = %e, what, "failed to update the sign-in history");

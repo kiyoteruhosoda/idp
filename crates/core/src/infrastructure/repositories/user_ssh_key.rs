@@ -1,6 +1,6 @@
-//! `UserSshKeyRepository` の sqlx 実装（task #885。ADR-0072）。
+//! sqlx implementation of `UserSshKeyRepository` (task #885, ADR-0072).
 //!
-//! 置くのは公開鍵だけ（型・本体・指紋）。貼り付けられた行のコメントは保存しない。
+//! Only the public key is stored (type, body, fingerprint). The comment of the pasted line is not stored.
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::UserSshKeyRepository;
@@ -139,9 +139,9 @@ impl UserSshKeyRepository for SqlxUserSshKeyRepository {
     }
 
     async fn list_distributable(&self, tenant_id: TenantId) -> Result<Vec<DistributedSshKey>> {
-        // 有効な利用者（仮登録でない）で、その組織の有効なメンバー（所属元も HOME の行を持つ）で、
-        // 利用者名を持つ人の鍵だけ。利用者名が無いと配る側が機器の利用者へ対応付けられない。
-        // 利用者名は登録簿の主識別子（`user_login_identifiers.primary_of_user`。`users` に列は無い）。
+        // Only keys of active users (not provisional) who are active members of the org (the home tenant also has a HOME row)
+        // and who have a username. Without a username, the distributor cannot map them to a machine user.
+        // The username is the registry's primary identifier (`user_login_identifiers.primary_of_user`; `users` has no column).
         let rows = sqlx::query(
             "SELECT p.display_value AS username, k.name, k.key_type, k.key_blob, \
                     k.fingerprint, k.created_at \

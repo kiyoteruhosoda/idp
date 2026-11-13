@@ -1,39 +1,39 @@
-//! SSO セッションを端末の鍵へ結び付ける（DBSC）ための、web と api で一致していないと壊れる値（task #887。ADR-0074）。
+//! Values that break unless web and api agree, for binding the SSO session to a device key (DBSC) (task #887, ADR-0074).
 //!
-//! - **challenge**: web が Chrome へ渡し、Chrome が鍵で署名して返す使い捨ての値。「どの SSO セッションに・いつ出したか」の
-//!   HMAC で、DB に置かない。web が作り（登録の求め・更新の 403）、api が確かめる。
-//! - **短い Cookie**（[`BOUND_COOKIE`]）: 結び付けたログイン状態が「いま鍵で署名できた」ことの印。「SSO セッション・期限」の
-//!   HMAC で、DB に置かない。web が出し、web が入口で確かめる。
+//! - **challenge**: a one-time value web hands to Chrome, which signs it with the key and returns it. An HMAC of
+//!   "which SSO session, issued when"; not stored in the DB. web creates it (registration request, refresh 403), api verifies it.
+//! - **Short cookie** ([`BOUND_COOKIE`]): a mark that the bound login state "just signed with the key". An HMAC of
+//!   "SSO session, expiry"; not stored in the DB. web issues it and web verifies it at the entrance.
 //!
-//! HMAC の鍵は `CSRF_SECRET` から用途ごとに分けて導く（同じ値で CSRF のトークンを作れないように）。
+//! The HMAC keys are derived from `CSRF_SECRET` separately per purpose (so the same value cannot make CSRF tokens).
 
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// 結び付けたログイン状態の短い Cookie の名前（HTTPS では `__Host-` を前置して置く）。
+/// Name of the short cookie of a bound login state (over HTTPS it is set with a `__Host-` prefix).
 pub const BOUND_COOKIE: &str = "sso_bound";
-/// 短い Cookie の寿命（秒）。Chrome はこれが切れるたびに鍵で署名して更新する。
+/// Lifetime of the short cookie (seconds). Chrome signs with the key and refreshes it every time it expires.
 pub const BOUND_COOKIE_MAX_AGE_SECS: i64 = 600;
-/// challenge を受け付ける長さ（秒）。
+/// How long a challenge is accepted (seconds).
 pub const CHALLENGE_MAX_AGE_SECS: i64 = 300;
-/// 登録の口（web）。ヘッダーの `path` に入れる。
+/// Registration route (web). Put in the header's `path`.
 pub const REGISTRATION_PATH: &str = "/dbsc/register";
-/// 更新の口（web）。登録の応答の `refresh_url` に入れる。
+/// Refresh route (web). Put in the registration response's `refresh_url`.
 pub const REFRESH_PATH: &str = "/dbsc/refresh";
-/// 受け付ける署名の方式（DBSC の草案が定めるもののうち鍵を使う 2 つ）。
+/// Accepted signature algorithms (the two key-based ones defined by the DBSC draft).
 pub const ALGORITHMS: &[&str] = &["ES256", "RS256"];
-/// 署名の JWT の `typ`。
+/// `typ` of the signature JWT.
 pub const PROOF_TYPE: &str = "dbsc+jwt";
 
-/// ログイン状態を求める側のヘッダー（Chrome が読む）。
+/// Header asking for a login state (read by Chrome).
 pub const REGISTRATION_HEADER: &str = "secure-session-registration";
-/// 更新で新しい challenge を渡すヘッダー。
+/// Header passing a new challenge on refresh.
 pub const CHALLENGE_HEADER: &str = "secure-session-challenge";
-/// Chrome が署名（JWT）を載せるヘッダー。
+/// Header where Chrome puts the signature (JWT).
 pub const RESPONSE_HEADER: &str = "secure-session-response";
-/// Chrome が更新のときに載せる、結び付けの識別子。
+/// Binding identifier Chrome sends on refresh.
 pub const SESSION_ID_HEADER: &str = "sec-secure-session-id";
 
 fn mac(key: &[u8], purpose: &str, message: &str) -> Vec<u8> {
@@ -53,7 +53,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-/// `{発行時刻}.{HMAC}` の形の値を作る。
+/// Creates a value of the form `{issued_at}.{HMAC}`.
 fn stamp(key: &[u8], purpose: &str, sso_session_id: &str, at: i64) -> String {
     let tag = mac(
         key,
@@ -63,7 +63,7 @@ fn stamp(key: &[u8], purpose: &str, sso_session_id: &str, at: i64) -> String {
     format!("{at}.{}", hex::encode(tag))
 }
 
-/// [`stamp`] の値を確かめ、刻まれた時刻を返す。
+/// Verifies a [`stamp`] value and returns the embedded time.
 fn read_stamp(key: &[u8], purpose: &str, sso_session_id: &str, value: &str) -> Option<i64> {
     let (at, tag) = value.split_once('.')?;
     if at.len() > 20 || tag.len() != 64 {
@@ -79,30 +79,30 @@ fn read_stamp(key: &[u8], purpose: &str, sso_session_id: &str, value: &str) -> O
     constant_time_eq(&expected, &provided).then_some(at)
 }
 
-/// SSO セッションに結び付いた challenge を作る（`now` は UNIX 秒）。
+/// Creates a challenge bound to the SSO session (`now` is UNIX seconds).
 pub fn challenge(key: &[u8], sso_session_id: &str, now: i64) -> String {
     stamp(key, "dbsc-challenge", sso_session_id, now)
 }
 
-/// challenge がこの SSO セッションのもので、出してから [`CHALLENGE_MAX_AGE_SECS`] 以内か。
+/// Whether the challenge belongs to this SSO session and is within [`CHALLENGE_MAX_AGE_SECS`] of issuance.
 pub fn challenge_is_fresh(key: &[u8], sso_session_id: &str, value: &str, now: i64) -> bool {
     read_stamp(key, "dbsc-challenge", sso_session_id, value)
         .is_some_and(|at| at <= now + 5 && now - at <= CHALLENGE_MAX_AGE_SECS)
 }
 
-/// 短い Cookie の値（期限 `expires_at` は UNIX 秒）。
+/// Value of the short cookie (expiry `expires_at` in UNIX seconds).
 pub fn bound_cookie(key: &[u8], sso_session_id: &str, expires_at: i64) -> String {
     stamp(key, "dbsc-bound-cookie", sso_session_id, expires_at)
 }
 
-/// 短い Cookie がこの SSO セッションのもので、まだ切れていないか。
+/// Whether the short cookie belongs to this SSO session and has not expired yet.
 pub fn bound_cookie_is_valid(key: &[u8], sso_session_id: &str, value: &str, now: i64) -> bool {
     read_stamp(key, "dbsc-bound-cookie", sso_session_id, value)
         .is_some_and(|expires_at| now < expires_at && expires_at - now <= BOUND_COOKIE_MAX_AGE_SECS)
 }
 
-/// 短い Cookie がこの SSO セッションのもので、まだ切れていなければ、その期限（UNIX 秒）。
-/// 本人の「状況」に出すため（task #896）。
+/// If the short cookie belongs to this SSO session and has not expired yet, its expiry (UNIX seconds).
+/// For showing in the user's "status" (task #896).
 pub fn bound_cookie_expires_at(
     key: &[u8],
     sso_session_id: &str,
@@ -114,7 +114,7 @@ pub fn bound_cookie_expires_at(
         .flatten()
 }
 
-/// ログインの応答に付ける `Secure-Session-Registration` の値。
+/// Value of `Secure-Session-Registration` put on the login response.
 pub fn registration_header(challenge: &str) -> String {
     format!(
         "({});path=\"{REGISTRATION_PATH}\";challenge=\"{challenge}\"",
@@ -122,20 +122,20 @@ pub fn registration_header(challenge: &str) -> String {
     )
 }
 
-/// 更新の 403 に付ける `Secure-Session-Challenge` の値。
+/// Value of `Secure-Session-Challenge` put on the refresh 403.
 pub fn challenge_header(challenge: &str, session_identifier: &str) -> String {
     format!("\"{challenge}\";id=\"{session_identifier}\"")
 }
 
-/// `DBSC_ALLOWED_REFRESH_INITIATORS` を検査する（task #934）。登録・更新の応答の `allowed_refresh_initiators` に入る。
+/// Checks `DBSC_ALLOWED_REFRESH_INITIATORS` (task #934). Goes into `allowed_refresh_initiators` of registration/refresh responses.
 ///
-/// DBSC の草案（§8.3・§8.4）では、結び付けの範囲は assay のオリジンだけ（`include_site: false`）なので、
-/// 要求を出したオリジンが assay でないとき（各アプリの見えない枠の `prompt=none` など）は、ここに当たる
-/// ホストでないと Chrome は短い Cookie を取り直さない。
+/// In the DBSC draft (§8.3, §8.4), the binding scope is only assay's origin (`include_site: false`), so
+/// when the requesting origin is not assay (e.g. `prompt=none` in each app's hidden frame), Chrome does not
+/// re-obtain the short cookie unless the host matches an entry here.
 ///
-/// 書けるのは `*.<名前>` と `<名前>`（ホスト名だけ）を空白で区切ったもの。草案の照合はホストの文字列なので、
-/// スキーム・ポート・パスは書けない。何にでも当たる `*` と、`*.` の後ろが 1 段のもの（`*.com`）は断る。
-/// `*.example.com` は `example.com` 自身には当たらない（要るなら両方書く）。1 つでも書けないものがあれば全体を断る。
+/// Only space-separated `*.<name>` and `<name>` (host names only) may be written. The draft matches host strings,
+/// so scheme, port and path cannot be written. `*` (matches anything) and a single label after `*.` (`*.com`) are rejected.
+/// `*.example.com` does not match `example.com` itself (write both if needed). If even one entry is invalid, the whole value is rejected.
 pub fn parse_refresh_initiators(raw: &str) -> Result<Vec<String>, String> {
     raw.split_whitespace()
         .map(parse_refresh_initiator)
@@ -168,7 +168,7 @@ fn parse_refresh_initiator(raw: &str) -> Result<String, String> {
     Ok(raw.to_string())
 }
 
-/// 結び付けの識別子として受け付ける形か（32 文字の 16 進。assay が作る）。
+/// Whether it has the accepted shape of a binding identifier (32 hex characters; created by assay).
 pub fn is_session_identifier(value: &str) -> bool {
     value.len() == 32 && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -210,7 +210,7 @@ mod tests {
                 "{raw} must be refused"
             );
         }
-        // 1 つでも書けないものがあれば全体を断る
+        // If even one entry is invalid, the whole value is rejected
         assert!(parse_refresh_initiators("*.nolumia.com *").is_err());
     }
     const SESSION: &str = "session-a";
@@ -239,7 +239,7 @@ mod tests {
             &c,
             1_000
         ));
-        // 未来の時刻を刻んだもの（時計のずれを越える）は受け付けない。
+        // A value stamped with a future time (beyond clock skew) is not accepted.
         assert!(!challenge_is_fresh(
             KEY,
             SESSION,
@@ -263,7 +263,7 @@ mod tests {
         assert!(bound_cookie_is_valid(KEY, SESSION, &b, 1_599));
         assert!(!bound_cookie_is_valid(KEY, SESSION, &b, 1_600));
         assert!(!bound_cookie_is_valid(KEY, "session-b", &b, 1_000));
-        // 寿命より先の期限を刻んだもの（鍵を知らなければ作れないが、念のため）は受け付けない。
+        // A value stamped with an expiry beyond the lifetime (impossible without the key, but just in case) is not accepted.
         assert!(!bound_cookie_is_valid(
             KEY,
             SESSION,

@@ -1,4 +1,4 @@
-//! `SamlSsoRequestRepository` の sqlx 実装。
+//! sqlx implementation of `SamlSsoRequestRepository`.
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::SamlSsoRequestRepository;
@@ -123,8 +123,8 @@ impl SamlSsoRequestRepository for SqlxSamlSsoRequestRepository {
         handle_hash: &str,
         new_id_hash: &str,
     ) -> Result<bool> {
-        // WHERE に handle_hash を含めることで単回使用を原子的に強制する（auth_sessions と同方式）。
-        // 同じ文で id_hash も差し替える（勝った側だけが新しい `saml_request_id` を得る）。
+        // Including handle_hash in WHERE enforces single use atomically (same approach as auth_sessions).
+        // The same statement also replaces id_hash (only the winner gets the new `saml_request_id`).
         let result = sqlx::query(
             "UPDATE saml_sso_requests \
              SET handle_hash = NULL, handle_expires_at = NULL, id_hash = ? \
@@ -140,7 +140,7 @@ impl SamlSsoRequestRepository for SqlxSamlSsoRequestRepository {
     }
 
     async fn delete(&self, id_hash: &str) -> Result<bool> {
-        // 応答発行前のクレームを兼ねる: 並行する resume は片方だけが 1 行削除に成功する。
+        // Doubles as the claim before issuing the response: of concurrent resumes, only one deletes the row.
         let result = sqlx::query("DELETE FROM saml_sso_requests WHERE id_hash = ?")
             .bind(id_hash)
             .execute(&self.pool)

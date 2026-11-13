@@ -1,7 +1,7 @@
 {% extends "console/layout.html" %}
 {% block content %}
-{#- アカウント一覧（ADR-0065）。人とサービスアカウントを 1 つに並べる。種別が違うだけで、
-    「これは何者で、どういう状態か」への答え方は同じ ——列も札の規則も種別で分けない。 -#}
+{#- Account list (ADR-0065). People and service accounts in one list. Only the kind differs;
+    the answer to "who is this and what state is it in" is the same -- columns and badge rules are not split by kind. -#}
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
   <h2 class="h4 mb-0">{{ messages.get("admin-accounts-title") }}</h2>
   <div class="d-flex flex-wrap gap-2">
@@ -17,8 +17,8 @@
 <p class="text-muted">{{ messages.get("admin-accounts-intro") }}</p>
 {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
 {% if let Some(key) = notice_key %}<div class="alert alert-success" role="status"><i class="fa-solid fa-circle-check me-2" aria-hidden="true"></i>{{ messages.get(key) }}</div>{% endif %}
-{#- 種別の絞り込み。読める種別が 1 つしか無い管理者には出さない（選べないものを並べない）。
-    タブの行き先は検索語を持ち越すので、検索欄を打つたびに差し替える（`data-live-search-region`）。 -#}
+{#- Kind filter. Hidden for admins who can read only one kind (do not list what cannot be chosen).
+    Tab targets carry the search term, so they are replaced on every keystroke in the search field (`data-live-search-region`). -#}
 <div data-live-search-region="kinds">
 {% if kind_tabs.len() > 1 %}
 <nav class="mb-3" aria-label="{{ messages.get("admin-accounts-kind-label") }}">
@@ -30,8 +30,8 @@
 </nav>
 {% endif %}
 </div>
-{#- 検索欄は打つだけで絞り込む（`assets/live-search.js`。入力が止まってから取り直し、下の領域だけを
-    差し替える）。スクリプトが動かなければボタンで送れる。 -#}
+{#- The search field filters as you type (`assets/live-search.js`; refetches after typing stops and replaces only
+    the region below). Without scripts the button submits. -#}
 <form method="get" action="{{ tenant }}/admin/accounts" class="mb-3" role="search" data-live-search>
   {% if !kind.is_empty() %}<input type="hidden" name="kind" value="{{ kind }}">{% endif %}
   <div class="input-group" style="max-width: 28rem;">
@@ -50,11 +50,11 @@
 {% endif %}
 {% else %}
 <p class="text-muted small">{{ messages.get("admin-pagination-total") }} {{ total }}</p>
-{#- ⚠ **一覧は「探す・状態を見る」だけ。** 操作は 1 件ずつの画面へ集める（ADR-0063）。
-    列は「誰か」「状態」「メモ」の 3 つ。状態は**普通でないものだけ**を札にする
-    ——全員に「HOME」「ACTIVE」「有効」が並ぶと、止まっている人が埋もれる。
-    種別は見出しの前の印で示す（人とサービスアカウントが混ざるので、種別は「普通でないもの」の
-    扱いにはしない）。 -#}
+{#- ⚠ **The list is only for "finding and viewing state".** Operations are gathered on per-item screens (ADR-0063).
+    Three columns: "who", "state", "note". Only **unusual states** become badges
+    -- if everyone shows "HOME", "ACTIVE", "enabled", the stopped ones get buried.
+    The kind is shown by a mark before the heading (people and service accounts are mixed, so kind is not treated
+    as "unusual"). -#}
 <div class="table-responsive">
   <table class="table table-cards table-hover align-middle members-table">
     <thead>
@@ -75,8 +75,8 @@
           {% if m.membership_type == "GUEST" %}<span class="badge text-bg-info">{{ messages.get("admin-members-type-guest") }}</span>{% endif %}
           {% if m.status == "SUSPENDED" %}<span class="badge text-bg-warning">{{ messages.get("admin-members-status-suspended") }}</span>
           {% else if m.status == "INVITED" %}<span class="badge text-bg-secondary">{{ messages.get("admin-members-status-invited") }}</span>{% endif %}
-          {#- 仮登録（ADR-0064）。有効かどうかより先に出す ——本人がまだ何も決めていないので入れない。 -#}
-          {#- 設定リンクが切れた仮登録は、管理者が出し直すまで誰も入れない。ただの「仮登録」と同じ札にしない。 -#}
+          {#- Provisional registration (ADR-0064). Shown before enabled/disabled -- the person has not decided anything yet, so they cannot sign in. -#}
+          {#- A provisional registration whose setup link expired lets nobody in until an admin reissues it. Do not use the same badge as plain "provisional". -#}
           {% if m.pending_setup && m.setup_link_expired %}<span class="badge text-bg-warning"><i class="fa-solid fa-link-slash me-1" aria-hidden="true"></i>{{ messages.get("admin-members-user-status-setup-expired") }}</span>
           {% else if m.pending_setup %}<span class="badge text-bg-secondary"><i class="fa-regular fa-hourglass-half me-1" aria-hidden="true"></i>{{ messages.get("admin-members-user-status-pending") }}</span>{% if let Some(until) = m.setup_link_expires_at %}<span class="small text-muted">{{ messages.get("admin-members-setup-link-until") }} <time class="local-time" datetime="{{ until }}">{{ crate::templates::utc_short(until.as_str()) }}</time></span>{% endif %}{% endif %}
           {% if m.locked %}<span class="badge text-bg-warning"><i class="fa-solid fa-lock me-1" aria-hidden="true"></i>{{ messages.get("admin-members-user-status-locked") }}</span>

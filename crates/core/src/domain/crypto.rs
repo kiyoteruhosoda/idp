@@ -1,4 +1,4 @@
-//! 暗号ユーティリティ: 乱数トークン生成、SHA-256、base64url、秘密鍵の暗号化（AES-256-GCM）。
+//! Crypto utilities: random token generation, SHA-256, base64url, private-key encryption (AES-256-GCM).
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
@@ -9,35 +9,35 @@ use sha2::{Digest, Sha256};
 
 const GCM_NONCE_LEN: usize = 12;
 
-/// 暗号学的乱数から `n_bytes` バイトを生成し、base64url（パディング無し）で返す。
-/// セッション ID / authorization code / auth_session id などの生成に使う。
+/// Generates `n_bytes` bytes from a cryptographic RNG and returns them as base64url (no padding).
+/// Used to generate session IDs / authorization codes / auth_session ids, etc.
 pub fn random_token(n_bytes: usize) -> String {
     let mut buf = vec![0u8; n_bytes];
     rand::rng().fill_bytes(&mut buf);
     URL_SAFE_NO_PAD.encode(buf)
 }
 
-/// 暗号学的乱数から `n_bytes` バイトを生成し、小文字 16 進で返す。
-/// DB キーに使う識別子（`auth_sessions.id`・SSO session_id 等）は ci 照合下でも
-/// 厳密一致となるよう小文字 16 進で生成する。
+/// Generates `n_bytes` bytes from a cryptographic RNG and returns them as lowercase hex.
+/// Identifiers used as DB keys (`auth_sessions.id`, SSO session_id, etc.) are generated as lowercase hex
+/// so they match exactly even under a ci collation.
 pub fn random_hex(n_bytes: usize) -> String {
     let mut buf = vec![0u8; n_bytes];
     rand::rng().fill_bytes(&mut buf);
     hex::encode(buf)
 }
 
-/// SHA-256 の 16 進小文字表現（64 文字）。code_hash / session_hash に使う。
+/// Lowercase hex representation of SHA-256 (64 chars). Used for code_hash / session_hash.
 pub fn sha256_hex(input: &str) -> String {
     let digest = Sha256::digest(input.as_bytes());
     hex::encode(digest)
 }
 
-/// バイト列を base64url（パディング無し）へ。JWK の `n` / `e` などに使う。
+/// Bytes to base64url (no padding). Used for JWK `n` / `e`, etc.
 pub fn base64url(bytes: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
-/// 平文を AES-256-GCM で暗号化し、`base64(nonce || ciphertext)` を返す。
+/// Encrypts plaintext with AES-256-GCM and returns `base64(nonce || ciphertext)`.
 pub fn encrypt(plaintext: &[u8], key: &[u8; 32]) -> anyhow::Result<String> {
     let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from(*key));
 
@@ -55,7 +55,7 @@ pub fn encrypt(plaintext: &[u8], key: &[u8; 32]) -> anyhow::Result<String> {
     Ok(STANDARD.encode(combined))
 }
 
-/// [`encrypt`] の逆。`base64(nonce || ciphertext)` を復号して平文バイト列を返す。
+/// Inverse of [`encrypt`]. Decrypts `base64(nonce || ciphertext)` and returns the plaintext bytes.
 pub fn decrypt(encoded: &str, key: &[u8; 32]) -> anyhow::Result<Vec<u8>> {
     let combined = STANDARD
         .decode(encoded)
@@ -65,7 +65,7 @@ pub fn decrypt(encoded: &str, key: &[u8; 32]) -> anyhow::Result<Vec<u8>> {
     }
     let (nonce_bytes, ciphertext) = combined.split_at(GCM_NONCE_LEN);
 
-    // 長さは上で確かめてあるので、ここで失敗するのは GCM_NONCE_LEN と型が食い違ったときだけ。
+    // The length was checked above, so this only fails if GCM_NONCE_LEN and the type disagree.
     let nonce =
         Nonce::try_from(nonce_bytes).map_err(|_| anyhow::anyhow!("invalid nonce length"))?;
 
@@ -90,9 +90,9 @@ mod tests {
 
     #[test]
     fn random_token_has_expected_length() {
-        // 32 バイト → base64url(パディング無し)で 43 文字。
+        // 32 bytes -> 43 chars in base64url (no padding).
         assert_eq!(random_token(32).len(), 43);
-        // 生成のたびに異なる。
+        // Differs on every generation.
         assert_ne!(random_token(32), random_token(32));
     }
 

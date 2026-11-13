@@ -1,14 +1,14 @@
-//! アプリケーションログ（`log` テーブル）の共有契約と `tracing` 取り込み層。
+//! Shared contract of the application log (`log` table) and the `tracing` ingestion layer.
 //!
-//! api と web の両方が WARN / ERROR を**同じ形**で組み立てる必要があるため、DTO だけでなく
-//! 「`tracing` イベント → 1 レコード」の導出もここに単一定義する（CLAUDE.md の contracts の役割：
-//! 「api と web で一致していないと壊れる値・導出」）。ずれると、同じ障害が画面上で別物に見える。
+//! Both api and web must build WARN / ERROR records **the same way**, so not only the DTOs but also the
+//! derivation "`tracing` event -> 1 record" is defined once here (the role of contracts in CLAUDE.md:
+//! "values and derivations that break unless api and web agree"). If they drift, the same failure looks different on screen.
 //!
-//! - api: 取り込んだレコードを直接 `log` テーブルへ書く。
-//! - web: DB を持たないため、api の `/internal/logs` へまとめて送って書いてもらう。
+//! - api: writes ingested records directly to the `log` table.
+//! - web: has no DB, so it sends them in batches to api's `/internal/logs` to be written.
 //!
-//! 記録対象は WARN / ERROR のみ（INFO 以下は stdout の構造化ログに任せ、DB を肥大させない）。
-//! 文言は多言語化せず運用言語（英語）で統一し、PII は載せない（CLAUDE.md「ログ」）。
+//! Only WARN / ERROR are recorded (INFO and below are left to stdout structured logs so the DB does not bloat).
+//! Messages are not localized; they use the operational language (English), and carry no PII (CLAUDE.md "Logging").
 
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
@@ -18,22 +18,22 @@ use tracing::{Event, Level, Metadata, Subscriber};
 use tracing_subscriber::layer::{Context, Filter, Layer};
 use tracing_subscriber::registry::LookupSpan;
 
-/// 出力元サービス名（`log.service`。DB の CHECK 制約と一致させる）。
+/// Source service name (`log.service`; keep in sync with the DB CHECK constraint).
 pub const SERVICE_API: &str = "api";
 pub const SERVICE_WEB: &str = "web";
 
-/// ログ 1 件（サービス間で受け渡す形）。`occurred_at` は RFC3339（UTC）の文字列で運ぶ。
+/// One log record (the shape passed between services). `occurred_at` is carried as an RFC3339 (UTC) string.
 ///
-/// `service` は受け取り側（api）が信頼できる形で埋めるのではなく**送り元が名乗る**。`/internal/logs`
-/// はサービストークンで保護された内部経路であり、名乗りを検証するのは api 側の責務。
+/// `service` is **declared by the sender**, not filled by the receiver (api) in a trusted way. `/internal/logs`
+/// is an internal route protected by the service token, and verifying the claim is api's responsibility.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApplicationLogPayload {
     pub occurred_at: String,
-    /// `ERROR` / `WARN`。
+    /// `ERROR` / `WARN`.
     pub level: String,
-    /// `api` / `web`。
+    /// `api` / `web`.
     pub service: String,
-    /// `tracing` の target（出力元モジュールパス）。
+    /// `tracing` target (module path of the source).
     pub target: String,
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -44,19 +44,19 @@ pub struct ApplicationLogPayload {
     pub traceback: Option<String>,
 }
 
-/// web → api のログ取り込み要求（`POST /internal/logs`）。まとめて送る。
+/// web -> api log ingestion request (`POST /internal/logs`). Sent in batches.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ApplicationLogIngestRequest {
     pub records: Vec<ApplicationLogPayload>,
 }
 
-/// 取り込み結果（受理件数）。
+/// Ingestion result (number accepted).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApplicationLogIngestResponse {
     pub accepted: usize,
 }
 
-/// 管理画面向けのログ 1 行（api → web）。
+/// One log row for the admin screen (api -> web).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApplicationLogEntryResponse {
     pub id: i64,
@@ -70,23 +70,23 @@ pub struct ApplicationLogEntryResponse {
     pub traceback: Option<String>,
 }
 
-// ── tracing 取り込み層 ────────────────────────────────────────────────────────
+// ── tracing ingestion layer ────────────────────────────────────────────────────────
 
-/// 取り込んだレコードの送り先。**実装は絶対にブロックしないこと**（`tracing` の `on_event` は
-/// リクエスト処理スレッド上で走る）。送れないときは黙って捨てる（ログ出力は再帰を生む）。
+/// Destination of ingested records. **Implementations must never block** (`tracing`'s `on_event`
+/// runs on the request handling thread). If it cannot send, drop silently (logging would recurse).
 pub trait CapturedLogSink: Send + Sync + 'static {
     fn submit(&self, record: ApplicationLogPayload);
 }
 
-/// WARN / ERROR の `tracing` イベントを [`ApplicationLogPayload`] へ写して [`CapturedLogSink`] へ流す層。
+/// Layer that maps WARN / ERROR `tracing` events to [`ApplicationLogPayload`] and feeds them to [`CapturedLogSink`].
 ///
-/// `correlation_id` / `tenant_id` は、イベント自身のフィールドか、囲っているスパンのフィールドから
-/// 拾う（内側のスパンを優先）。これにより「リクエスト → 処理 → 監査イベント」を `correlation_id`
-/// で一気通貫に追える（CLAUDE.md「ログ」）。
+/// `correlation_id` / `tenant_id` are picked from the event's own fields or the enclosing spans' fields
+/// (inner spans first). This lets "request -> processing -> audit event" be traced end to end by
+/// `correlation_id` (CLAUDE.md "Logging").
 pub struct ApplicationLogCaptureLayer<K: CapturedLogSink> {
     sink: K,
     service: &'static str,
-    /// 自己再帰を防ぐための除外 target 前方一致（ログ送信そのものが出すログを取り込まない）。
+    /// Excluded target prefixes to prevent self-recursion (logs emitted by log shipping itself are not ingested).
     excluded_targets: Vec<String>,
 }
 
@@ -99,8 +99,8 @@ impl<K: CapturedLogSink> ApplicationLogCaptureLayer<K> {
         }
     }
 
-    /// 指定 target（前方一致）のイベントを取り込まない。ログ書き込み経路自身の target を除外して、
-    /// 「書き込み失敗のログがまた書き込みを誘発する」再帰を断つために使う。
+    /// Do not ingest events for the given target (prefix match). Used to exclude the log write path's own target
+    /// and break the recursion where "a log of a write failure triggers another write".
     pub fn exclude_target(mut self, prefix: impl Into<String>) -> Self {
         self.excluded_targets.push(prefix.into());
         self
@@ -113,19 +113,19 @@ impl<K: CapturedLogSink> ApplicationLogCaptureLayer<K> {
     }
 }
 
-/// 取り込み層に付けるフィルタ（task #801）。
+/// Filter attached to the ingestion layer (task #801).
 ///
-/// - **スパンは必ず通す**。イベント自身は追跡キーを持たず、囲っているリクエストスパン
-///   （`correlation_id`）から拾うため、スパンが無効化されると `correlation_id` が NULL になる。
-/// - イベントは WARN 以上だけを通す（INFO 以下は stdout の構造化ログに任せる）。取り込み層は
-///   内部でもレベルを見るが、ここで落としておくと DEBUG / TRACE の分の呼び出し自体を省ける。
+/// - **Spans always pass.** Events carry no trace key themselves and pick it from the enclosing request span
+///   (`correlation_id`), so if spans are disabled, `correlation_id` becomes NULL.
+/// - Only events at WARN and above pass (INFO and below are left to stdout structured logs). The ingestion layer
+///   also checks the level internally, but dropping them here skips the DEBUG / TRACE calls altogether.
 ///
-/// ⚠ **通すものの [`Interest`] を `always` にしない。** 層ごとのフィルタの可否はスレッドごとの印に
-/// 残り、`enabled` が次に呼ばれるまで消えない。すべての層が `always` と答えた呼び出しは `enabled` を
-/// 飛ばすので、残っている印で判断され、stdout からも取り込み層からも黙って消える。印を残す相手は
-/// sqlx で、問い合わせが終わるたびに `log::log_enabled!` を呼び（`LogTracer` が `enabled` まで届ける）、
-/// `RUST_LOG` で要らないレベルだと続く event が配られない。つまり**問い合わせの直後の WARN / ERROR**が
-/// 落ちていた。`sometimes` なら `enabled` が毎回呼ばれて印が上書きされる。
+/// ⚠ **Do not make the [`Interest`] of what passes `always`.** Per-layer filter decisions remain as a per-thread
+/// mark and are not cleared until `enabled` is next called. A callsite for which every layer answered `always` skips
+/// `enabled`, so the leftover mark decides, and it silently disappears from both stdout and the ingestion layer. The one
+/// leaving the mark is sqlx, which calls `log::log_enabled!` after every query (`LogTracer` forwards it to `enabled`),
+/// and at a level `RUST_LOG` does not want, the following event is not dispatched. So **WARN / ERROR right after a query**
+/// were being dropped. With `sometimes`, `enabled` is called every time and the mark is overwritten.
 pub struct CaptureFilter;
 
 impl CaptureFilter {
@@ -148,7 +148,7 @@ impl<S> Filter<S> for CaptureFilter {
     }
 }
 
-/// スパン生成時に拾っておく追跡キー（イベント時にスコープを遡って参照する）。
+/// Trace keys captured at span creation (looked up by walking the scope at event time).
 #[derive(Debug, Clone, Default)]
 struct TrackingFields {
     correlation_id: Option<String>,
@@ -180,7 +180,7 @@ where
         let level = match *event.metadata().level() {
             Level::ERROR => "ERROR",
             Level::WARN => "WARN",
-            // INFO 以下は DB へ落とさない（stdout の構造化ログが担う）。
+            // INFO and below are not written to the DB (stdout structured logs cover them).
             _ => return,
         };
         let target = event.metadata().target();
@@ -191,7 +191,7 @@ where
         let mut visitor = FieldVisitor::default();
         event.record(&mut visitor);
 
-        // 追跡キーはイベント自身 → 内側のスパン → 外側のスパン の順に最初に見つかったものを使う。
+        // For trace keys, use the first found in the order: the event itself -> inner span -> outer span.
         let mut correlation_id = visitor.tracking.correlation_id;
         let mut tenant_id = visitor.tracking.tenant_id;
         if correlation_id.is_none() || tenant_id.is_none() {
@@ -215,7 +215,7 @@ where
         }
 
         let message = if visitor.message.is_empty() {
-            // `message` を持たないイベント（フィールドだけの記録）は target を本文の代わりにする。
+            // For events without `message` (field-only records), the target stands in for the message.
             target.to_string()
         } else if visitor.extra.is_empty() {
             visitor.message
@@ -240,8 +240,8 @@ fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
 }
 
-/// `tracing` フィールドの取り出し。`message` は本文、`error` は traceback、残りは `key=value` で
-/// 本文へ添える（構造化ログの JSON と同じ情報を、1 行の文字列として画面に出すため）。
+/// Extracts `tracing` fields. `message` is the message, `error` is the traceback, and the rest are appended to the
+/// message as `key=value` (to show the same information as the structured JSON log as a one-line string on screen).
 #[derive(Default)]
 struct FieldVisitor {
     message: String,
@@ -257,7 +257,7 @@ impl FieldVisitor {
             "error" => self.error = Some(value),
             "correlation_id" => self.tracking.correlation_id = Some(value),
             "tenant_id" => self.tracking.tenant_id = Some(value),
-            // `log` crate 由来のメタフィールドは本文に混ぜても情報にならない。
+            // Meta fields from the `log` crate add no information when mixed into the message.
             name if name.starts_with("log.") => {}
             name => {
                 let _ = write!(self.extra, " {name}={value}");
@@ -307,7 +307,7 @@ mod tests {
         }
     }
 
-    /// 個別のサブスクライバでクロージャを実行し、取り込まれたレコードを返す。
+    /// Runs the closure under a dedicated subscriber and returns the ingested records.
     fn capture(f: impl FnOnce()) -> Vec<ApplicationLogPayload> {
         let sink = CollectingSink::default();
         let layer = ApplicationLogCaptureLayer::new(SERVICE_API, sink.clone())

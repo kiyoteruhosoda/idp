@@ -1,9 +1,9 @@
-//! `Mailer` の lettre（SMTP）実装（MT17）。
+//! lettre (SMTP) implementation of `Mailer` (MT17).
 //!
-//! 接続情報は送信ごとに受け取る（システム設定は実行時に変更されるため、トランスポートを
-//! 使い回さない）。TLS は rustls。`use_tls = true` のとき、ポート 465 は implicit TLS
-//! （接続直後から TLS）、それ以外（587 等）は STARTTLS 必須として扱う。
-//! パスワード等の秘匿値はログ・エラーメッセージへ出さない。
+//! Connection info is received per send (system settings change at runtime, so the transport is
+//! not reused). TLS is rustls. With `use_tls = true`, port 465 is treated as implicit TLS
+//! (TLS right after connecting) and anything else (587, etc.) as STARTTLS required.
+//! Secrets such as passwords are never put in logs or error messages.
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::mailer::{Mailer, OutgoingEmail, SmtpRoute, SmtpServerConfig};
@@ -16,9 +16,9 @@ use lettre::transport::smtp::client::{Tls, TlsParameters};
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use std::time::Duration;
 
-/// implicit TLS（SMTPS）の標準ポート。これ以外の TLS 指定は STARTTLS とみなす。
+/// Standard port for implicit TLS (SMTPS). Any other TLS setting is treated as STARTTLS.
 const SMTPS_PORT: u16 = 465;
-/// 接続・応答待ちの上限。宛先が応答しないと、再発行の要求などがメールの送信を待ち続ける（task #740）。
+/// Upper bound for connecting and waiting for responses. If the destination doesn't respond, requests like reissuing keep waiting on the mail send (task #740).
 const SMTP_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct LettreSmtpMailer {
@@ -30,7 +30,7 @@ impl LettreSmtpMailer {
         Self::with_trust(OutboundTrust::none())
     }
 
-    /// 名前を引いた結果が内部の住所でも送ってよい名前を指定して作る（task #740）。
+    /// Builds it with names that may be sent to even if they resolve to internal addresses (task #740).
     pub fn with_trust(trust: OutboundTrust) -> Self {
         Self { trust }
     }
@@ -42,11 +42,11 @@ impl Default for LettreSmtpMailer {
     }
 }
 
-/// テナントの経路の宛先を確かめ、繋ぐ相手（確かめた住所）を返す（task #740）。
+/// Checks the tenant route's destination and returns what to connect to (the checked address) (task #740).
 ///
-/// 引いた結果を確かめてから名前のまま繋ぐと、繋ぐときに引き直した先が内部の住所になり得る
-/// （DNS rebinding）。そこで確かめた住所へ直接繋ぐ。TLS の証明書は元の名前で確かめる。
-/// 例外は運用者が名指しした名前だけで、字面で内部と分かるものは例外にしない（`OutboundTrust`）。
+/// Checking the resolved result and then connecting by name could re-resolve to an internal address at connect time
+/// (DNS rebinding). So it connects directly to the checked address. The TLS certificate is checked against the original name.
+/// The only exception is names the operator named, and textually internal ones are never exempted (`OutboundTrust`).
 async fn checked_tenant_destination(host: &str, trust: &OutboundTrust) -> Result<String> {
     if is_internal_host(host) {
         return Err(internal_destination());
@@ -70,7 +70,7 @@ fn internal_destination() -> DomainError {
     DomainError::InvalidValue("smtp host must not point at an internal destination".to_string())
 }
 
-/// エラーに秘匿値が混ざらないよう、接続情報を含まない固定の文脈だけ付ける。
+/// Attach only a fixed context without connection info, so no secret leaks into the error.
 fn mail_err<E: std::fmt::Display>(context: &str) -> impl FnOnce(E) -> DomainError + '_ {
     move |e| DomainError::Repository(format!("smtp {context}: {e}"))
 }
@@ -135,7 +135,7 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpListener;
 
-    /// 最小の SMTP 対話を話すインプロセスサーバ。受信した DATA 本文を返す。
+    /// In-process server speaking a minimal SMTP dialogue. Returns the received DATA body.
     async fn run_minimal_smtp_server(listener: TcpListener) -> String {
         let (socket, _) = listener.accept().await.expect("accept");
         let (read_half, mut write_half) = socket.into_split();
@@ -195,7 +195,7 @@ mod tests {
         let config = SmtpServerConfig {
             host: "127.0.0.1".to_string(),
             port: Some(port),
-            username: String::new(), // 認証なし
+            username: String::new(), // no authentication
             password: String::new(),
             from_address: "noreply@example.test".to_string(),
             use_tls: false,
@@ -219,9 +219,9 @@ mod tests {
         let mailer = LettreSmtpMailer::new();
         let config = SmtpServerConfig {
             host: "127.0.0.1".to_string(),
-            // 予約済みポートを bind して即クローズ → 接続拒否を確実にする代わりに、
-            // 未使用ポートへの接続失敗を検証する。
-            port: Some(1), // 特権ポート（listener なし）
+            // Instead of binding a reserved port and closing it right away to guarantee connection refusal,
+            // verify a connection failure to an unused port.
+            port: Some(1), // privileged port (no listener)
             username: String::new(),
             password: String::new(),
             from_address: "noreply@example.test".to_string(),
@@ -240,8 +240,8 @@ mod tests {
         std::net::SocketAddr::new(ip.parse().unwrap(), 0)
     }
 
-    /// テナントの経路は、宅内・ループバック・リンクローカルの字面なら繋がない（task #740）。
-    /// ⚠ 運用者が名指しした名前でも、字面で内部と分かるものは例外にしない。
+    /// Tenant routes don't connect if the host is textually in-home, loopback or link-local (task #740).
+    /// ⚠ Even names the operator named are not exempted if they are textually internal.
     #[tokio::test]
     async fn a_tenant_route_never_connects_to_an_internal_literal() {
         for host in [
@@ -261,7 +261,7 @@ mod tests {
         }
     }
 
-    /// 引いた結果に内部の住所が 1 つでも混ざれば繋がず、外だけなら確かめた住所へ繋ぐ。
+    /// If any resolved address is internal, don't connect; if all are external, connect to the checked address.
     #[test]
     fn a_tenant_route_connects_only_to_checked_external_addresses() {
         assert!(first_external_address("mail.example.com", &[addr("192.168.1.2")]).is_err());
@@ -277,7 +277,7 @@ mod tests {
         );
     }
 
-    /// 運用者が名指しした名前は、内側へ引けても名前のまま繋ぐ（split DNS）。
+    /// Names the operator named are connected to by name even if they resolve inward (split DNS).
     #[tokio::test]
     async fn a_trusted_name_keeps_its_name() {
         let trust = OutboundTrust::parse("nolumia.com");
@@ -289,7 +289,7 @@ mod tests {
         );
     }
 
-    /// 全体の経路は root だけが決めるので確かめない（開発環境の宛先も内部の名前になる）。
+    /// The global route is decided only by root, so it is not checked (development destinations are internal names too).
     #[tokio::test]
     async fn the_whole_idp_route_is_not_checked_but_a_tenant_route_is() {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");

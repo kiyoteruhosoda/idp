@@ -1,4 +1,4 @@
-//! `TenantMembershipRepository` の sqlx 実装（ADR-0009 §3）。
+//! sqlx implementation of `TenantMembershipRepository` (ADR-0009 §3).
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::TenantMembershipRepository;
@@ -58,7 +58,7 @@ fn map_row(row: &MySqlRow) -> Result<TenantMembership> {
     })
 }
 
-/// tenant_memberships への INSERT（プール直接実行と provisioning トランザクションで共用する）。
+/// INSERT into tenant_memberships (shared by direct pool execution and the provisioning transaction).
 pub(crate) async fn insert_membership<'e>(
     executor: impl sqlx::Executor<'e, Database = sqlx::MySql>,
     membership: &TenantMembership,
@@ -119,9 +119,9 @@ impl TenantMembershipRepository for SqlxTenantMembershipRepository {
         rows.iter().map(map_row).collect()
     }
 
-    /// `ACTIVE` なメンバーシップに加えて、**所属元テナントが `ACTIVE`** であることを課す
-    /// （ADR-0009 §8。理由はトレイト側の doc を参照）。辿る 3 表はいずれも主キー引きで、
-    /// `tenant_memberships` の PK `(tenant_id, user_id)` → `users` の PK → `tenants` の PK と進む。
+    /// In addition to an `ACTIVE` membership, requires the **home tenant to be `ACTIVE`**
+    /// (ADR-0009 §8; see the trait doc for why). All 3 tables are looked up by primary key,
+    /// going `tenant_memberships` PK `(tenant_id, user_id)` -> `users` PK -> `tenants` PK.
     async fn is_active_member(&self, tenant_id: TenantId, user_id: Uuid) -> Result<bool> {
         let row = sqlx::query(
             "SELECT 1 FROM tenant_memberships m \

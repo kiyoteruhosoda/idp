@@ -1,48 +1,51 @@
-//! システム設定（root/idp.system.admin が管理する assay 全体設定。ADR-0009 §5、MT14）。
+//! System settings (assay-wide settings managed by root/idp.system.admin; ADR-0009 §5, MT14).
 //!
-//! 設定値の優先順位は「組み込み既定値 < 環境変数（ENV）< DB（system_settings）」。あとから DB で上書き
-//! できるという思想で、より運用に近い層（DB）を優先する（ADR-0010 の DB_MANAGED は DB を正とする）。
-//! 本モジュールはその DB 層を表す。SMTP 等の運用設定を保持し、MT17（招待メール配送）・
-//! MT18（パスワードリセット）が参照する。秘匿値（SMTP パスワード）は `is_secret = true` とし、
-//! 暗号化して保存する（暗号化・復号は Application 層の責務）。
+//! Precedence of setting values is "built-in default < environment variable (ENV) < DB
+//! (system_settings)". Following the idea that the DB can override later, the layer closer to
+//! operations (DB) wins (ADR-0010's DB_MANAGED treats the DB as authoritative). This module
+//! represents that DB layer. It holds operational settings such as SMTP, referenced by MT17
+//! (invitation mail delivery) and MT18 (password reset). Secrets (SMTP password) have
+//! `is_secret = true` and are stored encrypted (encryption / decryption is the Application layer's
+//! job).
 //!
-//! 例外として、DB を読む前や DB 内 secret の復号に必要な bootstrap 系（DB 接続情報・
-//! `KEY_ENCRYPTION_KEY`・`CSRF_SECRET` 等）と、api/web で値を一致させる必要があるキーは `EnvLocked`
-//! とし、DB 上書きを受け付けず ENV（無ければ既定値）を用いる（ADR-0010 §2）。
+//! As exceptions, bootstrap values needed before reading the DB or to decrypt DB secrets (DB
+//! connection info, `KEY_ENCRYPTION_KEY`, `CSRF_SECRET`, etc.) and keys whose values must match
+//! between api/web are `EnvLocked`; they accept no DB override and use ENV (or the default if
+//! absent) (ADR-0010 §2).
 //!
-//! 許可されるキーは本モジュールの定数で集中管理する（`CLAUDE.md`「動的呼び出しの制限」に従い、
-//! 文字列の実行時解決ではなく明示的な定数で束ねる）。
+//! Allowed keys are managed centrally as constants in this module (per `CLAUDE.md` "Restricting
+//! dynamic calls", bundled as explicit constants rather than runtime string resolution).
 #![allow(dead_code)]
 
-/// システム設定 1 レコード（key-value）。`value` は保存形式そのまま（`is_secret` のときは暗号文）。
+/// One system setting record (key-value). `value` is in stored form (ciphertext when `is_secret`).
 #[derive(Debug, Clone)]
 pub struct SystemSetting {
     pub key: String,
     pub value: String,
-    /// `true` のとき `value` は暗号文（AES-256-GCM の base64）。
+    /// When `true`, `value` is ciphertext (base64 of AES-256-GCM).
     pub is_secret: bool,
 }
 
-// ── SMTP 設定キー（許可値の単一の出所）─────────────────────────────────────────
+// ── SMTP setting keys (single source of allowed values) ──────────────────────────────────
 pub const SMTP_HOST: &str = "smtp.host";
 pub const SMTP_PORT: &str = "smtp.port";
 pub const SMTP_USERNAME: &str = "smtp.username";
-/// SMTP パスワード（秘匿値。暗号化して保存する）。
+/// SMTP password (secret; stored encrypted).
 pub const SMTP_PASSWORD: &str = "smtp.password";
 pub const SMTP_FROM_ADDRESS: &str = "smtp.from_address";
 pub const SMTP_USE_TLS: &str = "smtp.use_tls";
 
-// ── SMS ゲートウェイ設定キー（AP13。許可値の単一の出所）─────────────────────────
-/// 送信要求を POST する URL。空 = SMS 送信は無効。
+// ── SMS gateway setting keys (AP13; single source of allowed values) ─────────────────────
+/// URL to POST send requests to. Empty = SMS sending disabled.
 pub const SMS_GATEWAY_URL: &str = "sms.gateway_url";
-/// 認証ヘッダ名（例 `Authorization`）。空 = 認証ヘッダを付けない。
+/// Auth header name (e.g. `Authorization`). Empty = no auth header.
 pub const SMS_AUTH_HEADER: &str = "sms.auth_header";
-/// 認証ヘッダの値（秘匿値。暗号化して保存する）。
+/// Auth header value (secret; stored encrypted).
 pub const SMS_AUTH_TOKEN: &str = "sms.auth_token";
-/// 差出人表示（事業者が `sender id` / `from` として扱う値）。空 = 指定しない。
+/// Sender display (the value a provider treats as `sender id` / `from`). Empty = unspecified.
 pub const SMS_SENDER_ID: &str = "sms.sender_id";
 
-// ── ランタイム設定メタデータ（ADR-0010 / CFG1）───────────────────────────────
+// ── Runtime setting metadata (ADR-0010 / CFG1) ───────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingOwner {
@@ -58,36 +61,39 @@ pub enum DefaultRisk {
     Dangerous,
 }
 
-/// 設定値の型（DB 上書き値の入力検証に使う）。
+/// Type of a setting value (used to validate DB override input).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingKind {
-    /// 非負整数（TTL 秒数・日数等）。
+    /// Non-negative integer (TTL seconds, days, etc.).
     UnsignedInteger,
-    /// 真偽値（`true` / `false`）。
+    /// Boolean (`true` / `false`).
     Boolean,
-    /// 自由文字列。
+    /// Free-form string.
     Text,
-    /// サービスの公開ベース URL（`ISSUER` 等）。スキームとホストを持つ絶対 URL であること。
+    /// Public base URL of a service (`ISSUER` etc.). Must be an absolute URL with a scheme and
+    /// host.
     PublicBaseUrl,
-    /// 決まった値の中から 1 つ選ぶ。選択肢に無い値は保存の時点で断る（保存できても次の起動で
-    /// `Config` が落ちるため）。
+    /// Choose one of fixed values. Values not among the choices are refused at save time (even if
+    /// saved, `Config` would fail at the next startup).
     Choice(&'static [SettingChoice]),
 }
 
-/// [`SettingKind::Choice`] の選択肢 1 つ。
+/// One choice of a [`SettingKind::Choice`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SettingChoice {
     pub value: &'static str,
-    /// この値にすると、そのテナント（全体なら全テナント）の利用者を締め出し得るか。
+    /// Whether this value could lock out the users of that tenant (all tenants if global).
     ///
-    /// `true` の値へ倒すときは**保存の前に確認を挟む**（ADR-0058。#63 と同じ轍を踏まない）。
-    /// 確認の要否はキー名で分岐させず、ここだけを見て決める ——キーを足す人が選択肢を書いた時点で、
-    /// 画面と API の確認が付いてくる。
+    /// When switching to a `true` value, **a confirmation is inserted before saving** (ADR-0058;
+    /// not repeating #63). Whether a confirmation is needed is decided only from here, never by
+    /// branching on key names — when someone adding a key writes the choices, the screen and API
+    /// confirmation come with it.
     pub locks_out: bool,
 }
 
 impl SettingDefinition {
-    /// `value` へ変えるとき、保存の前に確認を挟むべきか（定義の [`SettingChoice::locks_out`] だけで決める）。
+    /// Whether a confirmation should be inserted before saving when changing to `value` (decided
+    /// only by the definition's [`SettingChoice::locks_out`]).
     pub fn needs_confirmation(&self, value: &str) -> bool {
         match self.kind {
             SettingKind::Choice(choices) => choices
@@ -98,46 +104,50 @@ impl SettingDefinition {
     }
 }
 
-/// 設定の単位 ——IdP 全体で 1 つか、テナントが上書きできるか（ADR-0058 §3）。
+/// Unit of a setting — one for the whole IdP, or overridable by tenants (ADR-0058 §3).
 ///
-/// 出所（[`SettingOwner`]）とは**直交する軸**である。出所は「値がどこから来るか」、単位は
-/// 「誰の判断か」を表す。判定は 1 つだけで、⚠ **「IdP 全体に 1 つ無いと壊れるか」**（壊れないなら
-/// 降ろす）。「root が握っていたいか」で分けない。
+/// It is an **orthogonal axis** to the source ([`SettingOwner`]). The source says "where the value
+/// comes from", the unit says "whose decision it is". There is only one criterion: ⚠ **"does it
+/// break unless there is one for the whole IdP"** (if not, move it down). Do not split by "whether
+/// root wants to keep hold of it".
 ///
-/// 定義の必須項目にしてあるので、キーを足す人は必ずどちらかを選ぶことになる ——黙って全体のまま
-/// 増えていく形を作らない。
+/// It is a required field of the definition, so anyone adding a key must choose one — no shape
+/// where keys silently keep being added as global.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingScope {
-    /// IdP 全体で 1 つ。テナントは変えられない（発行者・Cookie・配置・プロセスの振る舞い、
-    /// トークンの寿命。ADR-0058 §5・§7）。
+    /// One for the whole IdP. Tenants cannot change it (issuer, cookies, deployment, process
+    /// behavior, token lifetimes; ADR-0058 §5, §7).
     Global,
-    /// テナントが上書きできる。⚠ **テナントに行が無いことが「全体に従う」である**（ADR-0058 §2）。
+    /// Tenants can override it. ⚠ **A tenant having no row means "follow the global value"**
+    /// (ADR-0058 §2).
     TenantOverridable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SettingDefinition {
     pub key: &'static str,
-    /// 単位（ADR-0058 §3）。テナントの表（`tenant_settings`）に書けるのは `TenantOverridable` だけ。
+    /// Unit (ADR-0058 §3). Only `TenantOverridable` can be written to the tenant table
+    /// (`tenant_settings`).
     pub scope: SettingScope,
     pub owner: SettingOwner,
-    /// api と web の**両方**が消費する値か（MT26 / ADR-0013）。web は DB を持たないため、
-    /// `true` かつ `DbManaged` のキーは起動時に api の `/internal/runtime-settings` から
-    /// DB 上書き値を取得して解決する。`EnvLocked` の共有キー（`CSRF_SECRET` 等）は
-    /// DB 上書き自体が無いので `false`。
+    /// Whether the value is consumed by **both** api and web (MT26 / ADR-0013). web has no DB, so
+    /// keys that are `true` and `DbManaged` are resolved at startup by fetching DB overrides from
+    /// api's `/internal/runtime-settings`. Shared `EnvLocked` keys (`CSRF_SECRET` etc.) have no DB
+    /// override at all, so they are `false`.
     pub shared_with_web: bool,
     pub secret: bool,
     pub restart_required: bool,
     pub default_risk: DefaultRisk,
     pub default_value: Option<&'static str>,
     pub kind: SettingKind,
-    /// この設定が何に使われるかの説明（設定画面に表示する運用者向けの一文）。運用言語（日本語）で統一する。
+    /// Description of what this setting is used for (one sentence for operators shown on the
+    /// settings screen). Kept in the operations language (Japanese).
     pub description: &'static str,
 }
 
 pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
-    // api と web の両方が消費する（web は `PUBLIC_WEB_BASE_URL` 未設定時の自オリジンと
-    // `COOKIE_DOMAIN` の検証に使う）。ADR-0017 で `EnvLocked` から DB 管理へ移した。
+    // Consumed by both api and web (web uses it for its own origin when `PUBLIC_WEB_BASE_URL` is
+    // unset and to validate `COOKIE_DOMAIN`). Moved from `EnvLocked` to DB-managed in ADR-0017.
     SettingDefinition {
         key: "ISSUER",
         scope: SettingScope::Global,
@@ -203,8 +213,9 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         default_value: Some("json"),
         description: "ログ出力形式（`json` = 構造化ログ / `pretty` = 開発向け整形）。",
     },
-    // api と web の両方が消費する値（MT26 / ADR-0013）。web は起動時に api から DB 上書き値を
-    // 取得して解決するため DB 管理できる。反映には api・web 双方の再起動が必要。
+    // A value consumed by both api and web (MT26 / ADR-0013). web fetches DB overrides from api at
+    // startup to resolve it, so it can be DB-managed. Applying it needs restarts of both api and
+    // web.
     SettingDefinition {
         key: "AUTH_SESSION_TTL_SECS",
         scope: SettingScope::Global,
@@ -425,9 +436,9 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         default_value: Some("60"),
         description: "scope→権限解決キャッシュの TTL（秒）。付与・剥奪時は即時 invalidate される。",
     },
-    // アカウントロックのポリシー（ユーザー認証・認証ポリシー仕様書 §17）。従来ハードコードだった
-    // 「10 回失敗 / 15 分ロック」を運用で調整できるようにする。OIDC ログイン・ポータルログイン・
-    // 管理コンソールログインの全経路へ一律に適用する。
+    // Account lockout policy (user authentication / auth policy spec §17). Makes the previously
+    // hard-coded "10 failures / 15-minute lock" adjustable in operations. Applies uniformly to all
+    // paths: OIDC login, portal login, and admin console login.
     SettingDefinition {
         key: "LOGIN_MAX_FAILED_ATTEMPTS",
         scope: SettingScope::TenantOverridable,
@@ -466,8 +477,9 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
                       `LOGIN_LOCK_DURATION_SECS` から倍々で伸び、この値で頭打ちになる。\
                       `LOGIN_LOCK_DURATION_SECS` 以下にすると段階化しない（従来どおりの固定時間）。",
     },
-    // ── パスワードポリシー（AP7。仕様 §11.2）──────────────────────────────
-    // パスワードを設定する全経路（自己登録・強制変更・セルフサービス変更・リセット）へ一律に効く。
+    // ── Password policy (AP7; spec §11.2) ────────────────────────────── Applies uniformly to
+    // every path that sets a password (self-registration, forced change, self-service change,
+    // reset).
     SettingDefinition {
         key: "PASSWORD_MIN_LENGTH",
         scope: SettingScope::TenantOverridable,
@@ -613,13 +625,15 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         description: "漏えい照合の 1 リクエストの上限時間（秒）。超えたら拒否せずに通す（外部の \
                       不調でパスワード変更が止まらないようにする）。",
     },
-    // 認証ポリシー（authentication_policies）が 1 件も一致しないときの既定動作（同仕様 §9.4）。
+    // Default effect when no authentication policy (authentication_policies) matches (same spec
+    // §9.4).
     SettingDefinition {
         key: "AUTH_POLICY_DEFAULT_EFFECT",
-        // テナントが決める（ADR-0058 §4）。判定は api が参照のたびにテナントの値を引く。
+        // Decided by the tenant (ADR-0058 §4). api reads the tenant's value on every lookup.
         scope: SettingScope::TenantOverridable,
-        // ⚠ web へは配らない（ADR-0058 §10）。管理コンソール（AP1）が一覧の上に既定動作を示すときも、
-        // api の一覧の応答に載せたテナントの値を描く。起動時スナップショットではテナント別に表せない。
+        // ⚠ Not distributed to web (ADR-0058 §10). When the admin console (AP1) shows the default
+        // effect above the list, it draws the tenant's value carried in api's list response. A
+        // startup snapshot cannot represent per-tenant values.
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -633,13 +647,14 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         description: "認証ポリシーが 1 件も一致しない場合の既定動作（`allow` / `deny`）。`deny` にすると\
                       許可ポリシーを明示したクライアント・ユーザーしかログインできなくなるため注意。",
     },
-    // アプリの割り当て判定をどこまでやるか（ADR-0054 の段階導入）。
+    // How far the app assignment check goes (phased rollout of ADR-0054).
     SettingDefinition {
         key: "APPLICATION_ASSIGNMENT_ENFORCEMENT",
-        // テナントが決める（ADR-0058 §4）。名簿が整ったテナントから `enforce` へ倒せる。
+        // Decided by the tenant (ADR-0058 §4). Tenants whose rosters are ready can flip to
+        // `enforce`.
         scope: SettingScope::TenantOverridable,
-        // web へは配らない（web のコードは一度も読んでいなかった。ADR-0058 §10）。アプリ一覧の
-        // 「いまは記録するだけ」は api の応答（`enforcement`）に載ったテナントの値で描く。
+        // Not distributed to web (web's code never read it; ADR-0058 §10). The app list's "only
+        // recording for now" is drawn from the tenant's value in api's response (`enforcement`).
         shared_with_web: false,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -656,9 +671,10 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
                       ログで確かめてから** `enforce` にすること。⚠ `enforce` にした瞬間、名簿に\
                       載っていない利用者は「個別」のアプリへ入れなくなる。",
     },
-    // api と web の Cookie 属性を一致させる必要がある共有キー（MT26 / ADR-0013）。DB 値は両サービスが
-    // 同じ経路（api の /internal/runtime-settings）から受け取るため、DB 管理でも属性がずれない。
-    // 未設定時の既定は各サービスが**自分の公開オリジンのスキーム**から導く（ADR-0012 §2）。
+    // Shared keys whose cookie attributes must match between api and web (MT26 / ADR-0013). Both
+    // services receive the DB value through the same route (api's /internal/runtime-settings), so
+    // attributes do not diverge even when DB-managed. When unset, each service derives the default
+    // from **the scheme of its own public origin** (ADR-0012 §2).
     SettingDefinition {
         key: "COOKIE_SECURE",
         scope: SettingScope::Global,
@@ -886,9 +902,10 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
     SettingDefinition {
         key: "TRUST_FORWARDED_HEADERS",
         scope: SettingScope::Global,
-        // web も同じゲートを使う（SEC1）。ADR-0018 以降ログインの入口は web で、web が組み立てた
-        // IP がボディで api のレートリミッタ・監査ログへ渡る。web だけがヘッダを無条件に信じると
-        // api 側のゲートがログイン経路で迂回される（IP レート制限の回避・監査ログの汚染）。
+        // web uses the same gate too (SEC1). Since ADR-0018 the login entrance is web, and the IP
+        // web assembles is passed in the body to api's rate limiter and audit log. If only web
+        // trusted the headers unconditionally, api's gate would be bypassed on the login path
+        // (evading IP rate limits, polluting the audit log).
         shared_with_web: true,
         owner: SettingOwner::DbManaged,
         secret: false,
@@ -900,7 +917,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
                       信頼できるプロキシ配下でのみ `true` にする（クライアント IP・スキーム判定に影響）。\
                       api と web の両方に効く。",
     },
-    // api/web の security header を一致させる必要がある共有キー（MT26 / ADR-0013）。
+    // Shared key whose security headers must match between api/web (MT26 / ADR-0013).
     SettingDefinition {
         key: "HSTS_MAX_AGE",
         scope: SettingScope::Global,
@@ -1032,8 +1049,9 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
         default_value: None,
         description: "CSRF トークンを導出する HMAC 鍵（32 バイト）。api/web で一致必須のため DB 上書き不可。",
     },
-    // api（相手の URL としてリダイレクト・メールリンクに使う）と web（自オリジンとして Secure 判定・
-    // 絶対 URL 生成に使う）で同一値必須のため EnvLocked（ADR-0012 §2。DbManaged から変更）。
+    // Must be the same value in api (used as the other side's URL for redirects and mail links) and
+    // web (used as its own origin for Secure decisions and absolute URL generation), so EnvLocked
+    // (ADR-0012 §2; changed from DbManaged).
     SettingDefinition {
         key: "PUBLIC_WEB_BASE_URL",
         scope: SettingScope::Global,
@@ -1050,7 +1068,7 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
                       変えると登録済みの Passkey が使えなくなる（WebAuthn の RP ID はこの URL の\
                       ホスト名から導出する。ADR-0019 決定 2）。**",
     },
-    // api/web の Cookie 掃除挙動を一致させる必要があるため EnvLocked（ADR-0012 §2）。
+    // EnvLocked because api/web cookie cleanup behavior must match (ADR-0012 §2).
     SettingDefinition {
         key: "COOKIE_DOMAIN",
         scope: SettingScope::Global,
@@ -1075,9 +1093,9 @@ pub fn runtime_setting_definition(key: &str) -> Option<&'static SettingDefinitio
         .find(|def| def.key == key)
 }
 
-/// api と web の両方が消費する DB 管理キー（MT26 / ADR-0013）。api はこの一覧の DB 上書き値だけを
-/// `/internal/runtime-settings` で web へ渡す。secret は決して共有しない（web は bootstrap secret を
-/// 自分の ENV から読む）。
+/// DB-managed keys consumed by both api and web (MT26 / ADR-0013). api passes only the DB overrides
+/// in this list to web via `/internal/runtime-settings`. Secrets are never shared (web reads
+/// bootstrap secrets from its own ENV).
 pub fn shared_with_web_setting_keys() -> impl Iterator<Item = &'static str> {
     RUNTIME_SETTING_DEFINITIONS
         .iter()
@@ -1085,14 +1103,14 @@ pub fn shared_with_web_setting_keys() -> impl Iterator<Item = &'static str> {
         .map(|def| def.key)
 }
 
-/// 指定キーが web と共有する DB 管理キーか。
+/// Whether the given key is a DB-managed key shared with web.
 pub fn is_shared_with_web(key: &str) -> bool {
     runtime_setting_definition(key)
         .map(|def| def.shared_with_web && !def.secret)
         .unwrap_or(false)
 }
 
-/// テナントが上書きできるキーの一覧（ADR-0058 §3）。
+/// List of keys tenants can override (ADR-0058 §3).
 pub fn tenant_overridable_setting_keys() -> impl Iterator<Item = &'static str> {
     RUNTIME_SETTING_DEFINITIONS
         .iter()
@@ -1100,25 +1118,28 @@ pub fn tenant_overridable_setting_keys() -> impl Iterator<Item = &'static str> {
         .map(|def| def.key)
 }
 
-/// 指定キーをテナントが上書きできるか。⚠ 定義に無いキーは `false`（綴り違いを通さない）。
+/// Whether tenants can override the given key. ⚠ Keys not in the definitions are `false`
+/// (misspellings do not pass).
 pub fn is_tenant_overridable(key: &str) -> bool {
     runtime_setting_definition(key)
         .map(|def| def.scope == SettingScope::TenantOverridable)
         .unwrap_or(false)
 }
 
-/// 保存しようとしている値が、そのキーの型（[`SettingKind`]）として妥当かを検証する。
+/// Validates that a value about to be saved is valid for the key's type ([`SettingKind`]).
 ///
-/// 全体（`system_settings`）とテナント（`tenant_settings`。ADR-0058）の**両方の保存がここを通る**。
-/// 片方だけ規則を変えると、全体には保存できるのにテナントには保存できない値が生まれる。
+/// **Both global (`system_settings`) and tenant (`tenant_settings`; ADR-0058) saves pass through
+/// here.** Changing the rule on only one side would create values that can be saved globally but
+/// not for a tenant.
 ///
-/// 空文字列は「上書きの解除」として呼び出し側が扱うので、ここへは渡さない。
+/// Empty strings are handled by callers as "clearing the override", so they are not passed here.
 pub fn validate_setting_value(def: &SettingDefinition, value: &str) -> Result<(), String> {
     let key = def.key;
     match def.kind {
         SettingKind::UnsignedInteger => {
-            // `Config` 側の最小の消費型（`KEY_ROTATION_LEAD_DAYS` 等の u32）でも必ずパースできるよう、
-            // u32 の範囲で検証する（範囲外を保存すると再起動が構成エラーで失敗するため）。
+            // Validate within the u32 range so that even the smallest consuming type on the
+            // `Config` side (u32 for `KEY_ROTATION_LEAD_DAYS` etc.) always parses (saving an
+            // out-of-range value would fail the restart with a config error).
             value.parse::<u32>().map(|_| ()).map_err(|_| {
                 format!(
                     "setting {key} must be a non-negative integer (max {})",
@@ -1149,11 +1170,12 @@ pub fn validate_setting_value(def: &SettingDefinition, value: &str) -> Result<()
     }
 }
 
-/// 公開ベース URL（[`SettingKind::PublicBaseUrl`]）として妥当かを検証する。
+/// Validates that a value is valid as a public base URL ([`SettingKind::PublicBaseUrl`]).
 ///
-/// `ISSUER` は ID Token の `iss` とディスカバリ文書の各 URL の基底になる。壊れた値を保存すると
-/// 次回起動から**全 RP のトークン検証が落ちる**ため、保存の時点で弾く。末尾スラッシュは
-/// [`crate::config`] が正規化するのでここでは許容する。
+/// `ISSUER` is the base of the ID Token `iss` and every URL in the discovery document. Saving a
+/// broken value would make **token verification at every RP fail** from the next startup, so it is
+/// rejected at save time. A trailing slash is normalized by [`crate::config`], so it is allowed
+/// here.
 pub fn validate_public_base_url(key: &str, value: &str) -> Result<(), String> {
     let url = url::Url::parse(value.trim()).map_err(|_| {
         format!("setting {key} must be an absolute URL (e.g. https://idp.example.com)")
@@ -1178,29 +1200,33 @@ pub fn validate_public_base_url(key: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// issuer が本番相当か（＝開発用の既定 secret での起動を拒否すべきか）。
+/// Whether the issuer is production-like (= whether startup with the default development secrets
+/// should be refused).
 ///
-/// 判定は「**ローカルループバック以外を公開している**」。https はもちろん、http でも
-/// loopback 以外のホストを名乗るなら前段で TLS を終端した本番配置とみなす（SEC11）。
+/// The criterion is "**it exposes something other than local loopback**". Not just https: even
+/// http, if it claims a host other than loopback, is treated as a production deployment terminating
+/// TLS in front (SEC11).
 ///
-/// スキームだけで判定していた頃は、TLS をプロキシで終端して `ISSUER=http://id.example.com` と
-/// した配置で fail-fast が効かず、ソースに埋まった既知の `INTERNAL_SERVICE_TOKEN` のまま
-/// `/internal/*` が開いていた（防御が nginx の `/internal/` 404 一枚だけになる）。
+/// Back when the decision was by scheme alone, a deployment terminating TLS at a proxy with
+/// `ISSUER=http://id.example.com` escaped the fail-fast, and `/internal/*` was open with the
+/// well-known `INTERNAL_SERVICE_TOKEN` embedded in the source (leaving nginx's `/internal/` 404 as
+/// the only defense).
 ///
-/// **起動時の fail-fast と、保存前の起動可否検査（[`ensure_override_is_bootable`]）が同じ判定を
-/// 使う**ようにするため、述語をここに置く。片方だけが判定規則を変えると、保存はできるのに
-/// 起動できない値が生まれる。
-/// 判定そのものは api / web 共有の契約に置く（`assay_contracts::deployment`）。web が別判定を
-/// 持つと「api は起動して web は起動しない」がおきるため。
+/// The predicate lives here so that **startup fail-fast and the pre-save bootability check
+/// ([`ensure_override_is_bootable`]) use the same decision**. If only one side changed the rule,
+/// values that can be saved but cannot boot would appear. The decision itself lives in the contract
+/// shared by api / web (`assay_contracts::deployment`). If web had its own decision, "api starts
+/// but web does not" could happen.
 pub fn requires_production_secrets(issuer: &str) -> bool {
     assay_contracts::deployment::requires_production_secrets(issuer)
 }
 
-/// 起動時に使われた bootstrap secret が開発用の既定値のままか（ADR-0017）。
+/// Whether the bootstrap secrets used at startup are still the development defaults (ADR-0017).
 ///
-/// これらは `EnvLocked` で DB からは直せない。`ISSUER` を https にすると api も web も開発用既定
-/// secret での起動を拒否するため、この組み合わせをそのまま保存させると「保存 → 再起動 → 二度と
-/// 起動しない」に至り、設定画面ごと消えて復旧手段が DB の直接編集しか残らない。
+/// These are `EnvLocked` and cannot be fixed from the DB. Making `ISSUER` https makes both api and
+/// web refuse to start with the default development secrets, so letting this combination be saved
+/// leads to "save → restart → never starts again", the settings screen disappears with it, and the
+/// only recovery is editing the DB directly.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DevelopmentSecrets {
     pub key_encryption_key: bool,
@@ -1209,7 +1235,8 @@ pub struct DevelopmentSecrets {
 }
 
 impl DevelopmentSecrets {
-    /// 開発用既定のまま使われている secret の環境変数名（設定すべきものを運用者へ示す）。
+    /// Environment variable names of secrets still at development defaults (tells operators what to
+    /// set).
     pub fn unset_keys(&self) -> Vec<&'static str> {
         let mut keys = Vec::new();
         if self.key_encryption_key {
@@ -1225,29 +1252,32 @@ impl DevelopmentSecrets {
     }
 }
 
-/// 保存前の起動可否検査に必要な、実行中プロセスの配置状態（ADR-0017）。
+/// Deployment state of the running process needed for the pre-save bootability check (ADR-0017).
 ///
-/// 起動時に fail-fast する条件のうち、**`ISSUER` の値によって成否が変わるもの**を集めて渡す。
-/// いずれも `EnvLocked` で DB からは直せない値なので、`ISSUER` 側を保存させないことでしか
-/// 「保存 → 再起動 → 二度と起動しない」を防げない。
+/// Collects, among the conditions that fail-fast at startup, **those whose outcome depends on the
+/// value of `ISSUER`**. All are `EnvLocked` values that cannot be fixed from the DB, so the only
+/// way to prevent "save → restart → never starts again" is to refuse saving the `ISSUER` side.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DeploymentState {
     pub development_secrets: DevelopmentSecrets,
-    /// `COOKIE_DOMAIN`（`EnvLocked`）。`None` = host-only で、そもそも整合検証が走らない。
+    /// `COOKIE_DOMAIN` (`EnvLocked`). `None` = host-only, so the consistency check does not run at
+    /// all.
     pub cookie_domain: Option<String>,
-    /// **明示設定された** `PUBLIC_WEB_BASE_URL`（`EnvLocked`）。`None` = issuer と同一オリジンへ
-    /// 追従するため、issuer を変えてもスキームがずれることはない。
+    /// The **explicitly set** `PUBLIC_WEB_BASE_URL` (`EnvLocked`). `None` = it follows the issuer's
+    /// origin, so changing the issuer never makes the schemes diverge.
     pub public_web_base_url_override: Option<String>,
 }
 
-/// 保存しようとしている DB 上書き値で**次回の起動が成功するか**を検査する（ADR-0017）。
+/// Checks whether **the next startup succeeds** with the DB override value about to be saved
+/// (ADR-0017).
 ///
-/// DB 上書きは再起動して初めて効くので、起動を失敗させる値は保存の時点でしか止められない。
-/// 失敗させたときは、起動しない api と web が残るだけでなく設定画面も落ちるため、画面からの
-/// 修正ができなくなる（復旧手段が DB の直接編集しか残らない）。
+/// DB overrides take effect only after a restart, so values that would fail startup can only be
+/// stopped at save time. If startup fails, not only do api and web stay down, the settings screen
+/// goes down too, so fixing it from the screen becomes impossible (the only recovery is editing the
+/// DB directly).
 ///
-/// 検査するのは `ISSUER` だけである。他の `DbManaged` キーは値の書式さえ通れば起動を止めない
-/// （書式は [`SettingKind`] 側で検証する）。
+/// Only `ISSUER` is checked. Other `DbManaged` keys never stop startup as long as the value format
+/// passes (the format is validated by [`SettingKind`]).
 pub fn ensure_override_is_bootable(
     key: &str,
     value: &str,
@@ -1257,7 +1287,8 @@ pub fn ensure_override_is_bootable(
         return Ok(());
     }
 
-    // 1. https の issuer は本番 secret を要求する（`config::ensure_production_secrets` と同じ条件）。
+    // 1. An https issuer requires production secrets (same condition as
+    //    `config::ensure_production_secrets`).
     if requires_production_secrets(value) {
         let missing = state.development_secrets.unset_keys();
         if !missing.is_empty() {
@@ -1271,11 +1302,12 @@ pub fn ensure_override_is_bootable(
         }
     }
 
-    // 2. `COOKIE_DOMAIN` を設定した配置では、issuer のホストがそのドメイン配下で、かつ
-    //    `PUBLIC_WEB_BASE_URL` とスキームが一致していなければ **api も web も起動に失敗する**
-    //    （ADR-0012 の fail-fast）。起動時とまったく同じ関数で検査し、判定規則を二重化しない。
+    // 2. In deployments with `COOKIE_DOMAIN` set, unless the issuer's host is under that domain and
+    //    its scheme matches `PUBLIC_WEB_BASE_URL`, **both api and web fail to start** (ADR-0012's
+    //    fail-fast). Checked with exactly the same function as at startup, without duplicating the
+    //    rule.
     if let Some(domain) = &state.cookie_domain {
-        // `PUBLIC_WEB_BASE_URL` 未設定なら issuer に追従するので、新しい issuer を両方に置く。
+        // If `PUBLIC_WEB_BASE_URL` is unset it follows the issuer, so put the new issuer in both.
         let web_origin = state
             .public_web_base_url_override
             .as_deref()
@@ -1297,13 +1329,14 @@ pub fn ensure_override_is_bootable(
 mod tests {
     use super::*;
 
-    /// web と共有するキーは DB 上書きを受け付けられなければ意味が無い（`EnvLocked` のまま
-    /// `shared_with_web` を立てると、api は DB 値を無視するのに web へは配れる、という不整合になる）。
+    /// Keys shared with web are meaningless unless they accept DB overrides (setting
+    /// `shared_with_web` while `EnvLocked` would be inconsistent: api ignores the DB value yet it
+    /// is distributed to web).
     #[test]
     fn tenant_overridable_keys_are_db_managed_and_not_secret() {
-        // テナントが上書きできるなら、全体の値も画面から変えられるべきである。`EnvLocked` を降ろすと
-        // 「全体は ENV でしか変えられないのに、テナントは画面で変えられる」という逆転が起きる。
-        // secret は復号の口が別に要る（ADR-0058 §8 の SMTP）。
+        // If tenants can override it, the global value should be changeable from the screen too.
+        // Keeping `EnvLocked` would invert things: "global can only be changed by ENV, but tenants
+        // can change it on screen". Secrets need a separate decryption path (ADR-0058 §8, SMTP).
         for key in tenant_overridable_setting_keys() {
             let def = runtime_setting_definition(key).unwrap();
             assert_eq!(def.owner, SettingOwner::DbManaged, "{key}");
@@ -1311,9 +1344,10 @@ mod tests {
         }
     }
 
-    /// テナントが上書きできるキーは参照のたびに引く（ADR-0058 §9）ので、再起動なしで効く。
-    /// ⚠ ここを true に戻すと、設定画面は「再起動待ち」を出し続ける（実際には効いているのに）。
-    /// 逆に、再起動しないと効かないキーがあるなら、その消費側はまだ `Config` を読んでいる。
+    /// Keys tenants can override are read on every lookup (ADR-0058 §9), so they take effect
+    /// without a restart. ⚠ Setting this back to true makes the settings screen keep showing
+    /// "waiting for restart" (although it is in effect). Conversely, if some key only takes effect
+    /// after a restart, its consumer still reads `Config`.
     #[test]
     fn tenant_overridable_keys_take_effect_without_a_restart() {
         for key in tenant_overridable_setting_keys() {
@@ -1322,8 +1356,8 @@ mod tests {
         }
     }
 
-    /// ⚠ テナントが上書きできるキーを web へ配らない（ADR-0058 §10）。web が受け取るのは api の
-    /// 起動時スナップショット 1 本で（ADR-0013）、テナントごとに違う値はそこに表せない。
+    /// ⚠ Keys tenants can override are not distributed to web (ADR-0058 §10). web receives a single
+    /// startup snapshot from api (ADR-0013), which cannot represent values differing per tenant.
     #[test]
     fn tenant_overridable_keys_are_not_shared_with_web() {
         for key in tenant_overridable_setting_keys() {
@@ -1331,8 +1365,9 @@ mod tests {
         }
     }
 
-    /// ⚠ トークンの寿命はテナントが変えられない（ADR-0058 §7）。300 秒は「権限を剥奪してから
-    /// 効くまでの上限」の根拠であり（ADR-0056）、緩める口を作らない。
+    /// ⚠ Token lifetimes cannot be changed by tenants (ADR-0058 §7). 300 seconds is the basis for
+    /// "the upper bound until revoking a permission takes effect" (ADR-0056); no endpoint to loosen
+    /// it is made.
     #[test]
     fn token_lifetimes_stay_with_the_whole_idp() {
         for key in [
@@ -1346,9 +1381,10 @@ mod tests {
         }
     }
 
-    /// 降ろすと壊れるキーは全体のまま（ADR-0058 §5）。発行と失効で同じ値であることが安全の根拠に
-    /// なっているもの、テナントを解決する前に要るもの、api と web で揃っていないと静かに壊れるもの。
-    /// ⚠ テナント解決のキャッシュの寿命をテナントの設定にすると、テナントが自分の解決を止められる。
+    /// Keys that would break if moved down stay global (ADR-0058 §5): those whose safety rests on
+    /// being the same value at issuance and revocation, those needed before resolving the tenant,
+    /// and those that silently break unless api and web agree. ⚠ Making the tenant resolution cache
+    /// lifetime a tenant setting would let a tenant stop its own resolution.
     #[test]
     fn keys_that_break_when_split_stay_with_the_whole_idp() {
         for key in [
@@ -1366,9 +1402,10 @@ mod tests {
         }
     }
 
-    /// 判定そのものを決める 2 キーはテナントが決め、参照のたびに引く（ADR-0058 §4・§9）。
-    /// `restart_required` を立てたままにすると、画面は「再起動が要る」と言うのに実際は再起動を
-    /// 待たずに効く ——運用者が値を変えてから再起動までの間を「まだ効いていない」と誤読する。
+    /// The two keys that set the decision defaults are decided by the tenant and read on every
+    /// lookup (ADR-0058 §4, §9). Leaving `restart_required` set would make the screen say "restart
+    /// needed" while it actually takes effect without waiting for a restart — operators would
+    /// misread the time between changing the value and restarting as "not yet in effect".
     #[test]
     fn decision_keys_are_decided_by_the_tenant_without_a_restart() {
         for key in [
@@ -1382,7 +1419,8 @@ mod tests {
         }
     }
 
-    /// 定義に無いキーは上書きできない（綴り違いを「黙って無視される行」にしない）。
+    /// Keys not in the definitions cannot be overridden (a misspelling does not become a "silently
+    /// ignored row").
     #[test]
     fn unknown_keys_are_not_tenant_overridable() {
         assert!(!is_tenant_overridable("PASSWORD_MIN_LENGHT"));
@@ -1403,14 +1441,16 @@ mod tests {
         assert!(validate_setting_value(url, "https://idp.example.com").is_ok());
         assert!(validate_setting_value(url, "idp.example.com").is_err());
 
-        // 選択肢に無い値は保存させない（保存できても次の起動で `Config` が落ちる）。
+        // Values not among the choices cannot be saved (even if saved, `Config` would fail at the
+        // next startup).
         let choice = runtime_setting_definition("AUTH_POLICY_DEFAULT_EFFECT").unwrap();
         assert!(validate_setting_value(choice, "deny").is_ok());
         assert!(validate_setting_value(choice, "denyy").is_err());
     }
 
-    /// 締め出し得る値（ポリシーの既定を deny・割り当てを enforce）は、定義の側から確認の要否が
-    /// 読める。キー名で分岐させないので、キーの単位を変えても確認は付いてくる。
+    /// Values that could lock users out (policy default deny, assignment enforce) let the need for
+    /// confirmation be read from the definition. Since there is no branching on key names,
+    /// confirmation follows even if the key's unit changes.
     #[test]
     fn values_that_can_lock_people_out_need_confirmation() {
         let effect = runtime_setting_definition("AUTH_POLICY_DEFAULT_EFFECT").unwrap();
@@ -1421,12 +1461,13 @@ mod tests {
         assert!(enforcement.needs_confirmation("enforce"));
         assert!(!enforcement.needs_confirmation("record_only"));
 
-        // 選択肢でないキーは確認を挟まない。
+        // Keys that are not choices get no confirmation.
         let integer = runtime_setting_definition("PASSWORD_MIN_LENGTH").unwrap();
         assert!(!integer.needs_confirmation("0"));
     }
 
-    /// 選択肢を持つキーの既定値は、選択肢の 1 つで、しかも締め出さない側であること。
+    /// The default of a key with choices is one of the choices, and on the side that does not lock
+    /// anyone out.
     #[test]
     fn choice_defaults_are_safe_choices() {
         for def in RUNTIME_SETTING_DEFINITIONS {
@@ -1459,8 +1500,9 @@ mod tests {
         }
     }
 
-    /// ISSUER は DB から変えられる（ADR-0017）。ここが `EnvLocked` に戻ると、設定画面に行は出るのに
-    /// 保存できない（`editable` が false になる）状態へ静かに戻る。
+    /// ISSUER can be changed from the DB (ADR-0017). If this went back to `EnvLocked`, it would
+    /// silently return to a state where the row shows on the settings screen but cannot be saved
+    /// (`editable` becomes false).
     #[test]
     fn issuer_is_db_managed_and_shared_with_web() {
         let def = runtime_setting_definition("ISSUER").expect("ISSUER is defined");
@@ -1473,10 +1515,10 @@ mod tests {
     #[test]
     fn public_base_urls_require_a_scheme_and_host() {
         assert!(validate_public_base_url("ISSUER", "https://idp.example.com").is_ok());
-        // 末尾スラッシュは `config` が正規化するので受ける。
+        // A trailing slash is accepted because `config` normalizes it.
         assert!(validate_public_base_url("ISSUER", "https://idp.example.com/").is_ok());
         assert!(validate_public_base_url("ISSUER", "http://localhost:8080").is_ok());
-        // ホストだけ・スキーム違い・資格情報・クエリは弾く。
+        // Host only, a different scheme, credentials, and queries are rejected.
         assert!(validate_public_base_url("ISSUER", "idp.example.com").is_err());
         assert!(validate_public_base_url("ISSUER", "ftp://idp.example.com").is_err());
         assert!(validate_public_base_url("ISSUER", "https://user:pw@idp.example.com").is_err());
@@ -1484,8 +1526,9 @@ mod tests {
         assert!(validate_public_base_url("ISSUER", "").is_err());
     }
 
-    /// https の ISSUER を保存できてしまうと、再起動で api も web も起動しなくなり、直す画面ごと
-    /// 消える。開発用既定 secret が残っている間は保存の時点で止める（ADR-0017）。
+    /// If an https ISSUER could be saved, after a restart neither api nor web would start, and the
+    /// screen to fix it would disappear too. While default development secrets remain, it is
+    /// stopped at save time (ADR-0017).
     #[test]
     fn an_https_issuer_is_refused_while_development_secrets_are_in_use() {
         let dev = DeploymentState {
@@ -1502,23 +1545,24 @@ mod tests {
         assert!(err.contains("CSRF_SECRET"), "{err}");
         assert!(!err.contains("INTERNAL_SERVICE_TOKEN"), "{err}");
 
-        // http（ローカル開発）はそのまま起動できるので通す。
+        // http (local development) can still start, so it passes.
         assert!(ensure_override_is_bootable("ISSUER", "http://localhost:8080", &dev).is_ok());
-        // secret が本番値なら https も通す。
+        // If the secrets are production values, https passes too.
         assert!(ensure_override_is_bootable(
             "ISSUER",
             "https://idp.example.com",
             &DeploymentState::default()
         )
         .is_ok());
-        // 他のキーは起動可否に関わらない。
+        // Other keys do not affect bootability.
         assert!(ensure_override_is_bootable("HSTS_MAX_AGE", "https://x", &dev).is_ok());
     }
 
-    /// `COOKIE_DOMAIN` を設定した配置では、issuer がそのドメインから外れる／`PUBLIC_WEB_BASE_URL` と
-    /// スキームがずれると **api も web も起動に失敗する**（ADR-0012 の fail-fast）。開発用 secret の
-    /// 検査だけでは素通りしてしまい、再起動ボタンを押した瞬間に両サービスが起動ループへ入って
-    /// 設定画面ごと消える。保存の時点で止める（ADR-0017）。
+    /// In deployments with `COOKIE_DOMAIN` set, if the issuer leaves that domain or its scheme
+    /// diverges from `PUBLIC_WEB_BASE_URL`, **both api and web fail to start** (ADR-0012's
+    /// fail-fast). The development secret check alone would let it through, and the moment the
+    /// restart button is pressed both services enter a boot loop and the settings screen disappears
+    /// with them. It is stopped at save time (ADR-0017).
     #[test]
     fn an_issuer_that_breaks_the_locked_cookie_domain_is_refused() {
         let state = |web: Option<&str>| DeploymentState {
@@ -1527,7 +1571,7 @@ mod tests {
             public_web_base_url_override: web.map(str::to_string),
         };
 
-        // 同一ドメイン配下で、明示された web オリジンとスキームも揃っていれば通る。
+        // Passes if under the same domain and the scheme matches the explicitly set web origin.
         assert!(ensure_override_is_bootable(
             "ISSUER",
             "https://api.example.com",
@@ -1535,7 +1579,8 @@ mod tests {
         )
         .is_ok());
 
-        // ドメインの外へ出る値は拒否する（ブラウザが Domain Cookie を拒み、ログインが回らない）。
+        // Values leaving the domain are refused (browsers reject the Domain cookie and login does
+        // not work).
         let err = ensure_override_is_bootable(
             "ISSUER",
             "https://api.other.com",
@@ -1544,7 +1589,8 @@ mod tests {
         .expect_err("outside COOKIE_DOMAIN must be refused");
         assert!(err.contains("COOKIE_DOMAIN"), "{err}");
 
-        // 明示された web オリジンとスキームがずれる値も拒否する（Secure 属性が非対称になる）。
+        // Values whose scheme diverges from the explicitly set web origin are also refused (the
+        // Secure attribute would be asymmetric).
         assert!(ensure_override_is_bootable(
             "ISSUER",
             "http://api.example.com",
@@ -1552,12 +1598,12 @@ mod tests {
         )
         .is_err());
 
-        // `PUBLIC_WEB_BASE_URL` 未設定なら web は issuer に追従するのでスキームはずれない。
+        // If `PUBLIC_WEB_BASE_URL` is unset, web follows the issuer, so the schemes do not diverge.
         assert!(
             ensure_override_is_bootable("ISSUER", "http://api.example.com", &state(None)).is_ok()
         );
 
-        // `COOKIE_DOMAIN` 未設定（host-only）ではそもそも整合検証が走らない。
+        // With `COOKIE_DOMAIN` unset (host-only), the consistency check does not even run.
         assert!(ensure_override_is_bootable(
             "ISSUER",
             "https://api.other.com",
@@ -1566,7 +1612,8 @@ mod tests {
         .is_ok());
     }
 
-    /// 定義キーの重複は「どちらが効くか」が探索順に依存する事故になるため禁止する。
+    /// Duplicate definition keys are forbidden because "which one wins" would depend on lookup
+    /// order.
     #[test]
     fn runtime_setting_keys_are_unique() {
         let mut seen = std::collections::HashSet::new();
@@ -1576,31 +1623,31 @@ mod tests {
     }
 }
 
-/// SMTP（メール配送）設定。参照時は平文パスワードを含めず「設定済みか否か」のみを外へ渡す
-/// （[`SmtpSettingsView`]）。更新時は [`UpdateSmtpCommand`] を用いる。
+/// SMTP (mail delivery) settings. On read, only "configured or not" goes out, never the plaintext
+/// password ([`SmtpSettingsView`]). Updates use [`UpdateSmtpCommand`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SmtpSettingsView {
     pub host: String,
     pub port: Option<u16>,
     pub username: String,
-    /// パスワードが設定済みか（平文は決して外へ出さない）。
+    /// Whether the password is set (the plaintext is never exposed).
     pub password_set: bool,
     pub from_address: String,
     pub use_tls: bool,
 }
 
-/// SMS ゲートウェイ設定の表示用（トークンは平文を返さず「設定済みか否か」のみ）。
+/// SMS gateway settings for display (no plaintext token, only "configured or not").
 #[derive(Debug, Clone, Default)]
 pub struct SmsSettingsView {
     pub gateway_url: String,
     pub auth_header: String,
-    /// 認証トークンが設定済みか（平文は決して外へ出さない）。
+    /// Whether the auth token is set (the plaintext is never exposed).
     pub auth_token_set: bool,
     pub sender_id: String,
 }
 
-/// SMS ゲートウェイ設定の更新コマンド。
-/// `auth_token` は `None` = 現行を維持、`Some("")` = 消去、`Some(x)` = 設定（SMTP と同じ規則）。
+/// Update command for SMS gateway settings.
+/// `auth_token`: `None` = keep current, `Some("")` = clear, `Some(x)` = set (same rule as SMTP).
 #[derive(Debug, Clone, Default)]
 pub struct UpdateSmsCommand {
     pub gateway_url: String,
@@ -1609,7 +1656,8 @@ pub struct UpdateSmsCommand {
     pub sender_id: String,
 }
 
-/// SMTP 設定の更新コマンド。`password` は `None` = 現行を維持、`Some("")` = 消去、`Some(x)` = 設定。
+/// Update command for SMTP settings. `password`: `None` = keep current, `Some("")` = clear,
+/// `Some(x)` = set.
 #[derive(Debug, Clone, Default)]
 pub struct UpdateSmtpCommand {
     pub host: String,

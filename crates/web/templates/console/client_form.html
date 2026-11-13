@@ -10,9 +10,9 @@
         <label class="form-label" for="client-app-name">{{ messages.get("admin-client-field-name") }}{% include "required_mark.html" %}</label>
         <input type="text" class="form-control" id="client-app-name" name="app_name" value="{{ values.app_name }}" required>
       </div>
-      {# 用途は入口（連携先の登録 / サービスアカウントの登録）で決まる。ここでは選ばせず、
-         何を登録しているのかだけを示す（ADR-0038）。id は client-form.js が読むので変えない。
-         用途を変えるには、その系統でクライアントを登録し直す（ADR-0032 の「用途ごとに分ける」）。 #}
+      {# The usage is decided by the entry point (registering a connection / a service account). It is not chosen here;
+         only what is being registered is shown (ADR-0038). client-form.js reads the id, so do not change it.
+         To change the usage, re-register the client in that family (ADR-0032 "split by usage"). #}
       <input type="hidden" id="client-usage" name="usage" value="{{ values.usage }}">
       <div class="mb-3">
         <div class="form-label">{{ messages.get("admin-client-field-usage") }}</div>
@@ -20,7 +20,7 @@
         <div class="form-text">{{ messages.get("admin-client-field-usage-fixed-hint") }}</div>
       </div>
       {% if is_new %}
-      {# システム用では confidential 以外あり得ないので、そのときは欄ごと出さない。 #}
+      {# System clients can only be confidential, so the whole field is hidden then. #}
       <div class="mb-3" data-client-form-row="client-type"{% if values.usage == "system" %} hidden{% endif %}>
         <label class="form-label" for="client-type">{{ messages.get("admin-client-field-type") }}</label>
         <select class="form-select" id="client-type" name="client_type">
@@ -37,8 +37,8 @@
         <textarea class="form-control" id="client-redirect-uris" name="redirect_uris" rows="4">{{ values.redirect_uris }}</textarea>
         <div class="form-text">{{ messages.get("admin-client-field-uris-hint") }}</div>
       </div>
-      {# 受け付ける scope は OIDC の 4 値だけなので、自由入力ではなく選択にする。`openid` は
-         登録時の必須項目なので、外せないことが分かる形で出す（値はハンドラが必ず付ける）。 #}
+      {# Only the 4 OIDC scopes are accepted, so this is a choice rather than free input. `openid` is
+         required at registration, so it is shown as not removable (the handler always adds the value). #}
       <fieldset class="mb-3">
         <legend class="form-label fs-6">{{ messages.get("admin-client-field-scopes") }}</legend>
         <div class="form-check">
@@ -76,29 +76,29 @@
         </select>
       </div>
       {% endif %}
-      {# 新規登録では public を選んでいる間も DOM に置いておく（描画をやめると JS で
-         confidential へ戻しても欄が現れず、方式を送らない登録になる。ADR-0036 以降、それは 400）。
-         編集では public に方式を送ると api が拒むので、従来どおり描画しない。 #}
+      {# For new registrations keep it in the DOM even while public is chosen (if not rendered, switching back to
+         confidential via JS would not bring the field back, and registration would send no method; since ADR-0036 that is 400).
+         When editing, sending a method for public is rejected by the api, so it is not rendered as before. #}
       {% if is_new || values.client_type == "confidential" %}
       <div class="mb-3" data-client-form-row="auth-method"{% if values.client_type != "confidential" %} hidden{% endif %}>
         <label class="form-label" for="client-auth-method">{{ messages.get("admin-client-field-auth-method") }}</label>
         <select class="form-select" id="client-auth-method" name="token_endpoint_auth_method">
-          {# 推奨（private_key_jwt）を先頭に置く。共有シークレットを持たない方式が既定になるようにする。 #}
+          {# Put the recommended one (private_key_jwt) first, so a method without a shared secret is the default. #}
           <option value="private_key_jwt"{% if values.token_endpoint_auth_method == "private_key_jwt" %} selected{% endif %}>private_key_jwt — {{ messages.get("admin-client-auth-method-recommended") }}</option>
           <option value="client_secret_basic"{% if values.token_endpoint_auth_method == "client_secret_basic" %} selected{% endif %}>client_secret_basic</option>
           <option value="client_secret_post"{% if values.token_endpoint_auth_method == "client_secret_post" %} selected{% endif %}>client_secret_post</option>
         </select>
         <div class="form-text">{{ messages.get("admin-client-field-auth-method-hint") }}</div>
       </div>
-      {# 検証鍵は private_key_jwt でのみ受け付ける（他の方式で送ると api が拒否する）。 #}
+      {# Verification keys are accepted only for private_key_jwt (the api rejects them with other methods). #}
       <div class="mb-3" data-client-form-row="jwks"{% if values.client_type != "confidential" || values.token_endpoint_auth_method != "private_key_jwt" %} hidden{% endif %}>
         <label class="form-label" for="client-jwks">{{ messages.get("admin-client-field-jwks") }}</label>
         <textarea class="form-control font-monospace" id="client-jwks" name="jwks" rows="8" spellcheck="false">{{ values.jwks }}</textarea>
         <div class="form-text">{{ messages.get("admin-client-field-jwks-hint") }}</div>
       </div>
       {% endif %}
-      {#- 管理者メモ（ADR-0065）。作ったときがいちばん経緯を覚えているので、作成と同時に書ける
-          （利用者の作成と同じ）。連携先はアカウントではないので出さない。 -#}
+      {#- Admin note (ADR-0065). The history is best remembered at creation, so it can be written then
+          (same as creating a user). Not shown for connections, which are not accounts. -#}
       {% if is_new && values.usage == "system" %}
       <div class="mb-3">
         <label class="form-label" for="client-note">{{ messages.get("admin-member-note-title") }}</label>

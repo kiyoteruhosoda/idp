@@ -1,6 +1,6 @@
-//! RefreshTokens エンティティ（設計仕様 §9.1）。
-//! DB には平文ではなく `token_hash = SHA-256(refresh_token)` を保存する。
-//! `parent_hash` は rotation / reuse detection に使う。
+//! RefreshTokens entity (design spec §9.1).
+//! The DB stores `token_hash = SHA-256(refresh_token)` rather than plaintext.
+//! `parent_hash` is used for rotation / reuse detection.
 #![allow(dead_code)]
 
 use crate::domain::tenant::TenantId;
@@ -11,32 +11,37 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct RefreshToken {
     pub token_hash: String,
-    /// rotation で発行する際に設定する（チェーンの前トークンの hash）。
+    /// Set when issued by rotation (hash of the previous token in the chain).
     pub parent_hash: Option<String>,
-    /// このトークンを生んだ認可グラント（authorization code）の SHA-256（SEC8）。code 交換で
-    /// 発行した根トークンと、そこから rotation で派生した子孫すべてが同じ値を持つ ＝ **トークン
-    /// ファミリの識別子**。再利用を検知したときはこの値でファミリごと失効させる。
+    /// SHA-256 of the authorization grant (authorization code) that produced this token (SEC8). The
+    /// root token issued by code exchange and all descendants derived from it by rotation share the
+    /// same value = **the token family identifier**. When reuse is detected, the whole family is
+    /// revoked by this value.
     ///
-    /// `parent_hash` はチェーンを 1 段ずつしか辿れず、再利用検知時に子孫を追えない。
-    /// `None` は移行前（0025 より前）に rotation 済みだった行だけで、次の rotation で埋まる。
+    /// `parent_hash` can follow the chain only one step at a time, so descendants cannot be traced
+    /// on reuse detection. `None` only for rows rotated before the migration (before 0025); filled
+    /// at the next rotation.
     pub grant_hash: Option<String>,
-    /// トークンを発行したテナント（ADR-0009 §8。使用・失効は同一テナントに限る）。
+    /// The tenant that issued the token (ADR-0009 §8; use and revocation are limited to the same
+    /// tenant).
     pub tenant_id: TenantId,
     pub user_id: Uuid,
     pub client_id: String,
     pub scope: Vec<String>,
-    /// ID Token へ載せる SSO セッション識別子（G5）。rotation で引き継ぐ。
+    /// SSO session identifier put in the ID Token (G5). Carried over on rotation.
     pub sid: Option<String>,
-    /// このグラントを生んだ認証で検証された方式（ADR-0043）。`sid` と同じく rotation で
-    /// 引き継ぐ ——refresh では認証をやり直していないので、名乗る強度も変わらないため。
-    /// `None` = 記録なし（本列の導入前に発行されたトークン）。
+    /// Methods verified by the authentication that produced this grant (ADR-0043). Like `sid`,
+    /// carried over on rotation — refresh does not redo authentication, so the claimed strength
+    /// does not change either. `None` = not recorded (tokens issued before this column existed).
     pub authentication_methods: Option<Vec<AuthenticationMethod>>,
-    /// このグラントを生んだ認証の時刻（ID Token の `auth_time`。task #584）。`sid` と同じく
-    /// rotation で引き継ぐ ——refresh では認証をやり直していないので、「最後にログインした時刻」も
-    /// 変わらない。`None` = 記録なし（本列の導入前に発行されたトークン。[`Self::auth_time_or_issued`]）。
+    /// Time of the authentication that produced this grant (the ID Token's `auth_time`; task #584).
+    /// Like `sid`, carried over on rotation — refresh does not redo authentication, so the "last
+    /// login time" does not change either. `None` = not recorded (tokens issued before this column
+    /// existed; [`Self::auth_time_or_issued`]).
     pub auth_time: Option<DateTime<Utc>>,
-    /// DPoP で結び付けた鍵の指紋（RFC 7638。ADR-0075）。`Some` なら、同じ鍵の証明が無いと使えない。
-    /// rotation で子へ引き継ぐ。`None` = 結び付けなし（持っていれば使える。今までどおり）。
+    /// Thumbprint of the key bound via DPoP (RFC 7638; ADR-0075). If `Some`, unusable without a
+    /// proof by the same key. Carried over to children on rotation. `None` = unbound (usable by
+    /// whoever holds it, as before).
     pub dpop_jkt: Option<String>,
     pub expires_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
@@ -56,13 +61,14 @@ impl RefreshToken {
         !self.is_revoked() && !self.is_expired_at(now)
     }
 
-    /// このトークンから rotation で発行する子へ引き継ぐファミリ識別子（SEC8）。
+    /// Family identifier carried over to the child issued from this token by rotation (SEC8).
     ///
-    /// 自身が `grant_hash` を持たない移行前の行なら、**自身の hash を新しい家族の起点にする**。
-    /// 祖先を辿らないのは、辿るための再帰が rotation のホットパスに載るため。こうしておけば、
-    /// 移行前から生きているチェーンも次の rotation 以降はファミリ失効の対象になる。
-    /// ID Token の `auth_time` に使う時刻。記録が無い移行前の行は、そのトークンを出した時刻で代える
-    /// （実際の認証はそれより前なので、少なくとも「今ログインした」とは名乗らない）。
+    /// For a pre-migration row without its own `grant_hash`, **its own hash becomes the start of a
+    /// new family**. Ancestors are not traced because the recursion to do so would sit on the
+    /// rotation hot path. This way, chains alive since before the migration become subject to
+    /// family revocation from the next rotation on. Time used for the ID Token's `auth_time`.
+    /// Pre-migration rows without a record use the time the token was issued (the actual
+    /// authentication was earlier, so at least it never claims "just logged in").
     pub fn auth_time_or_issued(&self) -> DateTime<Utc> {
         self.auth_time.unwrap_or(self.created_at)
     }
@@ -105,8 +111,8 @@ mod tests {
 
     #[test]
     fn legacy_rows_start_a_new_family_at_their_own_hash() {
-        // 0025 より前に rotation 済みだった行は `grant_hash` を持たない。祖先を辿らずに
-        // 自分を起点とすることで、次の rotation 以降はファミリ失効の対象になる。
+        // Rows rotated before 0025 have no `grant_hash`. By using themselves as the start without
+        // tracing ancestors, they become subject to family revocation from the next rotation on.
         assert_eq!(token("legacy", None).family_hash(), "legacy");
     }
 

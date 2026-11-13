@@ -1,19 +1,19 @@
-//! セッションを終えたら、そのセッションの refresh token も使えなくなる（ADR-0044）。
+//! Ending a session also makes that session's refresh tokens unusable (ADR-0044).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' \
 //!     cargo test --test session_end_revokes_refresh_tokens
 //!
-//! これは**単体テストでは証明できない**。`sid` は発行時に持ち回られ rotation で引き継がれる
-//! 値で、失効はその `sid` に対する 1 本の UPDATE である。つまり「発行 → 更新 → セッション終了
-//! → 更新が断られる」までを実 DB で通さないと、経路が繋がっている確証にならない。
+//! This **cannot be proven by unit tests**. `sid` is carried along at issuance and inherited on rotation,
+//! and revocation is one UPDATE against that `sid`. So without running "issue -> refresh -> end session
+//! -> refresh refused" against a real DB, there is no proof the path is wired up.
 //!
-//! 何を守っているか:
+//! What this protects:
 //!
-//! アクセストークンは既定 15 分で切れる。だがログアウトが refresh token を落とさないと、
-//! **その端末は 15 分ごとに新しいアクセストークンを取り直せる**（rotation は期限を延ばさないので
-//! 最初の発行から 30 日が上限だが、ログアウトしたはずの端末が 30 日動く時点で「ログアウト」に
-//! なっていない）。短命アクセストークンは、失効が効くことを前提にして初めて意味を持つ。
+//! Access tokens expire after 15 minutes by default. But if logout does not drop refresh tokens,
+//! **that device can re-obtain a new access token every 15 minutes** (rotation does not extend the limit,
+//! so 30 days from the first issuance is the cap, but a logged-out device working for 30 days is not
+//! "logged out"). Short-lived access tokens only make sense on the premise that revocation works.
 
 mod support;
 
@@ -28,7 +28,7 @@ use support::{
     CODE_CHALLENGE, CODE_VERIFIER, REDIRECT_URI, REDIRECT_URI_ENC, SERVICE_TOKEN,
 };
 
-/// ログイン 1 回ぶんの成果物。
+/// Artifacts of one login.
 struct LoggedIn {
     refresh_token: String,
     sso_cookie: String,
@@ -67,7 +67,7 @@ async fn register_user(app: &axum::Router, tenant: &str, username: &str, passwor
     assert_eq!(response.status(), StatusCode::CREATED, "user registration");
 }
 
-/// `offline_access` 付きで一通り通し、refresh token と SSO Cookie を得る。
+/// Runs through once with `offline_access` and obtains a refresh token and the SSO cookie.
 async fn log_in_with_offline_access(
     env: &TestEnv,
     client_id: &str,
@@ -117,7 +117,7 @@ async fn log_in_with_offline_access(
     let body = body_json(response).await;
     let sso_cookie = body["sso_session_id"].as_str().unwrap().to_string();
 
-    // `offline_access` は同意を挟む。挟まれたら承諾する。
+    // `offline_access` interposes consent. Accept it if interposed.
     let callback = match body["result"].as_str() {
         Some("consent_required") => {
             let consent_session = body["auth_session_id"].as_str().unwrap().to_string();
@@ -165,13 +165,13 @@ async fn log_in_with_offline_access(
     LoggedIn {
         refresh_token: tokens["refresh_token"]
             .as_str()
-            .expect("refresh_token（offline_access を要求している）")
+            .expect("refresh_token (offline_access was requested)")
             .to_string(),
         sso_cookie,
     }
 }
 
-/// refresh grant を 1 回叩く。成功したら回転後の refresh token を返す。
+/// Calls the refresh grant once. On success returns the rotated refresh token.
 async fn refresh(
     env: &TestEnv,
     client_id: &str,
@@ -198,7 +198,7 @@ async fn refresh(
     (status, rotated)
 }
 
-/// **ログアウトすると、そのセッションの refresh token は使えなくなる。**
+/// **Logging out makes that session's refresh tokens unusable.**
 #[tokio::test]
 async fn logging_out_stops_the_refresh_grant() {
     let Some(env) = support::setup("logout revokes refresh tokens").await else {
@@ -212,10 +212,10 @@ async fn logging_out_stops_the_refresh_grant() {
     .await;
     let logged_in = log_in_with_offline_access(&env, &client_id, &secret, &unique_username()).await;
 
-    // ログアウト前は更新が通る（この前提が崩れていると、以降の assert は何も証明しない）。
+    // Before logout refresh succeeds (if this premise breaks, the following asserts prove nothing).
     let (status, rotated) = refresh(&env, &client_id, &secret, &logged_in.refresh_token).await;
-    assert_eq!(status, StatusCode::OK, "ログアウト前の更新は通る");
-    let rotated = rotated.expect("回転後の refresh token");
+    assert_eq!(status, StatusCode::OK, "refresh before logout succeeds");
+    let rotated = rotated.expect("rotated refresh token");
 
     let response = send(
         &env.app,
@@ -231,20 +231,20 @@ async fn logging_out_stops_the_refresh_grant() {
     .await;
     assert_eq!(response.status(), StatusCode::OK, "rp logout");
 
-    // **回転後のトークン**で試す。rotation を引き継いだ子まで落ちていないと、
-    // 「ログアウト直前に一度更新した端末」だけが生き残る。
+    // Try with **the rotated token**. Unless children inherited through rotation are dropped too,
+    // only "devices that refreshed once right before logout" would survive.
     let (status, _) = refresh(&env, &client_id, &secret, &rotated).await;
     assert_eq!(
         status,
         StatusCode::BAD_REQUEST,
-        "ログアウト後の更新は断られる（断られないなら、その端末は最長 30 日動き続ける）"
+        "refresh after logout is refused (otherwise that device keeps working for up to 30 days)"
     );
 }
 
-/// **セルフサービスで他端末を切ると、その端末の refresh token も使えなくなる。**
+/// **Cutting off another device via self-service also makes that device's refresh tokens unusable.**
 ///
-/// 画面は「この端末をアカウントからログアウトしますか？」と訊く。`sso_sessions` の行を
-/// 消すだけでは、その問いに答えたことにならない。
+/// The screen asks "Sign this device out of the account?". Merely deleting the `sso_sessions`
+/// row does not answer that question.
 #[tokio::test]
 async fn revoking_a_session_from_the_security_screen_stops_its_refresh_grant() {
     let Some(env) = support::setup("self-service revoke revokes refresh tokens").await else {
@@ -258,16 +258,20 @@ async fn revoking_a_session_from_the_security_screen_stops_its_refresh_grant() {
     .await;
     let username = unique_username();
 
-    // 端末 A: 切られる側（refresh token を持つ）。
+    // Device A: the one being cut off (holds a refresh token).
     let device_a = log_in_with_offline_access(&env, &client_id, &secret, &username).await;
-    // 端末 B: 操作する側。同じ利用者でもう 1 セッション作る。
+    // Device B: the one operating. Create another session for the same user.
     let device_b = log_in_again(&env, &client_id, &secret, &username).await;
 
     let (status, rotated) = refresh(&env, &client_id, &secret, &device_a.refresh_token).await;
-    assert_eq!(status, StatusCode::OK, "切る前の更新は通る");
-    let rotated = rotated.expect("回転後の refresh token");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "refresh before cutting off succeeds"
+    );
+    let rotated = rotated.expect("rotated refresh token");
 
-    // 端末 B から、端末 A のセッションを切る。
+    // From device B, cut off device A's session.
     let overview = send(
         &env.app,
         post_internal(
@@ -287,7 +291,7 @@ async fn revoking_a_session_from_the_security_screen_stops_its_refresh_grant() {
         .expect("sessions")
         .iter()
         .find(|s| s["current"] == false)
-        .expect("端末 A のセッションが一覧に出る")["id"]
+        .expect("device A's session appears in the list")["id"]
         .as_str()
         .expect("session id")
         .to_string();
@@ -311,11 +315,11 @@ async fn revoking_a_session_from_the_security_screen_stops_its_refresh_grant() {
     assert_eq!(
         status,
         StatusCode::BAD_REQUEST,
-        "切った端末の更新は断られる"
+        "refresh from the cut-off device is refused"
     );
 }
 
-/// 既に登録済みの利用者でもう一度ログインし、SSO Cookie だけを得る。
+/// Logs in again as an already registered user and obtains only the SSO cookie.
 async fn log_in_again(env: &TestEnv, client_id: &str, secret: &str, username: &str) -> String {
     let password = "correct-horse-battery";
     let response = send(

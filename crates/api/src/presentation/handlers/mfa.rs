@@ -1,7 +1,7 @@
-//! MFA（TOTP）API ハンドラ（`/internal/mfa/*`）。
+//! MFA (TOTP) API handlers (`/internal/mfa/*`).
 //!
-//! TOTP の自己登録（setup/confirm/delete）と、ログインフローの TOTP 検証（verify）を扱う。
-//! すべて `/internal/*` ルータに属し、サービス認証トークンで保護される。
+//! Handles TOTP self-enrollment (setup/confirm/delete) and TOTP verification in the login flow (verify).
+//! All belong to the `/internal/*` router and are protected by the service auth token.
 
 use crate::application::audit::RequestContext;
 use crate::application::mfa_login::{MfaLoginCommand, MfaLoginOutcome};
@@ -18,9 +18,9 @@ use axum::extract::{Extension, State};
 use axum::response::Response;
 use axum::Json;
 
-/// TOTP セットアップ開始（`POST /internal/mfa/totp/setup`）。
+/// Starts TOTP setup (`POST /internal/mfa/totp/setup`).
 ///
-/// QR URI と生シークレット（base32）を返す。すでに有効な TOTP がある場合は `AlreadyConfigured`。
+/// Returns the QR URI and the raw secret (base32). `AlreadyConfigured` if an active TOTP already exists.
 pub async fn setup_totp(
     State(state): State<AppState>,
     Json(req): Json<InternalTotpSetupRequest>,
@@ -43,7 +43,7 @@ pub async fn setup_totp(
     }
 }
 
-/// TOTP 確認（`POST /internal/mfa/totp/confirm`）。6 桁コードを検証して有効化する。
+/// Confirms TOTP (`POST /internal/mfa/totp/confirm`). Verifies a 6-digit code and enables it.
 pub async fn confirm_totp(
     State(state): State<AppState>,
     Json(req): Json<InternalTotpConfirmRequest>,
@@ -69,7 +69,7 @@ pub async fn confirm_totp(
     }
 }
 
-/// TOTP 削除（`POST /internal/mfa/totp/delete`）。MFA を無効化する。
+/// Deletes TOTP (`POST /internal/mfa/totp/delete`). Disables MFA.
 pub async fn delete_totp(
     State(state): State<AppState>,
     Json(req): Json<InternalTotpDeleteRequest>,
@@ -86,10 +86,10 @@ pub async fn delete_totp(
     }
 }
 
-/// ログインフロー TOTP 検証（`POST /internal/mfa/totp/verify`）。
+/// TOTP verification in the login flow (`POST /internal/mfa/totp/verify`).
 ///
-/// パスワード認証済み（`password_verified_at` 設定済み）の AuthSession で TOTP コードを検証し、
-/// 成功時に SSO セッション発行 → code 発行（または同意画面へ誘導）を行う。
+/// Verifies the TOTP code on a password-authenticated AuthSession (`password_verified_at` set), and
+/// on success issues an SSO session -> issues a code (or leads to the consent screen).
 pub async fn verify_totp(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,

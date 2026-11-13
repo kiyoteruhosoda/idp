@@ -1,16 +1,16 @@
-//! ゲスト招待の承諾を**ルータ経由で**通す（api は wiremock で差し替える）。
+//! Runs guest invitation acceptance **through the router** (api replaced by wiremock).
 //!
-//! ⚠ **被招待者は、まだ参加先テナントのメンバーではない。** したがって承諾の経路は
-//! **そのテナントの管理トークンを前提にできない** ——承諾はメンバーになるための操作だからである。
+//! ⚠ **The invitee is not yet a member of the target tenant.** So the acceptance route
+//! **cannot assume that tenant's admin token** -- accepting is the operation of becoming a member.
 //!
-//! ⚠ **2026-09-16 まで、ここが管理トークンの交換（`POST /internal/admin/token`）を通っていた。**
-//! 交換は「そのテナントで権限を持つ利用者」にしか通らないため、被招待者では必ず 401 になり、
-//! 画面は「先に所属元テナントでログインしてください」へ戻っていた ——**ログインは済んでいるのに、である。**
-//! 層ごとの試験（api の統合試験・core の単体試験）はどちらも通っていたので、
-//! **web → api の並びを被招待者で通すこの試験でしか捕まらない。**
+//! ⚠ **Until 2026-09-16 this went through the admin token exchange (`POST /internal/admin/token`).**
+//! The exchange only succeeds for "users with permissions in that tenant", so it always gave 401 for invitees, and
+//! the screen went back to "please sign in to your home tenant first" -- **even though they were signed in.**
+//! Per-layer tests (api integration tests, core unit tests) both passed, so
+//! **only this test, running web -> api with an invitee, catches it.**
 //!
-//! そのため各試験は ⚠ **交換が 401 を返す状況を積んだうえで**承諾を叩く。交換に依存し直したら、
-//! ここが落ちる。
+//! So each test calls accept ⚠ **after setting up the exchange to return 401**. If it comes to depend on the exchange again,
+//! this fails.
 
 mod support;
 
@@ -32,7 +32,7 @@ fn cookies() -> String {
     format!("{SSO_SESSION_COOKIE}={SSO}")
 }
 
-/// api 側の承諾の口を積む。⚠ **資格情報は Cookie**（`AuthenticatedUser`）で、Bearer ではない。
+/// Mounts the api's accept endpoint. ⚠ **The credential is the Cookie** (`AuthenticatedUser`), not Bearer.
 async fn mount_accept(env: &WebEnv, status: u16, body: Option<serde_json::Value>) {
     let cookie = cookies();
     let response = match body {
@@ -60,7 +60,7 @@ fn accept_request(env: &WebEnv) -> axum::http::Request<axum::body::Body> {
 #[tokio::test]
 async fn accepting_forwards_the_session_cookie_without_a_management_token() {
     let env = setup().await;
-    // ⚠ 交換は失敗する状況にしておく（被招待者はまだメンバーではないので、これが実態）。
+    // ⚠ Make the exchange fail (the invitee is not a member yet, so this is reality).
     mount_unauthenticated_management_token(&env).await;
     mount_accept(&env, 204, None).await;
 
@@ -70,12 +70,12 @@ async fn accepting_forwards_the_session_cookie_without_a_management_token() {
     let html = body_text(response).await;
     assert!(
         html.contains("alert-success"),
-        "承諾の成功が出ていない: {html}"
+        "acceptance success is not shown: {html}"
     );
-    // 承諾できたのにフォームが残っていると、利用者は「まだ済んでいない」と読む。
+    // If the form remains after accepting, users read it as "not done yet".
     assert!(
         !html.contains(r#"name="token""#),
-        "成功後にフォームが残っている"
+        "form remains after success"
     );
 }
 
@@ -87,16 +87,16 @@ async fn unauthorized_from_the_api_asks_the_user_to_sign_in() {
 
     let response = send(&env.app, accept_request(&env)).await;
 
-    // セッションが本当に無効なときだけ、この案内が出る。
+    // This guidance appears only when the session is really invalid.
     assert_eq!(response.status(), StatusCode::OK);
     let html = body_text(response).await;
     assert!(
         !html.contains("alert-success"),
-        "失敗なのに成功が出ている: {html}"
+        "success shown despite failure: {html}"
     );
     assert!(
         !html.contains(r#"name="token""#),
-        "未ログインの案内でフォームを出さない"
+        "no form on the not-logged-in guidance"
     );
 }
 
@@ -113,16 +113,16 @@ async fn an_invalid_token_is_reported_as_invalid_not_as_a_sign_in_problem() {
 
     let response = send(&env.app, accept_request(&env)).await;
 
-    // ⚠ **トークンの問題とセッションの問題を同じ画面にしない。** 同じに見えると、
-    //   利用者も運用も「ログインし直す」を延々と試すことになる（2026-09-16 の切り分けがそれだった）。
+    // ⚠ **Do not use the same screen for token problems and session problems.** If they look the same,
+    //   users and operators keep trying "sign in again" endlessly (that was the 2026-09-16 diagnosis).
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let html = body_text(response).await;
     assert!(
         html.contains("alert-danger"),
-        "無効の表示が出ていない: {html}"
+        "invalid notice is not shown: {html}"
     );
     assert!(
         html.contains(r#"name="token""#),
-        "やり直せるようフォームは残す"
+        "keep the form so it can be retried"
     );
 }

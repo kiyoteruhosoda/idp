@@ -1,12 +1,12 @@
-//! ライブラリが `log` クレートを呼んだ直後の WARN / ERROR が、stdout と取り込み層の両方へ届くこと
-//! （task #801）。
+//! WARN / ERROR right after a library calls the `log` crate reach both stdout and the ingestion layer
+//! (task #801).
 //!
-//! `.init()` は `LogTracer` も入れるので、`log::log_enabled!` は購読者の `enabled` へ届き、どの層も
-//! 欲しがらないレコードだと、層ごとのフィルタの「無効」の印が event を伴わないままそのスレッドに残る。
-//! 本番の `RUST_LOG` では sqlx の問い合わせが終わるたびにこの形になる。
+//! `.init()` also installs `LogTracer`, so `log::log_enabled!` reaches the subscriber's `enabled`, and for a
+//! record no layer wants, the per-layer filter's "disabled" mark stays on that thread without an event.
+//! With the production `RUST_LOG` this happens after every sqlx query.
 //!
-//! ⚠ **この試験はこのファイルに 1 つだけ置く。** グローバルな購読者と `LogTracer` は 1 プロセスに
-//! 1 回しか入らず、同じプロセスで別の購読者が並ぶと呼び出しごとの `Interest` が混ざって、再現しなくなる。
+//! ⚠ **Keep only one test in this file.** The global subscriber and `LogTracer` can be installed only
+//! once per process; with other subscribers in the same process, per-callsite `Interest` mixes and it no longer reproduces.
 
 use assay_contracts::application_log::{
     ApplicationLogCaptureLayer, ApplicationLogPayload, CaptureFilter, CapturedLogSink, SERVICE_API,
@@ -48,7 +48,7 @@ impl<'a> fmt::MakeWriter<'a> for SharedBuffer {
 fn warn_and_error_after_sqlx_asked_log_enabled_reach_both_layers() {
     let sink = CollectingSink::default();
     let stdout = SharedBuffer::default();
-    // 本番（`telemetry::init`）と同じ層の重ね方・同じ `RUST_LOG`。
+    // Same layer stacking and same `RUST_LOG` as production (`telemetry::init`).
     tracing_subscriber::registry()
         .with(ApplicationLogCaptureLayer::new(SERVICE_API, sink.clone()).with_filter(CaptureFilter))
         .with(
@@ -71,8 +71,8 @@ fn warn_and_error_after_sqlx_asked_log_enabled_reach_both_layers() {
         (printed, captured)
     };
 
-    // sqlx が問い合わせのたびに呼ぶ形（`QueryLogger::finish`）。答えは見ない。`log_enabled!` は層の
-    // フィルタ全部に無効の印を付けたまま戻り、続く DEBUG の event は誰も聞いていないので配られない。
+    // The shape sqlx calls on every query (`QueryLogger::finish`). The answer is ignored. `log_enabled!`
+    // returns with every layer's filter marked disabled, and the following DEBUG event goes to no listener.
     let _ = log::log_enabled!(target: "sqlx::query", log::Level::Debug);
     tracing::warn!("warn after log_enabled");
     assert_eq!(delivered("warn after log_enabled"), (true, true));

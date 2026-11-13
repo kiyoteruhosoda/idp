@@ -1,4 +1,4 @@
-//! `RevokedAccessTokenRepository` の sqlx 実装（F5: Token 管理）。
+//! sqlx implementation of `RevokedAccessTokenRepository` (F5: token management).
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::RevokedAccessTokenRepository;
@@ -16,7 +16,7 @@ impl SqlxRevokedAccessTokenRepository {
         Self { pool }
     }
 
-    /// 期限切れ行の掃除（`expired_records` の `ExpiringRecordStore` 実装）が使う。
+    /// Used by the expired-row cleanup (the `ExpiringRecordStore` impl in `expired_records`).
     pub(super) fn pool(&self) -> &Db {
         &self.pool
     }
@@ -29,7 +29,7 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
 #[async_trait]
 impl RevokedAccessTokenRepository for SqlxRevokedAccessTokenRepository {
     async fn revoke(&self, token: &RevokedAccessToken) -> Result<()> {
-        // INSERT IGNORE: 既にある jti は冪等に無視する。
+        // INSERT IGNORE: an existing jti is ignored idempotently.
         sqlx::query(
             "INSERT IGNORE INTO revoked_access_tokens (jti, revoked_at, expires_at) \
              VALUES (?, ?, ?)",

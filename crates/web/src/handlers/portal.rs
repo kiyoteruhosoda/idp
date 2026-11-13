@@ -1,12 +1,12 @@
-//! エンドユーザー・ポータルのログイン（`/{tenant_id}/login` の OIDC 非依存経路）。
+//! End-user portal login (the OIDC-independent path of `/{tenant_id}/login`).
 //!
-//! `/{tenant_id}/login` は OIDC 連携アプリからの遷移（`auth_session_id` Cookie あり）では通常の OIDC
-//! ログイン（[`crate::handlers::login`]）として働く。`auth_session_id` を持たない直接アクセスでは、本
-//! モジュールの **ポータルログイン**（IdP 自身のアカウント画面 `/{tenant_id}/settings` へ入るための直接
-//! ログイン）として働く。振り分けは [`crate::handlers::login`] が Cookie の有無で行い、本モジュールへ委譲する。
+//! `/{tenant_id}/login` works as the normal OIDC login ([`crate::handlers::login`]) when arriving from an OIDC-linked app
+//! (with the `auth_session_id` cookie). For direct access without `auth_session_id`, it works as this module's
+//! **portal login** (a direct login into the IdP's own account screen `/{tenant_id}/settings`).
+//! [`crate::handlers::login`] dispatches by the presence of the cookie and delegates to this module.
 //!
-//! 認証・SSO 発行・TOTP 検証は api（`/internal/authenticate/portal*`）に委ね、web は CSRF（同期トークン）
-//! と Cookie 組み立て・画面描画・リダイレクトのみを担う（管理コンソールのログインと同じ責務分担）。
+//! Authentication, SSO issuance and TOTP verification are delegated to the api (`/internal/authenticate/portal*`); web handles only
+//! CSRF (synchronizer token), building cookies, rendering and redirects (same split of duties as the admin console login).
 
 use super::{api_internal_error, internal_call_status, locale};
 use crate::client_ip::ClientIp;
@@ -30,13 +30,13 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 
-/// ポータル CSRF 種 Cookie の寿命（秒）。ログイン〜TOTP 入力までを覆う。
+/// Lifetime (seconds) of the portal CSRF seed cookie. Covers login through TOTP input.
 const PORTAL_CSRF_TTL_SECS: u64 = 900;
-/// `mfa_ticket` Cookie の寿命（秒）。api 側チケットの有効期間（5 分）に合わせる。
+/// Lifetime (seconds) of the `mfa_ticket` cookie. Matches the api-side ticket validity (5 minutes).
 const PORTAL_MFA_TTL_SECS: u64 = 300;
 
-/// ポータルのログインフォーム（`GET /{tenant_id}/login`、`auth_session_id` 無し）。
-/// `error_key` は PRG（CSRF 不一致 → `?error=csrf`）で戻ったときのエラーバナー。
+/// Portal login form (`GET /{tenant_id}/login`, without `auth_session_id`).
+/// `error_key` is the error banner when returning via PRG (CSRF mismatch → `?error=csrf`).
 pub async fn login_page(
     state: &WebState,
     correlation: &CorrelationId,
@@ -44,14 +44,14 @@ pub async fn login_page(
     headers: &HeaderMap,
     error_key: Option<&str>,
 ) -> Response {
-    // 外部 IdP のボタン（AP10）。取得できなくてもパスワードログインは出す（フェイルソフト）。
-    // Messages は !Send なので、api の await より先に済ませる。
+    // External IdP buttons (AP10). Even if they cannot be fetched, password login is shown (fail-soft).
+    // Messages is !Send, so finish this before the api await.
     let external_providers = load_external_providers(state, correlation, tenant).await;
     let messages = Messages::new(locale(headers));
-    // CSRF の種（推測不能な乱数）を Cookie とフォーム双方へ渡す（admin ログインと同方式）。
-    // 既に有効な種 Cookie があれば使い回して TTL を延長する。GET のたびに回転させると、複数タブで
-    // ログイン画面を開いたときに古いタブのフォームが必ず CSRF 不一致になるため（種はセッション非依存の
-    // 乱数であり、使い回しても保護強度は変わらない）。
+    // Pass the CSRF seed (an unguessable random value) to both the cookie and the form (same as admin login).
+    // If a valid seed cookie exists, reuse it and extend its TTL. Rotating on every GET would make the form in old tabs
+    // always mismatch CSRF when the login screen is opened in multiple tabs (the seed is a session-independent
+    // random value, so reusing it does not weaken protection).
     let csrf_id = cookies::get(
         headers,
         &state.origin_bound_cookie(cookies::PORTAL_CSRF_COOKIE),
@@ -77,7 +77,7 @@ pub async fn login_page(
         .into_response()
 }
 
-/// ポータルのログイン実行（`POST /{tenant_id}/login`、`auth_session_id` 無し）。
+/// Performs portal login (`POST /{tenant_id}/login`, without `auth_session_id`).
 pub async fn login(
     state: &WebState,
     correlation: &CorrelationId,
@@ -86,7 +86,7 @@ pub async fn login(
     headers: &HeaderMap,
     form: LoginForm,
 ) -> Response {
-    // CSRF 検証（Cookie の種からトークンを再計算して照合）。
+    // CSRF verification (recompute the token from the cookie seed and compare).
     let csrf_id = cookies::get(
         headers,
         &state.origin_bound_cookie(cookies::PORTAL_CSRF_COOKIE),
@@ -97,8 +97,8 @@ pub async fn login(
         state.config.csrf_secret(),
     );
     if !csrf_ok {
-        // PRG: 303 で GET へ付け替え、新しい種 Cookie とトークンでフォームを自動再表示する
-        //（従来は空の CSRF を埋めたフォームを再描画するため、再送信しても復帰できなかった）。
+        // PRG: switch to GET with 303 and automatically re-show the form with a new seed cookie and token
+        //(previously it re-rendered a form with an empty CSRF, so resubmitting could not recover).
         tracing::warn!(
             correlation_id = %correlation.0,
             "portal login failed: csrf token mismatch or seed cookie expired; redirecting to fresh form"
@@ -143,7 +143,7 @@ pub async fn login(
             &[cookies::PORTAL_CSRF_COOKIE],
         ),
         InternalPortalAuthenticateResponse::MfaRequired { mfa_ticket } => {
-            // `mfa_ticket` を Cookie 化して TOTP 入力画面へ。portal_csrf Cookie は MFA フォームで再利用する。
+            // Store `mfa_ticket` in a cookie and go to the TOTP input screen. The portal_csrf cookie is reused by the MFA form.
             let set_cookies = state.set_cookies().set_local(
                 &state.origin_bound_cookie(cookies::PORTAL_MFA_COOKIE),
                 &mfa_ticket,
@@ -161,8 +161,8 @@ pub async fn login(
             StatusCode::FORBIDDEN,
         ),
         InternalPortalAuthenticateResponse::PasswordChangeRequired { username } => {
-            // 強制パスワード変更（ADR-0009 §5）。管理コンソールと同じ共有画面を流用し、SSO はまだ
-            // 発行しない。portal_csrf Cookie は維持し、変更フォームへ同じ csrf を埋め込む。
+            // Forced password change (ADR-0009 §5). Reuses the same shared screen as the admin console; SSO is not
+            // issued yet. Keep the portal_csrf cookie and embed the same csrf in the change form.
             Html(render_password_change_form(
                 &messages,
                 &tenant.prefix(),
@@ -193,7 +193,7 @@ pub async fn login(
             &csrf,
             "login-error-locked",
         ),
-        // 登録した端末に限る組織で、登録していない端末だった（task #916）。札を置いて登録の画面へ。
+        // Organization limited to registered devices, and this device is not registered (task #916). Place the ticket and go to enrollment.
         InternalPortalAuthenticateResponse::DeviceEnrollmentRequired { ticket } => {
             crate::handlers::device_enrollment::redirect(
                 state,
@@ -202,7 +202,7 @@ pub async fn login(
                 &portal_destination(state, headers, tenant),
             )
         }
-        // 認証ポリシー（AP2）。資格情報は検証済みなので資格情報エラーとは別の文言を出す。
+        // Authentication policy (AP2). The credentials are already verified, so show wording different from a credential error.
         InternalPortalAuthenticateResponse::PolicyDenied => reshow_login(
             &messages,
             &tenant.prefix(),
@@ -219,15 +219,15 @@ pub async fn login(
     }
 }
 
-/// ポータルの強制パスワード変更ページ（`GET /{tenant_id}/login/password-change`、ADR-0009 §5）。
-/// ブックマーク・再読込対策として直接アクセスはログイン画面へ誘導する（本人性は `POST /login` からの
-/// フォーム遷移で確認済みの username を要するため、GET 単独では変更を開始できない。管理コンソールと同方式）。
+/// Portal forced password change page (`GET /{tenant_id}/login/password-change`, ADR-0009 §5).
+/// Against bookmarks/reloads, direct access is led to the login screen (identity requires the username confirmed via the form
+/// transition from `POST /login`, so a GET alone cannot start a change; same as the admin console).
 pub async fn password_change_page(Extension(tenant): Extension<WebTenant>) -> Response {
     found(&format!("{}/login", tenant.prefix()))
 }
 
-/// ポータルの強制パスワード変更の実行（`POST /{tenant_id}/login/password-change`、ADR-0009 §5）。
-/// 成功時は SSO Cookie を発行してアカウント画面へ 302 する（管理コンソールと同じ共有画面を流用）。
+/// Performs the portal forced password change (`POST /{tenant_id}/login/password-change`, ADR-0009 §5).
+/// On success issues the SSO cookie and 302s to the account screen (reuses the same shared screen as the admin console).
 pub async fn password_change(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -236,7 +236,7 @@ pub async fn password_change(
     headers: HeaderMap,
     Form(form): Form<ForcedPasswordChangeForm>,
 ) -> Response {
-    // CSRF 検証（ログイン時と同じ portal_csrf の種で照合する）。
+    // CSRF verification (compared with the same portal_csrf seed as at login).
     let csrf_id = cookies::get(
         &headers,
         &state.origin_bound_cookie(cookies::PORTAL_CSRF_COOKIE),
@@ -247,9 +247,9 @@ pub async fn password_change(
         state.config.csrf_secret(),
     );
     if !csrf_ok {
-        // PRG: 強制変更フォームは `POST /login` からのフォーム遷移でしか開始できない（username を運ぶ）
-        // ため、ログイン画面へ 303 で戻して最初からやり直させる（従来は空の CSRF を埋めたフォームを
-        // 再描画するため、再送信しても復帰できなかった）。
+        // PRG: the forced change form can only be started via the form transition from `POST /login` (it carries the username),
+        // so 303 back to the login screen to start over (previously it re-rendered a form with an empty CSRF,
+        // so resubmitting could not recover).
         tracing::warn!(
             correlation_id = %correlation.0,
             "portal forced password change failed: csrf token mismatch or seed cookie expired; redirecting to login"
@@ -310,8 +310,8 @@ pub async fn password_change(
             &[cookies::PORTAL_CSRF_COOKIE],
         ),
         InternalPortalChangePasswordResponse::MfaRequired { mfa_ticket } => {
-            // パスワード変更成功・MFA 必要（MFA ゲート）: `mfa_ticket` を Cookie 化して TOTP 入力画面へ。
-            // portal_csrf Cookie は MFA フォームで再利用する（login の MfaRequired と同方式）。
+            // Password changed, MFA required (MFA gate): store `mfa_ticket` in a cookie and go to the TOTP input screen.
+            // The portal_csrf cookie is reused by the MFA form (same as login's MfaRequired).
             let set_cookies = state.set_cookies().set_local(
                 &state.origin_bound_cookie(cookies::PORTAL_MFA_COOKIE),
                 &mfa_ticket,
@@ -328,7 +328,7 @@ pub async fn password_change(
             "login-error-email-not-verified",
             StatusCode::FORBIDDEN,
         ),
-        // 登録した端末に限る組織で、登録していない端末だった（task #916）。札を置いて登録の画面へ。
+        // Organization limited to registered devices, and this device is not registered (task #916). Place the ticket and go to enrollment.
         InternalPortalChangePasswordResponse::DeviceEnrollmentRequired { ticket } => {
             crate::handlers::device_enrollment::redirect(
                 &state,
@@ -385,13 +385,13 @@ pub async fn password_change(
     }
 }
 
-/// ポータルの TOTP 入力ページ（`GET /{tenant_id}/login/mfa`）。`mfa_ticket` Cookie が必要。
+/// Portal TOTP input page (`GET /{tenant_id}/login/mfa`). Requires the `mfa_ticket` cookie.
 pub async fn mfa_page(
     State(state): State<WebState>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
 ) -> Response {
-    // チケットが無ければログインからやり直し。
+    // Without a ticket, start over from login.
     if cookies::get(
         &headers,
         &state.origin_bound_cookie(cookies::PORTAL_MFA_COOKIE),
@@ -416,7 +416,7 @@ pub async fn mfa_page(
     .into_response()
 }
 
-/// ポータルの TOTP 検証（`POST /{tenant_id}/login/mfa`）。
+/// Portal TOTP verification (`POST /{tenant_id}/login/mfa`).
 pub async fn mfa_submit(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -425,8 +425,8 @@ pub async fn mfa_submit(
     headers: HeaderMap,
     Form(form): Form<PortalTotpForm>,
 ) -> Response {
-    // 注: `Messages`（FluentBundle）は !Send のため、api の await をまたいで保持しない
-    //（各分岐で必要時に生成する）。
+    // Note: `Messages` (FluentBundle) is !Send, so it is not held across the api await
+    //(created when needed in each branch).
 
     let csrf_id = cookies::get(
         &headers,
@@ -443,11 +443,11 @@ pub async fn mfa_submit(
             "portal mfa failed: csrf token mismatch or seed cookie expired"
         );
         let Some(id) = csrf_id.as_deref().filter(|s| !s.is_empty()) else {
-            // 種 Cookie が無い（期限切れ等）: フォームを再表示しても照合できないため、
-            // ログインからやり直す（PRG）。
+            // No seed cookie (expired etc.): re-showing the form could not be verified,
+            // so start over from login (PRG).
             return see_other(&format!("{}/login?error=csrf", tenant.prefix()));
         };
-        // 古いフォームからの再送: 現在の種から導出した新しいトークンで再表示する。
+        // Resubmission from an old form: re-show with a new token derived from the current seed.
         let messages = Messages::new(locale(&headers));
         let csrf = portal_csrf_token(id, state.config.csrf_secret());
         return reshow_mfa(
@@ -487,7 +487,7 @@ pub async fn mfa_submit(
         }
     };
 
-    // await 後に Messages を生成する（!Send を await にまたがせない）。
+    // Create Messages after the await (do not let a !Send value live across an await).
     let messages = Messages::new(locale(&headers));
     match outcome {
         InternalPortalMfaResponse::Success {
@@ -510,7 +510,7 @@ pub async fn mfa_submit(
             &csrf,
             "mfa-error-invalid-code",
         ),
-        // チケット切れ・レート制限はログインからやり直させる（チケット Cookie を失効）。
+        // Expired ticket / rate limit: start over from login (expire the ticket cookie).
         InternalPortalMfaResponse::TicketExpired | InternalPortalMfaResponse::RateLimited => {
             let set_cookies = state
                 .set_cookies()
@@ -521,7 +521,7 @@ pub async fn mfa_submit(
             )
                 .into_response()
         }
-        // 登録した端末に限る組織で、登録していない端末だった（task #916）。札を置いて登録の画面へ。
+        // Organization limited to registered devices, and this device is not registered (task #916). Place the ticket and go to enrollment.
         InternalPortalMfaResponse::DeviceEnrollmentRequired { ticket } => {
             crate::handlers::device_enrollment::redirect(
                 &state,
@@ -530,7 +530,7 @@ pub async fn mfa_submit(
                 &portal_destination(&state, &headers, &tenant),
             )
         }
-        // ポリシー拒否はチケットを失効させて終える（再試行しても結果は変わらない）。
+        // A policy denial expires the ticket and finishes (retrying would not change the result).
         InternalPortalMfaResponse::PolicyDenied => {
             let set_cookies = state
                 .set_cookies()
@@ -549,16 +549,16 @@ pub async fn mfa_submit(
     }
 }
 
-/// エンドユーザーのログアウト（`POST /{tenant_id}/logout`。アカウント設定のフォームから）。api で SSO を
-/// 失効させ、Cookie を失効してログイン画面へ 302 する。
+/// End-user logout (`POST /{tenant_id}/logout`, from the account settings form). Revokes SSO in the api,
+/// expires the cookies and 302s to the login screen.
 ///
-/// ログイン中（SSO Cookie あり）はフォームの CSRF トークン（`console_csrf_token`）を照合し、合わなければ
-/// 何もせず（SSO も Cookie もそのまま）設定画面へ `?error=csrf` で戻す —— 外部のページからのログアウトの
-/// 強制を防ぐ（task #143。以前は SameSite=Lax だけで守られていた）。SSO Cookie が無ければ失効させる
-/// ものが無いので、トークンを見ずにログイン画面へ送る。フォームが読めない（Content-Type が無い等）ときも
-/// 422 にせず、空のトークンとして照合に落とす。
+/// When signed in (SSO cookie present), the form's CSRF token (`console_csrf_token`) is verified; if it does not match,
+/// nothing is done (SSO and cookies unchanged) and it returns to the settings screen with `?error=csrf` — preventing forced logout
+/// from external pages (task #143; previously protected only by SameSite=Lax). Without an SSO cookie there is nothing
+/// to revoke, so it goes to the login screen without checking the token. When the form cannot be read (no Content-Type etc.),
+/// it is not a 422 but falls into verification as an empty token.
 ///
-/// RP からのログアウト（OIDC の end_session_endpoint＝`GET /logout`）は `rp_logout` が受け、ここは通らない。
+/// Logout from an RP (OIDC end_session_endpoint = `GET /logout`) is received by `rp_logout` and does not come here.
 pub async fn logout(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -605,12 +605,12 @@ pub async fn logout(
         .into_response()
 }
 
-/// SSO Cookie を発行し、任意の一時 Cookie を失効させてアカウント画面へ 302 する共通処理。
-/// SSO Cookie は host-only のセッション Cookie（ADR-0018 決定 2。api へはボディ転送で渡す）。
-/// 失効させる一時 Cookie（CSRF・MFA チケット）は web ローカル。
+/// Shared processing that issues the SSO cookie, expires any temporary cookies and 302s to the account screen.
+/// The SSO cookie is a host-only session cookie (ADR-0018 decision 2; passed to the api via body forwarding).
+/// The temporary cookies to expire (CSRF, MFA ticket) are web-local.
 ///
-/// SAML SSO からログインへ誘導された場合（`saml_request_id` Cookie あり）は、アカウント画面
-/// ではなく `/saml/continue` へ戻してフローを完了させる。
+/// When led to login from SAML SSO (with the `saml_request_id` cookie), it returns to `/saml/continue`
+/// instead of the account screen to complete the flow.
 fn sso_success_response(
     state: &WebState,
     headers: &HeaderMap,
@@ -632,8 +632,8 @@ fn sso_success_response(
     (set_cookies.into_headers(), found(&destination)).into_response()
 }
 
-/// [`sso_success_response`] の中身（Cookie の組み立てと遷移先の決定）。パスキーログインだけは
-/// 応答が JSON（ブラウザの JS が受ける）で 302 を返せないため、同じ判断を共有できるよう分けてある。
+/// The body of [`sso_success_response`] (building cookies and deciding the destination). Only passkey login
+/// responds with JSON (received by browser JS) and cannot return a 302, so it is split out to share the same decision.
 pub(crate) fn sso_success_parts(
     state: &WebState,
     headers: &HeaderMap,
@@ -648,12 +648,12 @@ pub(crate) fn sso_success_parts(
         sso_session_id,
         sso_absolute_ttl_secs,
     );
-    // `expire_cookies` は素の（前置なしの）名前で受け取り、ここでオリジン束縛名へ解決する
-    // （呼び出し側 3 箇所で解決を書くと、片方だけ素の名前のまま消し忘れる。SEC5）。
+    // `expire_cookies` receives bare (unprefixed) names and resolves them to origin-bound names here
+    // (writing the resolution in each of the 3 callers would leave one deleting by the bare name. SEC5).
     for name in expire_cookies {
         set_cookies = set_cookies.expire_local(&state.origin_bound_cookie(name));
     }
-    // ユーザーの DB 言語設定があれば lang Cookie に同期する（MT20: DB > Cookie）。
+    // If the user has a DB language setting, sync it into the lang cookie (MT20: DB > Cookie).
     if let Some(lang) = user_language.and_then(Locale::from_tag) {
         set_cookies = set_cookies.set_local(
             cookies::LANG_COOKIE,
@@ -664,9 +664,9 @@ pub(crate) fn sso_success_parts(
     (set_cookies, portal_destination(state, headers, tenant))
 }
 
-/// ポータルのログインの後の行き先（SAML の続き・認証アプリの登録の確認・設定の画面）。
+/// Destination after portal login (SAML continuation, authenticator app registration confirmation, settings screen).
 ///
-/// 端末の登録（task #916）を挟んだときも、登録の後に同じ所へ戻すために使う。
+/// Also used to return to the same place after enrollment when device registration (task #916) was inserted.
 pub(crate) fn portal_destination(
     state: &WebState,
     headers: &HeaderMap,
@@ -685,7 +685,7 @@ pub(crate) fn portal_destination(
     {
         format!("{}/saml/continue", tenant.prefix())
     } else if let Some(enrollment) = enrollment {
-        // 認証アプリの登録の確認から来た（task #892）。ログインの後にその画面へ戻す。
+        // Came from the authenticator app registration confirmation (task #892). Return to that screen after login.
         format!(
             "{}/settings/app-approver/confirm?enrollment={enrollment}",
             tenant.prefix()
@@ -706,14 +706,14 @@ fn render_login_form(
         tenant_prefix,
         csrf,
         error_key,
-        // 再表示（資格情報エラー等）では外部 IdP のボタンを省く。ここは api を await できない
-        // 同期の描画関数で、そのために呼び出し側全部へ一覧を配るのは割に合わない。
-        // 利用者は一度ログイン画面へ戻れば（`GET /login`）ボタンを見られる。
+        // On re-display (credential errors etc.) the external IdP buttons are omitted. This is a synchronous render
+        // function that cannot await the api, and distributing the list to every caller for that is not worth it.
+        // Users can see the buttons by going back to the login screen once (`GET /login`).
         external_providers: &[],
     })
 }
 
-/// 有効な外部 IdP を取得する（失敗時は空。ログイン画面自体は必ず出す）。
+/// Fetches enabled external IdPs (empty on failure; the login screen itself is always shown).
 async fn load_external_providers(
     state: &WebState,
     correlation: &CorrelationId,
@@ -732,8 +732,8 @@ async fn load_external_providers(
     }
 }
 
-/// 強制パスワード変更フォームの HTML を共有テンプレート（[`ForcedPasswordChange`]）から描画する。
-/// 送信先はポータルの `POST /{tenant_id}/login/password-change`（管理コンソールは別 action）。
+/// Renders the forced password change form HTML from the shared template ([`ForcedPasswordChange`]).
+/// Submits to the portal's `POST /{tenant_id}/login/password-change` (the admin console uses a different action).
 fn render_password_change_form(
     messages: &Messages,
     tenant_prefix: &str,

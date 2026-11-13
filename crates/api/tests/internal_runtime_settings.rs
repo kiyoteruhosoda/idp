@@ -1,26 +1,26 @@
-//! 共有ランタイム設定（`GET /internal/runtime-settings`。MT26 / ADR-0013）の統合テスト（DB あり）。
+//! Integration tests (with DB) for shared runtime settings (`GET /internal/runtime-settings`; MT26 / ADR-0013).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test internal_runtime_settings
 //!
-//! web は DB を持たないため、api/web の両方が消費する DB 管理設定（`COOKIE_SECURE` 等）はこの
-//! エンドポイントが唯一の出所になる。検証するのは次の 5 点:
+//! web has no DB, so this endpoint is the single source of DB-managed settings consumed by both api and web
+//! (`COOKIE_SECURE` etc.). Five things are checked:
 //!
-//! 1. `/internal/*` 共通のサービストークンで保護されている（未提示・不一致は 401）。
-//! 2. `shared_with_web` のキーの DB 上書き値**だけ**を返す（api 専用のキーは漏らさない）。
-//! 3. **DB → api（実サーバ）→ HTTP → web の `Config`** がつながっている。ここが切れていると
-//!    api だけ新しい値で動き web は古い値のまま、という静かな不一致になる。
-//!    web を dev-dependency として使う理由は `e2e_domain_split.rs` と同じ（web の sqlx 非依存という
-//!    crate 境界は侵さない）。
-//! 4. 返すのは**実行中の api の起動時スナップショット**であり `system_settings` の現在値ではない
-//!    （ADR-0013 §1-a）。DB を書き換えても、再起動していない api の応答は変わらない。これが崩れると
-//!    「保存したが api を再起動していない」状態で web だけが新しい値を拾い、本エンドポイントが
-//!    防ごうとしている不一致そのものが起きる。
-//! 5. 上書き解除（空文字列）は「未設定」として返さない（web は自分の ENV へフォールバックする）。
+//! 1. It is protected by the service token common to `/internal/*` (missing / mismatched is 401).
+//! 2. It returns **only** DB override values of `shared_with_web` keys (api-only keys do not leak).
+//! 3. **DB → api (real server) → HTTP → web's `Config`** is connected. If broken, api alone would run with
+//!    new values while web keeps old ones, a silent mismatch.
+//!    The reason for using web as a dev-dependency is the same as `e2e_domain_split.rs` (it does not violate
+//!    the crate boundary of web not depending on sqlx).
+//! 4. What is returned is **the running api's startup snapshot**, not the current value of `system_settings`
+//!    (ADR-0013 §1-a). Rewriting the DB does not change the response of an api that has not restarted. If this broke,
+//!    in the "saved but api not restarted" state web alone would pick up new values, causing the very mismatch
+//!    this endpoint is meant to prevent.
+//! 5. Removing an override (empty string) is not returned as "unset" (web falls back to its own ENV).
 //!
-//! `system_settings` はテナント列を持たない assay 全体の共有テーブルで、テストバイナリは並列に走る。
-//! 同じキーを書き換えるケースを複数のテスト関数へ分けると互いに競合するため、**1 つのテスト関数**に
-//! 直列化してある。
+//! `system_settings` is an assay-wide shared table without a tenant column, and test binaries run in parallel.
+//! Splitting cases that rewrite the same key into several test functions would make them conflict, so they are
+//! serialized into **one test function**.
 
 mod support;
 
@@ -37,10 +37,10 @@ use std::future::IntoFuture;
 use std::sync::Arc;
 use support::{send, SERVICE_TOKEN, SERVICE_TOKEN_HEADER};
 
-/// このテストが書き換える共有キー（＝ web へ渡ることを期待するキー）。
+/// Shared key this test rewrites (= a key expected to be passed to web).
 const SHARED_KEYS: [&str; 3] = ["COOKIE_SECURE", "HSTS_MAX_AGE", "AUTH_SESSION_TTL_SECS"];
 
-/// 共有ランタイム設定 API を叩く（`token` が `Some` のときだけサービストークンを付ける）。
+/// Calls the shared runtime settings API (attaches the service token only when `token` is `Some`).
 fn get_shared_settings(token: Option<&str>) -> Request<Body> {
     let mut builder = Request::builder()
         .method("GET")
@@ -71,9 +71,9 @@ async fn delete_setting(pool: &sqlx::MySqlPool, key: &str) {
         .expect("delete system setting");
 }
 
-/// api の起動シーケンス（DB 管理設定の読み出し → `Config` 解決 → ルータ組立）を再現する。
-/// 本番と同じ `assay_api::load_db_managed_settings` を通すことで、「api が起動時に適用した値」と
-/// エンドポイントが配る値が同じであることをテストでも保証する。
+/// Reproduces api's startup sequence (read DB-managed settings → resolve `Config` → assemble the router).
+/// Going through the same `assay_api::load_db_managed_settings` as production guarantees in tests too that
+/// "the values api applied at startup" and the values the endpoint serves are the same.
 async fn start_api(pool: &sqlx::MySqlPool) -> axum::Router {
     let db_settings = assay_api::load_db_managed_settings(pool)
         .await
@@ -99,13 +99,13 @@ async fn shared_runtime_settings_are_protected_scoped_and_reach_the_web_configur
     };
     let pool = env.pool.clone();
 
-    // ── 1. サービストークンが無ければ 401（本文まで到達しない）。
+    // ── 1. Without the service token, 401 (the body is never reached).
     let response = send(&env.app, get_shared_settings(None)).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "missing token");
     let response = send(&env.app, get_shared_settings(Some("wrong-token"))).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "wrong token");
 
-    // ── 2. 共有キーを DB へ入れ、その状態で api を「起動」する。
+    // ── 2. Put shared keys into the DB and "start" api in that state.
     upsert_setting(&pool, "COOKIE_SECURE", "true").await;
     upsert_setting(&pool, "HSTS_MAX_AGE", "31536000").await;
     upsert_setting(&pool, "AUTH_SESSION_TTL_SECS", "1200").await;
@@ -126,8 +126,8 @@ async fn shared_runtime_settings_are_protected_scoped_and_reach_the_web_configur
             .map(String::as_str),
         Some("1200")
     );
-    // 共有キー以外（api 専用の TTL・SMTP 設定・secret）は 1 つも載せない。他テストが並行して
-    // 別のキーを書いていても、部分集合であることを見れば取りこぼしなく確認できる。
+    // Nothing other than shared keys (api-only TTL, SMTP settings, secrets) is included. Even if other tests write
+    // other keys in parallel, checking it is a subset confirms this without misses.
     for key in body.settings.keys() {
         assert!(
             SHARED_KEYS.contains(&key.as_str()),
@@ -135,15 +135,15 @@ async fn shared_runtime_settings_are_protected_scoped_and_reach_the_web_configur
         );
     }
 
-    // ── 3. api を実サーバとして起動し、web の起動手順（bootstrap → 取得 → 再解決）を辿る。
+    // ── 3. Start api as a real server and follow web's startup procedure (bootstrap → fetch → re-resolve).
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind api listener");
     let api_base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
     tokio::spawn(axum::serve(listener, app.clone()).into_future());
 
-    // ENV には DB と**異なる**値を置き、DB が勝つことまで確かめる。環境変数はプロセス共有だが、
-    // 本バイナリのテストはこの 1 関数だけなので競合しない。
+    // Put a value **different** from the DB in ENV, to check the DB wins. Env vars are process-shared, but
+    // this binary has only this one test function, so there is no conflict.
     std::env::set_var("API_BASE_URL", &api_base);
     std::env::set_var("COOKIE_SECURE", "false");
     std::env::set_var("HSTS_MAX_AGE", "1");
@@ -172,8 +172,8 @@ async fn shared_runtime_settings_are_protected_scoped_and_reach_the_web_configur
         "web must report which keys came from the DB"
     );
 
-    // ── 4. DB を書き換えても、再起動していない api の応答は変わらない（起動時スナップショット）。
-    // これが崩れると、api がまだ古い値で動いているのに web だけ新しい値を拾える状態になる。
+    // ── 4. Rewriting the DB does not change the response of an api that has not restarted (startup snapshot).
+    // If this broke, web alone could pick up new values while api still runs with old ones.
     upsert_setting(&pool, "HSTS_MAX_AGE", "63072000").await;
     let shared = client
         .fetch_shared_runtime_settings()
@@ -185,7 +185,7 @@ async fn shared_runtime_settings_are_protected_scoped_and_reach_the_web_configur
         "a running api must keep serving the value it started with"
     );
 
-    // ── 5. 上書き解除（空文字列）は、api を再起動した時点で「未設定」になる → web は ENV へ戻る。
+    // ── 5. Removing an override (empty string) becomes "unset" once api restarts → web falls back to ENV.
     upsert_setting(&pool, "HSTS_MAX_AGE", "").await;
     let restarted = start_api(&pool).await;
     let body = fetch_settings(&restarted).await;

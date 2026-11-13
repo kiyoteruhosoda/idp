@@ -1,14 +1,14 @@
-//! 外部 OIDC IdP の戻り口（callback）は、開始したブラウザからでないと進まない（task #581）。
+//! The external OIDC IdP return endpoint (callback) proceeds only from the browser that started it (task #581).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test external_oidc_browser_binding
 //!
-//! 攻撃者は自分のアカウントで外部 IdP のログインを途中まで進め、`code` と `state` の付いた戻り URL を
-//! 手に入れられる。それを他人に踏ませると、その人のブラウザに攻撃者のアカウントでログインした状態が
-//! 入っていた（ログイン CSRF）。戻り口は、開始時にブラウザへ渡した値（Cookie）が無いと進まない。
+//! An attacker can go partway through an external IdP login with their own account and obtain the return URL
+//! with `code` and `state`. Making someone else open it used to sign that person's browser in as the attacker's
+//! account (login CSRF). The return endpoint does not proceed without the value (cookie) given to the browser at start.
 //!
-//! 本物の外部 IdP は立てない。照合は**コードの交換より前**に行うので、照合に通れば交換へ進んで
-//! 失敗し（`external_failure`）、通らなければ進行状態が無いのと同じ扱い（`state_expired`）になる。
+//! No real external IdP is started. The check happens **before the code exchange**, so passing it proceeds to the
+//! exchange and fails (`external_failure`), while failing it is treated as if there were no progress state (`state_expired`).
 
 mod support;
 
@@ -16,7 +16,7 @@ use axum::http::StatusCode;
 use serde_json::{json, Value};
 use support::{body_json, post_internal, send, unique, TestEnv, SERVICE_TOKEN};
 
-/// 届かない外部 IdP（`.invalid` は名前が引けない。RFC 6761）を DB へ直接登録し、`provider_code` を返す。
+/// Registers an unreachable external IdP (`.invalid` names do not resolve; RFC 6761) directly in the DB and returns `provider_code`.
 async fn register_unreachable_oidc_provider(env: &TestEnv) -> String {
     let provider_code = format!("oidc-{}", unique());
     sqlx::query(
@@ -39,7 +39,7 @@ async fn register_unreachable_oidc_provider(env: &TestEnv) -> String {
     provider_code
 }
 
-/// 外部ログインを始め、`(state, browser_binding)` を返す。
+/// Starts an external login and returns `(state, browser_binding)`.
 async fn start(env: &TestEnv, provider_code: &str) -> (String, String) {
     let res = send(
         &env.app,
@@ -92,18 +92,18 @@ async fn the_callback_proceeds_only_in_the_browser_that_started_the_login() {
     };
     let provider_code = register_unreachable_oidc_provider(&env).await;
 
-    // 開始時の値を持たないブラウザ（攻撃者の戻り URL を踏まされた人）。
+    // A browser without the start value (someone made to open the attacker's return URL).
     let (state, _) = start(&env, &provider_code).await;
     let body = callback(&env, &state, None).await;
     assert_eq!(body["result"], "state_expired", "{body}");
 
-    // 別の外部ログインの値を持つブラウザ。
+    // A browser holding the value of another external login.
     let (attacker_state, _) = start(&env, &provider_code).await;
     let (_, victim_binding) = start(&env, &provider_code).await;
     let body = callback(&env, &attacker_state, Some(&victim_binding)).await;
     assert_eq!(body["result"], "state_expired", "{body}");
 
-    // 開始したブラウザなら照合を通り、コードの交換へ進む（相手に届かないので失敗する）。
+    // The browser that started it passes the check and proceeds to the code exchange (fails since the counterpart is unreachable).
     let (state, binding) = start(&env, &provider_code).await;
     let body = callback(&env, &state, Some(&binding)).await;
     assert_eq!(body["result"], "external_failure", "{body}");

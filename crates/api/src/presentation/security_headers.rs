@@ -1,19 +1,19 @@
-//! セキュリティヘッダミドルウェア（S1）。
+//! Security header middleware (S1).
 //!
-//! すべてのレスポンスに以下を付与する:
+//! Adds the following to every response:
 //! - `X-Content-Type-Options: nosniff`
 //! - `Referrer-Policy: strict-origin-when-cross-origin`
-//! - `X-Frame-Options: DENY`（画面を出さずに試す往復の 302 だけは設定した親の枠を許す。task #888）
+//! - `X-Frame-Options: DENY` (only the 302 of the silent round trip allows the configured parent frame; task #888)
 //!
-//! さらに `hsts_max_age > 0` のときは `Strict-Transport-Security` を付与する。
+//! Additionally adds `Strict-Transport-Security` when `hsts_max_age > 0`.
 
 use axum::extract::Request;
 use axum::http::header::{HeaderName, HeaderValue};
 use axum::middleware::Next;
 use axum::response::Response;
 
-/// 画面を出さずに試す往復（`prompt=none`）の 302 を、設定した親の枠に入れてよくする（task #888・ADR-0076）。
-/// 親が空なら何もしない。⚠ 描く応答には使わない（302 だけ）。
+/// Lets the 302 of the silent round trip (`prompt=none`) be framed by the configured parent (task #888, ADR-0076).
+/// Does nothing when the parent list is empty. ⚠ Not for rendered responses (302 only).
 pub fn allow_silent_auth_framing(
     response: &mut Response,
     ancestors: &assay_contracts::frame_ancestors::FrameAncestors,
@@ -28,7 +28,7 @@ pub fn allow_silent_auth_framing(
     }
 }
 
-/// 応答の CSP が枠を許しているか。許しているなら `X-Frame-Options: DENY` を足さない。
+/// Whether the response CSP allows framing. If it does, `X-Frame-Options: DENY` is not added.
 fn csp_allows_framing(headers: &axum::http::HeaderMap) -> bool {
     headers
         .get(axum::http::header::CONTENT_SECURITY_POLICY)
@@ -38,9 +38,9 @@ fn csp_allows_framing(headers: &axum::http::HeaderMap) -> bool {
         })
 }
 
-/// セキュリティヘッダを付与するミドルウェアファクトリ。
+/// Middleware factory that adds the security headers.
 ///
-/// `hsts_max_age` が `0` のときは HSTS ヘッダを付与しない。
+/// HSTS is not added when `hsts_max_age` is `0`.
 pub async fn add_security_headers(request: Request, next: Next, hsts_max_age: u64) -> Response {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
@@ -53,7 +53,7 @@ pub async fn add_security_headers(request: Request, next: Next, hsts_max_age: u6
         HeaderName::from_static("referrer-policy"),
         HeaderValue::from_static("strict-origin-when-cross-origin"),
     );
-    // 画面を出さずに試す往復の 302 だけは枠を許す（`allow_silent_auth_framing`。task #888）
+    // Only the 302 of the silent round trip allows framing (`allow_silent_auth_framing`; task #888).
     if !csp_allows_framing(headers) {
         headers.insert(
             HeaderName::from_static("x-frame-options"),

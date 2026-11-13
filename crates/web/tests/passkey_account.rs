@@ -1,8 +1,8 @@
-//! パスキーのセルフ管理画面（`/{tenant_id}/account/passkey*`）の動線をルータ経由で確かめる。
+//! Checks the flow of the passkey self-management screens (`/{tenant_id}/account/passkey*`) through the router.
 //!
-//! ここで見たいのは「操作したあとどこに立っているか」である。削除の結果を専用ページで伝えると
-//! 戻るリンクの無い 1 枚が残り、セッション切れを 401 の文言で伝えると利用者は抜け道を失う。
-//! どちらも画面の描画としては成立するので、リダイレクト先まで見ないと壊れていても気づけない。
+//! What we want to see is "where the user stands after an operation". Reporting removal on a dedicated page
+//! leaves a page with no way back, and reporting session expiry with a 401 message leaves users no way out.
+//! Both still render fine, so breakage goes unnoticed unless the redirect target is checked.
 
 mod support;
 
@@ -21,12 +21,12 @@ fn cookies() -> String {
     format!("{SSO_SESSION_COOKIE}={SSO}")
 }
 
-/// 削除フォームに埋まる CSRF トークン（task #587）。
+/// CSRF token embedded in the delete form (task #587).
 fn csrf() -> String {
     assay_web::csrf::console_csrf_token(SSO, TEST_CSRF_SECRET)
 }
 
-/// 重要操作のゲート（AP5）は満たしている状態にしておく。
+/// The gate for sensitive operations (AP5) is set to satisfied.
 async fn stub_step_up_satisfied(env: &WebEnv) {
     Mock::given(method("POST"))
         .and(path("/internal/step-up/check"))
@@ -54,7 +54,7 @@ async fn stub_delete(env: &WebEnv, result: &str) {
         .await;
 }
 
-/// 削除は一覧へ戻して結果をバナーで伝える（戻るリンクの無い完了ページを挟まない）。
+/// Removal returns to the list and reports the result in a banner (no completion page without a way back).
 #[tokio::test]
 async fn deleting_a_passkey_returns_to_the_list_with_a_banner() {
     let env = setup().await;
@@ -93,7 +93,7 @@ async fn deleting_a_passkey_returns_to_the_list_with_a_banner() {
     assert!(html.contains("パスキーを削除しました"), "{html}");
 }
 
-/// 消えていないものを「消しました」と言わない（api の `not_found` は失敗として伝える）。
+/// Do not say "removed" for something not removed (the api's `not_found` is reported as a failure).
 #[tokio::test]
 async fn a_passkey_that_was_not_there_is_reported_as_a_failure() {
     let env = setup().await;
@@ -120,7 +120,7 @@ async fn a_passkey_that_was_not_there_is_reported_as_a_failure() {
     );
 }
 
-/// サインインしていなければログイン画面へ送る（設定配下の他の画面と同じ扱い）。
+/// If not signed in, send to the login screen (same as other screens under settings).
 #[tokio::test]
 async fn the_list_sends_a_signed_out_visitor_to_the_login_page() {
     let env = setup().await;
@@ -135,7 +135,7 @@ async fn the_list_sends_a_signed_out_visitor_to_the_login_page() {
     assert_eq!(location(&response), format!("{}/login", env.prefix()));
 }
 
-/// セッションが切れていても行き止まりの 401 ページを出さない。
+/// Do not show a dead-end 401 page even when the session expired.
 #[tokio::test]
 async fn an_expired_session_sends_the_visitor_to_the_login_page() {
     let env = setup().await;
@@ -157,8 +157,8 @@ async fn an_expired_session_sends_the_visitor_to_the_login_page() {
     assert_eq!(location(&response), format!("{}/login", env.prefix()));
 }
 
-/// 一時停止中のパスキーは一覧に出る（鍵を引く経路は失効した行しか落とさない）。**出るのに
-/// 使えない**ので、状態と外し方まで画面に出す。
+/// Suspended passkeys appear in the list (the key lookup only drops revoked rows). **They appear but
+/// cannot be used**, so the screen shows the state and how to remove them.
 #[tokio::test]
 async fn a_suspended_passkey_is_marked_and_points_at_where_to_resume_it() {
     let env = setup().await;
@@ -191,8 +191,8 @@ async fn a_suspended_passkey_is_marked_and_points_at_where_to_resume_it() {
     );
 }
 
-/// 削除の確認はフォームの `data-confirm`（`console.js`）で出す。`onclick` はインライン JS で、
-/// CSP（`script-src 'self'`）に阻まれて**確認なしで送信される**。
+/// The removal confirmation uses the form's `data-confirm` (`console.js`). `onclick` is inline JS
+/// blocked by the CSP (`script-src 'self'`), so it would **submit without confirmation**.
 #[tokio::test]
 async fn the_delete_button_asks_for_confirmation_without_inline_script() {
     let env = setup().await;

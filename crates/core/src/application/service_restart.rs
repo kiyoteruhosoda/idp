@@ -1,8 +1,8 @@
-//! サービス再起動ユースケース（ADR-0017）。
+//! Service restart use case (ADR-0017).
 //!
-//! ランタイム設定の DB 上書きを反映する唯一の手段が再起動なので、設定画面から実行できるようにする。
-//! 認可（`idp.system.admin`）は Presentation の `RequirePerms` が担い、本サービスは呼ばれた時点で
-//! 認可済みとして扱う（他の管理ユースケースと同じ方針）。
+//! A restart is the only way to apply DB overrides of runtime settings, so it can be triggered from the settings screen.
+//! Authorization (`idp.system.admin`) is handled by `RequirePerms` in Presentation; this service treats itself
+//! as already authorized when called (same policy as the other admin use cases).
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::admin_actor::AdminActor;
@@ -13,10 +13,10 @@ use crate::domain::tenant_context::TenantContext;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// 受理を返してから停止するまでの猶予。
+/// Grace period between returning "accepted" and stopping.
 ///
-/// 先に止めると、この要求自身が接続ごと切れて「押したのに何も起きなかった」ように見える。
-/// 応答を書き出し切るだけの短い時間で足りる。
+/// Stopping first would cut this very request along with its connection, making it look like "I pressed it and nothing happened".
+/// A short time, just enough to finish writing the response, is sufficient.
 const SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
 
 pub struct ServiceRestartService {
@@ -29,10 +29,10 @@ impl ServiceRestartService {
         Self { restarter, audit }
     }
 
-    /// 再起動を要求する。監査へ記録してから、猶予をおいて停止を要求する。
+    /// Requests a restart. Records to the audit log, then requests a stop after the grace period.
     ///
-    /// 監査は停止**前**に書く。停止後には書けないうえ、稼働中の全リクエストを打ち切る操作は
-    /// 誰がいつ行ったかが残っていなければ後から追えない。
+    /// The audit is written **before** stopping. It cannot be written after the stop, and an operation that aborts
+    /// all in-flight requests cannot be traced later unless who did it and when is recorded.
     pub async fn request(
         &self,
         tenant: TenantContext,

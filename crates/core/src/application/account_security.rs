@@ -1,28 +1,28 @@
-//! 利用者セルフサービスのセキュリティ画面（G10）。
+//! The user's self-service security screen (G10).
 //!
-//! 一般的な IdP が持つのに assay に無かった 3 つを扱う:
+//! Handles three things common IdPs have but assay lacked:
 //!
-//! - **ログイン中セッションの一覧・失効**。端末を紛失した利用者が、管理者を介さずに他端末の
-//!   セッションを切れるようにする（これまでは今のセッションをログアウトすることしかできなかった）。
-//! - **連携済みアプリ（consent）の確認・取り消し**。一度同意すると利用者側から解除できず、
-//!   `ClientConsentRepository::revoke` / `list_for_user` は実装済みなのに呼び出し元が無かった。
-//! - **発行済みトークンの再発行**（ADR-0047）。アプリが預かっている合鍵だけを入れ替える。
-//!   連携も端末も切らずに「配ってしまったかもしれない鍵」を無効化する経路で、これまでは
-//!   パスワードを変えるか、アプリを 1 つずつ解除するしかなかった。
+//! - **Listing and revoking signed-in sessions.** Lets a user who lost a device cut off other devices'
+//!   sessions without going through an admin (until now only the current session could be logged out).
+//! - **Reviewing and revoking connected apps (consent).** Once consented, users could not undo it, and
+//!   `ClientConsentRepository::revoke` / `list_for_user` were implemented but had no caller.
+//! - **Reissuing issued tokens** (ADR-0047). Swaps only the duplicate keys apps hold.
+//!   A route to invalidate "keys that may have been handed out" without cutting integrations or devices; until now
+//!   the only options were changing the password or removing apps one by one.
 //!
-//! # セッションの指し方
+//! # How sessions are referenced
 //!
-//! `sso_sessions` の主キーは Cookie 値の SHA-256 で、これを画面へそのまま出す必要はない。
-//! ドメイン分離した非可逆の表示用 ID（[`crate::domain::sso_session::SsoSession::display_id`]）を
-//! 提示し、失効要求はその値と**当人のセッション集合**を突き合わせて解決する。値から
-//! `session_hash` を復元する経路は作らないので、表示用 ID が漏れても他人のセッションは切れない。
+//! The primary key of `sso_sessions` is the SHA-256 of the cookie value, and there is no need to show it on screen.
+//! A domain-separated irreversible display ID ([`crate::domain::sso_session::SsoSession::display_id`]) is
+//! presented, and revocation requests are resolved by matching that value against **the user's own set of sessions**.
+//! No route recovers `session_hash` from the value, so even a leaked display ID cannot cut another person's session.
 //!
-//! # 同意の取り消しで何を消すか
+//! # What revoking consent deletes
 //!
-//! 同意行を消すだけでは、その同意で発行済みのトークンが生き残る（利用者から見れば「解除したのに
-//! まだ繋がっている」）。取り消し時は当該クライアントの refresh token も失効させる。access token は
-//! 自己完結型 JWT のため、その寿命（既定 15 分）が切れるまでは有効なまま — これは設計上の受容点で、
-//! 即時性が要るなら `revoked_access_tokens` へ載せる仕組み（F5）を使う。
+//! Deleting only the consent row leaves tokens issued under it alive (to the user: "I removed it but it is
+//! still connected"). On revocation, that client's refresh tokens are also revoked. Access tokens are
+//! self-contained JWTs, so they stay valid until their lifetime (default 15 minutes) ends; this is an accepted
+//! design trade-off, and if immediacy is needed, use the mechanism that lists them in `revoked_access_tokens` (F5).
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::audit::{AuditEventType, AuditResult};
@@ -40,15 +40,15 @@ use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// 画面に出すログインセッション 1 件。
+/// One login session shown on screen.
 #[derive(Debug, Clone)]
 pub struct SessionSummary {
-    /// 失効要求で指すための表示用 ID（`session_hash` の非可逆な導出値）。
+    /// Display ID used to reference it in revocation requests (an irreversible derivation of `session_hash`).
     pub id: String,
-    /// このセッションが「今使っているブラウザのセッション」か。
+    /// Whether this session is "the session of the browser in use now".
     pub current: bool,
     pub auth_time: DateTime<Utc>,
-    /// 第二要素まで完了しているか（AP4 の記録。利用者が「この端末は MFA 済み」を確認できる）。
+    /// Whether the second factor was completed (recorded by AP4; lets users see "this device has done MFA").
     pub multi_factor: bool,
     pub user_agent: Option<String>,
     pub ip_address: Option<String>,
@@ -57,19 +57,19 @@ pub struct SessionSummary {
     pub absolute_expires_at: DateTime<Utc>,
 }
 
-/// 画面に出す連携済みアプリ 1 件。
+/// One connected app shown on screen.
 #[derive(Debug, Clone)]
 pub struct ConnectedAppSummary {
     pub client_id: String,
-    /// 表示名（クライアントが削除済みなら `client_id` にフォールバックする）。
+    /// Display name (falls back to `client_id` if the client was deleted).
     pub app_name: String,
-    /// 同意済み scope（`openid` を含む保存値そのまま）。
+    /// Consented scopes (the stored value as is, including `openid`).
     pub scopes: Vec<String>,
     pub granted_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
-/// セキュリティ画面の表示内容。
+/// Content of the security screen.
 pub struct SecurityOverview {
     pub sessions: Vec<SessionSummary>,
     pub connected_apps: Vec<ConnectedAppSummary>,
@@ -77,33 +77,33 @@ pub struct SecurityOverview {
 
 pub enum SecurityOverviewOutcome {
     Ok(Box<SecurityOverview>),
-    /// SSO セッションが無い・期限切れ・利用者が無効。
+    /// No SSO session, expired, or the user is disabled.
     SessionExpired,
     Internal(String),
 }
 
 pub enum RevokeSessionOutcome {
-    /// 失効した（冪等: 既に消えていた場合も含む）。
+    /// Revoked (idempotent: includes when it was already gone).
     Ok,
-    /// 指定 ID が当人のセッションに無い（他人のセッション・古い画面からの再送）。
+    /// The given ID is not among the user's sessions (another person's session, or a resend from an old screen).
     NotFound,
-    /// 今使っているセッション自身は、この画面からは切らせない（ログアウト導線を使わせる）。
+    /// The session in use itself cannot be cut from this screen (the logout flow is used instead).
     CurrentSession,
     SessionExpired,
     Internal(String),
 }
 
 pub enum RevokeConsentOutcome {
-    /// 取り消した（冪等: 同意が無かった場合も含む）。
+    /// Revoked (idempotent: includes when there was no consent).
     Ok,
     SessionExpired,
     Internal(String),
 }
 
 pub enum ReissueTokensOutcome {
-    /// 失効させた。`revoked` は落とした本数で、**0 も成功**（生きているトークンが無かった）。
-    /// 画面はこれを「対象がありませんでした」と出し分ける——同じ「完了しました」だけを返すと、
-    /// 効いていないのか元から無いのかが利用者に分からない。
+    /// Revoked. `revoked` is the number dropped, and **0 is also success** (there were no live tokens).
+    /// The screen shows this differently as "nothing to revoke": returning only the same "done" would
+    /// leave the user unable to tell whether it had no effect or there was nothing to begin with.
     Ok {
         revoked: u64,
     },
@@ -142,7 +142,7 @@ impl AccountSecurityService {
         }
     }
 
-    /// セキュリティ画面の表示内容（有効なセッション一覧＋連携済みアプリ一覧）を返す。
+    /// Returns the security screen content (valid session list + connected app list).
     pub async fn overview(
         &self,
         tenant: TenantContext,
@@ -160,7 +160,7 @@ impl AccountSecurityService {
             Ok(rows) => rows,
             Err(e) => return SecurityOverviewOutcome::Internal(e.to_string()),
         };
-        // 期限切れの行は GC を待たずに画面から落とす（利用者に「まだ生きている」と誤解させない）。
+        // Drop expired rows from the screen without waiting for GC (do not make the user think they are "still alive").
         let sessions: Vec<SessionSummary> = sessions
             .into_iter()
             .filter(|s| s.is_valid_at(now))
@@ -182,7 +182,7 @@ impl AccountSecurityService {
             Ok(rows) => rows,
             Err(e) => return SecurityOverviewOutcome::Internal(e.to_string()),
         };
-        // 表示名はクライアント一覧から引く（1 件ずつ引くと同意数ぶん往復するため 1 回で済ませる）。
+        // Display names are looked up from the client list (one at a time would round-trip per consent, so do it once).
         let clients = match self.clients.list(tenant_id).await {
             Ok(rows) => rows,
             Err(e) => return SecurityOverviewOutcome::Internal(e.to_string()),
@@ -211,7 +211,7 @@ impl AccountSecurityService {
         }))
     }
 
-    /// 指定セッションを失効させる（当人のセッションに限る）。
+    /// Revokes the given session (limited to the user's own sessions).
     pub async fn revoke_session(
         &self,
         tenant: TenantContext,
@@ -231,8 +231,8 @@ impl AccountSecurityService {
             Ok(rows) => rows,
             Err(e) => return RevokeSessionOutcome::Internal(e.to_string()),
         };
-        // 当人のセッション集合の中だけで表示用 ID を突き合わせる。他人のセッションはそもそも
-        // この集合に入らないため、ID を推測できても切れない。
+        // Match the display ID only within the user's own set of sessions. Other people's sessions are not
+        // in this set at all, so even a guessed ID cannot cut them.
         let Some(target) = sessions
             .iter()
             .find(|s| s.display_id() == target_display_id)
@@ -240,7 +240,7 @@ impl AccountSecurityService {
             return RevokeSessionOutcome::NotFound;
         };
         if target.session_hash == current_hash {
-            // 今のセッションを切ると Cookie だけが残って挙動が読みづらくなる。ログアウト導線へ回す。
+            // Cutting the current session would leave only the cookie and make behavior hard to follow. Send to the logout flow.
             return RevokeSessionOutcome::CurrentSession;
         }
 
@@ -248,15 +248,15 @@ impl AccountSecurityService {
             return RevokeSessionOutcome::Internal(e.to_string());
         }
 
-        // そのセッションから出た refresh token も落とす（ADR-0044）。
+        // Also drop refresh tokens issued from that session (ADR-0044).
         //
-        // ここを飛ばすと、画面は「この端末をアカウントからログアウトしました」と言うのに、
-        // その端末のアプリは**更新が通り続ける**（アクセストークンは 15 分で切れるが、
-        // リフレッシュが止まらないので窓が閉じない）。セッションの行を消すだけでは
-        // ログアウトになっていない。
+        // Skipping this, the screen would say "signed this device out of the account" while
+        // that device's apps **keep refreshing successfully** (access tokens expire in 15 minutes, but
+        // refresh does not stop, so the window never closes). Deleting the session row alone is
+        // not a logout.
         //
-        // **失敗したら断る**（fail-closed）。ここで黙って成功を返すと、
-        // 「切ったつもりで切れていない」という一番まずい結果を画面が肯定してしまう。
+        // **Refuse on failure** (fail-closed). Silently returning success here would have the screen
+        // affirm the worst outcome: "thought it was cut, but it is not".
         let sid = sso_session::sid_of(&target.session_hash);
         let revoked = match self
             .refresh_tokens
@@ -281,7 +281,7 @@ impl AccountSecurityService {
         RevokeSessionOutcome::Ok
     }
 
-    /// 連携済みアプリの同意を取り消し、そのクライアント向けの refresh token も失効させる。
+    /// Revokes a connected app's consent and also revokes refresh tokens for that client.
     pub async fn revoke_consent(
         &self,
         tenant: TenantContext,
@@ -301,15 +301,15 @@ impl AccountSecurityService {
         if let Err(e) = self.consents.revoke(tenant_id, user_id, client_id).await {
             return RevokeConsentOutcome::Internal(e.to_string());
         }
-        // 同意行だけ消しても発行済みトークンは生きている。利用者から見た「解除」を成立させるため、
-        // **解除したクライアントへ**発行済みの refresh token を失効させる。テナント単位で消すと、
-        // 1 つのアプリを外しただけで同じテナントの他のアプリからも締め出される。
+        // Deleting only the consent row leaves issued tokens alive. To make "removal" real from the user's view,
+        // revoke refresh tokens issued **to the removed client**. Deleting per tenant would lock the user out of
+        // the tenant's other apps just for removing one.
         if let Err(e) = self
             .refresh_tokens
             .revoke_all_for_user_and_client(tenant_id, user_id, client_id, now)
             .await
         {
-            // 同意の取り消し自体は成立している。トークンが残る点は運用ログで追えるようにする。
+            // Revoking the consent itself succeeded. Tokens remaining is made traceable in the operational log.
             tracing::error!(
                 error = %e,
                 "failed to revoke refresh tokens after a self-service consent revocation"
@@ -330,28 +330,28 @@ impl AccountSecurityService {
         RevokeConsentOutcome::Ok
     }
 
-    /// 当人へ発行済みの refresh token をすべて失効させる（画面上は「トークンの再発行」。ADR-0047）。
+    /// Revokes every refresh token issued to the user (shown on screen as "reissue tokens"; ADR-0047).
     ///
-    /// 実体は [`RefreshTokenRepository::revoke_all_for_user`] の 1 回で、**セッションにも同意にも
-    /// 触れない**。アプリが預かっている合鍵だけを入れ替える操作なので、ブラウザのログイン状態は
-    /// そのまま残り、各アプリは次の更新で SSO 越しに取り直す（利用者から見れば、多くのアプリは
-    /// 何も起きない）。端末を切りたい人にはセッションの失効が、アプリを外したい人には連携解除が
-    /// 既にある。この操作はその 2 つのどちらでもない——**誰にも気付かれずに配られたかもしれない
-    /// 鍵を、心当たりが無いまま無効化する**ためのものである。
+    /// In substance it is a single [`RefreshTokenRepository::revoke_all_for_user`] call and **touches neither sessions
+    /// nor consents**. It only swaps the duplicate keys apps hold, so the browser's login state
+    /// remains, and each app re-obtains through SSO on its next refresh (to the user, most apps
+    /// show no change). Cutting a device already has session revocation, and removing an app already has
+    /// disconnecting. This operation is neither: it is for **invalidating keys that may have been handed out
+    /// unnoticed, without knowing of anything specific**.
     ///
-    /// **テナントで絞らない。** refresh token は利用者の資格情報で、`sso_sessions` と同じく
-    /// 1 人が複数テナントのアプリを認可し得る（ADR-0044 決定 3 と同じ理由）。画面の「連携済み
-    /// アプリ」が現在のテナントぶんしか出ないからといってそこへ揃えると、**見えていないテナントの
-    /// 鍵だけが生き残る**。取りこぼした鍵は「入れ替えたつもり」を裏切るが、余分に落とした鍵は
-    /// 黙って取り直されるだけで済む。
+    /// **Not narrowed by tenant.** A refresh token is the user's credential, and like `sso_sessions`,
+    /// one person may authorize apps in several tenants (same reason as decision 3 of ADR-0044). Narrowing to
+    /// the screen's "connected apps", which shows only the current tenant, would leave **only the keys of unseen
+    /// tenants alive**. A missed key betrays "I thought I swapped them", while an extra dropped key
+    /// is merely re-obtained silently.
     ///
-    /// **未消費の authorization code には触れない。** code は数十秒で切れるうえ、いま別タブで
-    /// 進行中のログインを巻き添えにする。落としても、生きたセッションを持つ側は押した直後に
-    /// 新しい code を取れるので、この操作が守りたいものを守れない（守るのはセッションの失効の役目）。
+    /// **Unconsumed authorization codes are not touched.** Codes expire in tens of seconds and doing so would
+    /// take down a login in progress in another tab. Even if dropped, a holder of a live session could get a
+    /// new code right after pressing, so it would not protect what this operation wants to protect (that is session revocation's job).
     ///
-    /// **失敗したら断る**（fail-closed）。画面は残っていて押し直せる。ここで成功を返すと
-    /// 「入れ替えたつもりで古い鍵が生きている」という一番まずい結果を画面が肯定してしまう
-    /// （ADR-0044 のセルフサービス失効と同じ基準）。
+    /// **Refuse on failure** (fail-closed). The screen remains and can be pressed again. Returning success here would
+    /// have the screen affirm the worst outcome, "thought they were swapped but old keys are alive"
+    /// (same standard as the self-service revocation of ADR-0044).
     pub async fn reissue_tokens(
         &self,
         tenant: TenantContext,
@@ -385,8 +385,8 @@ impl AccountSecurityService {
         ReissueTokensOutcome::Ok { revoked }
     }
 
-    /// SSO セッションから本人を解決する。セッション無効・ユーザー不在・無効化済みは `Ok(None)`
-    /// （他のセルフサービス経路と同じ判定。`AccountProfileService::resolve_active_user` に倣う）。
+    /// Resolves the user from the SSO session. An invalid session, a missing user, or a disabled one is `Ok(None)`
+    /// (same decision as other self-service paths; follows `AccountProfileService::resolve_active_user`).
     async fn resolve_active_user_id(
         &self,
         session_hash: &str,
@@ -405,7 +405,7 @@ impl AccountSecurityService {
     }
 }
 
-/// テナント境界の型付けだけを担う補助（Presentation から `TenantId` を渡すため）。
+/// Helper that only handles typing of the tenant boundary (to pass `TenantId` from Presentation).
 impl AccountSecurityService {
     pub fn tenant_context(tenant_id: TenantId) -> TenantContext {
         TenantContext::new(tenant_id)
@@ -507,7 +507,7 @@ mod tests {
     }
     #[async_trait]
     impl UserRepository for FakeUsers {
-        /// このテストはログイン失敗経路を通らない（SEC13 の検証は login / mfa_login にある）。
+        /// This test does not go through the login failure path (SEC13 is verified in login / mfa_login).
         async fn record_login_failure(
             &self,
             _id: Uuid,
@@ -636,7 +636,7 @@ mod tests {
             unreachable!()
         }
         async fn list(&self, _t: TenantId) -> DomainResult<Vec<crate::domain::client::Client>> {
-            // 表示名が引けないケース（削除済みクライアント）を再現する。
+            // Reproduce the case where the display name cannot be looked up (deleted client).
             Ok(Vec::new())
         }
         async fn update(&self, _c: &crate::domain::client::Client) -> DomainResult<()> {
@@ -644,7 +644,7 @@ mod tests {
         }
     }
 
-    /// リポジトリを失敗させる箇所（fail-closed の確認用）。
+    /// Where to make the repository fail (for checking fail-closed).
     #[derive(Default, Clone, Copy)]
     struct Failures {
         session_revoke: bool,
@@ -653,12 +653,12 @@ mod tests {
 
     #[derive(Default)]
     struct FakeRefreshTokens {
-        /// 失効を要求された `(テナント, 利用者, クライアント)`。連携解除がクライアント単位に
-        /// 絞られているかを見るため、クライアントまで記録する。
+        /// `(tenant, user, client)` requested for revocation. The client is recorded too, to see whether
+        /// disconnecting is narrowed to the client.
         revoked: Mutex<Vec<(TenantId, Uuid, String)>>,
-        /// セッション単位で失効を要求された `(利用者, sid)`（ADR-0044）。
+        /// `(user, sid)` requested for per-session revocation (ADR-0044).
         revoked_sessions: Mutex<Vec<(Uuid, String)>>,
-        /// 利用者単位で失効を要求された利用者（ADR-0047 のトークン再発行）。
+        /// Users requested for per-user revocation (token reissue of ADR-0047).
         revoked_users: Mutex<Vec<Uuid>>,
         failures: Failures,
     }
@@ -715,7 +715,7 @@ mod tests {
             _u: Uuid,
             _at: DateTime<Utc>,
         ) -> DomainResult<()> {
-            // 連携解除ではテナント単位の全失効を呼んではいけない（他のアプリを巻き込む）。
+            // Disconnecting must not call the per-tenant full revocation (it would take down other apps).
             unreachable!("consent revocation must not revoke every client in the tenant")
         }
         async fn revoke_all_for_user_and_client(
@@ -818,16 +818,16 @@ mod tests {
             panic!("expected an overview");
         };
 
-        // 期限切れは出さない。
+        // Expired ones are not shown.
         assert_eq!(overview.sessions.len(), 2);
         let current = overview.sessions.iter().find(|s| s.current).unwrap();
         assert!(!current.multi_factor);
         let other = overview.sessions.iter().find(|s| !s.current).unwrap();
-        assert!(other.multi_factor, "MFA 済みセッションはそう見える");
-        // 表示用 ID は session_hash そのものではない。
+        assert!(other.multi_factor, "an MFA-completed session shows as such");
+        // The display ID is not the session_hash itself.
         assert_ne!(current.id, crypto::sha256_hex("current-cookie"));
 
-        // クライアントが引けない場合は client_id を表示名に使う。
+        // If the client cannot be looked up, client_id is used as the display name.
         assert_eq!(overview.connected_apps.len(), 1);
         assert_eq!(overview.connected_apps[0].app_name, "deleted-app");
     }
@@ -858,11 +858,11 @@ mod tests {
         assert_eq!(rows[0].session_hash, crypto::sha256_hex("current-cookie"));
     }
 
-    /// セッションを切ったら、そのセッションから出た refresh token も落とす（ADR-0044）。
+    /// Cutting a session also drops refresh tokens issued from that session (ADR-0044).
     ///
-    /// ここが抜けていると、画面は「この端末をログアウトしました」と言うのに、その端末の
-    /// アプリは更新が通り続ける（アクセストークンは 15 分で切れるが、リフレッシュが
-    /// 止まらないので窓が閉じない）。行を消すだけではログアウトになっていない。
+    /// If this were missing, the screen would say "signed this device out" while that device's
+    /// apps keep refreshing (access tokens expire in 15 minutes, but refresh
+    /// does not stop, so the window never closes). Deleting the row alone is not a logout.
     #[tokio::test]
     async fn revoking_a_session_also_revokes_its_refresh_tokens() {
         let h = harness(true);
@@ -884,8 +884,8 @@ mod tests {
             RevokeSessionOutcome::Ok
         ));
 
-        // **切ったセッションの sid** で失効させていること。表示用 ID や現在のセッションの
-        // sid で呼んでいたら、消したのと別のものを落としている。
+        // Revoked with **the sid of the cut session**. Calling with the display ID or the current session's
+        // sid would drop something other than what was deleted.
         let revoked = h.refresh_tokens.revoked_sessions.lock().unwrap();
         assert_eq!(revoked.len(), 1);
         assert_eq!(revoked[0].1, other.sid());
@@ -895,9 +895,9 @@ mod tests {
         );
     }
 
-    /// トークンを落とせなかったら、切れたことにしない（fail-closed）。
+    /// If tokens could not be dropped, it does not count as cut (fail-closed).
     ///
-    /// ここで成功を返すと「切ったつもりで切れていない」を画面が肯定してしまう。
+    /// Returning success here would have the screen affirm "thought it was cut, but it is not".
     #[tokio::test]
     async fn a_failed_token_revocation_fails_the_whole_request() {
         let h = harness_with(
@@ -927,7 +927,7 @@ mod tests {
         ));
     }
 
-    /// 今使っているセッションはこの画面からは切らせない（ログアウト導線へ回す）。
+    /// The session in use cannot be cut from this screen (sent to the logout flow).
     #[tokio::test]
     async fn revoking_the_current_session_is_refused() {
         let h = harness(true);
@@ -953,7 +953,7 @@ mod tests {
         assert_eq!(h.sessions.rows.lock().unwrap().len(), 1);
     }
 
-    /// 他人のセッションの表示用 ID を持ち込んでも切れない（当人の集合としか突き合わせない）。
+    /// Bringing another person's session display ID does not cut it (matched only against the user's own set).
     #[tokio::test]
     async fn a_session_id_that_is_not_ours_is_not_found() {
         let h = harness(true);
@@ -979,7 +979,7 @@ mod tests {
         assert_eq!(h.sessions.rows.lock().unwrap().len(), 1);
     }
 
-    /// 同意の取り消しは、同意行の削除に加えて当該テナントの refresh token も失効させる。
+    /// Revoking consent deletes the consent row and also revokes the tenant's refresh tokens.
     #[tokio::test]
     async fn revoking_a_consent_also_revokes_refresh_tokens_in_that_tenant() {
         let h = harness(true);
@@ -1009,14 +1009,14 @@ mod tests {
             RevokeConsentOutcome::Ok
         ));
         assert!(h.consents.rows.lock().unwrap().is_empty());
-        // 解除したクライアントのトークンだけを失効させる（同じテナントの他アプリは残る）。
+        // Only the removed client's tokens are revoked (other apps in the same tenant remain).
         assert_eq!(
             *h.refresh_tokens.revoked.lock().unwrap(),
             vec![(tenant_id(), user_id(), "app-a".to_string())]
         );
     }
 
-    /// 無効化された利用者のセッションが残っていても操作させない（他のセルフサービス経路と同じ）。
+    /// Even if a disabled user's session remains, no operation is allowed (same as other self-service paths).
     #[tokio::test]
     async fn a_disabled_user_cannot_use_the_screen() {
         let h = harness(false);
@@ -1033,10 +1033,10 @@ mod tests {
         ));
     }
 
-    /// トークンの再発行は、当人のトークンを全部落として**それ以外に触らない**（ADR-0047）。
+    /// Token reissue drops all of the user's tokens and **touches nothing else** (ADR-0047).
     ///
-    /// セッションまで消えると「アプリの鍵を入れ替えたい」だけの利用者が締め出され、同意まで
-    /// 消えると次のログインで同意画面が出る。どちらもこの操作が約束していないことである。
+    /// If sessions disappeared too, a user who "just wants to swap app keys" would be locked out, and if consents
+    /// disappeared, the consent screen would appear on the next login. Neither is something this operation promises.
     #[tokio::test]
     async fn reissuing_tokens_touches_only_the_tokens() {
         let h = harness(true);
@@ -1057,24 +1057,24 @@ mod tests {
             h.service
                 .reissue_tokens(TenantContext::new(tenant_id()), "current-cookie", &ctx())
                 .await,
-            // 落とした本数がそのまま返る（画面が「対象なし」を出し分けるため）。
+            // The number dropped is returned as is (so the screen can show "nothing to revoke").
             ReissueTokensOutcome::Ok { revoked: 3 }
         ));
 
-        // 落とすのは利用者単位で 1 回。クライアント単位・セッション単位の失効は使わない
-        // （テナントやセッションで絞ると、見えていないぶんの鍵が生き残る）。
+        // Drop once per user. Per-client and per-session revocation are not used
+        // (narrowing by tenant or session would leave unseen keys alive).
         assert_eq!(
             *h.refresh_tokens.revoked_users.lock().unwrap(),
             vec![user_id()]
         );
         assert!(h.refresh_tokens.revoked.lock().unwrap().is_empty());
         assert!(h.refresh_tokens.revoked_sessions.lock().unwrap().is_empty());
-        // 端末も連携も残る。
+        // Devices and integrations remain.
         assert_eq!(h.sessions.rows.lock().unwrap().len(), 2);
         assert_eq!(h.consents.rows.lock().unwrap().len(), 1);
     }
 
-    /// 落とせなかったら成功と言わない（fail-closed）。画面は残っていて押し直せる。
+    /// If they could not be dropped, do not claim success (fail-closed). The screen remains and can be pressed again.
     #[tokio::test]
     async fn a_failed_reissue_is_not_reported_as_success() {
         let h = harness_with(
@@ -1098,7 +1098,7 @@ mod tests {
         ));
     }
 
-    /// 無効化された利用者には再発行もさせない（画面表示・失効と同じ判定）。
+    /// A disabled user cannot reissue either (same decision as the screen and revocation).
     #[tokio::test]
     async fn a_disabled_user_cannot_reissue_tokens() {
         let h = harness(false);

@@ -1,17 +1,18 @@
-//! テナント境界の値オブジェクト（ADR-0009 §4・§8）。
+//! Tenant boundary value objects (ADR-0009 §4, §8).
 //!
-//! `TenantContext` はユースケースが処理対象とするテナント（`TenantResolver` が解決したテナント）を
-//! 表し、リポジトリ呼び出しには必ずこれを渡す（MariaDB に RLS はなく、アプリ層が唯一の分離防御線。
-//! `CLAUDE.md`「権限管理」）。
+//! `TenantContext` is the tenant a use case operates on (the tenant resolved by `TenantResolver`);
+//! it is always passed to repository calls (MariaDB has no RLS, so the app layer is the only
+//! isolation defense; `CLAUDE.md` "Authorization").
 //!
-//! `TenantScope` は権限（`user_permissions.tenant_id`）の適用範囲を表す。判定は「要求テナント ID と
-//! 権限 scope の完全一致」のみで行い、祖先・配下は一切考慮しない。root の特別バリアントは設けない
-//! （root かどうかは `permission_code` が `idp.system.admin` か否かで別途判定する）。
+//! `TenantScope` is the scope of a permission (`user_permissions.tenant_id`). Checks use only
+//! "exact match of the requested tenant ID and the permission scope"; ancestors and descendants are
+//! never considered. There is no special root variant (whether something is root is decided
+//! separately by `permission_code` being `idp.system.admin`).
 #![allow(dead_code)]
 
 use crate::domain::tenant::TenantId;
 
-/// ユースケースが処理対象とするテナント。
+/// The tenant a use case operates on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TenantContext {
     tenant_id: TenantId,
@@ -27,7 +28,7 @@ impl TenantContext {
     }
 }
 
-/// 権限の適用範囲（scope）。当該テナントのみに及ぶ（配下・系譜へは一切及ばない）。
+/// The scope of a permission. Covers only that tenant (never its descendants or lineage).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TenantScope(TenantId);
 
@@ -40,7 +41,8 @@ impl TenantScope {
         self.0
     }
 
-    /// 要求テナントと scope の完全一致判定（祖先・配下は考慮しない）。
+    /// Exact-match check of the requested tenant and the scope (ancestors and descendants are not
+    /// considered).
     pub fn matches(&self, requested: &TenantContext) -> bool {
         self.0 == requested.tenant_id
     }

@@ -1,9 +1,9 @@
-//! 認証ポリシー（ユーザー認証・認証ポリシー仕様書 §7〜§9）。
+//! Authentication policies (user authentication & authentication policy spec §7-§9).
 //!
-//! 認証ポリシーは「認証時に満たすべき条件（拒否・MFA 必須）」を決定する規則であり、
-//! 本人確認（パスワード・TOTP 等の認証器）とは分離する（同仕様 §2.3）。ポリシーを満たしても
-//! 本人確認に成功していなければ認証成功にはならない。評価は純粋関数（[`evaluate_policies`]）で、
-//! DB・フレームワークに依存しない。
+//! An authentication policy is a rule deciding "conditions to be met at authentication (deny, MFA required)",
+//! kept separate from identity verification (authenticators such as password and TOTP) (same spec §2.3). Satisfying a policy
+//! does not make authentication succeed unless identity verification succeeded. Evaluation is a pure function ([`evaluate_policies`]),
+//! independent of the DB and frameworks.
 #![allow(dead_code)]
 
 use crate::domain::error::DomainError;
@@ -14,23 +14,23 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use uuid::Uuid;
 
-/// ポリシーの効果（仕様 §7.4）。
+/// Effect of a policy (spec §7.4).
 ///
-/// `require_additional_authentication` は「第二要素を 1 つ足す」要求なので `RequireMfa`、
-/// 「この方式でなければ通さない」要求は `RequireSpecificMethod`（§12.2 の WebAuthn 必須・
-/// UV 必須を含む）として表す。両者を分けているのは、前者が**どれでもよい**のに対し
-/// 後者は**方式を指定する**ためで、片方に丸めると「TOTP を登録済みなら WebAuthn 必須を
-/// すり抜ける」といった穴になる。
+/// `require_additional_authentication` is a request to "add one second factor", so it is `RequireMfa`;
+/// a request "do not pass unless this method" is expressed as `RequireSpecificMethod` (including §12.2's WebAuthn required
+/// and UV required). They are separate because the former accepts **any**, while
+/// the latter **specifies the method**; merging them into one would create holes like "having TOTP registered slips past
+/// WebAuthn required".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolicyEffect {
-    /// 条件を満たした場合に認証を許可する。
+    /// Allows authentication when the conditions are met.
     Allow,
-    /// 条件を満たした場合に認証を拒否する（拒否は常に許可より優先。仕様 §9.3）。
+    /// Denies authentication when the conditions are met (deny always takes precedence over allow. Spec §9.3).
     Deny,
-    /// 条件を満たした場合に MFA（追加認証）を必須とする。方式は問わない。
+    /// Requires MFA (additional authentication) when the conditions are met. Any method.
     RequireMfa,
-    /// 条件を満たした場合に**特定の認証方式**を必須とする（AP3。パラメータは
-    /// [`AuthenticationPolicy::effect_params`]）。
+    /// Requires **a specific authentication method** when the conditions are met (AP3. Parameters are in
+    /// [`AuthenticationPolicy::effect_params`]).
     RequireSpecificMethod,
 }
 
@@ -44,7 +44,7 @@ impl PolicyEffect {
         }
     }
 
-    /// DB 保存値（`VARCHAR` + CHECK 制約）から復元する。許可値の単一の出所は本 enum。
+    /// Restores from the DB stored value (`VARCHAR` + CHECK constraint). This enum is the single source of allowed values.
     pub fn parse(s: &str) -> Result<Self, DomainError> {
         match s {
             "allow" => Ok(Self::Allow),
@@ -58,32 +58,32 @@ impl PolicyEffect {
     }
 }
 
-/// `require_specific_method` の要求内容（仕様 §12.2）。
+/// The requirement of `require_specific_method` (spec §12.2).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RequiredMethods {
-    /// 許可する認証方式。**いずれか 1 つ**を実際に使っていれば満たす（OR）。
-    /// 空 = 方式の指定なし（`user_verification` だけを要求する場合に使う）。
+    /// Allowed authentication methods. Satisfied if **any one** was actually used (OR).
+    /// Empty = no method specified (used when requiring only `user_verification`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub methods: Vec<AuthenticationMethod>,
-    /// WebAuthn の User Verification（生体・PIN による利用者確認）を必須とするか。
+    /// Whether WebAuthn User Verification (user confirmation by biometrics/PIN) is required.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub user_verification: bool,
 }
 
 impl RequiredMethods {
-    /// 実際に使われた認証方式（と UV の有無）が要求を満たすか。
+    /// Whether the authentication methods actually used (and whether UV was done) satisfy the requirement.
     ///
-    /// `methods` は OR。「password と webauthn の両方」のような AND を表したい場合は
-    /// ポリシーを 2 本に分ける（1 本の条件の中に暗黙の AND を持ち込むと、管理画面での
-    /// 読み取りと監査の説明が難しくなる）。
+    /// `methods` is OR. To express an AND like "both password and webauthn",
+    /// split into 2 policies (bringing an implicit AND into one condition makes reading it on the admin screen
+    /// and explaining it in the audit harder).
     pub fn satisfied_by(&self, used: &[AuthenticationMethod], user_verified: bool) -> bool {
         let method_ok = self.methods.is_empty() || used.iter().any(|m| self.methods.contains(m));
         let uv_ok = !self.user_verification || user_verified;
         method_ok && uv_ok
     }
 
-    /// 要求を人が読める形（監査ログ用。運用言語=英語）に落とす。
+    /// Renders the requirement in human-readable form (for audit logs. Operating language = English).
     pub fn describe(&self) -> String {
         let methods: Vec<&str> = self.methods.iter().map(|m| m.as_str()).collect();
         match (methods.is_empty(), self.user_verification) {
@@ -95,29 +95,29 @@ impl RequiredMethods {
     }
 }
 
-/// 曜日・時刻で表す適用時間帯（仕様 §8「時間帯」）。
+/// An applicable time window expressed by weekday and time (spec §8 "time window").
 ///
-/// タイムゾーンは**固定オフセット（分）**で表す。IANA タイムゾーン名を受け付けないのは、
-/// 夏時間の切り替わりを正しく扱うには tz データベースの同梱と更新運用が必要になり、
-/// 「その更新を怠ると認証ポリシーが静かにずれる」という運用リスクを新たに背負うため。
-/// 固定オフセットなら判定は常に決定的で、夏時間のある地域は 2 本のポリシーで表現できる。
+/// The time zone is expressed as a **fixed offset (minutes)**. IANA time zone names are not accepted because
+/// handling DST transitions correctly requires bundling and keeping the tz database updated,
+/// taking on the new operational risk that "neglecting those updates silently shifts authentication policies".
+/// With a fixed offset the decision is always deterministic, and regions with DST can be expressed with 2 policies.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TimeWindow {
-    /// 対象曜日（0 = 日曜 … 6 = 土曜）。空 = 全曜日。
+    /// Target weekdays (0 = Sunday ... 6 = Saturday). Empty = all days.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub days: Vec<u8>,
-    /// 開始時刻（その日の 0 時からの分。0〜1439）。
+    /// Start time (minutes since 00:00 of the day. 0-1439).
     pub start_minute: u16,
-    /// 終了時刻（同上。`start_minute` より小さい場合は**日をまたぐ**帯として扱う）。
+    /// End time (same as above. If smaller than `start_minute`, treated as a window **crossing midnight**).
     pub end_minute: u16,
-    /// 判定に使う UTC オフセット（分。例: JST = 540）。
+    /// UTC offset used for the decision (minutes. e.g. JST = 540).
     #[serde(default)]
     pub utc_offset_minutes: i16,
 }
 
 impl TimeWindow {
-    /// 値域を検証する（管理 API の入力検証。DB へ壊れた帯を入れない）。
+    /// Validates the value range (admin API input validation. Do not put broken windows into the DB).
     pub fn validate(&self) -> Result<(), DomainError> {
         if self.start_minute > 1439 || self.end_minute > 1439 {
             return Err(DomainError::InvalidValue(
@@ -137,12 +137,12 @@ impl TimeWindow {
         Ok(())
     }
 
-    /// `now` がこの帯に入るか。
+    /// Whether `now` falls within this window.
     pub fn contains(&self, now: DateTime<Utc>) -> bool {
         let local = now + chrono::Duration::minutes(self.utc_offset_minutes as i64);
         let minute = (local.hour() * 60 + local.minute()) as u16;
-        // 日をまたぐ帯（例 22:00-06:00）は、開始日の側で曜日を判定する。またいだ翌日の
-        // 早朝を「前日の帯」として扱わないと、22:00 開始の帯が 0 時で切れてしまう。
+        // A window crossing midnight (e.g. 22:00-06:00) checks the weekday on the start-day side. Unless the early morning
+        // after crossing is treated as "the previous day's window", a window starting at 22:00 would end at 00:00.
         let (in_range, day) = if self.start_minute <= self.end_minute {
             (
                 minute >= self.start_minute && minute < self.end_minute,
@@ -151,7 +151,7 @@ impl TimeWindow {
         } else if minute >= self.start_minute {
             (true, local.weekday().num_days_from_sunday() as u8)
         } else if minute < self.end_minute {
-            // 前日の帯の続き。
+            // Continuation of the previous day's window.
             (true, (local.weekday().num_days_from_sunday() as u8 + 6) % 7)
         } else {
             (false, 0)
@@ -160,43 +160,43 @@ impl TimeWindow {
     }
 }
 
-/// ポリシーの適用条件（仕様 §8。JSON カラムに保存する）。
+/// Conditions under which a policy applies (spec §8. Stored in a JSON column).
 ///
-/// 各条件は **空 = 制限しない（全てに一致）**、非空 = いずれかに一致で成立。複数の条件は AND。
-/// ユーザー特定前に評価できる条件（`application_ids`）とユーザー特定後にのみ評価できる条件
-/// （`user_ids`）が混在するため、評価はユーザー特定後に行う（仕様 §9.1）。
+/// Each condition is **empty = no restriction (matches everything)**; non-empty = holds if any matches. Multiple conditions are AND.
+/// Conditions evaluable before identifying the user (`application_ids`) and conditions evaluable only after identifying the user
+/// (`user_ids`) are mixed, so evaluation happens after identifying the user (spec §9.1).
 ///
-/// **評価材料が無い条件は「一致しない」に倒す。** 例えば `ip_cidrs` を持つポリシーは、接続元 IP を
-/// 取れないリクエスト（`TRUST_FORWARDED_HEADERS=false` の内部経路など）には一致しない。
-/// `deny` ポリシーではこれが取りこぼしになるが、逆に「材料が無いから一致とみなす」にすると
-/// `allow` ポリシーが無条件に広がる。どちらかを選ぶなら、**条件は明示的に満たされたときだけ
-/// 成立する**という一貫した規則の方が読み違えにくい。
+/// **Conditions without evaluation inputs fall to "no match".** For example, a policy with `ip_cidrs` does not match
+/// requests where the source IP cannot be obtained (internal paths with `TRUST_FORWARDED_HEADERS=false`, etc.).
+/// For `deny` policies this misses some, but conversely "treat as a match because there is no input" would
+/// make `allow` policies spread unconditionally. If one must choose, a consistent rule that **a condition holds only when
+/// explicitly satisfied** is harder to misread.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyConditions {
-    /// 対象アプリ（`applications.id`）。空 = 全アプリ。
+    /// Target apps (`applications.id`). Empty = all apps.
     ///
-    /// ⚠ **クライアントではなくアプリを指す**（ADR-0054 の決定 5）。`client_ids` のままだと
-    /// SAML のアプリがポリシーの外に残り、MFA を要求できない。`service_provider_ids` を
-    /// 並べる案を取らないのは、プロトコルが増えるたびに条件が増えるためである。
+    /// ⚠ **Points to apps, not clients** (ADR-0054 decision 5). With `client_ids`,
+    /// SAML apps would remain outside policies and MFA could not be required. Not taking the approach of listing
+    /// `service_provider_ids` because conditions would grow every time a protocol is added.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub application_ids: Vec<Uuid>,
-    /// 対象ユーザー（内部ユーザー ID）。空 = 全ユーザー。
+    /// Target users (internal user IDs). Empty = all users.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub user_ids: Vec<Uuid>,
-    /// 対象ネットワークゾーン（CIDR 表記。IPv4 / IPv6）。空 = 全ネットワーク（AP3）。
+    /// Target network zones (CIDR notation. IPv4 / IPv6). Empty = all networks (AP3).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ip_cidrs: Vec<String>,
-    /// 対象時間帯。空 = 常時。複数指定はいずれかに入れば成立（OR。AP3）。
+    /// Target time windows. Empty = always. Multiple entries hold if any contains it (OR. AP3).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub time_windows: Vec<TimeWindow>,
-    /// 認可要求の `acr_values` に含まれる値。空 = 要求内容を問わない（AP3・G12）。
+    /// Values contained in the authorization request's `acr_values`. Empty = regardless of the request (AP3, G12).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requested_acr: Vec<String>,
 }
 
 impl PolicyConditions {
-    /// 形式を検証する（管理 API の入力検証）。
+    /// Validates the format (admin API input validation).
     pub fn validate(&self) -> Result<(), DomainError> {
         for cidr in &self.ip_cidrs {
             IpRange::parse(cidr)?;
@@ -207,11 +207,11 @@ impl PolicyConditions {
         Ok(())
     }
 
-    /// 認証コンテキストに一致するか（空の条件は常に一致）。
+    /// Whether it matches the authentication context (empty conditions always match).
     pub fn matches(&self, ctx: &AuthenticationContext) -> bool {
-        // アプリを解決できない文脈（ポータル・管理コンソール、binding がまだ無い client）では
-        // `application_ids` を持つポリシーは一致しない ——評価材料が無い条件は「一致しない」に
-        // 倒す、という本モジュールの規則どおり。
+        // In contexts where the app cannot be resolved (portal, admin console, clients without a binding yet),
+        // policies with `application_ids` do not match, per this module's rule that conditions without
+        // evaluation inputs fall to "no match".
         let application_ok = self.application_ids.is_empty()
             || ctx
                 .application_id
@@ -230,7 +230,7 @@ impl PolicyConditions {
 
     fn matches_network(&self, ip_address: Option<&str>) -> bool {
         let Some(ip) = ip_address.and_then(|raw| raw.parse::<IpAddr>().ok()) else {
-            // 接続元が分からないリクエストには、ネットワーク条件付きのポリシーは一致しない。
+            // For requests whose source is unknown, policies with network conditions do not match.
             return false;
         };
         self.ip_cidrs
@@ -240,9 +240,9 @@ impl PolicyConditions {
     }
 }
 
-/// CIDR 表記のアドレス範囲（`192.0.2.0/24`・`2001:db8::/32`。プレフィクス省略時は単一アドレス）。
+/// An address range in CIDR notation (`192.0.2.0/24`, `2001:db8::/32`. A single address when the prefix is omitted).
 ///
-/// 外部クレートを足さずに扱えるよう、`IpAddr` のバイト列と prefix 長だけで判定する。
+/// Decided using only the `IpAddr` bytes and the prefix length, so no external crate is needed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IpRange {
     network: IpAddr,
@@ -279,14 +279,14 @@ impl IpRange {
             (IpAddr::V6(net), IpAddr::V6(addr)) => {
                 prefix_matches(&net.octets(), &addr.octets(), self.prefix_len)
             }
-            // IPv4 と IPv6 は跨いで比較しない（IPv4-mapped IPv6 を暗黙に同一視すると、
-            // 「IPv6 でアクセスすれば IPv4 の拒否レンジを抜けられる」ような差が生まれる）。
+            // Do not compare across IPv4 and IPv6 (implicitly equating IPv4-mapped IPv6 would create gaps
+            // like "accessing via IPv6 escapes IPv4 deny ranges").
             _ => false,
         }
     }
 }
 
-/// 先頭 `prefix_len` ビットが一致するか。
+/// Whether the leading `prefix_len` bits match.
 fn prefix_matches(network: &[u8], addr: &[u8], prefix_len: u8) -> bool {
     let full_bytes = (prefix_len / 8) as usize;
     if network[..full_bytes] != addr[..full_bytes] {
@@ -300,24 +300,24 @@ fn prefix_matches(network: &[u8], addr: &[u8], prefix_len: u8) -> bool {
     network[full_bytes] & mask == addr[full_bytes] & mask
 }
 
-/// ポリシー評価の入力（認証コンテキスト。仕様 §9.1「ユーザー特定後」時点の情報）。
+/// Input to policy evaluation (the authentication context. Information as of spec §9.1 "after identifying the user").
 #[derive(Debug, Clone, Copy)]
 pub struct AuthenticationContext<'a> {
-    /// フローのアプリ（ADR-0054）。ポータルログイン等のアプリ非依存の経路と、まだアプリへ
-    /// 繋がっていない client では `None`。
+    /// The flow's app (ADR-0054). `None` for app-independent paths such as portal sign-in, and for clients
+    /// not yet connected to an app.
     pub application_id: Option<Uuid>,
-    /// 特定済みユーザーの内部 ID。
+    /// Internal ID of the identified user.
     pub user_id: Uuid,
-    /// 接続元 IP（`TRUST_FORWARDED_HEADERS` の判定を通った値。取れない場合は `None`）。
+    /// Source IP (the value that passed the `TRUST_FORWARDED_HEADERS` check. `None` if unavailable).
     pub ip_address: Option<&'a str>,
-    /// 評価時刻（時間帯条件の判定に使う）。
+    /// Evaluation time (used for time window conditions).
     pub now: DateTime<Utc>,
-    /// 認可要求の `acr_values`（OIDC 以外の経路では空）。
+    /// The authorization request's `acr_values` (empty on non-OIDC paths).
     pub requested_acr: &'a [String],
 }
 
 impl<'a> AuthenticationContext<'a> {
-    /// アプリ・ネットワーク・時刻・acr を持たない最小の文脈（ポータル/管理コンソール等）。
+    /// The minimal context with no app, network, time or acr (portal / admin console, etc.).
     pub fn for_user(user_id: Uuid, now: DateTime<Utc>) -> Self {
         Self {
             application_id: None,
@@ -329,20 +329,20 @@ impl<'a> AuthenticationContext<'a> {
     }
 }
 
-/// 認証ポリシー 1 件（`authentication_policies` テーブル。仕様 §7.3 のサブセット）。
+/// One authentication policy (`authentication_policies` table. A subset of spec §7.3).
 #[derive(Debug, Clone)]
 pub struct AuthenticationPolicy {
     pub id: Uuid,
-    /// ポリシーはテナント単位で管理する（テナント越しに適用されない）。
+    /// Policies are managed per tenant (not applied across tenants).
     pub tenant_id: TenantId,
-    /// テナント内一意の識別コード（例: `deny-legacy-client`）。
+    /// Identifier code unique within the tenant (e.g. `deny-legacy-client`).
     pub policy_code: String,
     pub policy_name: String,
-    /// 評価順（昇順 = 小さいほど優先。仕様 §9.2）。
+    /// Evaluation order (ascending = smaller has priority. Spec §9.2).
     pub priority: i32,
     pub enabled: bool,
     pub effect: PolicyEffect,
-    /// `require_specific_method` の要求内容（他の効果では `None`）。
+    /// The requirement of `require_specific_method` (`None` for other effects).
     pub effect_params: Option<RequiredMethods>,
     pub conditions: PolicyConditions,
     pub created_at: DateTime<Utc>,
@@ -350,8 +350,8 @@ pub struct AuthenticationPolicy {
 }
 
 impl AuthenticationPolicy {
-    /// `policy_code` の形式検証（英数字・`-`・`_`・`.`、1〜100 文字）。
-    /// URL パスセグメント・監査ログにそのまま載せられる安全な文字に限定する。
+    /// Format validation of `policy_code` (alphanumerics, `-`, `_`, `.`, 1-100 chars).
+    /// Limited to characters safe to put as-is into URL path segments and audit logs.
     pub fn validate_code(code: &str) -> Result<(), DomainError> {
         if code.is_empty() || code.len() > 100 {
             return Err(DomainError::InvalidValue(
@@ -369,11 +369,11 @@ impl AuthenticationPolicy {
         Ok(())
     }
 
-    /// 効果とパラメータの整合を検証する。
+    /// Validates the consistency of effect and parameters.
     ///
-    /// `require_specific_method` は「何を要求するか」が無いと意味を持たない（何も要求しない
-    /// ポリシーが `allow` と同じ顔をして並ぶ）。逆に他の効果でパラメータを持つと、管理画面で
-    /// 効果を切り替えたときに死んだ設定が残る。
+    /// `require_specific_method` is meaningless without "what to require" (a policy requiring nothing
+    /// would line up looking like `allow`). Conversely, having parameters with other effects would leave dead settings
+    /// when switching effects on the admin screen.
     pub fn validate_effect_params(
         effect: PolicyEffect,
         params: Option<&RequiredMethods>,
@@ -395,7 +395,7 @@ impl AuthenticationPolicy {
         }
     }
 
-    /// `policy_name` の検証（空でない・200 文字以内）。
+    /// Validation of `policy_name` (non-empty, at most 200 chars).
     pub fn validate_name(name: &str) -> Result<(), DomainError> {
         if name.trim().is_empty() || name.chars().count() > 200 {
             return Err(DomainError::InvalidValue(
@@ -406,26 +406,26 @@ impl AuthenticationPolicy {
     }
 }
 
-/// ポリシー評価の結論。
+/// Conclusion of policy evaluation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PolicyDecision {
-    /// 認証を継続してよい（`matched_policy_code` = 一致した許可ポリシー。既定許可なら `None`）。
+    /// Authentication may continue (`matched_policy_code` = the matching allow policy. `None` for the default allow).
     Allow { matched_policy_code: Option<String> },
-    /// 認証を拒否する（仕様 §9.3: 拒否は他の全てに優先する）。
+    /// Deny authentication (spec §9.3: deny takes precedence over everything else).
     Deny { policy_code: String },
-    /// MFA（追加認証）を完了しなければ認証成功にしない。
+    /// Authentication does not succeed until MFA (additional authentication) is completed.
     RequireMfa { policy_code: String },
-    /// 指定された方式で認証していなければ認証成功にしない（AP3。仕様 §12.2）。
+    /// Authentication does not succeed unless authenticated with the specified method (AP3. Spec §12.2).
     ///
-    /// **一致した方式指定ポリシーを全件持つ。** 1 件目だけを採ると、`RequiredMethods` の
-    /// 「AND はポリシーを 2 本に分けて表す」という取り決めが壊れる（優先順位が先の 1 本さえ
-    /// 満たせば、もう 1 本の要求を無視して通れてしまう）。要求はすべて満たす必要がある。
+    /// **Holds all matching method-specifying policies.** Taking only the first would break the
+    /// `RequiredMethods` convention "AND is expressed by splitting into 2 policies" (satisfying just the higher-priority one
+    /// would let the other's requirement be ignored). All requirements must be satisfied.
     RequireMethods {
         requirements: Vec<MethodRequirement>,
     },
 }
 
-/// 一致した方式指定ポリシー 1 件（監査へどのポリシーが要求したかを残すため、コードを伴う）。
+/// One matching method-specifying policy (carries the code, to record in the audit which policy required it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MethodRequirement {
     pub policy_code: String,
@@ -433,13 +433,13 @@ pub struct MethodRequirement {
 }
 
 impl PolicyDecision {
-    /// `require_specific_method`（AP3）のうち**満たされていない**最初の 1 件を返す。
+    /// Returns the first `require_specific_method` (AP3) requirement that is **not satisfied**.
     ///
-    /// 満たされているとき・そもそも方式指定でないときは `None`。判定をここに置くのは、
-    /// ログイン経路が 7 本あり（OIDC パスワード / MFA / パスキー / 外部 IdP / 強制パスワード変更 /
-    /// ポータル / 管理コンソール）、それぞれで書くと規則がずれるためである。
+    /// `None` when satisfied or when it is not a method specification at all. The decision is placed here because
+    /// there are 7 sign-in paths (OIDC password / MFA / passkey / external IdP / forced password change /
+    /// portal / admin console), and writing it in each would make the rules drift.
     ///
-    /// 一致した要求は**全件**を検査する（1 件目だけ見ると AND の表現が壊れる）。
+    /// **All** matching requirements are checked (looking only at the first breaks the AND expression).
     pub fn unmet_method_requirement(
         &self,
         used: &[AuthenticationMethod],
@@ -453,11 +453,11 @@ impl PolicyDecision {
         }
     }
 
-    /// 「第二要素を 1 つ足せば満たせるか」。MFA ステップへ誘導してよいかの判定に使う。
+    /// "Can it be satisfied by adding one second factor". Used to decide whether to lead to the MFA step.
     ///
-    /// `require_mfa` が「認証器を持つ利用者は MFA ステップへ送り、持たない利用者だけ拒否する」
-    /// のと同じ扱いを方式指定にも与えるためのもの。ここで誘導しても、最終的な方式集合に対する
-    /// 判定は MFA 完了側でやり直されるので、満たせない第二要素で通ることはない。
+    /// This gives method specifications the same treatment `require_mfa` has: "send users with authenticators
+    /// to the MFA step and deny only those without". Leading there does not let anyone through with an unsatisfiable second factor,
+    /// because the decision against the final set of methods is redone on MFA completion.
     pub fn satisfied_by_adding(
         &self,
         used: &[AuthenticationMethod],
@@ -471,16 +471,16 @@ impl PolicyDecision {
     }
 }
 
-/// 予約語による組み込みの MFA 要求を監査へ残すときのポリシーコード（ADR-0043）。
+/// The policy code used when recording a built-in MFA requirement via a reserved word in the audit (ADR-0043).
 ///
-/// テナントが定義したポリシーと**同じ欄に出る**ので、管理画面で探しても見つからない値である
-/// ことが分かる形にしておく（`policy=builtin:acr_values`）。
+/// It **appears in the same field** as tenant-defined policies, so it is shaped to make clear that it is a value
+/// that cannot be found by searching on the admin screen (`policy=builtin:acr_values`).
 pub const BUILTIN_ACR_POLICY_CODE: &str = "builtin:acr_values";
 
-/// 一致するポリシーが 1 件も無いときの既定動作（仕様 §9.4「明示的に設定する」）。
+/// Default behavior when no policy matches (spec §9.4 "set explicitly").
 ///
-/// 既定は `Allow`（ポリシー未設定の既存環境の挙動を変えない）。デフォルト拒否へ倒す場合は
-/// 設定（`AUTH_POLICY_DEFAULT_EFFECT`）で `deny` を指定する。
+/// Default is `Allow` (does not change the behavior of existing environments without policies). To switch to default deny,
+/// specify `deny` in the setting (`AUTH_POLICY_DEFAULT_EFFECT`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DefaultPolicyEffect {
     Allow,
@@ -506,40 +506,40 @@ impl DefaultPolicyEffect {
     }
 }
 
-/// アカウントロックのポリシー（仕様 §17。失敗許容回数・ロック時間）。
+/// Account lock policy (spec §17. Allowed failure count, lock duration).
 ///
-/// 従来は各ログインサービスにハードコードされていた値（10 回 / 15 分）を、設定
-/// （`LOGIN_MAX_FAILED_ATTEMPTS` / `LOGIN_LOCK_DURATION_SECS`）から注入する単一の値表現に集約する。
-/// ロックはユーザー単位（仕様 §17.2）。恒久ロックは避ける（期限付きロックのみ）。
+/// Consolidates the values formerly hard-coded in each sign-in service (10 times / 15 minutes) into a single value representation
+/// injected from settings (`LOGIN_MAX_FAILED_ATTEMPTS` / `LOGIN_LOCK_DURATION_SECS`).
+/// Locks are per user (spec §17.2). Permanent locks are avoided (only locks with expiry).
 ///
-/// # 段階的ロック（AP6）
+/// # Progressive lock (AP6)
 ///
-/// ロック時間は失敗が重なるほど伸びる。固定時間だと、攻撃者は「ロック時間だけ待って
-/// また閾値まで試す」を無限に繰り返せ、単位時間あたりの試行数を一定に保てる。一方で初回の
-/// ロックを長くすると、打ち間違いを重ねただけの利用者が長時間締め出される。
-/// **初回は短く、繰り返すほど長く**（`lock_duration_secs` から倍々で
-/// `max_lock_duration_secs` まで）にすることで、両者を分ける。
+/// The lock duration grows as failures pile up. With a fixed duration, an attacker can repeat "wait only the lock duration
+/// and try up to the threshold again" forever, keeping the attempts per unit time constant. On the other hand, making the first
+/// lock long would lock out for a long time users who merely mistyped repeatedly.
+/// **Short at first, longer the more it repeats** (doubling from `lock_duration_secs` up to
+/// `max_lock_duration_secs`) separates the two.
 ///
-/// 段数の判定には `failed_login_count` をそのまま使う。この値は**ログイン成功でのみ**
-/// 0 に戻るため、ロック期限が切れた後の 1 回目の失敗は「閾値 + 1」となり自動的に次の段へ進む。
-/// 追加の状態列を持たずに段数を表現できる。
+/// The stage is determined using `failed_login_count` as is. This value returns to 0 **only on a successful sign-in**,
+/// so the first failure after a lock expires becomes "threshold + 1" and automatically advances to the next stage.
+/// Stages can be expressed without an extra state column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LockoutPolicy {
-    /// 連続失敗の許容回数（この回数に達したらロック）。
+    /// Allowed number of consecutive failures (lock when this count is reached).
     pub max_failed_attempts: i32,
-    /// 初回のロック時間（秒）。
+    /// First lock duration (seconds).
     pub lock_duration_secs: u64,
-    /// 段階的ロックの上限（秒）。`lock_duration_secs` 以下なら段階化は起きない（＝固定時間）。
+    /// Upper bound of the progressive lock (seconds). If at most `lock_duration_secs`, no progression happens (= fixed duration).
     pub max_lock_duration_secs: u64,
 }
 
-/// 段階的ロックの最大段数。`lock_duration_secs` の 2^ESCALATION_STEPS 倍まで伸ばせば、
-/// 既定値（15 分）でも 32 時間を超えて上限（既定 24 時間）に必ず届く。段数に上限を置くのは、
-/// 失敗回数がいくら大きくても計算が飽和したままになるようにするため。
+/// Max number of progressive lock stages. Extending up to 2^ESCALATION_STEPS times `lock_duration_secs`
+/// always reaches the upper bound (default 24 hours), exceeding 32 hours even with the default (15 minutes). The stage count is capped
+/// so that the computation stays saturated however large the failure count is.
 const ESCALATION_STEPS: u32 = 16;
 
 impl LockoutPolicy {
-    /// 失敗カウントが `failed_count` に達した時点でロックすべきなら、ロック期限を返す。
+    /// Returns the lock expiry if it should lock when the failure count reaches `failed_count`.
     pub fn locked_until_after_failure(
         &self,
         failed_count: i32,
@@ -550,10 +550,10 @@ impl LockoutPolicy {
         })
     }
 
-    /// 累積失敗回数 `failed_count` でロックするときのロック時間（秒）。
+    /// The lock duration (seconds) when locking at cumulative failure count `failed_count`.
     ///
-    /// 閾値ちょうどで `lock_duration_secs`、以降は 1 回失敗するごとに倍。
-    /// `max_lock_duration_secs` で頭打ちにする。
+    /// `lock_duration_secs` exactly at the threshold, then doubled with each further failure.
+    /// Capped at `max_lock_duration_secs`.
     pub fn lock_duration_secs_for(&self, failed_count: i32) -> u64 {
         let over = failed_count.saturating_sub(self.max_failed_attempts).max(0);
         let step = (over as u32).min(ESCALATION_STEPS);
@@ -562,26 +562,26 @@ impl LockoutPolicy {
             .saturating_mul(1u64.checked_shl(step).unwrap_or(u64::MAX));
         scaled
             .min(self.max_lock_duration_secs)
-            // 上限が初回より短く設定されていても、初回のロック時間は必ず適用する
-            //（上限の設定ミスでロックが実質無効化されないようにする）。
+            // Even if the upper bound is set shorter than the first, the first lock duration always applies
+            // (so a misconfigured upper bound does not effectively disable locking).
             .max(self.lock_duration_secs)
     }
 
-    /// 段階的ロックの「段」を、閾値からの超過が大きい順に列挙する（AP6）。
+    /// Enumerates the progressive lock "stages", largest excess over the threshold first (AP6).
     ///
-    /// 返すのは `(この失敗回数以上ならば, ロック秒数)` の組を**降順**に並べたもの。
-    /// 失敗の記録とロック判定は 1 文の `UPDATE` で行う必要があり（SEC13。読んで書き戻すと
-    /// 並行試行を取りこぼす）、その時点の失敗回数は SQL の中にしかない。ロック時間の計算式を
-    /// SQL へ写すと定義が二重化するため、**段の一覧をドメインから渡して SQL 側は選ぶだけ**に
-    /// する（`CASE WHEN failed_login_count + 1 >= ? THEN ? ...`）。
+    /// Returns pairs of `(if the failure count is at least this, lock seconds)` in **descending** order.
+    /// Recording the failure and the lock decision must be done in one `UPDATE` statement (SEC13. Reading and writing back
+    /// would miss concurrent attempts), and the failure count at that moment exists only inside SQL. Copying the lock duration formula
+    /// into SQL would duplicate the definition, so **the domain passes the list of stages and the SQL side only chooses**
+    /// (`CASE WHEN failed_login_count + 1 >= ? THEN ? ...`).
     ///
-    /// 上限に達した段より先は同じ値になるため列挙しない（末尾の段が「それ以上すべて」を表す）。
+    /// Stages beyond the one reaching the upper bound have the same value, so they are not enumerated (the last stage means "everything beyond").
     pub fn escalation_ladder(&self) -> Vec<(i32, u64)> {
         let mut ladder: Vec<(i32, u64)> = Vec::new();
         for step in 0..=ESCALATION_STEPS {
             let threshold = self.max_failed_attempts.saturating_add(step as i32);
             let duration = self.lock_duration_secs_for(threshold);
-            // 上限に達したら、それ以降の段は同じ値になるので打ち切る。
+            // Once the upper bound is reached, later stages have the same value, so stop.
             let capped = duration >= self.max_lock_duration_secs;
             ladder.push((threshold, duration));
             if capped {
@@ -593,25 +593,25 @@ impl LockoutPolicy {
     }
 }
 
-/// RP が予約語で MFA を要求したか（ADR-0043）。
+/// Whether the RP requested MFA via a reserved word (ADR-0043).
 ///
-/// 未知の文字列は無視する。テナントが `requested_acr` 条件へ独自の文字列を書く従来の使い方を
-/// 壊さないため（そちらは条件として引き続き効く）。
+/// Unknown strings are ignored, so as not to break the existing use of tenants writing their own strings in
+/// `requested_acr` conditions (those still work as conditions).
 fn requests_mfa(requested_acr: &[String]) -> bool {
     requested_acr.iter().any(|v| v == ACR_MULTI_FACTOR)
 }
 
-/// 認証ポリシーを評価する（仕様 §9）。
+/// Evaluates authentication policies (spec §9).
 ///
-/// - 対象は `enabled` かつ条件一致のポリシーのみ。
-/// - `Deny` が 1 件でも一致したら**常に**拒否（優先順位に関わらず。仕様 §9.3「拒否優先」）。
-/// - 次いで `RequireMfa` が一致していれば MFA を要求する（許可ポリシーと同時一致でも MFA 優先）。
-/// - 残りは `Allow`。最優先（priority 最小、同値は `policy_code` 昇順で安定）の一致を記録する。
-/// - 1 件も一致しなければ `default_effect` に従う（既定拒否時の `policy_code` は固定値
-///   `(default)` として監査に残す）。
-/// - **RP が予約語で MFA を要求していれば、ポリシーの有無に関わらず要求する**（ADR-0043）。
-///   方式指定ポリシーと同時に一致した場合は、方式指定へ「第二要素いずれか」を足して**両方**
-///   満たさせる。
+/// - Only `enabled` policies whose conditions match are considered.
+/// - If even one `Deny` matches, it is **always** denied (regardless of priority. Spec §9.3 "deny first").
+/// - Next, if `RequireMfa` matches, MFA is required (MFA wins even if an allow policy matches at the same time).
+/// - The rest are `Allow`. The match with the highest priority (smallest priority; ties stable by ascending `policy_code`) is recorded.
+/// - If none match, `default_effect` applies (on default deny, `policy_code` is kept in the audit as the fixed value
+///   `(default)`).
+/// - **If the RP requested MFA via a reserved word, it is required regardless of policies** (ADR-0043).
+///   If a method-specifying policy matches at the same time, "any second factor" is added to the method specification and **both**
+///   must be satisfied.
 pub fn evaluate_policies(
     policies: &[AuthenticationPolicy],
     ctx: &AuthenticationContext<'_>,
@@ -621,7 +621,7 @@ pub fn evaluate_policies(
         .iter()
         .filter(|p| p.enabled && p.conditions.matches(ctx))
         .collect();
-    // 優先順位の昇順（同値は policy_code 昇順で決定的に）。
+    // Ascending priority (ties deterministically by ascending policy_code).
     matched.sort_by(|a, b| {
         a.priority
             .cmp(&b.priority)
@@ -633,9 +633,9 @@ pub fn evaluate_policies(
             policy_code: deny.policy_code.clone(),
         };
     }
-    // 方式指定は MFA 要求より先に見る。`require_mfa` は「第二要素を 1 つ足せばよい」だが
-    // `require_specific_method` は「その方式でなければ通さない」で、後者の方が狭い要求のため。
-    // 逆順にすると、WebAuthn 必須のポリシーがある利用者が TOTP だけで通ってしまう。
+    // Method specifications are looked at before MFA requirements. `require_mfa` is "adding one second factor is enough", but
+    // `require_specific_method` is "do not pass unless that method", the narrower requirement.
+    // In reverse order, a user under a WebAuthn-required policy would pass with TOTP alone.
     let requirements: Vec<MethodRequirement> = matched
         .iter()
         .filter(|p| p.effect == PolicyEffect::RequireSpecificMethod)
@@ -646,8 +646,8 @@ pub fn evaluate_policies(
         .collect();
     if !requirements.is_empty() {
         let mut requirements = requirements;
-        // 方式指定と予約語の要求は別軸なので、**両方**満たさせる。方式指定を返して終わりに
-        // すると、`password` だけを要求するポリシーが 1 本あるだけで RP の MFA 要求が消える。
+        // Method specification and the reserved-word requirement are separate axes, so **both** must be satisfied. Returning the method specification
+        // and stopping would make the RP's MFA requirement vanish whenever a single policy requires only `password`.
         if requests_mfa(ctx.requested_acr) {
             requirements.push(MethodRequirement {
                 policy_code: BUILTIN_ACR_POLICY_CODE.to_string(),
@@ -667,9 +667,9 @@ pub fn evaluate_policies(
             policy_code: mfa.policy_code.clone(),
         };
     }
-    // RP が予約語で MFA を要求した場合（ADR-0043 決定 1）。**ポリシーの有無に関わらず**効かせる。
-    // ここへ書かないと、要求が効くかどうかがテナントの設定次第になり、「この値を送れば MFA になる」
-    // と公開できない（公開できない語彙は RP に伝えられない）。
+    // When the RP requested MFA via a reserved word (ADR-0043 decision 1). Applied **regardless of policies**.
+    // Without this, whether the request takes effect would depend on tenant settings, and "sending this value gives MFA"
+    // could not be published (vocabulary that cannot be published cannot be communicated to RPs).
     if requests_mfa(ctx.requested_acr) {
         return PolicyDecision::RequireMfa {
             policy_code: BUILTIN_ACR_POLICY_CODE.to_string(),
@@ -696,7 +696,7 @@ mod ap3_tests {
     use chrono::TimeZone;
 
     fn at(hour: u32, minute: u32) -> DateTime<Utc> {
-        // 2026-08-05 は水曜日（weekday 3）。
+        // 2026-08-05 is a Wednesday (weekday 3).
         Utc.with_ymd_and_hms(2026, 8, 5, hour, minute, 0).unwrap()
     }
 
@@ -737,8 +737,8 @@ mod ap3_tests {
         assert!(!range.contains("2001:db8:abce::1".parse().unwrap()));
     }
 
-    /// v4 と v6 を跨いで一致させない。同一視すると「IPv6 で来れば IPv4 の拒否レンジを抜けられる」
-    /// といった差が生まれる。
+    /// v4 and v6 are not matched across. Equating them would create gaps like
+    /// "coming via IPv6 escapes IPv4 deny ranges".
     #[test]
     fn address_families_do_not_cross_match() {
         let v4 = IpRange::parse("0.0.0.0/0").unwrap();
@@ -752,7 +752,7 @@ mod ap3_tests {
         assert!(IpRange::parse("192.0.2.0/abc").is_err());
     }
 
-    /// 評価材料が無いリクエストには、ネットワーク条件付きポリシーは一致しない。
+    /// For requests without evaluation inputs, policies with network conditions do not match.
     #[test]
     fn a_network_condition_does_not_match_without_a_client_ip() {
         let conditions = PolicyConditions {
@@ -776,33 +776,36 @@ mod ap3_tests {
         assert!(window.contains(at(17, 59)));
         assert!(
             !window.contains(at(18, 0)),
-            "終了時刻は含まない（半開区間）"
+            "the end time is exclusive (half-open interval)"
         );
         assert!(!window.contains(at(8, 59)));
     }
 
-    /// 日をまたぐ帯（22:00-06:00）は、翌日の早朝も「前日の帯」として扱う。曜日指定と
-    /// 組み合わせたときにここを間違えると、金曜 22 時開始の帯が土曜 0 時で切れる。
+    /// A window crossing midnight (22:00-06:00) treats the next day's early morning as "the previous day's window" too. Getting this
+    /// wrong combined with weekday specification would make a window starting Friday 22:00 end at Saturday 00:00.
     #[test]
     fn a_window_that_crosses_midnight_keeps_the_starting_day() {
         let window = TimeWindow {
-            days: vec![3], // 水曜
+            days: vec![3], // Wednesday
             start_minute: 22 * 60,
             end_minute: 6 * 60,
             utc_offset_minutes: 0,
         };
-        assert!(window.contains(at(23, 0)), "水曜 23:00 は帯の中");
-        // 木曜 02:00 は「水曜開始の帯」の続き。
+        assert!(
+            window.contains(at(23, 0)),
+            "Wednesday 23:00 is inside the window"
+        );
+        // Thursday 02:00 is the continuation of "the window starting Wednesday".
         let thursday_early = Utc.with_ymd_and_hms(2026, 8, 6, 2, 0, 0).unwrap();
         assert!(window.contains(thursday_early));
-        // 木曜 23:00 は木曜開始の帯になるので、水曜指定では一致しない。
+        // Thursday 23:00 belongs to the window starting Thursday, so it does not match a Wednesday specification.
         let thursday_night = Utc.with_ymd_and_hms(2026, 8, 6, 23, 0, 0).unwrap();
         assert!(!window.contains(thursday_night));
     }
 
     #[test]
     fn the_utc_offset_shifts_the_window() {
-        // JST 09:00-18:00 = UTC 00:00-09:00。
+        // JST 09:00-18:00 = UTC 00:00-09:00.
         let window = TimeWindow {
             days: vec![],
             start_minute: 9 * 60,
@@ -845,7 +848,7 @@ mod ap3_tests {
         assert!(!requirement.satisfied_by(&[AuthenticationMethod::Password], false));
     }
 
-    /// UV 必須は「方式が合っていても UV されていなければ通さない」（§12.2）。
+    /// UV required means "even if the method matches, it does not pass without UV" (§12.2).
     #[test]
     fn user_verification_is_required_independently_of_the_method() {
         let requirement = RequiredMethods {
@@ -856,7 +859,7 @@ mod ap3_tests {
         assert!(requirement.satisfied_by(&[AuthenticationMethod::WebAuthn], true));
     }
 
-    /// 方式指定は MFA 要求より先に効く。逆だと「WebAuthn 必須」の利用者が TOTP で通ってしまう。
+    /// Method specification takes effect before MFA requirements. Otherwise a "WebAuthn required" user would pass with TOTP.
     #[test]
     fn a_specific_method_requirement_wins_over_require_mfa() {
         let mut specific = policy_for_test("specific", 10, PolicyEffect::RequireSpecificMethod);
@@ -883,9 +886,9 @@ mod ap3_tests {
             .is_none());
     }
 
-    /// 一致した方式指定は**全件**を持ち、すべて満たす必要がある。1 件目だけを採ると
-    /// 「AND はポリシーを 2 本に分けて表す」という取り決めが壊れ、優先順位が先の 1 本さえ
-    /// 満たせばもう 1 本を無視して通れてしまう。
+    /// **All** matching method specifications are held and all must be satisfied. Taking only the first would
+    /// break the convention "AND is expressed by splitting into 2 policies", letting one pass by satisfying just the higher-priority
+    /// one and ignoring the other.
     #[test]
     fn every_matching_method_requirement_must_be_satisfied() {
         let mut webauthn = policy_for_test("webauthn", 1, PolicyEffect::RequireSpecificMethod);
@@ -906,14 +909,18 @@ mod ap3_tests {
         let PolicyDecision::RequireMethods { requirements } = &decision else {
             panic!("expected RequireMethods, got {decision:?}");
         };
-        assert_eq!(requirements.len(), 2, "一致した方式指定を全件持つ");
+        assert_eq!(
+            requirements.len(),
+            2,
+            "holds all matching method specifications"
+        );
 
-        // 優先順位が先の WebAuthn だけを満たしても、TOTP の要求が残る。
+        // Satisfying only the higher-priority WebAuthn still leaves the TOTP requirement.
         let unmet = decision
             .unmet_method_requirement(&[AuthenticationMethod::WebAuthn], true)
             .expect("totp requirement is still unmet");
         assert_eq!(unmet.policy_code, "totp");
-        // 両方を満たせば通る。
+        // Satisfying both passes.
         assert!(decision
             .unmet_method_requirement(
                 &[AuthenticationMethod::WebAuthn, AuthenticationMethod::Totp],
@@ -922,7 +929,7 @@ mod ap3_tests {
             .is_none());
     }
 
-    /// 拒否は方式指定よりさらに優先する（仕様 §9.3）。
+    /// Deny takes precedence even over method specifications (spec §9.3).
     #[test]
     fn deny_still_wins_over_a_specific_method_requirement() {
         let mut specific = policy_for_test("specific", 1, PolicyEffect::RequireSpecificMethod);
@@ -941,8 +948,8 @@ mod ap3_tests {
         ));
     }
 
-    /// ADR-0043 決定 1。ポリシーが 1 件も無く既定が許可でも、予約語の要求だけで MFA になる。
-    /// ここが効かないと「この値を送れば MFA になる」と公開できない。
+    /// ADR-0043 decision 1. Even with no policies and a default of allow, the reserved-word request alone makes it MFA.
+    /// Without this, "sending this value gives MFA" could not be published.
     #[test]
     fn the_reserved_word_requires_mfa_without_any_policy() {
         let requested = [ACR_MULTI_FACTOR.to_string()];
@@ -962,8 +969,8 @@ mod ap3_tests {
         ));
     }
 
-    /// 知らない文字列は従来どおり「ポリシーの条件の材料」でしかない。テナントが独自の値を
-    /// 条件へ書く使い方を壊さないため。
+    /// Unknown strings remain merely "inputs to policy conditions" as before, so as not to break tenants writing
+    /// their own values in conditions.
     #[test]
     fn an_unknown_acr_value_requires_nothing_by_itself() {
         let requested = ["urn:example:loa2".to_string()];
@@ -983,8 +990,8 @@ mod ap3_tests {
         ));
     }
 
-    /// 方式指定ポリシーがあっても RP の要求は消えない。方式指定を返して終わりにすると、
-    /// `password` だけを要求する 1 本があるだけで MFA 要求がすり抜ける。
+    /// The RP's request does not vanish even with a method-specifying policy. Returning the method specification and stopping would
+    /// let the MFA requirement slip through whenever a single policy requires only `password`.
     #[test]
     fn the_reserved_word_survives_a_specific_method_policy() {
         let mut specific = policy_for_test("pwd-only", 10, PolicyEffect::RequireSpecificMethod);
@@ -1004,11 +1011,11 @@ mod ap3_tests {
             },
             DefaultPolicyEffect::Allow,
         );
-        // パスワードだけでは満たせない（第二要素の要求が残っている）。
+        // Password alone does not satisfy it (the second-factor requirement remains).
         assert!(decision
             .unmet_method_requirement(&[AuthenticationMethod::Password], false)
             .is_some());
-        // パスワード + TOTP なら両方満たす。
+        // Password + TOTP satisfies both.
         assert!(decision
             .unmet_method_requirement(
                 &[AuthenticationMethod::Password, AuthenticationMethod::Totp],
@@ -1017,7 +1024,7 @@ mod ap3_tests {
             .is_none());
     }
 
-    /// 拒否は予約語より優先する（仕様 §9.3）。要求されたから通す、にはしない。
+    /// Deny takes precedence over reserved words (spec §9.3). It does not pass just because it was requested.
     #[test]
     fn deny_still_wins_over_the_reserved_word() {
         let deny = policy_for_test("deny-all", 1, PolicyEffect::Deny);
@@ -1054,7 +1061,7 @@ mod ap3_tests {
         }
     }
 
-    /// `require_specific_method` は要求内容が無いと意味を持たない（`allow` と同じ顔をして並ぶ）。
+    /// `require_specific_method` is meaningless without a requirement (it would line up looking like `allow`).
     #[test]
     fn effect_params_must_match_the_effect() {
         assert!(AuthenticationPolicy::validate_effect_params(
@@ -1113,12 +1120,12 @@ mod tests {
         }
     }
 
-    /// 条件に使うアプリ（テスト用の固定値）。
+    /// The app used in conditions (fixed value for tests).
     fn an_application() -> Uuid {
         Uuid::from_u128(0x0199_0000_0000_7000_8000_0000_0000_0001)
     }
 
-    /// 上とは別のアプリ。
+    /// An app different from the one above.
     fn another_application() -> Uuid {
         Uuid::from_u128(0x0199_0000_0000_7000_8000_0000_0000_0002)
     }
@@ -1171,7 +1178,7 @@ mod tests {
         );
     }
 
-    /// 仕様 §9.3: 拒否は許可・MFA より常に優先する（優先順位の値に関わらず）。
+    /// Spec §9.3: deny always takes precedence over allow and MFA (regardless of priority values).
     #[test]
     fn deny_wins_over_allow_and_mfa_regardless_of_priority() {
         let user = Uuid::new_v4();
@@ -1203,7 +1210,7 @@ mod tests {
         );
     }
 
-    /// 仕様 §9.3: 追加認証（MFA）ポリシーは通常許可より優先する。
+    /// Spec §9.3: additional authentication (MFA) policies take precedence over plain allow.
     #[test]
     fn require_mfa_wins_over_allow() {
         let user = Uuid::new_v4();
@@ -1260,7 +1267,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        // 対象アプリのみ拒否。
+        // Deny only the target app.
         assert!(matches!(
             evaluate_policies(
                 std::slice::from_ref(&p),
@@ -1269,7 +1276,7 @@ mod tests {
             ),
             PolicyDecision::Deny { .. }
         ));
-        // 他クライアント・クライアント無し（ポータル）は一致しない。
+        // Other clients and no client (portal) do not match.
         assert!(matches!(
             evaluate_policies(
                 std::slice::from_ref(&p),
@@ -1302,7 +1309,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        // 両条件一致で成立（AND）。
+        // Holds when both conditions match (AND).
         assert!(matches!(
             evaluate_policies(
                 std::slice::from_ref(&p),
@@ -1311,7 +1318,7 @@ mod tests {
             ),
             PolicyDecision::RequireMfa { .. }
         ));
-        // 片方だけでは不成立。
+        // Only one does not hold.
         assert!(matches!(
             evaluate_policies(
                 std::slice::from_ref(&p),
@@ -1330,7 +1337,7 @@ mod tests {
         ));
     }
 
-    /// 同効果のポリシーが複数一致した場合は priority 昇順の先頭を記録する（監査で追跡するため）。
+    /// When several policies with the same effect match, the first by ascending priority is recorded (for tracing in the audit).
     #[test]
     fn lowest_priority_value_wins_within_same_effect() {
         let user = Uuid::new_v4();
@@ -1393,7 +1400,7 @@ mod tests {
         assert!(policy.locked_until_after_failure(6, now).is_some());
     }
 
-    /// AP6: ロック時間は失敗が重なるたびに倍になり、上限で頭打ちになる。
+    /// AP6: the lock duration doubles each time failures pile up, capped at the upper bound.
     #[test]
     fn lock_duration_doubles_until_it_reaches_the_cap() {
         let policy = LockoutPolicy {
@@ -1401,18 +1408,18 @@ mod tests {
             lock_duration_secs: 900,
             max_lock_duration_secs: 7_200,
         };
-        // 閾値ちょうどは初回の時間。以降 1 回失敗するごとに倍。
+        // Exactly at the threshold is the first duration. Then doubled with each further failure.
         assert_eq!(policy.lock_duration_secs_for(5), 900);
         assert_eq!(policy.lock_duration_secs_for(6), 1_800);
         assert_eq!(policy.lock_duration_secs_for(7), 3_600);
         assert_eq!(policy.lock_duration_secs_for(8), 7_200);
-        // 上限に達したらそれ以上は伸びない。
+        // Once the upper bound is reached it grows no further.
         assert_eq!(policy.lock_duration_secs_for(9), 7_200);
         assert_eq!(policy.lock_duration_secs_for(i32::MAX), 7_200);
     }
 
-    /// 上限を初回より短く設定しても、初回のロック時間は必ず適用する（設定ミスでロックが
-    /// 実質無効化されないようにする）。
+    /// Even if the upper bound is set shorter than the first, the first lock duration always applies (so a misconfiguration
+    /// does not effectively disable locking).
     #[test]
     fn a_cap_below_the_base_duration_does_not_shorten_the_first_lock() {
         let policy = LockoutPolicy {
@@ -1424,8 +1431,8 @@ mod tests {
         assert_eq!(policy.lock_duration_secs_for(30), 900);
     }
 
-    /// 段の一覧は「超過が大きい順」に並ぶ。SQL の `CASE` は先に一致した WHEN を採るため、
-    /// 順序が逆だと常に初回の時間が選ばれて段階化が効かなくなる。
+    /// The list of stages is ordered "largest excess first". SQL `CASE` takes the first matching WHEN, so
+    /// in reverse order the first duration would always be chosen and progression would not work.
     #[test]
     fn the_escalation_ladder_is_ordered_from_the_longest_lock_down() {
         let policy = LockoutPolicy {
@@ -1435,13 +1442,13 @@ mod tests {
         };
         let ladder = policy.escalation_ladder();
         assert_eq!(ladder, vec![(7, 3_600), (6, 1_800), (5, 900)]);
-        // 各段はドメインの計算式と一致する（SQL 側はこの一覧から選ぶだけ）。
+        // Each stage matches the domain formula (the SQL side only chooses from this list).
         for (threshold, duration) in &ladder {
             assert_eq!(policy.lock_duration_secs_for(*threshold), *duration);
         }
     }
 
-    /// 段階化しない設定（上限 = 初回）は 1 段だけになる。
+    /// A non-progressive setting (upper bound = first) has only one stage.
     #[test]
     fn a_fixed_duration_policy_yields_a_single_step() {
         let policy = LockoutPolicy {
@@ -1465,12 +1472,12 @@ mod tests {
             serde_json::from_str::<PolicyConditions>(&json).unwrap(),
             conditions
         );
-        // 空条件は `{}` に落ちる（DB の JSON カラムを簡潔に保つ）。
+        // Empty conditions become `{}` (keeps the DB JSON column concise).
         assert_eq!(
             serde_json::to_string(&PolicyConditions::default()).unwrap(),
             "{}"
         );
-        // 未知のキーは拒否する（タイポで条件が無視され全許可になる事故を防ぐ）。
+        // Unknown keys are rejected (prevents accidents where a typo makes a condition ignored and everything allowed).
         assert!(serde_json::from_str::<PolicyConditions>(r#"{"clientIds": []}"#).is_err());
     }
 }

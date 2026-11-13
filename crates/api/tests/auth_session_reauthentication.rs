@@ -1,11 +1,11 @@
-//! 認可セッションの上で「認証し直し」たとき、前の認証が残らないことの統合テスト。
+//! Integration tests that "re-authenticating" on an authorization session leaves no previous authentication behind.
 //!
-//! 同意待ち（＝認証済み）の認可セッションで、別の利用者としてパスワードだけを通し、第二段
-//! （パスワードの強制変更・MFA）の手前で止まった場合、その認可セッションはもう**誰の認証も
-//! 完了していない**。前の利用者の `auth_time` / `sid` が残っていると、同意の承諾がそれを
-//! 「認証済み」と読み、第二段を済ませていない利用者に code を発行してしまう。
+//! On an authorization session awaiting consent (= authenticated), if only a password passes as another user and it
+//! stops before the second stage (forced password change, MFA), that authorization session has **no completed
+//! authentication of anyone** anymore. If the previous user's `auth_time` / `sid` remained, accepting consent would
+//! read it as "authenticated" and issue a code to a user who has not finished the second stage.
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行する。
+//! Runs only when `TEST_DATABASE_URL` is set.
 
 mod support;
 
@@ -60,15 +60,15 @@ async fn password_only_reauthentication_does_not_inherit_the_previous_login() {
         return;
     };
     let tenant = env.root_tenant_id.clone();
-    // profile を要求して、最初の利用者を同意画面で止める。
+    // Request profile so the first user stops at the consent screen.
     let client_id = support::insert_public_client(&env.pool, &tenant, &["openid", "profile"]).await;
 
-    // 1 人目（自分のアカウント）: 普通にログインして同意待ちになる。
+    // First user (one's own account): signs in normally and reaches awaiting consent.
     let first = format!("reauth-a-{}", support::unique());
     support::register_user(&env.app, &tenant, &first, "first-password-1").await;
     support::mark_email_verified(&env.pool, &tenant, &first).await;
 
-    // 2 人目（パスワードだけ知られている相手）: 強制変更の状態にしておく。
+    // Second user (someone whose password alone is known): put in the forced change state.
     let second = format!("reauth-b-{}", support::unique());
     support::register_user(&env.app, &tenant, &second, "second-password-1").await;
     support::mark_email_verified(&env.pool, &tenant, &second).await;
@@ -96,12 +96,12 @@ async fn password_only_reauthentication_does_not_inherit_the_previous_login() {
     assert_eq!(body["result"], "consent_required", "{body}");
     let session = body["auth_session_id"].as_str().unwrap().to_string();
 
-    // 同じ認可セッションで 2 人目としてパスワードだけ通す（強制変更の手前で止まる）。
+    // On the same authorization session, pass only the password as the second user (stops before the forced change).
     let body = authenticate(&env, &session, &second, "second-password-1").await;
     assert_eq!(body["result"], "password_change_required", "{body}");
     let session = body["auth_session_id"].as_str().unwrap().to_string();
 
-    // 同意画面も出さない（承諾できない段に、押しても通らない画面を見せない）。
+    // The consent screen is not shown either (do not show a screen whose button cannot work at a stage where consent is impossible).
     let response = send(
         &env.app,
         Request::builder()
@@ -120,8 +120,8 @@ async fn password_only_reauthentication_does_not_inherit_the_previous_login() {
         "the consent page must not be shown before authentication completes: {body}"
     );
 
-    // ⚠ ここで同意を承諾しても、code は出てはならない。2 人目は認証を終えておらず、
-    //   1 人目の認証はもう、この認可セッションの持ち主ではない。
+    // ⚠ Even if consent is accepted here, no code must be issued. The second user has not finished authenticating,
+    //   and the first user's authentication no longer owns this authorization session.
     let body = internal_post(
         &env.app,
         "/internal/consent/approve",

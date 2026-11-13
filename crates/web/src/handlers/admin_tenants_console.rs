@@ -1,7 +1,7 @@
-//! root 管理者向けテナント一覧・登録画面（web）。
+//! Tenant list and registration screen for the root admin (web).
 //!
-//! 画面は React 風の reducer/component 分割を持つ小さなプログレッシブ UI として再構成し、
-//! 認可・永続化は api の `/{tenant_id}/admin/tenants`（`idp.system.admin` 必須）へ委譲する。
+//! The screen is restructured as a small progressive UI with a React-like reducer/component split;
+//! authorization and persistence are delegated to the api's `/{tenant_id}/admin/tenants` (requires `idp.system.admin`).
 
 use super::locale;
 use crate::api_client::AdminApiError;
@@ -40,7 +40,7 @@ pub async fn list(
     };
     let sso = sso(&headers);
     let offset = query.offset.unwrap_or(0).max(0);
-    // ページングは api（DB）側で行う（G7）。web はページ位置を引き継ぎ、前後リンクだけを組む。
+    // Paging is done on the api (DB) side (G7). web carries over the page position and only builds prev/next links.
     let page = match state
         .api
         .list_tenants(
@@ -128,10 +128,10 @@ pub async fn create(
     .into_response()
 }
 
-/// 子テナントの表示名・状態の変更（`POST /{tenant_id}/admin/tenants/{child_id}/update`。MT23）。
-/// api の `PATCH /admin/tenants/{child_id}` に委ね、成功時は一覧へ戻して完了通知を出す
-/// （Post/Redirect/Get）。状態の許可値検証は api（`TenantStatus::parse`）が行い、web は値の受け渡しに
-/// 徹する（不正値は `?error=validation`）。
+/// Changes a child tenant's display name and status (`POST /{tenant_id}/admin/tenants/{child_id}/update`. MT23).
+/// Delegates to the api's `PATCH /admin/tenants/{child_id}`; on success returns to the list with a completion notice
+/// (Post/Redirect/Get). Allowed status values are validated by the api (`TenantStatus::parse`); web only
+/// passes values through (invalid values give `?error=validation`).
 pub async fn update(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -173,8 +173,8 @@ pub async fn update(
     }
 }
 
-/// 子テナントの削除（`POST /{tenant_id}/admin/tenants/{child_id}/delete`）。配下に子テナント・
-/// ユーザー・クライアントが残っている場合は api が 409 を返す（`?error=delete-conflict`）。
+/// Deletes a child tenant (`POST /{tenant_id}/admin/tenants/{child_id}/delete`). If child tenants,
+/// users or clients remain under it, the api returns 409 (`?error=delete-conflict`).
 pub async fn delete(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -209,9 +209,9 @@ pub async fn delete(
     }
 }
 
-/// 子テナント管理者のパスワード再発行
-/// （`POST /{tenant_id}/admin/tenants/{child_id}/reset-admin-password`）。
-/// 成功時は生成パスワードを一度だけ表示する。
+/// Reissues the child tenant admin's password
+/// (`POST /{tenant_id}/admin/tenants/{child_id}/reset-admin-password`).
+/// On success the generated password is shown only once.
 pub async fn reset_admin_password(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -317,14 +317,14 @@ mod tests {
         }
     }
 
-    /// MT23: 一覧の各行から表示名・状態を編集できる（api の `PATCH /admin/tenants/{id}` へ接続する）。
+    /// MT23: each list row can edit the display name and status (connected to the api's `PATCH /admin/tenants/{id}`).
     #[test]
     fn edit_form_posts_name_and_status_with_current_values_preselected() {
         let html = render_list(&[tenant_view("DISABLED")], false);
         assert!(html.contains("/admin/tenants/019f6514-08ea-7138-ad71-838a7bdd3575/update"));
         assert!(html.contains("name=\"csrf_token\" value=\"csrf123\""));
         assert!(html.contains("value=\"Child\""));
-        // 現在の状態が選択済みで開く（誤って ACTIVE に戻さないため）。
+        // Opens with the current status selected (so it is not accidentally set back to ACTIVE).
         assert!(html.contains("<option value=\"DISABLED\" selected>"));
         assert!(!html.contains("<option value=\"ACTIVE\" selected>"));
 
@@ -332,7 +332,7 @@ mod tests {
         assert!(active.contains("<option value=\"ACTIVE\" selected>"));
     }
 
-    /// 保存完了は Post/Redirect/Get 後の `?saved=tenant` でのみバナー表示する。
+    /// The save-complete banner is shown only via `?saved=tenant` after Post/Redirect/Get.
     #[test]
     fn saved_banner_is_shown_only_after_a_successful_update() {
         let messages = Messages::new(Locale::Ja);

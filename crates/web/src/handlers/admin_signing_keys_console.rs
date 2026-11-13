@@ -1,7 +1,7 @@
-//! 署名鍵管理コンソール画面（`/{tenant_id}/admin/signing-keys`、K1）。
+//! Signing key management console screen (`/{tenant_id}/admin/signing-keys`, K1).
 //!
-//! 鍵一覧表示・新規生成フォーム・退役・削除操作を提供する。
-//! 操作の実体は api の `/admin/signing-keys/*` に SSO Cookie 転送で委譲する。
+//! Provides the key list, the generation form, and retire/delete operations.
+//! The actual operations are delegated to the api's `/admin/signing-keys/*` by forwarding the SSO cookie.
 
 use super::locale;
 use crate::admin_dto::SigningKeyView;
@@ -33,7 +33,7 @@ macro_rules! admin_or_return {
     };
 }
 
-/// 署名鍵一覧（`GET /{tenant_id}/admin/signing-keys`）。
+/// Signing key list (`GET /{tenant_id}/admin/signing-keys`).
 pub async fn list(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -59,15 +59,15 @@ pub async fn list(
 #[derive(Deserialize)]
 pub struct GenerateKeyForm {
     pub algorithm: String,
-    /// 猶予を置かず、すぐ署名に使い始める指定。チェックボックスは「チェック時のみ送られる」ため
-    /// `Option<String>` で受ける。**既定（未チェック）が通常の入れ替え**で、鍵は JWKS へ公開
-    /// されるだけ。署名を引き継ぐのは `KEY_ROTATION_PUBLISH_LEAD_HOURS` 後になる。
+    /// Request to start signing immediately without a grace period. A checkbox is "sent only when checked",
+    /// so it is received as `Option<String>`. **The default (unchecked) is a normal rotation**: the key is only
+    /// published to JWKS. It takes over signing after `KEY_ROTATION_PUBLISH_LEAD_HOURS`.
     #[serde(default)]
     pub activate_immediately: Option<String>,
     pub csrf_token: String,
 }
 
-/// 新規署名鍵を生成する（`POST /{tenant_id}/admin/signing-keys/generate`）。
+/// Generates a new signing key (`POST /{tenant_id}/admin/signing-keys/generate`).
 pub async fn generate(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -79,7 +79,7 @@ pub async fn generate(
     let sso = sso(&headers);
 
     if !console_csrf_valid_in(&headers, &form.csrf_token, state.config.csrf_secret()) {
-        // Messages は await の後に作る（non-Send のため await をまたがない）。
+        // Build Messages after the await (it is non-Send, so it must not live across an await).
         let keys = state
             .api
             .list_signing_keys(&correlation.0, &tenant.0, &sso)
@@ -143,7 +143,7 @@ pub struct KidForm {
     pub csrf_token: String,
 }
 
-/// 署名鍵を退役させる（`POST /{tenant_id}/admin/signing-keys/retire`）。
+/// Retires a signing key (`POST /{tenant_id}/admin/signing-keys/retire`).
 pub async fn retire(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -210,7 +210,7 @@ pub async fn retire(
     }
 }
 
-/// 署名鍵を削除する（`POST /{tenant_id}/admin/signing-keys/delete`）。RETIRED のみ可。
+/// Deletes a signing key (`POST /{tenant_id}/admin/signing-keys/delete`). Only RETIRED keys.
 pub async fn delete(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -277,7 +277,7 @@ pub async fn delete(
     }
 }
 
-// ── ヘルパー ─────────────────────────────────────────────────────────────────
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn sso(headers: &HeaderMap) -> String {
     cookies::get(headers, cookies::SSO_SESSION_COOKIE).unwrap_or_default()

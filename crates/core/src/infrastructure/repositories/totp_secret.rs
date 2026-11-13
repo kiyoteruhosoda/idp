@@ -1,15 +1,15 @@
-//! `TotpSecretRepository` の sqlx 実装。
+//! sqlx implementation of `TotpSecretRepository`.
 //!
-//! # 秘密の置き場所
+//! # Where the secret lives
 //!
-//! 共有鍵は**認証器の登録簿**（`user_authenticators.secret_encrypted`）にだけ在る（AP11b。
-//! 元の表 `user_totp_secrets` は migration 0038 で削除した）。
+//! The shared key lives only in **the authenticator registry** (`user_authenticators.secret_encrypted`) (AP11b;
+//! the original table `user_totp_secrets` was dropped in migration 0038).
 //!
-//! 対象にするのは「失効していない TOTP の行」である。再登録すると古い行は `revoked` になるため、
-//! 失効した行まで見ると**取り消したはずの共有鍵で認証が通る**。
+//! The target is "non-revoked TOTP rows". Re-registering makes the old row `revoked`, so
+//! looking at revoked rows too would **let authentication pass with a shared key that should have been revoked**.
 //!
-//! トレイト（DIP 境界）は移行の前後で変えていない。秘密がどの表にあるかは infrastructure の
-//! 都合であり、呼び出し側（ログイン・step-up・登録）が知る必要は無い。
+//! The trait (DIP boundary) did not change across the migration. Which table holds the secret is an infrastructure
+//! concern; callers (login, step-up, registration) need not know.
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::TotpSecretRepository;
@@ -54,11 +54,11 @@ fn map_row(row: &MySqlRow) -> Result<TotpSecret> {
 
 #[async_trait]
 impl TotpSecretRepository for SqlxTotpSecretRepository {
-    /// 共有鍵を登録簿の行へ載せる。
+    /// Puts the shared key on the registry row.
     ///
-    /// 行そのものは `AuthenticatorManagementService::register_totp_pending` が先に作る。
-    /// **1 行も更新できなかったら失敗させる**——秘密の置き場所が登録簿だけになった以上、
-    /// 黙って何もしないと「登録できたのに設定されていない」利用者ができる。
+    /// The row itself is created first by `AuthenticatorManagementService::register_totp_pending`.
+    /// **Fails if not a single row was updated** -- now that the registry is the only place for the secret,
+    /// silently doing nothing would create users who "registered but are not set up".
     async fn upsert(&self, secret: &TotpSecret) -> Result<()> {
         let result = sqlx::query(
             "UPDATE user_authenticators \
@@ -94,8 +94,8 @@ impl TotpSecretRepository for SqlxTotpSecretRepository {
         row.as_ref().map(map_row).transpose()
     }
 
-    /// 確認時刻を記録する。`status` の遷移（`pending` → `active`）は
-    /// `AuthenticatorManagementService::activate_totp` が行う。
+    /// Records the confirmation time. The `status` transition (`pending` -> `active`) is done by
+    /// `AuthenticatorManagementService::activate_totp`.
     async fn confirm(&self, user_id: Uuid, confirmed_at: DateTime<Utc>) -> Result<()> {
         sqlx::query(
             "UPDATE user_authenticators SET confirmed_at = ? \
@@ -110,8 +110,8 @@ impl TotpSecretRepository for SqlxTotpSecretRepository {
         Ok(())
     }
 
-    /// 共有鍵を消す。**行は残す**（失効は `AuthenticatorManagementService::revoke_totp` が
-    /// `status` で表す）。消し忘れると、失効させたはずの共有鍵が DB に残り続ける。
+    /// Clears the shared key. **The row is kept** (revocation is expressed by `AuthenticatorManagementService::revoke_totp`
+    /// via `status`). Forgetting to clear it would leave a shared key that should have been revoked in the DB.
     async fn delete(&self, user_id: Uuid) -> Result<()> {
         sqlx::query(
             "UPDATE user_authenticators SET secret_encrypted = NULL \
@@ -124,12 +124,12 @@ impl TotpSecretRepository for SqlxTotpSecretRepository {
         Ok(())
     }
 
-    /// 受理した time-step を記録する。**記録済みより新しいときだけ**更新し、更新できたら `true`。
+    /// Records an accepted time-step. Updates **only if newer than the recorded one**, returning `true` if updated.
     ///
-    /// `totp_last_used_step < ?` を WHERE に含めることで、判定と書き込みを 1 文の原子的操作にする。
-    /// 同じコード（同じステップ）で競合した 2 つのリクエストのうち、先に UPDATE した一方だけが
-    /// `rows_affected == 1` になり、もう一方は `0`（＝リプレイ）になる。NULL（未記録）は
-    /// `COALESCE` で -1 とみなし、初回は必ず記録できるようにする。
+    /// Including `totp_last_used_step < ?` in the WHERE makes the check and the write one atomic statement.
+    /// Of 2 requests racing with the same code (same step), only the one that UPDATEs first gets
+    /// `rows_affected == 1`; the other gets `0` (= replay). NULL (not recorded) is treated as -1
+    /// via `COALESCE`, so the first one can always be recorded.
     async fn record_totp_step_if_newer(
         &self,
         user_id: Uuid,

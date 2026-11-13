@@ -1,18 +1,18 @@
-//! 招待とメンバーシップのユースケース（ADR-0009 §3）。
+//! Invitation and membership use case (ADR-0009 §3).
 //!
-//! ユーザーが所属元以外のテナントに参加する唯一の経路は**招待**（Entra ID の B2B ゲストに相当）。
-//! 参加先テナントの管理者が招待を作成すると、一度限りの**招待トークン**をレスポンスで返す
-//! （`generated_password` と同じ「一度だけ返し、管理者が別途本人へ通知する」パターン。トークンは
-//! ハッシュのみ保存し、ログ・監査ログに出力しない）。被招待者は**所属元テナントでログイン済みの
-//! セッション**で承諾エンドポイントにトークンを提示し、メンバーシップが `ACTIVE` になる。本人性は
-//! トークンの所持とログイン済みセッションで確認する。
+//! The only way for a user to join a tenant other than their home tenant is an **invitation** (like Entra ID's B2B guests).
+//! When a host tenant's admin creates an invitation, a one-time **invitation token** is returned in the response
+//! (the same "return once, the admin notifies the person separately" pattern as `generated_password`. Only the token's
+//! hash is stored, and it is never written to logs or the audit log). The invitee presents the token to the accept endpoint
+//! with **a session logged in at their home tenant**, and the membership becomes `ACTIVE`. Identity is confirmed
+//! by possession of the token and the logged-in session.
 //!
-//! 参加先テナントの管理者がゲストに対して行えるのは「メンバーシップの解除」と「参加先テナントを
-//! scope とする権限の付与・剥奪」のみで、ゲストの `users` レコード（パスワード・状態・MFA・
-//! プロフィール）は操作できない（それは所属元テナントの管理者と本人のみ。§3）。判定・検証は本
-//! Application 層で完結し、Presentation には結果のみ返す（CLAUDE.md「権限管理」）。HTTP
-//! エンドポイント（`/{tenant_id}/admin/invitations`・`/{tenant_id}/invitations/accept`・
-//! `/{tenant_id}/admin/members/{user_id}`）は MT11 で presentation に追加する。
+//! All a host tenant's admin can do to a guest is "remove the membership" and "grant/revoke permissions scoped to
+//! the host tenant"; they can't touch the guest's `users` record (password, state, MFA,
+//! profile) (only the home tenant's admins and the person can. §3). Decisions and validation are completed in this
+//! Application layer, and only the result is returned to Presentation (CLAUDE.md "Permission management"). The HTTP
+//! endpoints (`/{tenant_id}/admin/invitations`, `/{tenant_id}/invitations/accept`,
+//! `/{tenant_id}/admin/members/{user_id}`) are added to presentation in MT11.
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::system_settings::SystemSettingsService;
@@ -43,53 +43,53 @@ use uuid::Uuid;
 pub enum InvitationError {
     #[error("not found")]
     NotFound,
-    /// 既に当該テナントのメンバー（HOME/GUEST/INVITED）である。
+    /// Already a member of the tenant (HOME/GUEST/INVITED).
     #[error("already a member")]
     AlreadyMember,
-    /// 相手の指し方が、メールアドレスでも内部 ID（UUID）でもない（ADR-0061）。
+    /// The invitee reference is neither an email address nor an internal ID (UUID) (ADR-0061).
     #[error("validation error: {0}")]
     Validation(MessageKey),
-    /// 承諾者が被招待ユーザー本人でない／HOME は解除できない等。
+    /// The accepter isn't the invited user, HOME can't be removed, etc.
     #[error("forbidden: {0}")]
     Forbidden(MessageKey),
-    /// 招待トークンが無効・期限切れ。
+    /// The invitation token is invalid or expired.
     #[error("invalid or expired invitation")]
     InvalidOrExpired,
     #[error("internal error: {0}")]
     Internal(String),
 }
 
-/// 招待作成の結果。`token` は平文の招待トークンで、**この一度だけ**返す（保存はハッシュのみ）。
+/// Result of creating an invitation. `token` is the plaintext invitation token, returned **only this once** (only the hash is stored).
 pub struct CreatedInvitation {
-    /// 平文の招待トークン。メール未達時に管理者が被招待者へ別途通知する（ログ・監査には出さない）。
+    /// Plaintext invitation token. If the mail doesn't arrive, the admin notifies the invitee separately (never in logs or audit).
     pub token: String,
     pub expires_at: DateTime<Utc>,
-    /// 招待メール（承諾リンク）を被招待者へ送信できたか（MT17）。SMTP 未設定・送信失敗は `false`
-    /// （招待自体は成立しており、管理者がトークンを手動で伝達する）。
+    /// Whether the invitation email (accept link) could be sent to the invitee (MT17). `false` if SMTP is unset or sending failed
+    /// (the invitation itself is valid, and the admin conveys the token manually).
     pub email_sent: bool,
-    /// 被招待者のメールアドレス（画面表示用。送信先の確認）。⚠ **メールアドレスで招いたときだけ**
-    /// 入る（＝呼び出し元が入力した値の写し）。内部 ID で招いたときは `None`（task #591）——ID だけで
-    /// 他のテナントの利用者のアドレスを引き出せてしまうため。
+    /// The invitee's email address (for display; to confirm the destination). ⚠ **Set only when invited by email address**
+    /// (= a copy of the value the caller entered). `None` when invited by internal ID (task #591) ——otherwise an ID alone
+    /// could pull out the address of a user in another tenant.
     pub invitee_email: Option<String>,
 }
 
-/// 招待トークンのバイト長（base64url で 43 文字程度）。
+/// Byte length of the invitation token (about 43 chars in base64url).
 const INVITATION_TOKEN_BYTES: usize = 32;
 
 pub struct InvitationService {
     users: Arc<dyn UserRepository>,
     memberships: Arc<dyn TenantMembershipRepository>,
     permissions: Arc<dyn UserPermissionRepository>,
-    /// ゲスト停止時に当該テナント分の refresh token を失効させるために使う（MT24）。
+    /// Used to revoke that tenant's refresh tokens when a guest is suspended (MT24).
     refresh_tokens: Arc<dyn RefreshTokenRepository>,
-    /// SMTP 接続情報の出所（MT14 のシステム設定。実行時に変更されるため送信ごとに引く）。
+    /// Source of SMTP connection info (MT14 system settings; changes at runtime, so looked up for each send).
     system_settings: Arc<SystemSettingsService>,
     mailer: Arc<dyn Mailer>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
-    /// テナントが上書きできる設定の解決（ADR-0058）。参照のたびに引く。
+    /// Resolution of settings tenants can override (ADR-0058). Looked up every time.
     settings: Arc<dyn EffectiveTenantSettings>,
-    /// 承諾リンクの土台となる公開ベース URL（web 画面。末尾スラッシュ無し）。
+    /// Public base URL the accept link is built on (web screens; no trailing slash).
     console_base_url: String,
 }
 
@@ -121,12 +121,12 @@ impl InvitationService {
         }
     }
 
-    /// 参加先テナント（`host`）へゲスト招待を作成する。被招待ユーザーは既存ユーザー（所属元は他
-    /// テナント）でなければならない。既にメンバー（HOME/GUEST/INVITED）なら `AlreadyMember`。
-    /// 平文トークンを**一度だけ**返す（保存はハッシュのみ）。
+    /// Creates a guest invitation to the host tenant (`host`). The invited user must be an existing user (whose home is
+    /// another tenant). If already a member (HOME/GUEST/INVITED), `AlreadyMember`.
+    /// Returns the plaintext token **only once** (only the hash is stored).
     ///
-    /// `invitee` は**メールアドレス、または内部 ID（UUID）**（ADR-0061）。読み分けは
-    /// [`Self::resolve_invitee`] に閉じ、呼び出し側は 1 本の入力を渡すだけでよい。
+    /// `invitee` is **an email address or an internal ID (UUID)** (ADR-0061). Telling them apart is enclosed in
+    /// [`Self::resolve_invitee`]; the caller just passes a single input.
     pub async fn create_invitation(
         &self,
         host: TenantContext,
@@ -136,12 +136,12 @@ impl InvitationService {
     ) -> Result<CreatedInvitation, InvitationError> {
         let host_id = host.tenant_id();
 
-        // 被招待ユーザーが実在すること。所属元が host のユーザーは既に HOME メンバーであり、
-        // 下の membership 存在チェックで `AlreadyMember` に倒れる。
+        // The invited user must exist. A user whose home is host is already a HOME member and
+        // falls to `AlreadyMember` in the membership existence check below.
         let (invitee, named_by_email) = self.resolve_invitee(invitee).await?;
         let target_user_id = invitee.id;
 
-        // 既存メンバーシップ（HOME/GUEST/INVITED）があれば二重招待しない。
+        // Don't invite twice if a membership (HOME/GUEST/INVITED) already exists.
         match self.memberships.find(host_id, target_user_id).await {
             Ok(Some(_)) => return Err(InvitationError::AlreadyMember),
             Ok(None) => {}
@@ -150,8 +150,8 @@ impl InvitationService {
 
         let now = self.clock.now();
         let token = crypto::random_token(INVITATION_TOKEN_BYTES);
-        // 有効期間は招待した参加先テナントの値（招待は参加先のメンバーシップ行。ADR-0058）。
-        // 承諾側は保存した `expires_at` を見るので、発行と検証で値が食い違うことはない。
+        // The lifetime is the inviting host tenant's value (the invitation is a membership row of the host tenant. ADR-0058).
+        // The accepting side looks at the stored `expires_at`, so issuance and verification can't disagree.
         let invitation_ttl = self
             .settings
             .invitation_ttl(host_id)
@@ -163,8 +163,8 @@ impl InvitationService {
             user_id: target_user_id,
             membership_type: MembershipType::Guest,
             status: MembershipStatus::Invited,
-            // `tenant_memberships.invited_by` は利用者 ID の列なので、機械が招待した場合は
-            // 記録先が無い（誰が招待したかは監査ログの `reason` の `actor_client=` に残る）。
+            // `tenant_memberships.invited_by` is a user ID column, so when a machine invites there's nowhere
+            // to record it (who invited is kept in the audit log's `reason` as `actor_client=`).
             invited_by: invited_by.user_id(),
             invitation_token_hash: Some(crypto::sha256_hex(&token)),
             invitation_expires_at: Some(expires_at),
@@ -176,7 +176,7 @@ impl InvitationService {
             .await
             .map_err(|e| InvitationError::Internal(e.to_string()))?;
 
-        // 監査には被招待者の内部 ID のみ記録する（招待トークンは出さない。§3）。
+        // Only the invitee's internal ID is recorded in the audit (the invitation token isn't output. §3).
         self.audit
             .record(
                 AuditEventType::TenantInvitationCreated,
@@ -189,8 +189,8 @@ impl InvitationService {
             )
             .await;
 
-        // 承諾リンクをメールで配送する（MT17）。SMTP 未設定・送信失敗でも招待は成立しており、
-        // best-effort（`email_sent` で結果を返し、管理者が手動伝達へフォールバックできる）。
+        // Deliver the accept link by email (MT17). Even if SMTP is unset or sending fails, the invitation is valid;
+        // best-effort (the result is returned in `email_sent`, and the admin can fall back to conveying it manually).
         let email_sent = self
             .deliver_invitation_email(&invitee.email, host_id, &token, expires_at)
             .await;
@@ -203,18 +203,18 @@ impl InvitationService {
         })
     }
 
-    /// 招待する相手を決める（ADR-0061）。入力はメールアドレス、または内部 ID（UUID）。
+    /// Decides who to invite (ADR-0061). The input is an email address or an internal ID (UUID).
     ///
-    /// **UUID を先に読む。** メールアドレスとして成り立たない文字列だけがこちらへ来るので順序は
-    /// 本来どちらでもよいが、先に試すほうが「ID を貼った」意図を取り違えない。
+    /// **UUID is read first.** Only strings that aren't valid email addresses come here, so the order doesn't really
+    /// matter, but trying it first avoids misreading the intent of "pasted an ID".
     ///
-    /// メールで引くのは**テナントを跨いでちょうど 1 人**のときだけで、0 人も複数人も同じ
-    /// `NotFound` にする（[`UserRepository::find_active_user_by_email_across_tenants`]）。
-    /// ⚠ **複数人を「曖昧です」と言い分けない** —— 参加先の管理者は相手のテナントの名簿を
-    /// 見られないので、言い分けると「このアドレスの利用者が他にも居る」ことだけが分かる。
-    /// 逃げ道（内部 ID で指す）は画面の説明に書いてある。
+    /// Lookup by email only succeeds when there is **exactly one person across tenants**; zero and several both give the same
+    /// `NotFound` ([`UserRepository::find_active_user_by_email_across_tenants`]).
+    /// ⚠ **Don't distinguish several as "ambiguous"** —— the host tenant's admin can't see the other tenant's roster,
+    /// so distinguishing would reveal only that "other users with this address exist".
+    /// The way out (referring by internal ID) is explained on screen.
     ///
-    /// 返す真偽値は「メールアドレスで指したか」（応答にアドレスを載せてよいか。task #591）。
+    /// The returned bool is "whether referred to by email address" (whether the address may be put in the response. task #591).
     async fn resolve_invitee(&self, input: &str) -> Result<(User, bool), InvitationError> {
         let input = input.trim();
         if let Ok(id) = Uuid::parse_str(input) {
@@ -240,9 +240,9 @@ impl InvitationService {
         }
     }
 
-    /// 招待メール（承諾リンク）を配送する。成功なら `true`。SMTP 未設定は静かに `false`、
-    /// 送信失敗は warning ログ（PII を含めないため宛先は出さず、被招待者の内部情報も出さない）。
-    /// 文言は MT19（API の多言語化）まで日英併記の固定文とする。
+    /// Delivers the invitation email (accept link). `true` on success. SMTP unset quietly gives `false`;
+    /// a send failure logs a warning (no destination, to avoid PII, and no internal info about the invitee).
+    /// Until MT19 (API i18n), the wording is fixed text in both Japanese and English.
     async fn deliver_invitation_email(
         &self,
         to: &str,
@@ -250,7 +250,7 @@ impl InvitationService {
         token: &str,
         expires_at: DateTime<Utc>,
     ) -> bool {
-        // 招待は招待するテナントの名前で届く（ADR-0058 §8）。
+        // The invitation arrives under the inviting tenant's name (ADR-0058 §8).
         let server = match self.system_settings.smtp_server_for(host_id).await {
             Ok(Some(server)) => server,
             Ok(None) => return false,
@@ -259,7 +259,7 @@ impl InvitationService {
                 return false;
             }
         };
-        // トークンは base64url（URL 安全）なのでそのまま連結できる。
+        // The token is base64url (URL-safe), so it can be concatenated as-is.
         let accept_url = format!(
             "{}/{}/invitations/accept?token={}",
             self.console_base_url, host_id, token
@@ -289,10 +289,10 @@ impl InvitationService {
         }
     }
 
-    /// 招待を承諾する。承諾者は**所属元テナントでログイン済み**のユーザー（`session_user_id`）で、
-    /// トークンを提示する。本人性はトークンの所持 + ログイン済みセッションで確認する（§3）。
-    /// トークンが当該テナント（`tenant`）の招待でない／期限切れ／不存在は一律 `InvalidOrExpired`、
-    /// 承諾者が被招待者本人でなければ `Forbidden`。
+    /// Accepts an invitation. The accepter is a user **logged in at the home tenant** (`session_user_id`) who
+    /// presents the token. Identity is confirmed by possession of the token + the logged-in session (§3).
+    /// A token that isn't an invitation of this tenant (`tenant`), is expired, or doesn't exist is uniformly `InvalidOrExpired`;
+    /// if the accepter isn't the invitee, `Forbidden`.
     pub async fn accept_invitation(
         &self,
         tenant: TenantContext,
@@ -314,17 +314,17 @@ impl InvitationService {
             Err(e) => return Err(InvitationError::Internal(e.to_string())),
         };
 
-        // トークンは当該テナントの招待でなければならない（別テナントの承諾エンドポイントで使わせない）。
+        // The token must be an invitation of this tenant (don't let it be used at another tenant's accept endpoint).
         if membership.tenant_id != tenant.tenant_id() {
             return Err(InvitationError::InvalidOrExpired);
         }
-        // 承諾者は被招待ユーザー本人であること（ログイン済みセッションで確認。§3）。
+        // The accepter must be the invited user (confirmed by the logged-in session. §3).
         if membership.user_id != session_user_id {
             return Err(InvitationError::Forbidden(MessageKey::new(
                 "api-invitation-not-invitee",
             )));
         }
-        // 期限切れは承諾不可（INVITED のまま）。
+        // Expired invitations can't be accepted (stays INVITED).
         let now = self.clock.now();
         match membership.invitation_expires_at {
             Some(exp) if exp > now => {}
@@ -351,20 +351,20 @@ impl InvitationService {
         Ok(())
     }
 
-    /// ゲストメンバーシップを一時停止する（MT24）。GUEST の `ACTIVE` のみ（それ以外は `Forbidden`）。
+    /// Suspends a guest membership (MT24). Only GUEST `ACTIVE` (otherwise `Forbidden`).
     ///
-    /// 解除（[`revoke_membership`](Self::revoke_membership)）との違いは**元に戻せること**。
-    /// メンバーシップ行と当該テナント scope の権限行を残したまま `SUSPENDED` にし、アクセスだけを
-    /// 止める。再開すれば権限も含めて元の状態に戻るため、休職・委託の中断のような一時的な措置に使える。
+    /// The difference from removal ([`revoke_membership`](Self::revoke_membership)) is that **it can be undone**.
+    /// It sets `SUSPENDED` while keeping the membership row and the permission rows scoped to the tenant, stopping only access.
+    /// Resuming restores the original state including permissions, so it suits temporary measures like leave or a paused contract.
     ///
-    /// 併せて**当該テナントで発行済みの refresh token を失効させる**。停止は `/authorize` の
-    /// メンバーシップ判定（`is_active_member`）で効くが、既存の refresh token はそこを通らず
-    /// トークンを更新し続けられるため、これを失効させないと停止が効くのは最長で refresh token の
-    /// 寿命（既定 30 日）先になる。
+    /// It also **revokes the refresh tokens issued in this tenant**. Suspension takes effect via `/authorize`'s
+    /// membership check (`is_active_member`), but existing refresh tokens don't go through it and
+    /// can keep refreshing, so without revoking them suspension would take effect only up to the refresh token's
+    /// lifetime later (default 30 days).
     ///
-    /// SSO セッションは**失効させない**。SSO セッションはホスト単位で共有され（ADR-0009 §8）、
-    /// 消すとその利用者の所属元テナントのログインまで巻き込む。停止は 1 テナントに対する措置であり、
-    /// 他テナントでの利用を妨げてはいけない。当該テナントへのアクセスは次の `/authorize` で止まる。
+    /// SSO sessions are **not revoked**. SSO sessions are shared per host (ADR-0009 §8), and deleting them
+    /// would also take down the user's login at their home tenant. Suspension is a measure against one tenant and
+    /// must not prevent use in other tenants. Access to this tenant stops at the next `/authorize`.
     pub async fn suspend_membership(
         &self,
         host: TenantContext,
@@ -385,10 +385,10 @@ impl InvitationService {
             .await
             .map_err(|e| InvitationError::Internal(e.to_string()))?;
 
-        // 当該テナント分の refresh token を失効させる（他テナント分は残す）。失効できなければ
-        // 停止が効かないままになるため、成功を返さない（fail-closed）。メンバーシップは既に
-        // SUSPENDED だが、再実行は冪等ではないので（停止済みは Forbidden）、運用は解除か
-        // 再開→再停止で復旧する。
+        // Revoke this tenant's refresh tokens (other tenants' are kept). If revocation fails,
+        // suspension wouldn't take effect, so success is not returned (fail-closed). The membership is already
+        // SUSPENDED, but re-running isn't idempotent (already suspended is Forbidden), so operations recover by removing it or
+        // resuming -> suspending again.
         self.refresh_tokens
             .revoke_all_for_user_in_tenant(host_id, target_user_id, self.clock.now())
             .await
@@ -408,8 +408,8 @@ impl InvitationService {
         Ok(())
     }
 
-    /// 一時停止したゲストメンバーシップを再開する（MT24）。`SUSPENDED` の GUEST のみ。
-    /// 権限行は停止中も残っているため、`ACTIVE` へ戻すだけで停止前の状態に復帰する。
+    /// Resumes a suspended guest membership (MT24). Only a `SUSPENDED` GUEST.
+    /// Permission rows remain during suspension, so returning to `ACTIVE` restores the pre-suspension state.
     pub async fn resume_membership(
         &self,
         host: TenantContext,
@@ -444,7 +444,7 @@ impl InvitationService {
         Ok(())
     }
 
-    /// 当該テナントのメンバーシップ行を取得する。不存在は `NotFound`（テナント越しの存在推測を防ぐ）。
+    /// Fetches the tenant's membership row. Missing is `NotFound` (prevents cross-tenant existence guessing).
     async fn require_membership(
         &self,
         host_id: TenantId,
@@ -457,12 +457,12 @@ impl InvitationService {
         }
     }
 
-    /// ゲストメンバーシップを解除する（ゲストの追放。§3）。HOME は解除できない（`Forbidden`）。
-    /// 解除時、当該テナントを scope とするそのユーザーの権限行も削除する（§3）。
+    /// Removes a guest membership (expelling the guest. §3). HOME can't be removed (`Forbidden`).
+    /// On removal, that user's permission rows scoped to the tenant are also deleted (§3).
     ///
-    /// 順序は fail-closed: **権限剥奪 → メンバーシップ削除**。管理アクセス判定（`RequirePerms`）は
-    /// 権限行のみを見るため、権限剥奪が失敗した場合は操作全体を失敗させる（メンバーシップを残す）。
-    /// 逆順にすると、権限の後始末が失敗したとき追放済みゲストが管理権限を保持し続けてしまう。
+    /// The order is fail-closed: **revoke permissions -> delete membership**. The admin access check (`RequirePerms`)
+    /// looks only at permission rows, so if revoking permissions fails, the whole operation fails (the membership stays).
+    /// In the reverse order, if cleaning up permissions failed, an expelled guest would keep admin permissions.
     pub async fn revoke_membership(
         &self,
         host: TenantContext,
@@ -478,8 +478,8 @@ impl InvitationService {
             )));
         }
 
-        // 当該テナントを scope とする権限行を一括削除する（§3）。失敗時はここで中断し、
-        // メンバーシップは削除しない（fail-closed。キャッシュ invalidation は repository 側）。
+        // Bulk-delete the permission rows scoped to the tenant (§3). On failure, stop here and
+        // don't delete the membership (fail-closed; cache invalidation is on the repository side).
         self.permissions
             .revoke_all_for_user_in_tenant(host_id, target_user_id)
             .await
@@ -521,7 +521,7 @@ mod tests {
     use chrono::TimeZone;
     use std::sync::Mutex;
 
-    /// テスト用の秘匿値暗号化キー（SMTP パスワードの復号検証に使う）。
+    /// Encryption key for secret values in tests (used to verify decryption of the SMTP password).
     const TEST_KEY: [u8; 32] = *b"unit-test-key-0123456789abcdef!!";
 
     fn now() -> DateTime<Utc> {
@@ -548,13 +548,13 @@ mod tests {
     }
 
     struct FakeUsers {
-        /// 複数人持てるようにしてあるのは、**同じメールアドレスの利用者が 2 つのテナントに
-        /// 居る**状況を作るため（ADR-0061）。
+        /// It can hold several so we can create the situation of **users with the same email address in two
+        /// tenants** (ADR-0061).
         users: Vec<User>,
     }
     #[async_trait]
     impl UserRepository for FakeUsers {
-        /// このテストはログイン失敗経路を通らない（SEC13 の検証は login / mfa_login にある）。
+        /// These tests don't go through the login failure path (SEC13 verification is in login / mfa_login).
         async fn record_login_failure(
             &self,
             _id: Uuid,
@@ -569,8 +569,8 @@ mod tests {
         async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<User>> {
             Ok(self.users.iter().find(|u| u.id == id).cloned())
         }
-        /// 本物（sqlx 実装）と同じ規則で答える —— ACTIVE な利用者にちょうど 1 人当たるときだけ返し、
-        /// 0 人でも複数人でも `None`（ADR-0061）。
+        /// Answers by the same rule as the real one (sqlx implementation) —— returns only when exactly one ACTIVE user matches,
+        /// `None` for zero or several (ADR-0061).
         async fn find_active_user_by_email_across_tenants(
             &self,
             email: &str,
@@ -632,7 +632,7 @@ mod tests {
         }
     }
 
-    /// テナント単位の refresh token 失効を記録するフェイク（MT24）。
+    /// A fake recording per-tenant refresh token revocation (MT24).
     #[derive(Default)]
     struct FakeRefreshTokens {
         revoked: Mutex<Vec<(TenantId, Uuid)>>,
@@ -676,7 +676,7 @@ mod tests {
             unreachable!()
         }
         async fn revoke_all_for_user(&self, _u: Uuid, _now: DateTime<Utc>) -> DomainResult<u64> {
-            // ゲストの停止はテナント単位で失効させる（ユーザー全体を巻き込まない）。
+            // Guest suspension revokes per tenant (doesn't take down the whole user).
             unreachable!()
         }
         async fn count_active_for_user(&self, _u: Uuid, _now: DateTime<Utc>) -> DomainResult<u64> {
@@ -784,7 +784,7 @@ mod tests {
     #[derive(Default)]
     struct FakePermissions {
         granted: Mutex<Vec<(TenantId, Uuid, String)>>,
-        /// 一括剥奪を失敗させる（後始末失敗で操作全体が中断されることの検証用）。
+        /// Makes bulk revocation fail (for verifying that a cleanup failure aborts the whole operation).
         fail_revoke_all: bool,
     }
     #[async_trait]
@@ -890,7 +890,7 @@ mod tests {
         }
     }
 
-    /// システム設定のインメモリフェイク（SMTP 設定の有無を切り替える）。
+    /// In-memory fake of system settings (toggles whether SMTP settings exist).
     #[derive(Default)]
     struct FakeSettingsRepo {
         rows: Mutex<Vec<SystemSetting>>,
@@ -910,7 +910,7 @@ mod tests {
         }
     }
 
-    /// 送信内容（接続情報＋メール）を記録するメーラのフェイク。
+    /// A fake mailer recording what was sent (connection info + mail).
     #[derive(Default)]
     struct FakeMailer {
         sent: Mutex<Vec<(SmtpServerConfig, OutgoingEmail)>>,
@@ -932,7 +932,7 @@ mod tests {
         }
     }
 
-    /// SMTP を設定済みにするフェイク設定（パスワードは TEST_KEY で暗号化して保存する）。
+    /// Fake settings with SMTP configured (the password is stored encrypted with TEST_KEY).
     fn smtp_configured_settings() -> Arc<FakeSettingsRepo> {
         let repo = Arc::new(FakeSettingsRepo::default());
         let mut rows = vec![
@@ -982,7 +982,7 @@ mod tests {
         )
     }
 
-    /// 利用者を複数持たせる版（メールアドレスの曖昧さを作るテストで使う）。
+    /// Version holding several users (used by tests that create email address ambiguity).
     #[allow(clippy::too_many_arguments)]
     fn service_with_users(
         users: Vec<User>,
@@ -1061,7 +1061,7 @@ mod tests {
             .await
             .expect("invitation created");
         assert!(!created.token.is_empty());
-        // 保存されるのはハッシュのみ（平文は保持しない）。
+        // Only the hash is stored (no plaintext kept).
         let stored_hash = memberships.rows.lock().unwrap()[0]
             .invitation_token_hash
             .clone()
@@ -1069,7 +1069,7 @@ mod tests {
         assert_eq!(stored_hash, crypto::sha256_hex(&created.token));
         assert_ne!(stored_hash, created.token);
 
-        // 被招待者本人がトークンを提示して承諾 → ACTIVE。
+        // The invitee presents the token and accepts -> ACTIVE.
         svc.accept_invitation(TenantContext::new(host), guest, &created.token, &ctx())
             .await
             .expect("accepted");
@@ -1091,7 +1091,7 @@ mod tests {
                 AuditEventType::TenantInvitationAccepted
             ]
         );
-        // 監査に招待トークンが漏れていない。
+        // The invitation token hasn't leaked into the audit.
         assert!(sink.events.lock().unwrap().iter().all(|e| {
             e.reason
                 .as_deref()
@@ -1127,26 +1127,26 @@ mod tests {
             .await
             .expect("created");
         assert!(created.email_sent);
-        // ⚠ 内部 ID で招いたので、応答にアドレスは載らない（task #591）。メールは届いている。
+        // ⚠ Invited by internal ID, so the address isn't in the response (task #591). The mail was delivered.
         assert_eq!(created.invitee_email, None);
 
         let sent = mailer.sent.lock().unwrap();
         assert_eq!(sent.len(), 1);
         let (server, mail) = &sent[0];
-        // 接続情報はシステム設定から解決され、パスワードは復号済みで渡る。
+        // Connection info is resolved from system settings, and the password is passed decrypted.
         assert_eq!(server.host, "smtp.example.com");
         assert_eq!(server.port, Some(587));
         assert_eq!(server.password, "mail-secret");
         assert_eq!(server.from_address, "noreply@example.com");
         assert!(server.use_tls);
-        // 宛先は被招待者のメール。本文に承諾リンク（host テナント + トークン）を含む。
+        // The destination is the invitee's email. The body contains the accept link (host tenant + token).
         assert_eq!(mail.to, "guest@other.example.com");
         let expected_url = format!(
             "https://idp.example.com/{}/invitations/accept?token={}",
             host, created.token
         );
         assert!(mail.body_text.contains(&expected_url));
-        // 監査ログにはトークンを出さない（本文はメールのみ）。
+        // The token isn't output to the audit log (only in the mail body).
         assert!(sink.events.lock().unwrap().iter().all(|e| {
             e.reason
                 .as_deref()
@@ -1166,7 +1166,7 @@ mod tests {
             Arc::new(FakeMemberships::default()),
             Arc::new(FakePermissions::default()),
             Arc::new(CapturingSink::default()),
-            Arc::new(FakeSettingsRepo::default()), // SMTP 未設定
+            Arc::new(FakeSettingsRepo::default()), // SMTP not configured
             mailer.clone(),
             Arc::new(FakeRefreshTokens::default()),
         );
@@ -1180,7 +1180,7 @@ mod tests {
             )
             .await
             .expect("created");
-        // 招待は成立し、メールは送られない（トークンの手動伝達）。
+        // The invitation is valid and no mail is sent (the token is conveyed manually).
         assert!(!created.email_sent);
         assert!(!created.token.is_empty());
         assert!(mailer.sent.lock().unwrap().is_empty());
@@ -1214,7 +1214,7 @@ mod tests {
             )
             .await
             .expect("created despite mail failure");
-        // best-effort: 送信失敗でも招待（INVITED 行）は残り、email_sent = false で報告する。
+        // best-effort: even if sending fails, the invitation (INVITED row) remains and email_sent = false is reported.
         assert!(!created.email_sent);
         assert_eq!(memberships.rows.lock().unwrap().len(), 1);
     }
@@ -1248,10 +1248,10 @@ mod tests {
         ));
     }
 
-    /// **相手をメールアドレスで指して招ける**（ADR-0061）。
+    /// **The invitee can be referred to by email address** (ADR-0061).
     ///
-    /// 参加先テナントの管理者は相手のテナントの名簿を見られないので、内部 ID を知らないまま
-    /// 招けることがこの経路の目的である。
+    /// A host tenant's admin can't see the other tenant's roster, so the purpose of this path is
+    /// inviting without knowing the internal ID.
     #[tokio::test]
     async fn create_accepts_an_email_address_as_the_invitee() {
         let host: TenantId = Uuid::now_v7().into();
@@ -1279,15 +1279,15 @@ mod tests {
             created.invitee_email.as_deref(),
             Some("guest@other.example.com")
         );
-        // 招いた相手は ID で指したときと同じ人（メンバーシップの行き先で確かめる）。
+        // The invited person is the same as when referred to by ID (checked by where the membership points).
         assert!(memberships.find(host, guest).await.unwrap().is_some());
     }
 
-    /// 同じメールアドレスの利用者が 2 つのテナントに居るときは**招かない**。
+    /// When users with the same email address are in two tenants, **no one is invited**.
     ///
-    /// `users.email` の一意性はテナントの中にしか無いので、どちらを招くかは決められない。
-    /// ⚠ **「曖昧です」と言い分けない** —— 言い分けると、参加先の管理者に「このアドレスの利用者が
-    /// 他のテナントにも居る」ことだけが分かってしまう。見つからないときと同じ `NotFound` にする。
+    /// `users.email` is only unique within a tenant, so which one to invite can't be decided.
+    /// ⚠ **Don't distinguish it as "ambiguous"** —— distinguishing would reveal to the host tenant's admin only that
+    /// "a user with this address exists in other tenants too". It is the same `NotFound` as not found.
     #[tokio::test]
     async fn create_refuses_an_email_shared_by_two_tenants() {
         let host: TenantId = Uuid::now_v7().into();
@@ -1318,7 +1318,7 @@ mod tests {
         ));
     }
 
-    /// メールアドレスでも内部 ID でもない入力は、存在の話をする前に断る。
+    /// Input that is neither an email address nor an internal ID is refused before talking about existence.
     #[tokio::test]
     async fn create_rejects_an_invitee_that_is_neither_an_email_nor_an_id() {
         let host: TenantId = Uuid::now_v7().into();
@@ -1383,7 +1383,7 @@ mod tests {
             .await
             .unwrap();
 
-        // 別ユーザーのセッションでは承諾できない。
+        // Can't accept with another user's session.
         assert!(matches!(
             svc.accept_invitation(
                 TenantContext::new(host),
@@ -1394,7 +1394,7 @@ mod tests {
             .await,
             Err(InvitationError::Forbidden(_))
         ));
-        // トークンが別テナントの承諾経路で提示された場合も拒否。
+        // Also refused when the token is presented on another tenant's accept path.
         let other: TenantId = Uuid::now_v7().into();
         assert!(matches!(
             svc.accept_invitation(TenantContext::new(other), guest, &created.token, &ctx())
@@ -1409,7 +1409,7 @@ mod tests {
         let home: TenantId = Uuid::now_v7().into();
         let guest = Uuid::new_v4();
         let memberships = Arc::new(FakeMemberships::default());
-        // TTL 0 の service で期限切れを作る。
+        // Create an expiry with a TTL-0 service.
         let audit = Arc::new(AuditService::new(
             Arc::new(CapturingSink::default()),
             Arc::new(FixedClock(now())),
@@ -1433,7 +1433,7 @@ mod tests {
             Arc::new(FakeMailer::default()),
             audit,
             Arc::new(FixedClock(now())),
-            // 全体は 1 時間のまま、招待した参加先だけが 0 秒と決めている（期限の値は参加先のもの）。
+            // The global value stays 1 hour; only the inviting host tenant sets 0 seconds (the expiry value is the host's).
             {
                 let settings = crate::application::tenant_settings::testing::tenant_settings();
                 settings.set_global("INVITATION_TTL_SECS", "3600");
@@ -1451,7 +1451,7 @@ mod tests {
             )
             .await
             .unwrap();
-        // expires_at == now（`> now` ではない）→ 期限切れ扱い。
+        // expires_at == now (not `> now`) -> treated as expired.
         assert!(matches!(
             svc.accept_invitation(TenantContext::new(host), guest, &created.token, &ctx())
                 .await,
@@ -1482,7 +1482,7 @@ mod tests {
             .lock()
             .unwrap()
             .push((host, guest, "idp.tenant.admin".to_string()));
-        // 別テナント scope の権限は残す。
+        // Permissions scoped to another tenant are kept.
         let other: TenantId = Uuid::now_v7().into();
         permissions
             .granted
@@ -1505,7 +1505,7 @@ mod tests {
         .await
         .expect("revoked");
         assert!(memberships.rows.lock().unwrap().is_empty());
-        // host scope の権限は消え、other scope は残る。
+        // host-scoped permissions are gone, other-scoped ones remain.
         let remaining = permissions.granted.lock().unwrap().clone();
         assert_eq!(
             remaining,
@@ -1515,8 +1515,8 @@ mod tests {
 
     #[tokio::test]
     async fn revoke_aborts_when_permission_cleanup_fails() {
-        // 権限の後始末に失敗したら操作全体を失敗させ、メンバーシップを残す（fail-closed）。
-        // 逆だと追放済みゲストが権限行を通じて管理アクセスを保持し続ける。
+        // If cleaning up permissions fails, the whole operation fails and the membership stays (fail-closed).
+        // Otherwise an expelled guest would keep admin access through permission rows.
         let host: TenantId = Uuid::now_v7().into();
         let home: TenantId = Uuid::now_v7().into();
         let guest = Uuid::new_v4();
@@ -1553,7 +1553,7 @@ mod tests {
             .await,
             Err(InvitationError::Internal(_))
         ));
-        // メンバーシップは削除されない（権限が残る限りメンバーでもあり続ける）。
+        // The membership isn't deleted (as long as permissions remain, they stay a member too).
         assert_eq!(memberships.rows.lock().unwrap().len(), 1);
     }
 
@@ -1583,12 +1583,12 @@ mod tests {
             .await,
             Err(InvitationError::Forbidden(_))
         ));
-        // HOME は残る。
+        // HOME remains.
         assert_eq!(memberships.rows.lock().unwrap().len(), 1);
     }
 
-    /// MT24: 停止はメンバーシップと権限を残したまま `SUSPENDED` にし、当該テナント分の
-    /// refresh token を失効させる。再開すると停止前の状態（権限込み）へ戻る。
+    /// MT24: suspension sets `SUSPENDED` while keeping the membership and permissions, and revokes that tenant's
+    /// refresh tokens. Resuming restores the pre-suspension state (including permissions).
     #[tokio::test]
     async fn suspends_and_resumes_guest_keeping_membership_and_permissions() {
         let host: TenantId = Uuid::now_v7().into();
@@ -1630,17 +1630,17 @@ mod tests {
         let row = memberships.rows.lock().unwrap()[0].clone();
         assert!(row.is_suspended());
         assert!(!row.is_active(), "suspended guests must not pass is_active");
-        // 解除（削除）と違い、メンバーシップも権限も残る。
+        // Unlike removal (deletion), both the membership and permissions remain.
         assert_eq!(memberships.rows.lock().unwrap().len(), 1);
         assert_eq!(permissions.granted.lock().unwrap().len(), 1);
-        // 当該テナント分の refresh token だけを失効させる。
+        // Only this tenant's refresh tokens are revoked.
         assert_eq!(*refresh_tokens.revoked.lock().unwrap(), vec![(host, guest)]);
         assert_eq!(
             sink.events.lock().unwrap()[0].event_type,
             AuditEventType::TenantMembershipSuspended
         );
 
-        // 再開すると ACTIVE へ戻り、権限もそのまま。
+        // Resuming returns to ACTIVE, with permissions intact.
         svc.resume_membership(
             TenantContext::new(host),
             guest,
@@ -1657,7 +1657,7 @@ mod tests {
         );
     }
 
-    /// HOME・招待中・二重停止・未停止の再開はいずれも拒否する（遷移の可否は domain が持つ）。
+    /// HOME, invited, double suspension and resuming a non-suspended one are all refused (the domain owns whether a transition is allowed).
     #[tokio::test]
     async fn suspend_and_resume_reject_invalid_transitions() {
         let host: TenantId = Uuid::now_v7().into();
@@ -1676,7 +1676,7 @@ mod tests {
             Arc::new(CapturingSink::default()),
         );
 
-        // HOME は停止できない（所属元を止めるとログイン先が無くなる）。
+        // HOME can't be suspended (stopping the home tenant would leave nowhere to log in).
         assert!(matches!(
             svc.suspend_membership(
                 TenantContext::new(host),
@@ -1687,7 +1687,7 @@ mod tests {
             .await,
             Err(InvitationError::Forbidden(_))
         ));
-        // ACTIVE を再開しようとしても拒否。
+        // Trying to resume an ACTIVE one is refused too.
         assert!(matches!(
             svc.resume_membership(
                 TenantContext::new(host),
@@ -1698,7 +1698,7 @@ mod tests {
             .await,
             Err(InvitationError::Forbidden(_))
         ));
-        // メンバーシップが無ければ NotFound（テナント越しの存在推測を防ぐ）。
+        // Without a membership, NotFound (prevents cross-tenant existence guessing).
         assert!(matches!(
             svc.suspend_membership(
                 TenantContext::new(Uuid::now_v7().into()),
@@ -1709,7 +1709,7 @@ mod tests {
             .await,
             Err(InvitationError::NotFound)
         ));
-        // 招待中（未承諾）はまだアクセスが無いため停止対象にならない。
+        // Invited (not yet accepted) has no access yet, so it isn't a suspension target.
         let invited = Uuid::new_v4();
         memberships.rows.lock().unwrap().push(TenantMembership {
             tenant_id: host,
@@ -1735,8 +1735,8 @@ mod tests {
         let _ = home;
     }
 
-    /// refresh token の失効に失敗したら停止は成功を返さない（停止したのにトークンで
-    /// アクセスし続けられる、という取り違えを防ぐ）。
+    /// If revoking refresh tokens fails, suspension doesn't return success (prevents the mix-up of being suspended
+    /// yet still able to access with tokens).
     #[tokio::test]
     async fn suspend_fails_when_tenant_refresh_tokens_cannot_be_revoked() {
         let host: TenantId = Uuid::now_v7().into();
@@ -1771,7 +1771,7 @@ mod tests {
             .await,
             Err(InvitationError::Internal(_))
         ));
-        // 失敗したときは監査へ成功を残さない。
+        // On failure, no success is left in the audit.
         assert!(sink.events.lock().unwrap().is_empty());
     }
 }

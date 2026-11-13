@@ -1,14 +1,14 @@
-//! G12: `response_mode=form_post`。
+//! G12: `response_mode=form_post`.
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test response_mode_form_post
 //!
-//! 検証するのは 3 点:
+//! Three things are checked:
 //!
-//! 1. 未知の `response_mode` は**既定へ丸めず**エラーにする。丸めると、RP は `form_post` を
-//!    要求したつもりで認可コードが URL に載って返り、しかもそれに気づけない。
-//! 2. 要求が `/authorize` から**別リクエストの応答時点まで**運ばれる（`auth_sessions` へ保存する）。
-//! 3. 応答は「送信先＋パラメータ」で返り、**送信先に認可コードが載らない**。
+//! 1. An unknown `response_mode` is an error, **not rounded to the default**. If rounded, an RP believing it requested
+//!    `form_post` would get the authorization code back in the URL, without noticing.
+//! 2. The request is carried from `/authorize` **to the time of the response in another request** (stored in `auth_sessions`).
+//! 3. The response comes back as "destination + parameters", and **the destination carries no authorization code**.
 
 mod support;
 
@@ -30,7 +30,7 @@ fn authorize_uri(tenant: &str, client_id: &str, response_mode: &str) -> String {
     )
 }
 
-/// 未知の値は `invalid_request` として RP へ返す（既定の `query` へ丸めない）。
+/// Unknown values are returned to the RP as `invalid_request` (not rounded to the default `query`).
 #[tokio::test]
 async fn an_unsupported_response_mode_is_rejected_instead_of_being_defaulted() {
     let Some(env) = setup("response_mode rejection").await else {
@@ -53,14 +53,14 @@ async fn an_unsupported_response_mode_is_rejected_instead_of_being_defaulted() {
         location.contains("error=invalid_request"),
         "unsupported response_mode must be an error, got {location}"
     );
-    // エラーそのものは RP へ返る（リダイレクト可能な段階の失敗のため）。
+    // The error itself goes back to the RP (a failure at a stage where redirecting is possible).
     assert!(
         location.starts_with("http://localhost:3000/callback"),
         "{location}"
     );
 }
 
-/// `query` は従来どおり受け付ける（明示指定でも既定でも同じ）。
+/// `query` is accepted as before (same whether explicit or default).
 #[tokio::test]
 async fn an_explicit_query_response_mode_is_accepted() {
     let Some(env) = setup("response_mode query").await else {
@@ -85,8 +85,8 @@ async fn an_explicit_query_response_mode_is_accepted() {
     );
 }
 
-/// 要求が `/authorize` から応答時点まで運ばれ、`resume` の応答が
-/// 「送信先＋フォームフィールド」で返る。**送信先に認可コードが載らない**ことも確かめる。
+/// The request is carried from `/authorize` to response time, and the `resume` response comes back as
+/// "destination + form fields". Also checks that **the destination carries no authorization code**.
 #[tokio::test]
 async fn form_post_is_carried_to_the_authorization_response() {
     let Some(env) = setup("response_mode form_post").await else {
@@ -96,7 +96,7 @@ async fn form_post_is_carried_to_the_authorization_response() {
     let user_id = support::create_plain_user(&env.pool, &env.root_tenant_id).await;
     let sso_cookie = support::create_sso_session(&env.pool, &user_id).await;
 
-    // 1. `/authorize` で `form_post` を要求し、web へのハンドオフを受け取る。
+    // 1. Request `form_post` at `/authorize` and receive the handoff to web.
     let response = send(
         &env.app,
         anonymous(
@@ -109,9 +109,9 @@ async fn form_post_is_carried_to_the_authorization_response() {
     assert_eq!(response.status(), StatusCode::FOUND);
     let handle = handoff_handle(&response);
 
-    // 2. 要求は `auth_sessions` に残る（応答を組み立てるのは別リクエストのため）。
-    //    テストは同じ DB を共有し並行して走るので、**このテストが作ったクライアント**で絞る。
-    //    絞らないと隣のテストの認可セッション（`query`）を読んでしまう。
+    // 2. The request remains in `auth_sessions` (the response is built by another request).
+    //    Tests share the same DB and run in parallel, so filter by **the client this test created**.
+    //    Otherwise it would read a neighbouring test's authorization session (`query`).
     let stored: Option<String> =
         sqlx::query_scalar("SELECT response_mode FROM auth_sessions WHERE client_id = ?")
             .bind(&client_id)
@@ -124,14 +124,14 @@ async fn form_post_is_carried_to_the_authorization_response() {
         "the requested response_mode must survive until the response is built"
     );
 
-    // 3. SSO 済みなので resume がそのまま認可応答を返す。
+    // 3. Already SSO-signed-in, so resume returns the authorization response directly.
     let body = resume_authorize(&env.app, &env.root_tenant_id, &handle, Some(&sso_cookie)).await;
     assert_eq!(body["result"], serde_json::json!("redirect"));
 
     let redirect_to = body["redirect_to"].as_str().expect("redirect_to");
     let form_post = body["form_post"].as_array().expect("form_post fields");
 
-    // 送信先には認可応答のパラメータが載らない（載せると URL に code が残る）。
+    // The destination carries no authorization response parameters (otherwise the code would remain in the URL).
     assert_eq!(redirect_to, "http://localhost:3000/callback");
     assert!(!redirect_to.contains("code="), "{redirect_to}");
 
@@ -143,8 +143,8 @@ async fn form_post_is_carried_to_the_authorization_response() {
     assert!(names.contains(&"state"), "{form_post:?}");
 }
 
-/// 失敗も成功と同じ返し方で返す（RP は同じ受け口で待っている）。`prompt=none` で SSO が無いときの
-/// `login_required` は、`form_post` を要求されていれば hidden フィールドで返る。
+/// Failures come back the same way as successes (the RP waits at the same endpoint). The `login_required` of
+/// `prompt=none` without SSO comes back in hidden fields when `form_post` was requested.
 #[tokio::test]
 async fn a_resume_failure_follows_the_requested_response_mode() {
     let Some(env) = setup("response_mode form_post error").await else {
@@ -197,7 +197,7 @@ async fn a_resume_failure_follows_the_requested_response_mode() {
         "{fields:?}"
     );
 
-    // `query` のままの要求では従来どおり URL に載る。
+    // A request staying with `query` puts it in the URL as before.
     let response = send(
         &env.app,
         anonymous(

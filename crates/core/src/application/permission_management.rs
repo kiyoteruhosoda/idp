@@ -1,11 +1,11 @@
-//! 利用者権限（permission code）の付与・剥奪ユースケース（ADR-0006、Progress A2）。
+//! Use case for granting and revoking user permissions (permission codes) (ADR-0006, Progress A2).
 //!
-//! テナント管理者（`idp.tenant.admin`。`idp.system.admin` は代替として許可）のみが実行する。判定・検証は本 Application 層で完結し、Presentation には
-//! 結果のみ返す（CLAUDE.md「権限管理」）。全ての付与・剥奪は `audit_log` に記録する
-//! （`user_permission.granted` / `.revoked`、設計仕様 §7）。
+//! Only tenant admins (`idp.tenant.admin`; `idp.system.admin` accepted as an alternative) run it. Decisions and validation are completed in this Application layer and only
+//! the result is returned to Presentation (CLAUDE.md "Permission management"). Every grant and revocation is recorded in `audit_log`
+//! (`user_permission.granted` / `.revoked`, design spec §7).
 //!
-//! 権限の**参照**（保護判定）は [`crate::application::admin_access::AdminAccessService`] が担う。
-//! 本サービスは「権限の管理（変更）」という別責務（SRP）であり、`ClientManagementService` と同じ位置づけ。
+//! **Reading** permissions (protection checks) is the job of [`crate::application::admin_access::AdminAccessService`].
+//! This service has the separate responsibility of "managing (changing) permissions" (SRP), the same role as `ClientManagementService`.
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::admin_actor::AdminActor;
@@ -34,13 +34,13 @@ pub enum PermissionManagementError {
     Internal(String),
 }
 
-/// `idp.system.admin` の付与・剥奪は保有者のみが行える（ADR-0009 §4）。
+/// Granting and revoking `idp.system.admin` can only be done by holders of it (ADR-0009 §4).
 pub struct PermissionManagementService {
     users: Arc<dyn UserRepository>,
     memberships: Arc<dyn TenantMembershipRepository>,
     permissions: Arc<dyn UserPermissionRepository>,
-    /// root テナントの解決に使う。`idp.system.admin` は root scope でしか存在できないため、
-    /// 実行者の保有確認は**要求テナントではなく root scope** で引く必要がある（ADR-0009 §4）。
+    /// Used to resolve the root tenant. `idp.system.admin` can only exist in the root scope, so the actor's
+    /// holding must be looked up **in the root scope, not the requested tenant** (ADR-0009 §4).
     tenants: Arc<dyn TenantRepository>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
@@ -65,8 +65,8 @@ impl PermissionManagementService {
         }
     }
 
-    /// 付与可能な権限コードの一覧（`permissions` マスタ）を返す。管理コンソール（A2）の
-    /// 付与フォームで選択肢を提示するために使う。
+    /// Returns the list of grantable permission codes (the `permissions` master). Used to present the choices in
+    /// the admin console's (A2) grant form.
     pub async fn available_codes(&self) -> Result<Vec<String>, PermissionManagementError> {
         self.permissions
             .list_available_codes()
@@ -74,9 +74,9 @@ impl PermissionManagementService {
             .map_err(|e| PermissionManagementError::Internal(e.to_string()))
     }
 
-    /// 対象利用者を内部 ID で取得する（管理コンソールの表示用）。不存在、または所属元が
-    /// 要求テナント以外（テナント越しの参照。ゲストを含む）は 404 相当（ADR-0009 §3:
-    /// 参加先管理者はゲストの `users` レコードへ到達できない）。
+    /// Gets the target user by internal ID (for display in the admin console). Missing, or a home tenant other than
+    /// the requested tenant (cross-tenant lookup, including guests), is equivalent to 404 (ADR-0009 §3:
+    /// host tenant admins can't reach a guest's `users` record).
     pub async fn get_user(
         &self,
         tenant: TenantContext,
@@ -88,8 +88,8 @@ impl PermissionManagementService {
         }
     }
 
-    /// 識別子（メールアドレスまたはユーザー名）で利用者を探す（管理コンソールの検索用）。
-    /// `@` を含めばメール、そうでなければユーザー名として解決する。空文字列は None を返す。
+    /// Finds a user by identifier (email address or user name) (for the admin console's search).
+    /// Resolved as an email if it contains `@`, otherwise as a user name. An empty string returns None.
     pub async fn find_user_by_identifier(
         &self,
         tenant: TenantContext,
@@ -108,7 +108,7 @@ impl PermissionManagementService {
         result.map_err(|e| PermissionManagementError::Internal(e.to_string()))
     }
 
-    /// 対象利用者が要求テナントを scope として保有する権限コード一覧を返す（順序は不定）。
+    /// Returns the permission codes the target user holds with the requested tenant as scope (order unspecified).
     pub async fn list(
         &self,
         tenant: TenantContext,
@@ -121,9 +121,9 @@ impl PermissionManagementService {
             .map_err(|e| PermissionManagementError::Internal(e.to_string()))
     }
 
-    /// 対象利用者へ、要求テナントを scope として権限コードを付与する（冪等）。
-    /// 付与後の保有コード一覧を返す。`idp.system.admin` の付与は保有者のみが行える
-    /// （ADR-0009 §4。scope = root の保証は DB の CHECK 制約と二重防御）。
+    /// Grants a permission code to the target user with the requested tenant as scope (idempotent).
+    /// Returns the held codes after granting. Granting `idp.system.admin` can only be done by holders
+    /// (ADR-0009 §4. scope = root is guaranteed with defense in depth by the DB CHECK constraint).
     pub async fn grant(
         &self,
         tenant: TenantContext,
@@ -161,8 +161,8 @@ impl PermissionManagementService {
         self.list(tenant, target).await
     }
 
-    /// 対象利用者から、要求テナントを scope とする権限コードを剥奪する（未保有でもエラーにしない）。
-    /// 剥奪後の保有コード一覧を返す。`idp.system.admin` の剥奪は保有者のみが行える（ADR-0009 §4）。
+    /// Revokes a permission code scoped to the requested tenant from the target user (no error if not held).
+    /// Returns the held codes after revoking. Revoking `idp.system.admin` can only be done by holders (ADR-0009 §4).
     pub async fn revoke(
         &self,
         tenant: TenantContext,
@@ -198,18 +198,18 @@ impl PermissionManagementService {
         self.list(tenant, target).await
     }
 
-    /// 対象利用者が現存し、要求テナントで **ACTIVE なメンバーシップ**（HOME / GUEST）を持つことを
-    /// 確かめる（ADR-0009 §4）。付与対象はアカウントの出自（HOME か GUEST か）では区別しない。
-    /// `INVITED`（未承諾）ゲスト・テナント外ユーザーはメンバーシップが ACTIVE でないため、テナント越しの
-    /// 存在推測を防ぐべく不存在と同じ 404 に倒す。
+    /// Confirms that the target user exists and has an **ACTIVE membership** (HOME / GUEST) in the requested tenant
+    /// (ADR-0009 §4). Grant targets aren't distinguished by account origin (HOME or GUEST).
+    /// `INVITED` (not yet accepted) guests and users outside the tenant have no ACTIVE membership, so to prevent
+    /// cross-tenant existence guessing they fall to the same 404 as nonexistent.
     async fn ensure_user_in_tenant(
         &self,
         tenant: TenantContext,
         target: Uuid,
     ) -> Result<(), PermissionManagementError> {
-        // ユーザーが現存すること（メンバーシップ行は FK でユーザーを含意するが、明示して意図を残す）。
+        // The user exists (a membership row implies the user via FK, but this is stated explicitly to record the intent).
         let exists = self.find_user_by_id(target).await?.is_some();
-        // 要求テナントで ACTIVE なメンバーシップ（HOME / GUEST）を持つこと。
+        // Has an ACTIVE membership (HOME / GUEST) in the requested tenant.
         let active_member = exists
             && self
                 .memberships
@@ -223,7 +223,7 @@ impl PermissionManagementService {
         }
     }
 
-    /// ユーザー ID で検索し、内部エラーを `PermissionManagementError::Internal` に変換する。
+    /// Looks up by user ID and converts internal errors to `PermissionManagementError::Internal`.
     async fn find_user_by_id(
         &self,
         id: Uuid,
@@ -234,9 +234,9 @@ impl PermissionManagementService {
             .map_err(|e| PermissionManagementError::Internal(e.to_string()))
     }
 
-    /// 全テナント共通の資源を扱うコード（署名鍵。`permission::ROOT_SCOPED_CODES`）は、root の中でしか
-    /// 付与させない。子テナントで持たせると、その管理者がテナントを越えて全体の鍵へ届く。
-    /// ⚠ 剥奪は止めない（root 以外に残った行を片付けられるようにする）。
+    /// Codes handling resources shared by all tenants (signing keys. `permission::ROOT_SCOPED_CODES`) can only be
+    /// granted inside root. If held in a child tenant, its admin would reach the global keys across tenants.
+    /// ⚠ Revocation is not blocked (so rows left outside root can be cleaned up).
     async fn ensure_root_scoped_code_stays_in_root(
         &self,
         tenant: TenantContext,
@@ -260,7 +260,7 @@ impl PermissionManagementService {
         }
     }
 
-    /// `idp.system.admin` の付与・剥奪は `idp.system.admin` 保有者のみが実行できる（ADR-0009 §4）。
+    /// Granting and revoking `idp.system.admin` can only be performed by holders of `idp.system.admin` (ADR-0009 §4).
     async fn ensure_system_admin_change_allowed(
         &self,
         tenant: TenantContext,
@@ -270,9 +270,9 @@ impl PermissionManagementService {
         if code.as_str() != permission::SYSTEM_ADMIN {
             return Ok(());
         }
-        // `idp.system.admin` はクライアントへ付与できない（ADR-0037）ので、クライアント主体は
-        // 定義上この権限を保有し得ない。**機械の資格情報から root 権限が生えないこと**が
-        // 細粒度化の前提なので、リポジトリを引くまでもなくここで落とす。
+        // `idp.system.admin` can't be granted to clients (ADR-0037), so a client actor can't hold this permission
+        // by definition. **Root permissions never sprouting from machine credentials** is the premise of
+        // fine-grained permissions, so reject here without even looking at the repository.
         let Some(actor_user_id) = actor.user_id() else {
             return Err(PermissionManagementError::Forbidden(MessageKey::new(
                 "api-permission-system-admin-forbidden",
@@ -286,21 +286,21 @@ impl PermissionManagementService {
             .map_err(|e| PermissionManagementError::Internal(e.to_string()))?
             .ok_or_else(|| PermissionManagementError::Internal("root tenant not found".into()))?;
 
-        // 1. この権限は root scope でしか存在できない（CHECK 制約
-        //    `user_permissions_system_admin_scope_chk`。ADR-0009 §4）。非 root テナントでの付与は
-        //    行の挿入自体が通らないので、実行者の資格を見るまでもなく断る。**ここを実行者の判定に
-        //    任せると、root の system 管理者が非 root テナントで判定を通過し、DB 制約違反の 500 に
-        //    落ちる。** 付与フォームの選択肢は `permission::is_grantable_in_tenant` が先に落とすので、
-        //    ここへ来るのは API 直叩きだけである。
+        // 1. This permission can only exist in the root scope (CHECK constraint
+        //    `user_permissions_system_admin_scope_chk`. ADR-0009 §4). Granting in a non-root tenant fails at
+        //    row insertion anyway, so refuse without even checking the actor's eligibility. **Leaving this to the actor
+        //    check would let a root system admin pass the check in a non-root tenant and end in a 500 from the DB
+        //    constraint violation.** The grant form's choices are already filtered by `permission::is_grantable_in_tenant`, so
+        //    only direct API calls get here.
         if tenant.tenant_id() != root.id {
             return Err(PermissionManagementError::Forbidden(MessageKey::new(
                 "api-permission-system-admin-root-only",
             )));
         }
 
-        // 2. 実行者が **root scope の** `idp.system.admin` を保有すること。「実行者が system 管理者か」
-        //    は root scope の事実であり、要求テナントで引くのは（1 の判定を通った時点で結果は同じでも）
-        //    問いとして誤っている。
+        // 2. The actor holds `idp.system.admin` **in the root scope**. "Is the actor a system admin" is a fact
+        //    of the root scope, and looking it up in the requested tenant is the wrong question (even if, after
+        //    passing check 1, the result would be the same).
         match self
             .permissions
             .has_permission(root.id, actor_user_id, permission::SYSTEM_ADMIN)
@@ -315,14 +315,14 @@ impl PermissionManagementService {
     }
 }
 
-/// 監査ログの `reason`（PII を含めない。内部 UUID と権限コードのみ）。
+/// `reason` for the audit log (no PII: only internal UUIDs and permission codes).
 fn audit_reason(code: &PermissionCode, target: Uuid) -> String {
     format!("permission={code} target={target}")
 }
 
 fn map_repo_error(e: DomainError) -> PermissionManagementError {
     match e {
-        // 未知の権限コード（`permissions` マスタに無い）等は不正リクエスト扱い。
+        // Unknown permission codes (not in the `permissions` master) etc. are treated as bad requests.
         DomainError::InvalidValue(_) => {
             PermissionManagementError::Validation(MessageKey::new("api-permission-unknown"))
         }
@@ -349,7 +349,7 @@ mod tests {
     }
 
     fn test_tenant() -> TenantId {
-        // 各テストは service() へ渡すユーザーとテナントを揃える必要があるため固定値にする。
+        // Each test must align the user and tenant passed to service(), so these are fixed values.
         TenantId::from(Uuid::from_u128(0x0197_0000_0000_7000_8000_0000_0000_0001))
     }
 
@@ -364,8 +364,8 @@ mod tests {
         }
     }
 
-    /// `find_root` だけを答えるテナントリポジトリ。root は [`test_tenant`] とする——各テストは
-    /// このテナントを要求テナントとして渡すので、既定では「root テナントでの操作」になる。
+    /// A tenant repository that only answers `find_root`. root is [`test_tenant`] ——each test passes
+    /// this tenant as the requested tenant, so by default it is "an operation in the root tenant".
     struct FakeTenants;
 
     fn root_tenant() -> Tenant {
@@ -407,7 +407,7 @@ mod tests {
         }
     }
 
-    /// 監査イベントを収集するだけのシンク（付与/剥奪が記録されることの検証用）。
+    /// A sink that only collects audit events (for verifying that grants/revocations are recorded).
     #[derive(Default)]
     struct CapturingSink {
         events: Mutex<Vec<AuditEvent>>,
@@ -425,7 +425,7 @@ mod tests {
     }
     #[async_trait]
     impl UserRepository for FakeUsers {
-        /// このテストはログイン失敗経路を通らない（SEC13 の検証は login / mfa_login にある）。
+        /// These tests don't go through the login failure path (SEC13 verification is in login / mfa_login).
         async fn record_login_failure(
             &self,
             _id: Uuid,
@@ -502,7 +502,7 @@ mod tests {
         }
     }
 
-    /// 指定した (tenant, user) の組を ACTIVE メンバーとして扱うフェイク（他は非メンバー）。
+    /// A fake treating the given (tenant, user) pairs as ACTIVE members (others are non-members).
     #[derive(Default)]
     struct FakeMemberships {
         active: Mutex<Vec<(TenantId, Uuid)>>,
@@ -552,7 +552,7 @@ mod tests {
         }
     }
 
-    /// 付与/剥奪の呼び出しを記録し、保有状態を保持するフェイク。
+    /// A fake that records grant/revoke calls and keeps the holding state.
     #[derive(Default)]
     struct FakePermissions {
         granted: Mutex<Vec<(TenantId, Uuid, String)>>,
@@ -688,7 +688,7 @@ mod tests {
         )
     }
 
-    /// 既定では対象ユーザーを所属元テナントの ACTIVE メンバーとして登録する（正常系の HOME 相当）。
+    /// By default registers the target user as an ACTIVE member of its home tenant (the normal HOME case).
     fn service(
         user: Option<User>,
         perms: Arc<FakePermissions>,
@@ -810,7 +810,7 @@ mod tests {
             .await,
             Err(PermissionManagementError::Validation(_))
         ));
-        // 失敗時は監査イベントを出さない。
+        // No audit event on failure.
         assert!(sink.events.lock().unwrap().is_empty());
     }
 
@@ -822,7 +822,7 @@ mod tests {
             Arc::new(FakePermissions::default()),
             Arc::new(CapturingSink::default()),
         );
-        // `@` を含めばメール、含まなければユーザー名で解決する。
+        // Resolved by email if it contains `@`, otherwise by user name.
         let by_email = svc
             .find_user_by_identifier(tenant_ctx(), "target@example.com")
             .await
@@ -833,7 +833,7 @@ mod tests {
             .await
             .expect("lookup ok");
         assert_eq!(by_username.map(|u| u.id), Some(target));
-        // 未知の識別子・空文字列は None。
+        // Unknown identifiers and empty strings give None.
         assert!(svc
             .find_user_by_identifier(tenant_ctx(), "nobody@example.com")
             .await
@@ -844,7 +844,7 @@ mod tests {
             .await
             .expect("lookup ok")
             .is_none());
-        // 他テナントの scope では解決しない（テナント分離）。
+        // Not resolved in another tenant's scope (tenant isolation).
         let other = TenantContext::new(TenantId::from(Uuid::now_v7()));
         assert!(svc
             .find_user_by_identifier(other, "target@example.com")
@@ -903,11 +903,11 @@ mod tests {
         ));
     }
 
-    /// `idp.system.admin` は root scope でしか存在できない（ADR-0009 §4）。したがって非 root テナントでは、
-    /// **実行者が root の system 管理者であっても**付与できない。
+    /// `idp.system.admin` can only exist in the root scope (ADR-0009 §4). So in a non-root tenant it can't be granted
+    /// **even if the actor is a root system admin**.
     ///
-    /// ここを実行者の保有判定だけに任せると、root scope で引いた結果が true になって判定を通過し、
-    /// DB の CHECK 制約違反（500）まで進んでしまう。テナントの判定は実行者の判定より前に置く。
+    /// Leaving this to the actor's holding check alone would make the root-scope lookup return true, pass the check,
+    /// and proceed to a DB CHECK constraint violation (500). The tenant check is placed before the actor check.
     #[tokio::test]
     async fn system_admin_cannot_be_granted_outside_the_root_tenant() {
         let target = Uuid::new_v4();
@@ -915,13 +915,13 @@ mod tests {
         let child = TenantId::from(Uuid::from_u128(0x0197_0000_0000_7000_8000_0000_0000_0002));
         let perms = Arc::new(FakePermissions::default());
         let sink = Arc::new(CapturingSink::default());
-        // 実行者は root scope で idp.system.admin を保有している。
+        // The actor holds idp.system.admin in the root scope.
         perms
             .granted
             .lock()
             .unwrap()
             .push((test_tenant(), actor, "idp.system.admin".to_string()));
-        // 対象は子テナントの ACTIVE メンバー（`ensure_user_in_tenant` は通す）。
+        // The target is an ACTIVE member of a child tenant (`ensure_user_in_tenant` passes).
         let svc = service_with(
             Some(test_user(target)),
             Arc::new(FakeMemberships::with_active(vec![(child, target)])),
@@ -951,7 +951,7 @@ mod tests {
         let sink = Arc::new(CapturingSink::default());
         let svc = service(Some(test_user(target)), perms.clone(), sink.clone());
 
-        // actor が idp.system.admin を保有しない → Forbidden（ADR-0009 §4）。
+        // The actor doesn't hold idp.system.admin -> Forbidden (ADR-0009 §4).
         assert!(matches!(
             svc.grant(
                 tenant_ctx(),
@@ -965,7 +965,7 @@ mod tests {
         ));
         assert!(sink.events.lock().unwrap().is_empty());
 
-        // actor が保有していれば付与できる。
+        // If the actor holds it, it can be granted.
         perms
             .granted
             .lock()
@@ -984,15 +984,15 @@ mod tests {
         assert_eq!(codes, vec!["idp.system.admin".to_string()]);
     }
 
-    /// INVITED（未承諾）ゲスト等、当該テナントで ACTIVE なメンバーシップを持たない対象への付与は
-    /// 不存在（404）に倒す（ADR-0009 §4。テナント越しの存在推測を防ぐ）。
+    /// Granting to targets without an ACTIVE membership in the tenant, such as INVITED (not yet accepted) guests, falls
+    /// to nonexistent (404) (ADR-0009 §4; prevents cross-tenant existence guessing).
     #[tokio::test]
     async fn grant_rejects_non_active_member() {
         let target = Uuid::new_v4();
         let actor = Uuid::new_v4();
         let perms = Arc::new(FakePermissions::default());
         let sink = Arc::new(CapturingSink::default());
-        // ユーザーは現存するが、要求テナントの ACTIVE メンバー登録は無い（INVITED 相当）。
+        // The user exists, but has no ACTIVE member registration in the requested tenant (INVITED equivalent).
         let svc = service_with(
             Some(test_user(target)),
             Arc::new(FakeMemberships::default()),
@@ -1011,10 +1011,10 @@ mod tests {
             .await,
             Err(PermissionManagementError::NotFound)
         ));
-        // 失敗時は付与も監査記録も行わない。
+        // On failure, neither grant nor audit record happens.
         assert!(perms.granted.lock().unwrap().is_empty());
         assert!(sink.events.lock().unwrap().is_empty());
-        // list/revoke も同じく 404。
+        // list/revoke are also 404.
         assert!(matches!(
             svc.list(tenant_ctx(), target).await,
             Err(PermissionManagementError::NotFound)
@@ -1032,19 +1032,19 @@ mod tests {
         ));
     }
 
-    /// 他テナント所属のユーザーが要求テナントの ACTIVE メンバーでなければ 404 を維持する
-    /// （テナント外の識別子推測を防ぐ）。
+    /// A user belonging to another tenant stays 404 unless they are an ACTIVE member of the requested tenant
+    /// (prevents guessing identifiers outside the tenant).
     #[tokio::test]
     async fn grant_rejects_user_from_other_tenant_without_membership() {
         let target = Uuid::new_v4();
-        // 所属元（HOME）は別テナント。
+        // The home tenant (HOME) is another tenant.
         let other_tenant =
             TenantId::from(Uuid::from_u128(0x0197_0000_0000_7000_8000_0000_0000_00FF));
         let mut guest = test_user(target);
         guest.tenant_id = other_tenant;
         let svc = service_with(
             Some(guest),
-            // 要求テナント（test_tenant）でのメンバーシップは無い。
+            // No membership in the requested tenant (test_tenant).
             Arc::new(FakeMemberships::default()),
             Arc::new(FakePermissions::default()),
             Arc::new(CapturingSink::default()),
@@ -1063,8 +1063,8 @@ mod tests {
         ));
     }
 
-    /// 所属元が別テナントの GUEST でも、要求テナントで ACTIVE なメンバーであれば付与できる
-    /// （出自で区別しない。ADR-0009 §4）。付与 scope は要求テナント。
+    /// Even a GUEST whose home is another tenant can be granted if they are an ACTIVE member of the requested tenant
+    /// (not distinguished by origin. ADR-0009 §4). The grant scope is the requested tenant.
     #[tokio::test]
     async fn grant_succeeds_for_active_guest_from_other_tenant() {
         let target = Uuid::new_v4();
@@ -1075,7 +1075,7 @@ mod tests {
         guest.tenant_id = other_tenant;
         let perms = Arc::new(FakePermissions::default());
         let sink = Arc::new(CapturingSink::default());
-        // 要求テナント（test_tenant）で ACTIVE な GUEST メンバーとして登録する。
+        // Registered as an ACTIVE GUEST member of the requested tenant (test_tenant).
         let svc = service_with(
             Some(guest),
             Arc::new(FakeMemberships::with_active(vec![(test_tenant(), target)])),
@@ -1094,7 +1094,7 @@ mod tests {
             .await
             .expect("grant ok");
         assert_eq!(codes, vec!["idp.tenant.admin".to_string()]);
-        // 付与 scope は要求テナント（所属元テナントではない）。
+        // The grant scope is the requested tenant (not the home tenant).
         assert_eq!(
             perms.granted.lock().unwrap().clone(),
             vec![(test_tenant(), target, "idp.tenant.admin".to_string())]

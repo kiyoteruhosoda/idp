@@ -1,10 +1,10 @@
-//! 利用者権限の付与・剥奪・参照エンドポイント（`/admin/users/{user_id}/permissions`、
-//! A2・ADR-0006・設計仕様 §7）。
+//! User permission grant / revoke / query endpoints (`/admin/users/{user_id}/permissions`,
+//! A2, ADR-0006, design spec §7).
 //!
-//! 参照は `idp.permissions:read`、付与・剥奪は `idp.permissions:write` が要る（`RequirePerms<PermissionsRead>` /
-//! `<PermissionsWrite>`。`idp.tenant.admin` は両方を含意する）。付与・剥奪は `audit_log` に記録する
-//! （`user_permission.granted` / `.revoked`）。判定は Application 層（`PermissionManagementService`）
-//! が行い、本ハンドラは HTTP への写像のみを担う。
+//! Reading needs `idp.permissions:read`; grant/revoke need `idp.permissions:write` (`RequirePerms<PermissionsRead>` /
+//! `<PermissionsWrite>`; `idp.tenant.admin` implies both). Grants/revocations are recorded in `audit_log`
+//! (`user_permission.granted` / `.revoked`). Decisions are made by the application layer (`PermissionManagementService`);
+//! this handler only maps to HTTP.
 
 use crate::domain::permission;
 use crate::presentation::admin::{PermissionsRead, PermissionsWrite, RequirePerms};
@@ -24,19 +24,19 @@ use axum::http::HeaderMap;
 use axum::Json;
 use uuid::Uuid;
 
-/// 付与可能な権限コード（`permissions` マスタ）を一覧する（`GET /admin/permissions`）。
-/// 管理コンソール（web）の付与フォームの選択肢に使う支援 API。
+/// Lists grantable permission codes (the `permissions` master) (`GET /admin/permissions`).
+/// A support API used for the choices of the grant form in the admin console (web).
 ///
-/// **要求テナントで付与し得ないコードは常に落とす。** `idp.system.admin` は root scope でしか
-/// 存在できない（ADR-0009 §4）ため、非 root テナントで返すと「選べるのに必ず 403 になる選択肢」に
-/// なる。ADR-0032 の「選べないものを見せない」をここでも適用する。
+/// **Codes that cannot be granted in the requesting tenant are always dropped.** `idp.system.admin` can only exist
+/// in root scope (ADR-0009 §4), so returning it in a non-root tenant would make "a choice that always 403s".
+/// ADR-0032's "don't show what can't be chosen" applies here too.
 ///
-/// **呼び出し元が配れないコードも落とす**（`permission::may_assign`。task #579）。
+/// **Codes the caller cannot hand out are dropped too** (`permission::may_assign`, task #579).
 ///
-/// `?grantable_to=client` を付けると、さらに**クライアントへ付与できるコードだけ**へ絞る（ADR-0037）。
-/// 絞り込みを api で行うのは、判定（`domain::permission` の各関数）の出所を core に一本化するため
-/// である。web は core に依存しない（crate 境界で強制。ADR-0007）ので、web 側で同じ判定を書くと
-/// **マスタが増えたときに片方だけ古くなる**。
+/// With `?grantable_to=client`, it narrows further to **only codes grantable to clients** (ADR-0037).
+/// Filtering in the api keeps the single source of the decision (the `domain::permission` functions) in core.
+/// web does not depend on core (enforced by the crate boundary, ADR-0007), so writing the same decision in web would leave
+/// **one side stale when the master grows**.
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/permissions",
@@ -63,7 +63,7 @@ pub async fn list_available_permissions(
         .map_err(|e| map_permission_management_error(e, locale))?;
     let tenant_is_root = tenant.tenant().is_root();
     codes.retain(|code| permission::is_grantable_in_tenant(code, tenant_is_root));
-    // 呼び出し元が配れないコード（自分の持たない権限。task #579）も落とす。付与の口が 403 にする。
+    // Also drop codes the caller cannot hand out (permissions it doesn't hold, task #579). The grant endpoint would 403 them.
     codes.retain(|code| permission::may_assign(&admin.permission_codes, code, tenant_is_root));
     if query.grantable_to.as_deref() == Some(GRANTABLE_TO_CLIENT) {
         codes.retain(|code| permission::is_grantable_to_client(code));
@@ -71,19 +71,19 @@ pub async fn list_available_permissions(
     Ok(Json(AvailablePermissionsResponse { codes }))
 }
 
-/// `grantable_to` の唯一の許可値。未知の値は絞り込まない（＝全件）——ここで 400 にしないのは、
-/// 支援 API であり、綴りを誤っても「候補が多すぎる」に留まって害が無いためである。
+/// The only allowed value of `grantable_to`. Unknown values don't filter (= all) -- not a 400 here because
+/// it is a support API, and a misspelling only results in "too many candidates", which is harmless.
 const GRANTABLE_TO_CLIENT: &str = "client";
 
-/// `GET /admin/permissions` のクエリ。
+/// Query of `GET /admin/permissions`.
 #[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
 pub struct AvailablePermissionsQuery {
-    /// `client` を指定すると、クライアントへ付与できるコードだけを返す。
+    /// With `client`, returns only codes grantable to clients.
     #[serde(default)]
     pub grantable_to: Option<String>,
 }
 
-/// 対象利用者が保有する権限コードを一覧する。
+/// Lists the permission codes held by the target user.
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/users/{user_id}/permissions",
@@ -103,7 +103,7 @@ pub async fn list_permissions(
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
-    // 先頭のパスセグメントは `{tenant_id}`（`ResolvedTenant` から取得済みのため破棄する）。
+    // The first path segment is `{tenant_id}` (discarded; already obtained from `ResolvedTenant`).
     Path((_tenant_id, user_id)): Path<(String, String)>,
 ) -> Result<Json<UserPermissionsResponse>, ApiError> {
     let target = parse_user_id(&user_id, locale)?;
@@ -118,7 +118,7 @@ pub async fn list_permissions(
     }))
 }
 
-/// 対象利用者へ権限コードを付与する（冪等）。付与後の保有コード一覧を返す。
+/// Grants a permission code to the target user (idempotent). Returns the held codes after granting.
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/users/{user_id}/permissions",
@@ -176,7 +176,7 @@ pub async fn grant_permission(
     }))
 }
 
-/// 対象利用者から権限コードを剥奪する（未保有でもエラーにしない）。剥奪後の保有コード一覧を返す。
+/// Revokes a permission code from the target user (not an error if not held). Returns the held codes after revoking.
 #[utoipa::path(
     delete,
     path = "/{tenant_id}/admin/users/{user_id}/permissions/{permission_code}",

@@ -13,8 +13,8 @@ fn main() {
 
     println!("cargo:rustc-env=IDP_GIT_VERSION={git_version}");
 
-    // ビルド番号（CI の通し番号）。コミットが同じでもビルドし直せば上がるので、「新しい成果物が
-    // 配置されたか」を版数だけで判断できる。手元ビルドでは付かない（空）。
+    // Build number (CI run counter). It increases on every rebuild even for the same commit, so
+    // "was a new artifact deployed?" can be told from the version alone. Empty for local builds.
     let build_number = env::var("IDP_BUILD_NUMBER")
         .ok()
         .and_then(non_empty_version)

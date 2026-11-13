@@ -1,9 +1,9 @@
-//! SSO セッションの復元（サイレント再認証）。
+//! Restoring SSO sessions (silent re-authentication).
 //!
-//! OIDC の認可フロー再開（[`crate::application::authorize`]）と SAML SSO
-//! （[`crate::application::saml_sso`]）が同じ判定を共有する:
-//! 有効期限 → ユーザー有効性 → **要求テナントの ACTIVE メンバーシップ**（ADR-0009 §8）の順に
-//! 検証し、成功時は idle 期限を延長して `sso_session.resumed` を監査記録する。
+//! Resuming the OIDC authorization flow ([`crate::application::authorize`]) and SAML SSO
+//! ([`crate::application::saml_sso`]) share the same checks:
+//! they verify, in order, expiry -> user validity -> **ACTIVE membership in the requested tenant** (ADR-0009 §8),
+//! and on success extend the idle expiry and audit `sso_session.resumed`.
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::audit::{AuditEventType, AuditResult};
@@ -20,22 +20,22 @@ use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// 復元に成功した SSO セッション。
+/// An SSO session that was successfully restored.
 pub struct RestoredSso {
     pub user_id: Uuid,
-    /// 初回ログイン時刻（`auth_time`。復元では更新しない）。
+    /// First sign-in time (`auth_time`. Not updated on restore).
     pub auth_time: DateTime<Utc>,
-    /// セッションの SHA-256（Cookie 生値は含まない）。SAML の `SessionIndex` 等、
-    /// セッションを不透明に参照する用途に使える。
+    /// SHA-256 of the session (does not include the raw Cookie value). Can be used to refer to the session
+    /// opaquely, e.g. as SAML `SessionIndex`.
     pub session_hash: String,
-    /// 本セッションを確立した認証方式（AP4。仕様 §14.3）。
+    /// The authentication method that established this session (AP4. Spec §14.3).
     pub authentication_methods: Vec<AuthenticationMethod>,
-    /// 認証強度（AP4）。Step-up 認証（§15）の判定材料。
+    /// Authentication strength (AP4). Input for the step-up authentication (§15) decision.
     pub authentication_strength: AuthenticationStrength,
-    /// 第二要素の検証完了時刻（AP4）。MFA 経過時間による再認証（§18.2）の判定材料。
+    /// Time the second factor was verified (AP4). Input for re-authentication by elapsed MFA time (§18.2).
     pub mfa_completed_at: Option<DateTime<Utc>>,
-    /// 確立時に決めた絶対期限までの長さ（秒）。web が Cookie を発行し直すときの `Max-Age`
-    /// （ログイン時の発行と同じ値。ADR-0058）。
+    /// Length (seconds) until the absolute expiry decided at establishment. The `Max-Age` when the web reissues the Cookie
+    /// (same value as at sign-in. ADR-0058).
     pub absolute_ttl_secs: u64,
 }
 
@@ -45,7 +45,7 @@ pub struct SsoRestorer {
     memberships: Arc<dyn TenantMembershipRepository>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
-    /// テナントが上書きできる設定の解決（ADR-0058）。参照のたびに引く。
+    /// Resolution of settings tenants can override (ADR-0058). Looked up on every reference.
     settings: Arc<dyn EffectiveTenantSettings>,
 }
 
@@ -68,8 +68,8 @@ impl SsoRestorer {
         }
     }
 
-    /// SSO セッションの復元を試みる。有効なら idle 期限を延長して [`RestoredSso`] を返す。
-    /// 期限切れは削除して `sso_session.expired` を監査ログへ記録する。
+    /// Tries to restore an SSO session. If valid, extends the idle expiry and returns [`RestoredSso`].
+    /// Expired sessions are deleted and `sso_session.expired` is recorded in the audit log.
     pub async fn try_resume(
         &self,
         tenant: TenantContext,
@@ -98,16 +98,16 @@ impl SsoRestorer {
             return Ok(None);
         }
 
-        // ユーザーが無効化されていれば SSO 復元しない（再ログインで検出させる）。
+        // Do not restore SSO if the user is disabled (let re-sign-in detect it).
         let home_tenant_id = match self.users.find_by_id(session.user_id).await? {
             Some(user) if user.is_active() && !user.is_locked_at(now) => user.tenant_id,
             _ => return Ok(None),
         };
 
-        // メンバーシップ判定（ADR-0009 §8）: SSO セッションはホスト単位で共有されるため、
-        // ユーザーが**要求テナントの ACTIVE メンバーシップ（HOME または GUEST）を持つこと**を検証する。
-        // メンバーシップのない SSO セッションは当該テナントのフローでは未認証として扱う（= ログインへ）。
-        // ゲストは所属元テナントでログインしてこの SSO を確立し、参加先テナントではこの判定で許可される。
+        // Membership check (ADR-0009 §8): SSO sessions are shared per host, so verify that
+        // the user **has an ACTIVE membership (HOME or GUEST) in the requested tenant**.
+        // An SSO session without membership is treated as unauthenticated in that tenant's flow (= go to sign-in).
+        // Guests establish this SSO by signing in at their home tenant, and are allowed by this check in the tenant they joined.
         if !self
             .memberships
             .is_active_member(tenant.tenant_id(), session.user_id)
@@ -116,9 +116,9 @@ impl SsoRestorer {
             return Ok(None);
         }
 
-        // idle 期限を更新（absolute は変更しない）。auth_time は初回ログイン時刻を維持する。
-        // ⚠ 延長幅は**確立したときと同じ**利用者の所属元テナントの値で決める（ADR-0058）。復元した
-        // 画面のテナント（ゲストなら参加先）で決めると、確立と延長で寿命が食い違う。
+        // Update the idle expiry (absolute is not changed). auth_time keeps the first sign-in time.
+        // ⚠ The extension length is decided by the value of the user's home tenant, **the same as at establishment** (ADR-0058).
+        // Deciding by the restored screen's tenant (the joined one for guests) makes lifetime differ between establishment and extension.
         let lifetime = self.settings.sso_session_lifetime(home_tenant_id).await?;
         self.sso_sessions
             .extend_idle(&session_hash, now + lifetime.idle)

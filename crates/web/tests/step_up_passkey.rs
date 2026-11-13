@@ -1,8 +1,8 @@
-//! パスキーでの本人確認（step-up。AP5・T38）をルータ経由で確かめる。
+//! Checks passkey verification (step-up; AP5, T38) through the router.
 //!
-//! この経路が無いと、パスキーで入った利用者は**認証器の管理へ入れない**（管理は step-up の対象で、
-//! その step-up がパスワードしか受け付けなかった）。ここで見たいのは、導線を出す条件と、完了後に
-//! どこへ戻すか —— どちらもハンドラ内の純関数では現れない。
+//! Without this route, users who signed in with a passkey **cannot enter authenticator management** (management is
+//! a step-up target, and that step-up accepted only passwords). What we want to see is when the entry is shown and
+//! where to return after completion -- neither shows up in the handler's pure functions.
 
 mod support;
 
@@ -67,8 +67,8 @@ async fn challenge_page(env: &WebEnv) -> String {
     body_text(response).await
 }
 
-/// 使えるパスキーを持つ利用者には、パスワードの隣にパスキーの導線を出す。**多要素を求められる
-/// 操作（認証器の管理）でもパスキー 1 回で満たせる**ため、TOTP を持たない利用者の唯一の道になる。
+/// Users with a usable passkey get the passkey entry next to the password. **Even operations demanding multi-factor
+/// (authenticator management) are satisfied by one passkey**, so it is the only path for users without TOTP.
 #[tokio::test]
 async fn the_challenge_offers_the_passkey_route_to_a_user_who_has_one() {
     let env = setup().await;
@@ -81,7 +81,7 @@ async fn the_challenge_offers_the_passkey_route_to_a_user_who_has_one() {
         html.contains(r#"data-complete-path="/settings/verify/passkey/complete""#),
         "{html}"
     );
-    // 完了 API へ添える値（どの操作か・終わったらどこへ戻すか）を画面が渡す。
+    // The screen passes the values for the completion API (which operation, where to return).
     assert!(
         html.contains(r#"data-operation="manage_authenticators""#),
         "{html}"
@@ -92,7 +92,7 @@ async fn the_challenge_offers_the_passkey_route_to_a_user_who_has_one() {
     );
 }
 
-/// パスキーを持たない利用者には出さない（押してもブラウザのダイアログが出てから失敗するだけ）。
+/// Not shown to users without passkeys (pressing it would just fail after the browser dialog).
 #[tokio::test]
 async fn the_challenge_hides_the_passkey_route_without_a_usable_passkey() {
     let env = setup().await;
@@ -104,7 +104,7 @@ async fn the_challenge_hides_the_passkey_route_without_a_usable_passkey() {
     assert!(!html.contains("/settings/verify/passkey/"), "{html}");
 }
 
-/// 確認が通ったら、元いた画面へ戻す（フォーム経路の 303 に当たるものを JSON で返す）。
+/// After verification passes, return to the original screen (returns the JSON equivalent of the form route's 303).
 #[tokio::test]
 async fn a_verified_passkey_sends_the_user_back_to_the_operation() {
     let env = setup().await;
@@ -132,8 +132,8 @@ async fn a_verified_passkey_sends_the_user_back_to_the_operation() {
     );
 }
 
-/// `next` はブラウザから来る値なので、この経路でも同一テナントのパスに限る
-/// （オープンリダイレクトを JSON 応答で作らない）。
+/// `next` comes from the browser, so this route also restricts it to same-tenant paths
+/// (no open redirect via the JSON response).
 #[tokio::test]
 async fn a_foreign_next_is_replaced_with_the_settings_page() {
     let env = setup().await;
@@ -160,7 +160,7 @@ async fn a_foreign_next_is_replaced_with_the_settings_page() {
     );
 }
 
-/// セッションが切れていたら文言を出さずログインへ送る（この画面で再試行しても通らない）。
+/// If the session expired, send to login without a message (retrying on this screen would not pass).
 #[tokio::test]
 async fn an_expired_session_is_sent_to_the_login_page() {
     let env = setup().await;
@@ -187,7 +187,7 @@ async fn an_expired_session_is_sent_to_the_login_page() {
     );
 }
 
-/// アサーションが通らなかったときは、翻訳済みの文言へ写せるコードを返す（画面が文言を持つ）。
+/// When the assertion fails, return a code that maps to translated text (the screen holds the text).
 #[tokio::test]
 async fn a_rejected_passkey_is_reported_as_a_code_the_screen_can_translate() {
     let env = setup().await;
@@ -212,7 +212,7 @@ async fn a_rejected_passkey_is_reported_as_a_code_the_screen_can_translate() {
     assert!(body["redirect_to"].is_null());
 }
 
-/// サインインしていなければチャレンジを配らない（引き上げる先が無い）。
+/// If not signed in, no challenge is issued (nothing to step up).
 #[tokio::test]
 async fn beginning_without_a_session_is_unauthorized() {
     let env = setup().await;

@@ -1,4 +1,4 @@
-//! `audit_log` テーブルの sqlx 実装。書き込み（`AuditLogSink`）と読み取り（`AuditLogQuery`）。
+//! sqlx implementation of the `audit_log` table. Writing (`AuditLogSink`) and reading (`AuditLogQuery`).
 
 use crate::domain::audit::{AuditEvent, AuditLogEntry, AuditLogFilter};
 use crate::domain::error::{DomainError, Result};
@@ -47,10 +47,10 @@ impl AuditLogSink for SqlxAuditLogSink {
     }
 
     async fn purge_older_than(&self, older_than: DateTime<Utc>) -> Result<u64> {
-        // 1 回の DELETE で消す上限を置く。監査ログは長期間 `AUDIT_LOG_RETENTION_DAYS = 0`
-        // （削除しない）で運用してから有効化される想定で、初回の削除対象が数百万行になり得る。
-        // 無制限の DELETE はその間ずっとロックを保持し、認可フローの INSERT を止めてしまう。
-        // 残りは次の周期が引き取る（呼び出し側は削除件数で「まだ残っている」を判断できる）。
+        // Cap the number of rows deleted by one DELETE. The audit log is expected to run for a long time with
+        // `AUDIT_LOG_RETENTION_DAYS = 0` (no deletion) before being enabled, so the first deletion may cover millions of rows.
+        // An unbounded DELETE would hold locks the whole time and stall the authorization flow's INSERTs.
+        // The rest is picked up by the next cycle (callers can tell "some remain" from the deleted count).
         let deleted = sqlx::query("DELETE FROM audit_log WHERE occurred_at < ? LIMIT ?")
             .bind(older_than.naive_utc())
             .bind(PURGE_BATCH_SIZE)
@@ -62,8 +62,8 @@ impl AuditLogSink for SqlxAuditLogSink {
     }
 }
 
-/// 1 回の保持期間削除で消す最大行数（G8）。`audit_log_occurred_idx` を使う範囲削除のため、
-/// 1 バッチの所要時間は行数にほぼ比例する。
+/// Maximum rows deleted in one retention deletion (G8). It is a range delete using `audit_log_occurred_idx`,
+/// so one batch's duration is roughly proportional to the row count.
 const PURGE_BATCH_SIZE: i64 = 10_000;
 
 pub struct SqlxAuditLogQuery {
@@ -76,15 +76,15 @@ impl SqlxAuditLogQuery {
     }
 }
 
-/// `reason` の格納先カラム上限（`VARCHAR(255)`）。超過分は切り詰める。
+/// Column limit for `reason` (`VARCHAR(255)`). Anything beyond is truncated.
 ///
-/// `reason` には可変長の値が入る（テナントのドメインは最長 253 文字。ADR-0029）。溢れたまま
-/// bind すると strict mode の MariaDB は INSERT ごと失敗させ、**監査イベントが丸ごと落ちる** ——
-/// 呼び出し側（`AuditService::record`）はエラーログを出すだけで、操作そのものは成功しているため、
-/// 「起きたのに記録が無い」状態になる。末尾を落としてでも記録を残す。
+/// `reason` holds variable-length values (a tenant domain is up to 253 characters; ADR-0029). Binding an overflowing value
+/// makes strict-mode MariaDB fail the whole INSERT, and **the audit event is lost entirely** --
+/// the caller (`AuditService::record`) only logs an error while the operation itself succeeded,
+/// leaving "it happened but there is no record". Keep the record even if the tail is cut.
 const REASON_MAX_LEN: usize = 255;
 
-/// 文字境界を壊さないよう `char` 単位で切る（`VARCHAR` の上限も文字数）。
+/// Cuts by `char` so character boundaries aren't broken (the `VARCHAR` limit is in characters too).
 fn truncate_reason(reason: &str) -> String {
     reason.chars().take(REASON_MAX_LEN).collect()
 }
@@ -130,7 +130,7 @@ fn map_row(row: &MySqlRow) -> Result<AuditLogEntry> {
 #[async_trait]
 impl AuditLogQuery for SqlxAuditLogQuery {
     async fn search(&self, filter: &AuditLogFilter) -> Result<Vec<AuditLogEntry>> {
-        // 条件は指定された項目のみ AND で積む。値はすべてバインドする（SQL インジェクション対策）。
+        // Only the specified conditions are ANDed. All values are bound (SQL injection protection).
         let mut qb: QueryBuilder<MySql> = QueryBuilder::new(
             "SELECT id, event_type, occurred_at, tenant_id, user_id, client_id, ip_address, \
              user_agent, result, reason, correlation_id FROM audit_log WHERE 1 = 1",
@@ -170,7 +170,7 @@ impl AuditLogQuery for SqlxAuditLogQuery {
         &self,
         tenant_id: TenantId,
     ) -> Result<Vec<(String, DateTime<Utc>)>> {
-        // 「利用」= 成功したトークン発行・認可コード発行。client_id ごとの最新時刻を 1 回の集計で取る。
+        // "Usage" = successful token issuance and authorization code issuance. Gets the latest time per client_id in one aggregation.
         let rows = sqlx::query(
             "SELECT client_id, MAX(occurred_at) AS last_used_at FROM audit_log \
              WHERE tenant_id = ? AND client_id IS NOT NULL AND result = 'success' \
@@ -195,7 +195,7 @@ impl AuditLogQuery for SqlxAuditLogQuery {
 mod tests {
     use super::*;
 
-    /// 上限を超える `reason` は切り詰める（溢れたまま bind すると監査イベントごと落ちる）。
+    /// A `reason` over the limit is truncated (binding it overflowing would lose the whole audit event).
     #[test]
     fn reason_is_truncated_to_the_column_limit() {
         let long = "domain=".to_string() + &"a".repeat(300);
@@ -204,7 +204,7 @@ mod tests {
             truncate_reason("domain=corp.example"),
             "domain=corp.example"
         );
-        // 文字境界を壊さない（マルチバイトでも panic しない）。
+        // Don't break character boundaries (no panic even with multibyte characters).
         assert_eq!(
             truncate_reason(&"あ".repeat(300)).chars().count(),
             REASON_MAX_LEN

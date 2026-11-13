@@ -1,8 +1,8 @@
-//! クライアント状況一覧のユースケース（状況確認画面 A3）。
+//! Client status list use case (status screen A3).
 //!
-//! 登録済みクライアント（`ClientRepository`）と監査ログ由来の**最終利用時刻**（`AuditLogQuery`）を
-//! 突き合わせ、運用者向けの状況ビュー（状態・scope・最終利用時刻）を組み立てる。読み取り専用であり、
-//! クライアントの登録・更新を担う `ClientManagementService`（変更）とは関心を分ける（SRP）。
+//! Joins registered clients (`ClientRepository`) with the **last used time** from the audit log (`AuditLogQuery`)
+//! to build a status view for operators (state, scope, last used time). It is read-only and kept
+//! separate from `ClientManagementService` (changes), which registers and updates clients (SRP).
 
 use crate::domain::client::Client;
 use crate::domain::error::DomainError;
@@ -13,14 +13,14 @@ use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// クライアント 1 件の状況（読み取りモデル）。
+/// Status of one client (read model).
 #[derive(Debug, Clone)]
 pub struct ClientStatusView {
     pub client_id: String,
     pub app_name: String,
     pub status: ClientStatus,
     pub scopes: Vec<String>,
-    /// 最終利用時刻（成功したトークン発行・認可コード発行の最新時刻）。未利用は `None`。
+    /// Last used time (latest successful token issuance or authorization code issuance). `None` if never used.
     pub last_used_at: Option<DateTime<Utc>>,
 }
 
@@ -37,7 +37,7 @@ impl ClientStatusService {
         }
     }
 
-    /// 指定テナントの全クライアントの状況を、登録の新しい順（`ClientRepository::list` の順）で返す。
+    /// Returns the status of every client in the given tenant, newest registration first (the order of `ClientRepository::list`).
     pub async fn list(&self, tenant: TenantContext) -> Result<Vec<ClientStatusView>, DomainError> {
         let clients = self.clients.list(tenant.tenant_id()).await?;
         let last_used: HashMap<String, DateTime<Utc>> = self
@@ -143,10 +143,10 @@ mod tests {
             .await
             .expect("list ok");
         assert_eq!(views.len(), 2);
-        // 順序は clients.list の順を保つ。
+        // Keep the order of clients.list.
         assert_eq!(views[0].client_id, "used");
         assert_eq!(views[0].last_used_at, Some(used_at));
         assert_eq!(views[1].client_id, "fresh");
-        assert_eq!(views[1].last_used_at, None, "未利用は None");
+        assert_eq!(views[1].last_used_at, None, "never used is None");
     }
 }

@@ -1,8 +1,8 @@
-//! OpenAPI ドキュメント（utoipa による自動生成）。
+//! OpenAPI document (generated automatically by utoipa).
 //!
-//! API エンドポイント仕様はここから生成される `/api/openapi.json`・Swagger UI（`/api/docs`）が
-//! 唯一の出所（`CLAUDE.md`「ドキュメント運用」）。仕様はハンドラの `#[utoipa::path]` 属性と
-//! DTO の `ToSchema` から組み立てられる。
+//! The `/api/openapi.json` and Swagger UI (`/api/docs`) generated from here are the single source
+//! of the API endpoint spec (`CLAUDE.md` "Documentation"). The spec is built from the handlers'
+//! `#[utoipa::path]` attributes and the DTOs' `ToSchema`.
 
 use crate::presentation::dto::{
     AcceptInvitationRequest, AccountApplicationListResponse, AccountApplicationResponse,
@@ -301,7 +301,7 @@ use utoipa::{Modify, OpenApi};
 )]
 pub struct ApiDoc;
 
-/// Bearer 認証スキーム定義（`/userinfo` のアクセストークンと、管理 API の管理トークン。ADR-0037）。
+/// Bearer auth scheme definition (the `/userinfo` access token and the admin API's admin token; ADR-0037).
 struct BearerToken;
 
 impl Modify for BearerToken {
@@ -324,7 +324,7 @@ mod tests {
     use super::*;
     use utoipa::openapi::path::HttpMethod;
 
-    /// 指定の経路・メソッドが OpenAPI 文書に載っている（CLAUDE.md「API 仕様は OpenAPI が唯一の出所」）。
+    /// The given path and method are in the OpenAPI document (CLAUDE.md "OpenAPI is the single source of the API spec").
     fn assert_operation(
         doc: &utoipa::openapi::OpenApi,
         path: &str,
@@ -334,16 +334,16 @@ mod tests {
         let operation = doc
             .paths
             .get_path_operation(path, method)
-            .unwrap_or_else(|| panic!("{label} {path} が OpenAPI に無い"));
-        // 管理 API は Bearer の管理トークンで認証する（ADR-0037）ことを仕様にも書く。
+            .unwrap_or_else(|| panic!("{label} {path} is missing from OpenAPI"));
+        // The spec also states that the admin API authenticates with a Bearer admin token (ADR-0037).
         assert!(
             operation.security.is_some(),
-            "{label} {path} に bearer_token の security が無い"
+            "{label} {path} has no bearer_token security"
         );
     }
 
-    /// 管理コンソールの支援 API（身元・クライアント状況・権限マスタ・利用者の検索と取得）と
-    /// SAML SP の管理 API がすべて載っている（task #146。以前はどれも OpenAPI に無かった）。
+    /// The admin console support APIs (identity, client status, permission master, user search
+    /// and lookup) and the SAML SP admin APIs are all listed (task #146; none were in OpenAPI before).
     #[test]
     fn console_support_and_saml_sp_admin_api_is_documented() {
         let doc = ApiDoc::openapi();
@@ -380,7 +380,7 @@ mod tests {
         assert_operation(&doc, &format!("{sp}/{{id}}"), HttpMethod::Put, "PUT");
         assert_operation(&doc, &format!("{sp}/{{id}}"), HttpMethod::Delete, "DELETE");
 
-        let schemas = &doc.components.as_ref().expect("components が無い").schemas;
+        let schemas = &doc.components.as_ref().expect("components missing").schemas;
         for name in [
             "WhoamiResponse",
             "ClientStatusResponse",
@@ -394,14 +394,14 @@ mod tests {
         ] {
             assert!(
                 schemas.contains_key(name),
-                "schema {name} が OpenAPI に無い"
+                "schema {name} is missing from OpenAPI"
             );
         }
     }
 
-    /// 載っている管理 API はどれも、Bearer の security と 401 / 403 を書いている。403 の説明に
-    /// `idp.tenant.admin` を書いてよいのは、実際に `RequirePerms<IdpAdmin>` で守る whoami だけ
-    /// （細粒度の権限へ分けた口に古い「`idp.tenant.admin` 必須」が残っていた。task #146）。
+    /// Every listed admin API documents Bearer security and 401 / 403. Only whoami, which is really
+    /// guarded by `RequirePerms<IdpAdmin>`, may mention `idp.tenant.admin` in its 403 description
+    /// (endpoints split into fine-grained permissions still had the old "`idp.tenant.admin` required"; task #146).
     #[test]
     fn every_documented_admin_operation_states_bearer_and_its_permission() {
         let doc = ApiDoc::openapi();
@@ -422,30 +422,27 @@ mod tests {
                 checked += 1;
                 assert!(
                     operation.security.is_some(),
-                    "{method} {path} に bearer_token の security が無い"
+                    "{method} {path} has no bearer_token security"
                 );
                 let responses = &operation.responses.responses;
-                assert!(
-                    responses.contains_key("401"),
-                    "{method} {path} に 401 が無い"
-                );
+                assert!(responses.contains_key("401"), "{method} {path} has no 401");
                 let forbidden = match responses.get("403") {
                     Some(utoipa::openapi::RefOr::T(response)) => response.description.clone(),
-                    _ => panic!("{method} {path} に 403 が無い"),
+                    _ => panic!("{method} {path} has no 403"),
                 };
                 if path != whoami {
                     assert!(
                         !forbidden.contains("idp.tenant.admin"),
-                        "{method} {path} の 403 の説明に古い「idp.tenant.admin 必須」が残っている: {forbidden}"
+                        "{method} {path} 403 description still has the old \"idp.tenant.admin required\": {forbidden}"
                     );
                 }
             }
         }
-        assert!(checked > 0, "管理 API が 1 本も載っていない");
+        assert!(checked > 0, "no admin API is listed at all");
     }
 
-    /// 外部 IdP の管理 API（一覧・登録・更新・削除・SAML メタデータと discovery の取り込み）が
-    /// すべて載っている（task #124。以前は discovery の取り込みだけが載っていた）。
+    /// The external IdP admin APIs (list, create, update, delete, SAML metadata and discovery import)
+    /// are all listed (task #124; only the discovery import was listed before).
     #[test]
     fn external_idp_admin_api_is_documented() {
         let doc = ApiDoc::openapi();
@@ -472,7 +469,7 @@ mod tests {
             "POST",
         );
 
-        let schemas = &doc.components.as_ref().expect("components が無い").schemas;
+        let schemas = &doc.components.as_ref().expect("components missing").schemas;
         for name in [
             "ExternalIdpResponse",
             "ExternalIdpRegisterRequest",
@@ -484,7 +481,7 @@ mod tests {
         ] {
             assert!(
                 schemas.contains_key(name),
-                "schema {name} が OpenAPI に無い"
+                "schema {name} is missing from OpenAPI"
             );
         }
     }

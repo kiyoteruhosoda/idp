@@ -1,8 +1,8 @@
-//! クライアント（RP）登録・管理エンドポイント（`/admin/clients`、設計仕様 §9.3、Progress A1）。
+//! Client (RP) registration and management endpoints (`/admin/clients`, design spec §9.3, Progress A1).
 //!
-//! 参照は `idp.clients:read`、作成・更新・削除・secret 再発行は `idp.clients:write` が要る
-//! （`RequirePerms<ClientsRead>` / `<ClientsWrite>`。`idp.tenant.admin` は両方を含意する）。`client_secret` は confidential
-//! クライアントの登録・再発行時に**その応答でのみ**平文で返す（DB はハッシュのみ保存）。
+//! Reading needs `idp.clients:read`; create/update/delete/secret reissue need `idp.clients:write`
+//! (`RequirePerms<ClientsRead>` / `<ClientsWrite>`; `idp.tenant.admin` implies both). For confidential clients, `client_secret`
+//! is returned in plaintext **only in the response** to registration/reissue (the DB stores only the hash).
 
 use crate::application::client_management::{
     ClientManagementError, RegisterClientCommand, UpdateClientCommand,
@@ -24,7 +24,7 @@ use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 
-/// クライアントを登録する。`client_id` は自動採番。confidential のとき `client_secret` を平文で返す。
+/// Registers a client. `client_id` is auto-assigned. For confidential clients, returns `client_secret` in plaintext.
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/clients",
@@ -85,12 +85,12 @@ pub async fn create_client(
     ))
 }
 
-/// `?grant_type=` の解釈（ADR-0038）。
+/// Interpretation of `?grant_type=` (ADR-0038).
 ///
-/// **未知の値は 400 で断る。** ADR-0037 の `?grantable_to=` は綴り違いを「絞り込まない」に倒したが、
-/// あちらは選択肢を狭めるだけの支援 API なので害が無かった。こちらを黙って無視すると、
-/// 「連携先」の一覧にサービスアカウントが混ざったまま表示される —— **絞り込みの失敗が
-/// 画面上は成功に見える**。
+/// **Unknown values are rejected with 400.** ADR-0037's `?grantable_to=` falls back to "no filtering" on misspellings,
+/// but that is a support API that only narrows choices, so it was harmless. Silently ignoring it here would
+/// show the "connected apps" list with service accounts mixed in -- **a failed filter would
+/// look like success on screen**.
 fn parse_grant_type_filter(
     raw: Option<&str>,
     locale: ApiLocale,
@@ -103,10 +103,10 @@ fn parse_grant_type_filter(
     })
 }
 
-/// 登録済みクライアントを新しい順に 1 ページ分と総件数で返す（G7）。
+/// Returns one page of registered clients, newest first, plus the total count (G7).
 ///
-/// ページングは DB 側で行う。全件を返す方式は、テナント内のクライアント数に比例して
-/// 応答が膨らむため採らない（`/admin/members` と同じ方針）。
+/// Paging happens in the DB. Returning everything is not used, as responses would grow with the number of
+/// clients in the tenant (same policy as `/admin/members`).
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/clients",
@@ -140,7 +140,7 @@ pub async fn list_clients(
     }))
 }
 
-/// 単一クライアントを取得する。
+/// Gets a single client.
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/clients/{client_id}",
@@ -159,7 +159,7 @@ pub async fn get_client(
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
-    // 先頭のパスセグメントは `{tenant_id}`（`ResolvedTenant` から取得済みのため破棄する）。
+    // The first path segment is `{tenant_id}` (discarded; already obtained from `ResolvedTenant`).
     Path((_tenant_id, client_id)): Path<(String, String)>,
 ) -> Result<Json<ClientResponse>, ApiError> {
     let client = state
@@ -170,7 +170,7 @@ pub async fn get_client(
     Ok(Json(client_response(&client)))
 }
 
-/// クライアントを部分更新する（app_name / redirect_uris / scopes / status）。
+/// Partially updates a client (app_name / redirect_uris / scopes / status).
 #[utoipa::path(
     patch,
     path = "/{tenant_id}/admin/clients/{client_id}",
@@ -241,7 +241,7 @@ pub async fn update_client(
     Ok(Json(client_response(&client)))
 }
 
-/// confidential クライアントの `client_secret` を再発行する。新しい平文をこの応答でのみ返す。
+/// Reissues a confidential client's `client_secret`. The new plaintext is returned only in this response.
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/clients/{client_id}/secret",
@@ -291,11 +291,11 @@ pub async fn rotate_client_secret(
     }))
 }
 
-/// クライアントを論理削除する（`DELETE /admin/clients/{client_id}`。ADR-0035）。
+/// Soft-deletes a client (`DELETE /admin/clients/{client_id}`, ADR-0035).
 ///
-/// 実体は残し、状態を `DELETED` にする。発行済みトークン・同意・監査ログが `client_id` で
-/// 紐づいているため、実体を消すと監査で「どのアプリだったか」を追えなくなる。使えなくなるのは
-/// 即座である（認可・トークン・introspection は `is_active()` で弾く）。
+/// The row is kept and its status set to `DELETED`. Issued tokens, consents and audit logs are linked by `client_id`,
+/// so deleting the row would make "which app was it" untraceable in audits. It becomes unusable
+/// immediately (authorization, tokens and introspection reject it via `is_active()`).
 #[utoipa::path(
     delete,
     path = "/{tenant_id}/admin/clients/{client_id}",
@@ -341,8 +341,8 @@ pub async fn delete_client(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// クライアント状況一覧（`GET /admin/clients/status`）。状態・scope・最終利用時刻。管理コンソール
-/// （web）の状況画面が用いる支援 API（`idp.clients:read` 必須）。
+/// Client status list (`GET /admin/clients/status`): status, scopes, last used time. A support API used by
+/// the status screen of the admin console (web) (requires `idp.clients:read`).
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/clients/status",
@@ -378,7 +378,7 @@ pub async fn list_client_status(
     ))
 }
 
-/// `token_endpoint_auth_method` の文字列をパースする（G3。未指定は `None` ＝ 変更・既定のまま）。
+/// Parses the `token_endpoint_auth_method` string (G3; unspecified is `None` = unchanged / default).
 fn parse_auth_method(
     raw: &Option<String>,
     locale: ApiLocale,
@@ -404,8 +404,8 @@ fn client_response(c: &Client) -> ClientResponse {
         response_types: c.response_types.clone(),
         scopes: c.scopes.clone(),
         token_endpoint_auth_method: c.token_endpoint_auth_method.as_str().to_string(),
-        // `private_key_jwt` の検証鍵。公開鍵しか保存していないので、そのまま返して差し支えない
-        // （管理者が「どの鍵が今有効か」をローテーション中に確認できる必要がある）。
+        // Verification keys for `private_key_jwt`. Only public keys are stored, so returning them as is is fine
+        // (admins need to check "which key is currently active" during rotation).
         jwks: c.jwks.as_ref().map(|j| j.to_storage_json()),
         post_logout_redirect_uris: c.post_logout_redirect_uris.clone(),
         frontchannel_logout_uri: c.frontchannel_logout_uri.clone(),

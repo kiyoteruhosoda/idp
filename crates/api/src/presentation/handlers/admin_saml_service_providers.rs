@@ -1,13 +1,13 @@
-//! SAML SP（クライアント）登録エンドポイント（`/{tenant_id}/admin/saml-service-providers`）。
-//! 本プロダクト（IdP）が信頼する SP を管理する。
+//! SAML SP (client) registration endpoints (`/{tenant_id}/admin/saml-service-providers`).
+//! Manages the SPs this product (the IdP) trusts.
 //!
-//! 一覧は `idp.saml-service-providers:read`、登録・更新・削除とメタデータの取り込みは
-//! `idp.saml-service-providers:write` が要る（`RequirePerms<SamlServiceProvidersRead>` /
-//! `<SamlServiceProvidersWrite>`。`idp.tenant.admin` は両方を含意する）。
+//! Listing needs `idp.saml-service-providers:read`; register/update/delete and metadata import need
+//! `idp.saml-service-providers:write` (`RequirePerms<SamlServiceProvidersRead>` /
+//! `<SamlServiceProvidersWrite>`; `idp.tenant.admin` implies both).
 //!
-//! 入出力は api 側の `utoipa` 付き DTO で受け渡す（OpenAPI に載せるため。task #146）。web が使う
-//! `assay_contracts::admin` の DTO（`assay_contracts` は `utoipa` を持たない）と形が食い違うと
-//! 管理画面からの登録・編集が静かに壊れるため、食い違いはこのファイルのテストが落とす。
+//! Input/output use api-side DTOs with `utoipa` (to appear in OpenAPI, task #146). If their shape diverges from the
+//! `assay_contracts::admin` DTOs web uses (`assay_contracts` has no `utoipa`), registering and editing from
+//! the admin screen silently breaks, so the tests in this file catch any divergence.
 
 use crate::application::saml_service_provider_management::{
     RegisterSamlServiceProviderCommand, SamlServiceProviderManagementError,
@@ -29,40 +29,40 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-/// SAML SP の登録要求（`assay_contracts::admin::SamlServiceProviderRegisterRequest` と同じ形）。
+/// SAML SP registration request (same shape as `assay_contracts::admin::SamlServiceProviderRegisterRequest`).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SamlServiceProviderRegisterRequest {
     pub display_name: String,
-    /// SP の entityID（テナント内で一意）。
+    /// The SP's entityID (unique within the tenant).
     pub entity_id: String,
-    /// SP の AssertionConsumerService URL。
+    /// The SP's AssertionConsumerService URL.
     pub acs_url: String,
-    /// NameID フォーマット（空なら既定の persistent）。
+    /// NameID format (default persistent if empty).
     #[serde(default)]
     pub name_id_format: String,
-    /// 署名/暗号証明書（任意）。
+    /// Signing/encryption certificate (optional).
     #[serde(default)]
     pub x509_certificate: Option<String>,
     pub enabled: bool,
 }
 
-/// SAML SP の更新要求（登録と同じ項目で置き換える。テナントは変えない。
-/// `assay_contracts::admin::SamlServiceProviderUpdateRequest` と同じ形）。
+/// SAML SP update request (replaces with the same fields as registration; the tenant does not change.
+/// Same shape as `assay_contracts::admin::SamlServiceProviderUpdateRequest`).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SamlServiceProviderUpdateRequest {
     pub display_name: String,
     pub entity_id: String,
     pub acs_url: String,
-    /// NameID フォーマット（空なら既定の persistent）。
+    /// NameID format (default persistent if empty).
     #[serde(default)]
     pub name_id_format: String,
-    /// 署名/暗号証明書（任意）。
+    /// Signing/encryption certificate (optional).
     #[serde(default)]
     pub x509_certificate: Option<String>,
     pub enabled: bool,
 }
 
-/// SAML SP の管理 API 表現（`assay_contracts::admin::SamlServiceProviderResponse` と同じ形）。
+/// Admin API representation of a SAML SP (same shape as `assay_contracts::admin::SamlServiceProviderResponse`).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SamlServiceProviderResponse {
     pub id: String,
@@ -71,37 +71,37 @@ pub struct SamlServiceProviderResponse {
     pub entity_id: String,
     pub acs_url: String,
     pub name_id_format: String,
-    /// 署名/暗号証明書（設定されていなければ null）。
+    /// Signing/encryption certificate (null if not set).
     pub x509_certificate: Option<String>,
     pub enabled: bool,
-    /// RFC3339。
+    /// RFC3339.
     pub created_at: String,
-    /// RFC3339。
+    /// RFC3339.
     pub updated_at: String,
 }
 
-/// SP メタデータ取り込みの要求（`assay_contracts::admin::SamlMetadataImportRequest` と同じ形）。
+/// SP metadata import request (same shape as `assay_contracts::admin::SamlMetadataImportRequest`).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SamlSpMetadataImportRequest {
-    /// SAML メタデータ XML（SP の `EntityDescriptor`）。
+    /// SAML metadata XML (the SP's `EntityDescriptor`).
     pub metadata_xml: String,
 }
 
-/// SP メタデータ取り込みの応答（登録フォームの初期値。**登録はしていない**。
-/// `assay_contracts::admin::SamlSpMetadataImportResponse` と同じ形）。
+/// SP metadata import response (initial values for the registration form; **nothing is registered**.
+/// Same shape as `assay_contracts::admin::SamlSpMetadataImportResponse`).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SamlSpMetadataImportResponse {
-    /// メタデータの表示名（無ければ空文字）。
+    /// Display name from the metadata (empty string if none).
     pub display_name: String,
     pub entity_id: String,
     pub acs_url: String,
-    /// NameID フォーマット（無ければ空文字）。
+    /// NameID format (empty string if none).
     pub name_id_format: String,
-    /// 証明書（base64 DER。無ければ空文字）。
+    /// Certificate (base64 DER; empty string if none).
     pub x509_certificate: String,
 }
 
-/// SP を登録する。成功時 201。
+/// Registers an SP. 201 on success.
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/saml-service-providers",
@@ -140,7 +140,7 @@ pub async fn register(
     Ok((StatusCode::CREATED, Json(to_response(&provider))))
 }
 
-/// 既存 SP を更新する（テナント境界内の `id` のみ）。
+/// Updates an existing SP (only `id`s within the tenant boundary).
 #[utoipa::path(
     put,
     path = "/{tenant_id}/admin/saml-service-providers/{id}",
@@ -184,7 +184,7 @@ pub async fn update(
     Ok(Json(to_response(&provider)))
 }
 
-/// SP を削除する（テナント境界内の `id` のみ）。成功時 204。
+/// Deletes an SP (only `id`s within the tenant boundary). 204 on success.
 #[utoipa::path(
     delete,
     path = "/{tenant_id}/admin/saml-service-providers/{id}",
@@ -215,7 +215,7 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// SP を一覧する。
+/// Lists SPs.
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/saml-service-providers",
@@ -242,7 +242,7 @@ pub async fn list(
     Ok(Json(providers.iter().map(to_response).collect()))
 }
 
-/// SP メタデータ XML を解析し、登録フォームの初期値を返す。データは永続化しない。
+/// Parses SP metadata XML and returns initial values for the registration form. Nothing is persisted.
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/saml-service-providers/import-metadata",
@@ -275,8 +275,8 @@ pub async fn import_metadata(
     }))
 }
 
-/// パスの SP id（UUID 文字列）を検証する。不正な UUID は「見つからない」と同義に 404 とする
-/// （存在しない id を細かく区別して情報を与えない）。
+/// Validates the SP id (UUID string) in the path. An invalid UUID is treated like "not found", 404
+/// (no information given by finely distinguishing nonexistent ids).
 fn parse_id(raw: &str, locale: ApiLocale) -> Result<Uuid, ApiError> {
     Uuid::parse_str(raw)
         .map_err(|_| ApiError::NotFound(ApiMessages::new(locale).get("api-saml-sp-not-found")))
@@ -319,7 +319,7 @@ mod tests {
 
     const CERT: &str = "MIIB-sp";
 
-    /// 管理コンソール（web）が送る `assay_contracts` の要求を、api の DTO がそのまま受け取れる。
+    /// The api DTO accepts as is the `assay_contracts` request sent by the admin console (web).
     #[test]
     fn saml_sp_request_contracts_match_the_api_dto() {
         let shared = assay_contracts::admin::SamlServiceProviderRegisterRequest {
@@ -364,7 +364,7 @@ mod tests {
         assert_eq!(api.metadata_xml, shared.metadata_xml);
     }
 
-    /// api が返す JSON と、web が `assay_contracts` の型から作る JSON が**鍵まで同じ**。
+    /// The JSON the api returns and the JSON web builds from the `assay_contracts` types are **identical down to the keys**.
     #[test]
     fn saml_sp_response_contracts_match_the_api_dto() {
         let api = SamlServiceProviderResponse {

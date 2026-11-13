@@ -1,4 +1,4 @@
-//! `AccountNoteRepository` の sqlx 実装（ADR-0063 / ADR-0065）。
+//! sqlx implementation of `AccountNoteRepository` (ADR-0063 / ADR-0065).
 
 use crate::domain::account::AccountRef;
 use crate::domain::error::{DomainError, Result};
@@ -36,8 +36,8 @@ impl AccountNoteRepository for SqlxAccountNoteRepository {
         updated_by: Option<Uuid>,
         now: DateTime<Utc>,
     ) -> Result<()> {
-        // 種類ごとの UNIQUE（`(tenant_id, user_id)` / `(tenant_id, client_id)`）に当たれば置き換える。
-        // `id` は最初に書いたときのものを残す。
+        // Replace when hitting the per-kind UNIQUE (`(tenant_id, user_id)` / `(tenant_id, client_id)`).
+        // `id` keeps the value from the first write.
         sqlx::query(
             "INSERT INTO account_notes \
              (id, tenant_id, kind, user_id, client_id, note, updated_at, updated_by) \

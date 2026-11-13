@@ -1,14 +1,14 @@
-//! テナント作成・管理エンドポイント（`/{tenant_id}/admin/tenants`。ADR-0009 §4・§6）。
+//! Tenant creation and management endpoints (`/{tenant_id}/admin/tenants`, ADR-0009 §4, §6).
 //!
-//! 自テナントの取得・更新（`/admin/settings/tenant`）は `idp.tenant-settings:read` / `:write`
-//! （`RequirePerms<TenantSettingsRead>` / `<TenantSettingsWrite>`。`idp.tenant.admin` は含意する）、
-//! それ以外（テナントの一覧・作成・更新・削除・ドメイン・子テナント管理者のパスワード再発行）は
-//! `idp.system.admin` が必要（`RequirePerms<IdpSystemAdmin>`）。`idp.system.admin` は root
-//! scope でしか存在できないため、実質的にテナントを作成・削除できるのは root テナントの system 管理者
-//! だけになる（§4）。作成時は**作成者自身**を新テナントのブートストラップ管理者（ACTIVE GUEST +
-//! `idp.tenant.admin`）として登録する（平文パスワードは返さない）。判定は Application 層
-//! （`TenantManagementService`）が行う。なお、子テナント管理者のパスワード再発行
-//! （`admin-password-reset`）は、作成後に登録された利用者をメールアドレスで対象に残置する。
+//! Getting/updating the own tenant (`/admin/settings/tenant`) needs `idp.tenant-settings:read` / `:write`
+//! (`RequirePerms<TenantSettingsRead>` / `<TenantSettingsWrite>`; implied by `idp.tenant.admin`);
+//! everything else (listing/creating/updating/deleting tenants, domains, reissuing child tenant admin passwords)
+//! needs `idp.system.admin` (`RequirePerms<IdpSystemAdmin>`). `idp.system.admin` can only exist in root
+//! scope, so effectively only system admins of the root tenant can create and delete tenants
+//! (§4). On creation, **the creator themselves** is registered as the new tenant's bootstrap admin (ACTIVE GUEST +
+//! `idp.tenant.admin`) (no plaintext password is returned). Decisions are made by the application layer
+//! (`TenantManagementService`). Note that reissuing a child tenant admin's password
+//! (`admin-password-reset`) remains available, targeting users registered after creation by email address.
 
 use crate::application::tenant_management::{
     CreateTenantCommand, TenantManagementError, UpdateTenantCommand,
@@ -37,7 +37,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use uuid::Uuid;
 
-/// 直下の子テナントを 1 ページ分と総件数で返す（G7）。ページングは DB 側で行う。
+/// Returns one page of direct child tenants plus the total count (G7). Paging happens in the DB.
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/tenants",
@@ -70,9 +70,9 @@ pub async fn list_tenants(
     }))
 }
 
-/// 子テナントを作成する。作成者自身が新テナントのブートストラップ管理者（ACTIVE GUEST +
-/// `idp.tenant.admin`）になる（ADR-0009 §4）。作成者は以後、正式な管理者を登録・付与してから自身を
-/// 解除して離脱する。
+/// Creates a child tenant. The creator becomes the new tenant's bootstrap admin (ACTIVE GUEST +
+/// `idp.tenant.admin`) (ADR-0009 §4). The creator then registers and grants the real admins, and then removes
+/// themselves and leaves.
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/tenants",
@@ -114,7 +114,7 @@ pub async fn create_tenant(
     Ok((StatusCode::CREATED, Json(tenant_response(&created))))
 }
 
-/// 直下の子テナント 1 件を取得する。
+/// Gets one direct child tenant.
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/tenants/{child_id}",
@@ -144,7 +144,7 @@ pub async fn get_tenant(
     Ok(Json(tenant_response(&found)))
 }
 
-/// 子テナントの表示名・状態を部分更新する。
+/// Partially updates a child tenant's display name and status.
 #[utoipa::path(
     patch,
     path = "/{tenant_id}/admin/tenants/{child_id}",
@@ -199,13 +199,13 @@ pub async fn update_tenant(
         )
         .await
         .map_err(|e| map_error(e, locale))?;
-    // 解決キャッシュには更新前の名称・状態が載っている。捨てないと、次のリクエストが TTL
-    // （TENANT_CACHE_TTL_SECS）の間だけ旧名称のヘッダ表示・旧 status での可否判定を続ける。
+    // The resolution cache holds the pre-update name and status. Unless dropped, subsequent requests keep showing the old name
+    // in the header and deciding with the old status for the TTL (TENANT_CACHE_TTL_SECS).
     state.tenant_resolution.invalidate(updated.id);
     Ok(Json(tenant_response(&updated)))
 }
 
-/// 子テナントを削除する。配下に子テナント・ユーザー・クライアントが存在する場合は 409。
+/// Deletes a child tenant. 409 if child tenants, users or clients exist under it.
 #[utoipa::path(
     delete,
     path = "/{tenant_id}/admin/tenants/{child_id}",
@@ -240,17 +240,17 @@ pub async fn delete_tenant(
         .delete_tenant(tenant.context(), child, &admin.actor, &ctx)
         .await
         .map_err(|e| map_error(e, locale))?;
-    // 削除した（＝以後解決してはならない）テナントを解決キャッシュから捨てる。
+    // Drop the deleted tenant (= must never resolve again) from the resolution cache.
     state.tenant_resolution.invalidate(child);
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// 子テナントの利用者（テナント登録時の初期管理者等）のパスワードを再発行する
-/// （`POST /{tenant_id}/admin/tenants/{child_id}/admin-password-reset`）。
+/// Reissues the password of a child tenant's user (e.g. the initial admin registered with the tenant)
+/// (`POST /{tenant_id}/admin/tenants/{child_id}/admin-password-reset`).
 ///
-/// 対象は**直下の子テナント所属**の利用者をメールアドレスで指定する。32 文字以上のランダム
-/// パスワードを自動生成して `must_change_password` を設定し、`setup_url` を
-/// **この応答でのみ**平文で返す（テナント作成時と同じパターン。ADR-0009 §5）。
+/// The target is a user **belonging to a direct child tenant**, specified by email address. Generates a random
+/// password of 32+ characters, sets `must_change_password`, and returns `setup_url` in plaintext
+/// **only in this response** (same pattern as tenant creation, ADR-0009 §5).
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/tenants/{child_id}/admin-password-reset",
@@ -278,7 +278,7 @@ pub async fn reset_tenant_admin_password(
     Json(body): Json<TenantAdminPasswordResetRequest>,
 ) -> Result<Json<UserPasswordResetResponse>, ApiError> {
     let child = parse_tenant_id(&child_id, locale)?;
-    // 直下の子テナントであることを検証する（他系統のテナントを対象にさせない）。
+    // Verify it is a direct child tenant (don't allow targeting tenants of other lineages).
     let child_tenant = state
         .tenants_admin
         .get_child(tenant.context(), child)
@@ -306,7 +306,7 @@ pub async fn reset_tenant_admin_password(
     }))
 }
 
-/// 設定画面のテナント設定区画: 自テナント（要求テナント自身）を取得する（`idp.tenant-settings:read` 必須。MT14）。
+/// Tenant section of the settings screen: gets the own tenant (the requesting tenant itself) (requires `idp.tenant-settings:read`, MT14).
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/settings/tenant",
@@ -332,7 +332,7 @@ pub async fn get_current_tenant(
     Ok(Json(tenant_response(&current)))
 }
 
-/// 設定画面のテナント設定区画: 自テナントの表示名を更新する（`idp.tenant-settings:write` 必須。MT14）。
+/// Tenant section of the settings screen: updates the own tenant's display name (requires `idp.tenant-settings:write`, MT14).
 #[utoipa::path(
     patch,
     path = "/{tenant_id}/admin/settings/tenant",
@@ -372,18 +372,18 @@ pub async fn update_current_tenant(
         )
         .await
         .map_err(|e| map_error(e, locale))?;
-    // 解決キャッシュを捨てる。管理コンソールのヘッダは whoami（＝解決済みテナント）から表示名を
-    // 得るため、捨てないと改名直後に「本文は新名称・ヘッダは旧名称」の画面になる。
+    // Drop the resolution cache. The admin console header gets the display name from whoami (= the resolved tenant),
+    // so without dropping it, right after a rename the screen shows "new name in the body, old name in the header".
     state.tenant_resolution.invalidate(updated.id);
     Ok(Json(tenant_response(&updated)))
 }
 
-// ── ドメインの割り当て（ADR-0029）────────────────────────────────────────────
+// ── Domain assignment (ADR-0029) ────────────────────────────────────────────────
 //
-// 対象は**自テナントまたは直下の子**。root 自身にもドメインが要る（root の利用者は作成した
-// テナントへゲストとして入るため）ので、子だけには絞らない。判定は Application 層が行う。
+// Targets are **the own tenant or direct children**. Root itself needs domains too (root's users enter the tenants
+// they created as guests), so it is not limited to children. Decisions are made by the application layer.
 
-/// テナントに割り当てられているドメインを一覧する。
+/// Lists the domains assigned to the tenant.
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/tenants/{target_id}/domains",
@@ -412,7 +412,7 @@ pub async fn list_tenant_domains(
     Ok(Json(domains.iter().map(domain_response).collect()))
 }
 
-/// ドメインを割り当てる。すでに**どこかのテナントが**押さえていれば 409（一意性はグローバル）。
+/// Assigns a domain. 409 if **any tenant** already holds it (uniqueness is global).
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/tenants/{target_id}/domains",
@@ -453,7 +453,7 @@ pub async fn add_tenant_domain(
     Ok((StatusCode::CREATED, Json(domain_response(&added))))
 }
 
-/// 割り当てを解除する。
+/// Removes an assignment.
 #[utoipa::path(
     delete,
     path = "/{tenant_id}/admin/tenants/{target_id}/domains/{domain_id}",

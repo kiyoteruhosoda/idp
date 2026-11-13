@@ -1,23 +1,23 @@
-//! SAML SP-initiated SSO のユースケース（`/{tenant_id}/saml/sso`）。
+//! SAML SP-initiated SSO use case (`/{tenant_id}/saml/sso`).
 //!
-//! OIDC の認可フロー（ADR-0018 決定 2）と同じハンドオフ方式を採る。api はブラウザ Cookie を
-//! 読まないため、[`SamlSsoService::begin`] は AuthnRequest を検証して [`SamlSsoRequest`] を作成し、
-//! **単回・短命のハンドル**を web へのリダイレクト URL（`{web}/{tenant}/saml/continue?handle=...`）
-//! に載せる。web は自ドメインの host-only `sso_session_id` Cookie とともに
-//! `/internal/saml/resume`（[`SamlSsoService::resume`]）を呼び、SSO が有効なら署名付き
-//! SAML Response を受け取って ACS へ自動 POST するフォームを描画する。SSO 未確立なら
-//! `saml_request_id` を Cookie 化してポータルログインへ誘導し、ログイン成功後に同じ resume を
-//! `saml_request_id` で再開する。
+//! Uses the same handoff scheme as the OIDC authorization flow (ADR-0018 decision 2). The api does not read
+//! browser Cookies, so [`SamlSsoService::begin`] validates the AuthnRequest, creates a [`SamlSsoRequest`], and puts
+//! a **single-use, short-lived handle** in the redirect URL to the web (`{web}/{tenant}/saml/continue?handle=...`).
+//! The web calls `/internal/saml/resume` ([`SamlSsoService::resume`]) together with its own domain's host-only
+//! `sso_session_id` Cookie, and if SSO is valid, receives a signed
+//! SAML Response and renders a form that auto-POSTs it to the ACS. If SSO is not established, it
+//! turns `saml_request_id` into a Cookie and leads to the portal sign-in, and after a successful sign-in resumes
+//! the same resume with `saml_request_id`.
 //!
-//! # ここが SAML の「アプリを使ってよいか」の門でもある（ADR-0054）
+//! # This is also SAML's "may this app be used" gate (ADR-0054)
 //!
-//! アサーションを発行できる経路は [`SamlSsoService::resume`] の 1 本だけで、ポータルでの
-//! ログイン（パスワード・MFA・パスキー・外部 IdP）はどれも SSO を確立してからここへ戻ってくる。
-//! OIDC の code の発行地点（`CodeIssuanceService::issue`）と同じく、判定は発行の直前に置く。
-//! 断ったら ACS へは POST せず、assay の画面で伝える（決定 2）。
+//! The only path that can issue assertions is [`SamlSsoService::resume`], and every portal
+//! sign-in (password, MFA, passkey, external IdP) comes back here after establishing SSO.
+//! As with OIDC's code issuance point (`CodeIssuanceService::issue`), the check is placed right before issuance.
+//! If refused, nothing is POSTed to the ACS; it is told on assay's screen (decision 2).
 //!
-//! エラー方針: 検証済みの ACS（登録済み SP）が確定する前のエラーは信頼できる返送先が無いため、
-//! RP へリダイレクトせず 400 として呼び出し元へ返す（プロトコルエラーは翻訳しない。CLAUDE.md）。
+//! Error policy: errors before a verified ACS (registered SP) is settled have no trustworthy return destination, so
+//! they are returned to the caller as 400 without redirecting to the RP (protocol errors are not translated. CLAUDE.md).
 
 use crate::application::application_access::{ApplicationAccessService, ApplicationGate};
 use crate::application::audit::{AuditService, RequestContext};
@@ -44,28 +44,28 @@ use base64::Engine;
 use chrono::Duration;
 use std::sync::Arc;
 
-/// web ハンドオフ用ハンドルの有効期限（秒）。`/saml/sso` の 302 を web が受けて
-/// `/internal/saml/resume` へ渡すまでの片道だけを覆えばよい（OIDC の authorize と同値）。
+/// Expiry (seconds) of the web handoff handle. It only needs to cover the one-way trip from the web receiving
+/// the 302 of `/saml/sso` to passing it to `/internal/saml/resume` (same value as OIDC authorize).
 const HANDLE_TTL_SECS: i64 = 60;
 
-/// 発行するアサーションの有効期限（`NotOnOrAfter` / `SubjectConfirmationData`）。
-/// ブラウザ経由の即時 POST を想定した短命値（設計仕様 §2.2 の authorization code と同じ思想）。
+/// Expiry of issued assertions (`NotOnOrAfter` / `SubjectConfirmationData`).
+/// A short value assuming an immediate POST via the browser (same idea as the authorization code in design spec §2.2).
 const ASSERTION_TTL_SECS: i64 = 300;
 
-/// DB 列幅に合わせた入力上限（`saml_sso_requests.request_id` / `relay_state`）。
+/// Input limits matching DB column widths (`saml_sso_requests.request_id` / `relay_state`).
 const MAX_REQUEST_ID_LEN: usize = 1024;
 const MAX_RELAY_STATE_LEN: usize = 1024;
 
-/// `SAMLRequest` の受信バインディング。
+/// Receiving binding of `SAMLRequest`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SamlSsoBinding {
-    /// HTTP-Redirect（GET クエリ。base64 + raw DEFLATE）。
+    /// HTTP-Redirect (GET query. base64 + raw DEFLATE).
     Redirect,
-    /// HTTP-POST（フォーム。base64）。
+    /// HTTP-POST (form. base64).
     Post,
 }
 
-/// `/saml/sso` の受信内容。
+/// What `/saml/sso` received.
 pub struct SamlBeginCommand {
     pub binding: SamlSsoBinding,
     pub saml_request: String,
@@ -73,48 +73,48 @@ pub struct SamlBeginCommand {
 }
 
 pub enum SamlBeginOutcome {
-    /// 検証成功。単回ハンドルを URL に載せて web の `/saml/continue` へ 302 する。
+    /// Validation succeeded. 302 to the web's `/saml/continue` with the single-use handle in the URL.
     HandoffToWeb { handle: String },
-    /// AuthnRequest が不正（未登録 SP・ACS 不一致・解析失敗）。検証済みの返送先が無いため
-    /// リダイレクトせず 400 を返す（`reason` は RP 開発者向けの固定英語文言）。
+    /// The AuthnRequest is invalid (unregistered SP, ACS mismatch, parse failure). There is no verified return destination,
+    /// so 400 is returned without redirecting (`reason` is fixed English text for RP developers).
     BadRequest { reason: String },
-    /// 内部エラー。
+    /// Internal error.
     Internal(String),
 }
 
-/// `/internal/saml/resume` のコマンド。初回は `handle`（単回交換）、ログイン後の再開は
-/// `saml_request_id`（web の host-only Cookie）で行う。
+/// Command for `/internal/saml/resume`. The first time uses `handle` (single-use exchange); resuming after sign-in
+/// uses `saml_request_id` (the web's host-only Cookie).
 pub struct SamlResumeCommand {
     pub handle: Option<String>,
     pub saml_request_id: Option<String>,
-    /// web の host-only `sso_session_id` Cookie の値（無ければ未ログイン）。
+    /// Value of the web's host-only `sso_session_id` Cookie (not signed in if absent).
     pub sso_session_id: Option<String>,
 }
 
 pub enum SamlResumeOutcome {
-    /// SSO 有効。署名付き SAML Response（base64）を ACS へ自動 POST するフォームを web が描画する。
+    /// SSO valid. The web renders a form that auto-POSTs the signed SAML Response (base64) to the ACS.
     Completed {
         acs_url: String,
-        /// `SAMLResponse` フォーム値（base64 済み）。
+        /// `SAMLResponse` form value (already base64).
         saml_response: String,
         relay_state: Option<String>,
     },
-    /// 認証が必要。web は `saml_request_id` を host-only Cookie 化してポータルログインへ誘導する。
+    /// Authentication required. The web turns `saml_request_id` into a host-only Cookie and leads to the portal sign-in.
     LoginRequired { saml_request_id: String },
-    /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **ACS へ POST しない。**
-    /// 進行状態は消費済み（SP からやり直しても、割り当てが変わるまでは同じ答えになる）。
+    /// Authenticated, but use of this app is not permitted (ADR-0054). ⚠ **Do not POST to the ACS.**
+    /// The progress state is consumed (redoing from the SP gives the same answer until the assignment changes).
     ApplicationNotPermitted { application_name: String },
-    /// ハンドル・リクエストが無効・期限切れ・使用済み（SP からやり直し）。
+    /// The handle/request is invalid, expired, or used (redo from the SP).
     Expired,
-    /// 内部エラー。
+    /// Internal error.
     Internal(String),
 }
 
-/// アサーション発行の結果（`CodeIssuance` と同じ理由で、拒否を `Err` に混ぜない）。
+/// Result of issuing an assertion (refusal is not mixed into `Err`, for the same reason as `CodeIssuance`).
 enum SamlIssuance {
-    /// 発行できた（base64 済みの `SAMLResponse`）。
+    /// Issued (the base64-encoded `SAMLResponse`).
     Issued(String),
-    /// このアプリの利用が許可されていない。⚠ **ACS へ送らない。**
+    /// Use of this app is not permitted. ⚠ **Do not send to the ACS.**
     ApplicationDenied { application_name: String },
 }
 
@@ -127,7 +127,7 @@ pub struct SamlSsoService {
     keys: Arc<KeyService>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
-    /// 基底 issuer（`config.issuer()`）。テナント issuer = IdP entityID の合成に使う。
+    /// Base issuer (`config.issuer()`). Used to compose the tenant issuer = IdP entityID.
     base_issuer: String,
     request_ttl: Duration,
 }
@@ -160,14 +160,14 @@ impl SamlSsoService {
         }
     }
 
-    /// AuthnRequest を検証し、[`SamlSsoRequest`] を作成して web ハンドオフ用ハンドルを発行する。
+    /// Validates the AuthnRequest, creates a [`SamlSsoRequest`], and issues the web handoff handle.
     pub async fn begin(
         &self,
         tenant: TenantContext,
         cmd: SamlBeginCommand,
         ctx: &RequestContext,
     ) -> SamlBeginOutcome {
-        // 1. デコード・解析。
+        // 1. Decode and parse.
         let decoded = match cmd.binding {
             SamlSsoBinding::Redirect => decode_redirect_binding(&cmd.saml_request),
             SamlSsoBinding::Post => decode_post_binding(&cmd.saml_request),
@@ -181,7 +181,7 @@ impl SamlSsoService {
             Err(e) => return self.reject(tenant, None, &e.to_string(), ctx).await,
         };
 
-        // 2. 登録済み SP の解決（テナント境界内。ADR-0009 §8）。
+        // 2. Resolve the registered SP (within the tenant boundary. ADR-0009 §8).
         let provider = match self
             .service_providers
             .find_by_entity_id(tenant.tenant_id(), &parsed.issuer)
@@ -211,8 +211,8 @@ impl SamlSsoService {
                 .await;
         }
 
-        // 3. ACS URL: AuthnRequest が指定した場合は登録値との完全一致を要求する（未検証の
-        //    送信先へアサーションを送らない）。未指定なら登録値を使う。
+        // 3. ACS URL: if the AuthnRequest specifies one, require an exact match with the registered value (do not send assertions
+        //    to unverified destinations). If omitted, use the registered value.
         if let Some(requested_acs) = parsed.acs_url.as_deref() {
             if requested_acs != provider.acs_url {
                 return self
@@ -249,11 +249,11 @@ impl SamlSsoService {
                 .await;
         }
 
-        // 4. 進行状態を作成し、単回ハンドルで web へハンドオフする（ADR-0018 決定 2 と同方式）。
+        // 4. Create the progress state and hand off to the web with a single-use handle (same scheme as ADR-0018 decision 2).
         let now = self.clock.now();
         let handle = crypto::random_hex(32);
-        // 平文の `saml_request_id` はここでは誰にも渡らない（web へ渡すのは単回ハンドルだけ）。
-        // web が受け取る値はハンドル交換時（`resume`）に作られる。
+        // The plaintext `saml_request_id` is not handed to anyone here (only the single-use handle goes to the web).
+        // The value the web receives is created at handle exchange (`resume`).
         let request = SamlSsoRequest {
             id_hash: saml_sso_request::id_hash(&crypto::random_hex(32)),
             tenant_id: tenant.tenant_id(),
@@ -274,8 +274,8 @@ impl SamlSsoService {
         SamlBeginOutcome::HandoffToWeb { handle }
     }
 
-    /// web ハンドオフの再開。SSO が有効なら署名付き SAML Response を発行し、無ければ
-    /// ログイン誘導（`LoginRequired`）を返す。
+    /// Resumes the web handoff. If SSO is valid, issues a signed SAML Response; otherwise
+    /// returns a sign-in redirect (`LoginRequired`).
     pub async fn resume(
         &self,
         tenant: TenantContext,
@@ -284,8 +284,8 @@ impl SamlSsoService {
     ) -> SamlResumeOutcome {
         let now = self.clock.now();
 
-        // 1. 進行状態の解決。初回はハンドルを単回消費し、ログイン後の再開は行 id で引く。
-        //    DB にはハッシュしか無い（SEC6）ため、ハンドル交換の側では web へ返す平文をここで作る。
+        // 1. Resolve the progress state. The first time consumes the handle once; resuming after sign-in looks up by row id.
+        //    The DB holds only hashes (SEC6), so on the handle exchange side the plaintext returned to the web is created here.
         let (request, saml_request_id) =
             if let Some(handle) = cmd.handle.as_deref().filter(|h| !h.is_empty()) {
                 let handle_hash = crypto::sha256_hex(handle);
@@ -309,7 +309,7 @@ impl SamlSsoService {
                     .await
                 {
                     Ok(true) => request.id_hash = rotated_id_hash,
-                    // 並行する交換に負けた・再利用 → 単回使用として拒否する。
+                    // Lost to a concurrent exchange, or reused -> refused as single-use.
                     Ok(false) => return SamlResumeOutcome::Expired,
                     Err(e) => return SamlResumeOutcome::Internal(e.to_string()),
                 }
@@ -328,13 +328,13 @@ impl SamlSsoService {
                 return SamlResumeOutcome::Expired;
             };
 
-        // 2. SSO 復元（OIDC と共通の判定。メンバーシップ検証を含む）。
+        // 2. SSO restore (same checks as OIDC, including membership verification).
         let restored = match cmd.sso_session_id.as_deref().filter(|s| !s.is_empty()) {
             Some(session_id) => match self.sso_restorer.try_resume(tenant, session_id, ctx).await {
                 Ok(restored) => restored,
                 Err(e) => {
                     tracing::error!(error = %e, "failed to check SSO session for SAML SSO");
-                    // SSO 確認失敗は致命ではない。ログインへフォールバックする。
+                    // An SSO check failure is not fatal. Fall back to sign-in.
                     None
                 }
             },
@@ -344,7 +344,7 @@ impl SamlSsoService {
             return SamlResumeOutcome::LoginRequired { saml_request_id };
         };
 
-        // 3. SP を再解決する（フロー中の削除・無効化を SSO 成立後にも尊重する）。
+        // 3. Re-resolve the SP (respect deletion/disablement during the flow even after SSO is established).
         let provider = match self
             .service_providers
             .find_by_id(tenant.tenant_id(), request.service_provider_id)
@@ -358,9 +358,9 @@ impl SamlSsoService {
             Err(e) => return SamlResumeOutcome::Internal(e.to_string()),
         };
 
-        // 4. 進行状態を原子的に消費（クレーム）してから応答を発行する。同じ `saml_request_id` の
-        //    並行 resume は片方だけが削除（1 行）に成功し、負けた側は Expired になる
-        //    （1 つの AuthnRequest に対する成功アサーションの二重発行を防ぐ）。
+        // 4. Atomically consume (claim) the progress state before issuing the response. Of concurrent resumes with the same
+        //    `saml_request_id`, only one succeeds in deleting (1 row), and the loser becomes Expired
+        //    (prevents double issuance of successful assertions for one AuthnRequest).
         match self.requests.delete(&request.id_hash).await {
             Ok(true) => {}
             Ok(false) => return SamlResumeOutcome::Expired,
@@ -378,15 +378,15 @@ impl SamlSsoService {
             Ok(SamlIssuance::ApplicationDenied { application_name }) => {
                 SamlResumeOutcome::ApplicationNotPermitted { application_name }
             }
-            // クレーム後の失敗は進行状態が消費済みのため再開できない（SP からやり直す）。
+            // A failure after claiming cannot be resumed since the progress state is consumed (redo from the SP).
             Err(e) => SamlResumeOutcome::Internal(e),
         }
     }
 
-    /// 署名付き SAML Response（base64）を組み立てる。
+    /// Builds a signed SAML Response (base64).
     ///
-    /// 割り当ての判定（ADR-0054）は**組み立てより先**に行う。進行状態の消費（クレーム）の後に
-    /// 置くのは、並行する resume が同じ AuthnRequest について判定を二重に記録しないためである。
+    /// The assignment check (ADR-0054) is done **before building**. It is placed after consuming (claiming) the progress
+    /// state so that concurrent resumes do not record the check twice for the same AuthnRequest.
     async fn issue_response(
         &self,
         tenant: TenantContext,
@@ -418,8 +418,8 @@ impl SamlSsoService {
             Err(e) => return Err(e.to_string()),
         };
 
-        // NameID: SP 登録の Format に従う。emailAddress はメール、それ以外（persistent 等）は
-        // 外部公開サブジェクト識別子（`sub`。OIDC の `sub` と同一値）を使う。
+        // NameID: follows the Format of the SP registration. emailAddress uses the email; anything else (persistent, etc.)
+        // uses the externally exposed subject identifier (`sub`. Same value as OIDC's `sub`).
         let name_id = if provider.name_id_format.contains("emailAddress") {
             user.email.clone()
         } else {
@@ -467,7 +467,7 @@ impl SamlSsoService {
         Ok(SamlIssuance::Issued(STANDARD.encode(xml)))
     }
 
-    /// AuthnRequest の拒否を監査記録して 400 応答を返す（未登録 SP の探索も痕跡に残す）。
+    /// Audits the AuthnRequest refusal and returns a 400 response (traces of probing for unregistered SPs are also kept).
     async fn reject(
         &self,
         tenant: TenantContext,

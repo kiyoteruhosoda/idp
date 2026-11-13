@@ -1,19 +1,23 @@
-//! パスワードリセット／アカウント設定のワンタイムトークン（MT18・ADR-0062）。
+//! One-time tokens for password reset / account setup (MT18, ADR-0062).
 //!
-//! 平文トークンはリンクでのみ本人へ渡し、保存は SHA-256 hex（`token_hash`）のみ。
-//! `used_at` の設定で単回消費とする（authorization code と同じ one-time パターン）。
+//! The plaintext token reaches the user only via the link; only its SHA-256 hex (`token_hash`) is
+//! stored. Setting `used_at` makes it single-use (the same one-time pattern as authorization
+//! codes).
 
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-/// リンクの用途。**同じ 1 本のトークンで、リンク先にできることだけが変わる**（ADR-0062）。
+/// Purpose of the link. **With the same single token, only what the link target allows changes**
+/// (ADR-0062).
 ///
-/// DB はネイティブ ENUM を使わず `VARCHAR` + `CHECK` なので、許可値の単一の出所はこの enum。
+/// The DB uses `VARCHAR` + `CHECK` rather than a native ENUM, so this enum is the single source of
+/// allowed values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResetPurpose {
-    /// 本人が要求したパスワード再設定（忘失時。MT18）。
+    /// Password reset requested by the user (forgotten password; MT18).
     Reset,
-    /// 管理者が発行したアカウント設定。パスワードの設定に加えて**パスキーの登録**も許す。
+    /// Account setup issued by an admin. Besides setting a password, it also allows **registering a
+    /// passkey**.
     Setup,
 }
 
@@ -25,8 +29,9 @@ impl ResetPurpose {
         }
     }
 
-    /// 保存値から復元する。⚠ **知らない値は `Reset` に丸めない** —— 丸めると、将来足した用途の
-    /// 行が「本人の再設定」として扱われ、その用途でだけ許している操作が黙って通る。
+    /// Restores from the stored value. ⚠ **Unknown values are not coerced to `Reset`** — otherwise
+    /// rows for purposes added later would be treated as "user's own reset", and operations allowed
+    /// only for them would pass silently.
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "reset" => Some(ResetPurpose::Reset),
@@ -35,10 +40,11 @@ impl ResetPurpose {
         }
     }
 
-    /// この用途のリンクで**パスキーを登録してよいか**。
+    /// Whether a link with this purpose **may register a passkey**.
     ///
-    /// 許すのは `setup` だけ。`reset` は「パスワードを忘れた」経路で、そこに認証器を足せると、
-    /// メールを一時的に読める相手が居座る手段を得てしまう（パスワードなら次の再設定で切れる）。
+    /// Only `setup` allows it. `reset` is the "forgot password" path; allowing an authenticator
+    /// there would give someone with temporary access to the mailbox a way to persist (a password
+    /// is cut off by the next reset).
     pub fn allows_passkey_registration(&self) -> bool {
         matches!(self, ResetPurpose::Setup)
     }
@@ -46,12 +52,12 @@ impl ResetPurpose {
 
 #[derive(Debug, Clone)]
 pub struct PasswordResetToken {
-    /// トークンの SHA-256 hex（平文は保存しない）。
+    /// SHA-256 hex of the token (the plaintext is not stored).
     pub token_hash: String,
     pub user_id: Uuid,
     pub purpose: ResetPurpose,
     pub expires_at: DateTime<Utc>,
-    /// 消費時刻。`None` = 未使用。
+    /// Consumption time. `None` = unused.
     pub used_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
 }
@@ -73,7 +79,7 @@ mod tests {
         assert_eq!(ResetPurpose::parse(""), None);
     }
 
-    /// パスキーを足せるのは管理者が出したリンクだけ。
+    /// Only admin-issued links can add a passkey.
     #[test]
     fn only_a_setup_link_may_register_a_passkey() {
         assert!(ResetPurpose::Setup.allows_passkey_registration());

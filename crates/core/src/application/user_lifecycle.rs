@@ -1,16 +1,16 @@
-//! 管理者による利用者ライフサイクル操作（無効化・有効化・削除・パスワード再発行・MFA 解除・
-//! トークン再発行・プロフィール編集。ADR-0009 §5・MT21・MT25・ADR-0047）。
+//! User lifecycle operations by admins (disable, enable, delete, password reissue, MFA removal,
+//! token reissue, profile editing. ADR-0009 §5, MT21, MT25, ADR-0047).
 //!
-//! 操作対象は**所属元（HOME）が要求テナントの利用者のみ**（`users.tenant_id` 照合。ゲストの
-//! `users` レコードは所属元テナントの管理者だけが操作できる。§3）。自分自身への操作は禁止する
-//! （誤操作によるロックアウト防止。パスワード変更・MFA 解除はセルフサービスを使う）。ただし
-//! プロフィール編集（[`UserLifecycleService::update_profile`]）はロックアウトを招かないため自分自身も
-//! 対象にできる。
+//! Targets are **only users whose home (HOME) is the requested tenant** (`users.tenant_id` match. A guest's
+//! `users` record can be operated only by admins of their home tenant. §3). Operating on oneself is forbidden
+//! (to prevent lockout by mistake. Password changes and MFA removal use self-service). However,
+//! profile editing ([`UserLifecycleService::update_profile`]) does not cause lockout, so it can also target
+//! oneself.
 //!
-//! パスワード再発行は作成時と同じ方針（[`crate::application::user_management`]）: 32 文字以上の
-//! ランダムパスワードを自動生成し、`must_change_password = true` を設定する。生成パスワードは
-//! **その応答でのみ**平文で返し、ログ・監査には出さない。再発行・無効化・MFA 解除時は当該利用者の
-//! SSO セッション・refresh token・未消費 authorization code を全失効させる。
+//! Password reissue follows the same policy as creation ([`crate::application::user_management`]): a random password of 32+ chars
+//! is auto-generated and `must_change_password = true` is set. The generated password is
+//! returned in plaintext **only in that response** and is not output to logs or audits. On reissue, disable and MFA removal, all of that user's
+//! SSO sessions, refresh tokens and unconsumed authorization codes are revoked.
 
 use crate::application::account_setup::{AccountSetupLinkIssuer, SetupLink};
 use crate::application::audit::{AuditService, RequestContext};
@@ -36,54 +36,54 @@ use crate::domain::values::{
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// 自動生成パスワードのバイト長（base64url で 43 文字。ADR-0009 §5 の「32 文字以上」を満たす）。
+/// Byte length of the auto-generated password (43 chars in base64url. Meets ADR-0009 §5's "32 chars or more").
 const GENERATED_PASSWORD_BYTES: usize = 32;
 
-/// パスワード再発行の結果。どちらも**この一度だけ**返す。
+/// Result of a password reissue. Both are returned **only this once**.
 pub struct ResetUserPassword {
     pub user_id: Uuid,
-    /// 本人へ渡す**アカウント設定リンク**（ADR-0062）。
+    /// The **account setup link** handed to the user (ADR-0062).
     ///
-    /// ⚠ **置き換えたパスワードそのものは返さない。** 再発行は「いまのパスワードを即座に
-    /// 無効にする」操作なので値は生成して入れるが、⚠ **誰も知らないまま**にする ——
-    /// 管理者が本人の資格情報を手にする形をやめるための変更である。
+    /// ⚠ **The replaced password itself is not returned.** Reissue is an operation that "immediately invalidates
+    /// the current password", so a value is generated and set, but ⚠ **left known to nobody**:
+    /// this change ends any form in which the admin holds the user's credentials.
     pub setup_link: SetupLink,
 }
 
-/// MFA 解除の結果（MT21）。何を外したかを管理者へ返す（監査にも同じ粒度で記録する）。
-/// シークレット・クレデンシャルそのものは含めない（`Debug` に載る値も同様）。
+/// Result of MFA removal (MT21). Tells the admin what was removed (also recorded in the audit at the same granularity).
+/// Secrets and credentials themselves are not included (same for values shown in `Debug`).
 #[derive(Debug)]
 pub struct MfaReset {
     pub user_id: Uuid,
-    /// TOTP 設定が存在して削除されたか（未設定なら `false`）。
+    /// Whether TOTP settings existed and were deleted (`false` if not set).
     pub totp_removed: bool,
-    /// 削除した Passkey（WebAuthn クレデンシャル）の件数。
+    /// Number of deleted passkeys (WebAuthn credentials).
     pub passkeys_removed: u64,
 }
 
-/// トークン再発行の結果（ADR-0047）。`revoked` は落とした本数で、**0 も成功**
-/// （生きているトークンが無かった）。管理者へ「対象がありませんでした」を出し分けるために返す。
+/// Result of a token reissue (ADR-0047). `revoked` is the number dropped, and **0 is also success**
+/// (there were no live tokens). Returned so the admin can be shown "there was nothing to revoke".
 #[derive(Debug)]
 pub struct TokenReissue {
     pub user_id: Uuid,
     pub revoked: u64,
 }
 
-/// 利用者のいま有効なトークンの本数（task #83）。再発行（ADR-0047）を押す前に、対象が
-/// あるかを管理者へ見せるための読み取り結果。
+/// Number of the user's currently valid tokens (task #83). A read result for showing the admin, before pressing reissue (ADR-0047),
+/// whether there is anything to revoke.
 ///
-/// ⚠ **数えられるのは refresh token だけ**である。アクセストークンは自己完結型 JWT で DB に
-/// 行を持たないため、発行済みの本数を数える手段が無い。フィールド名に種類を入れているのは、
-/// 画面が「何を数えたか」を取り違えないため。
+/// ⚠ **Only refresh tokens can be counted**. Access tokens are self-contained JWTs with no rows in the DB,
+/// so there is no way to count how many were issued. The field name includes the kind so that
+/// the screen does not mistake "what was counted".
 #[derive(Debug)]
 pub struct ActiveTokenCount {
     pub user_id: Uuid,
-    /// 未失効かつ期限内の refresh token の本数（テナントを問わない。再発行が落とす範囲と同じ）。
+    /// Number of unrevoked, unexpired refresh tokens (regardless of tenant. Same scope as what reissue drops).
     pub refresh_tokens: u64,
 }
 
-/// プロフィール編集の指示（MT25）。`None` のフィールドは変更しない（部分更新）。
-/// `preferred_username` / `name` に空文字を渡すと「解除（`NULL`）」を意味する。
+/// Profile edit instruction (MT25). Fields that are `None` are not changed (partial update).
+/// Passing an empty string for `preferred_username` / `name` means "clear (`NULL`)".
 #[derive(Debug, Default, Clone)]
 pub struct UpdateUserProfileCommand {
     pub email: Option<String>,
@@ -99,7 +99,7 @@ pub enum UserLifecycleError {
     Forbidden(MessageKey),
     #[error("validation error: {0}")]
     Validation(MessageKey),
-    /// email / preferred_username がテナント内で既に使われている（MT25）。
+    /// email / preferred_username is already used in the tenant (MT25).
     #[error("conflict: {0}")]
     Conflict(MessageKey),
     #[error("internal error: {0}")]
@@ -111,8 +111,8 @@ fn internal(e: crate::domain::error::DomainError) -> UserLifecycleError {
 }
 
 pub struct UserLifecycleService {
-    /// 認証器の登録簿（AP9）。MFA 解除で登録簿側も失効させる。要るのは失効だけなので、
-    /// 管理ユースケース全体ではなくリポジトリを直接受ける。
+    /// Authenticator registry (AP9). MFA removal also revokes on the registry side. Only revocation is needed,
+    /// so it takes the repository directly rather than the whole admin use case.
     authenticators: Arc<dyn UserAuthenticatorRepository>,
     users: Arc<dyn UserRepository>,
     sso_sessions: Arc<dyn SsoSessionRepository>,
@@ -121,13 +121,13 @@ pub struct UserLifecycleService {
     totp_secrets: Arc<dyn TotpSecretRepository>,
     webauthn_credentials: Arc<dyn WebAuthnCredentialRepository>,
     hasher: Arc<dyn PasswordHasher>,
-    /// パスワード再発行で退役するハッシュを履歴へ積むために持つ（AP7）。積まないと、
-    /// 再発行 → 本人が変更 の直後に**再発行前のパスワードへ戻せてしまう**。
+    /// Held to push the hash retired by a password reissue onto the history (AP7). Without it,
+    /// right after reissue -> the user changes it, **they could change back to the pre-reissue password**.
     password_policy: Arc<PasswordPolicyService>,
     audit: Arc<AuditService>,
-    /// 失効させたことを RP へ伝える（ADR-0049 I7）。assay の中だけで消しても RP は気付けない。
+    /// Tells RPs about the revocation (ADR-0049 I7). Deleting only inside assay goes unnoticed by RPs.
     stop_announcement: Arc<dyn SessionStopAnnouncer>,
-    /// 再発行のたびに本人へ渡すリンクを出す（ADR-0062）。
+    /// Issues a link handed to the user on every reissue (ADR-0062).
     account_setup: Arc<AccountSetupLinkIssuer>,
     clock: Arc<dyn Clock>,
 }
@@ -166,7 +166,7 @@ impl UserLifecycleService {
         }
     }
 
-    /// 利用者のパスワードを再発行する（内部 ID 指定）。生成パスワードを一度だけ返す。
+    /// Reissues a user's password (by internal ID). Returns the generated password only once.
     pub async fn reset_password(
         &self,
         tenant: TenantContext,
@@ -179,8 +179,8 @@ impl UserLifecycleService {
         self.reset_password_for(tenant, &user, actor, ctx).await
     }
 
-    /// 利用者のパスワードを再発行する（メールアドレス指定。テナント管理コンソールが子テナントの
-    /// 管理者を対象に使う）。`tenant` は**対象利用者の所属元テナント**を渡す。
+    /// Reissues a user's password (by email address. Used by the tenant admin console to target admins of
+    /// child tenants). Pass **the target user's home tenant** as `tenant`.
     pub async fn reset_password_by_email(
         &self,
         tenant: TenantContext,
@@ -204,8 +204,8 @@ impl UserLifecycleService {
         self.reset_password_for(tenant, &user, actor, ctx).await
     }
 
-    /// 利用者の状態を変更する（有効化・無効化）。`LOCKED` はログイン失敗ロック専用のため
-    /// 管理操作では設定できない。無効化時は全セッション・トークンを失効させる。
+    /// Changes a user's status (enable / disable). `LOCKED` is only for sign-in failure lockout, so
+    /// admin operations cannot set it. Disabling revokes all sessions and tokens.
     pub async fn set_status(
         &self,
         tenant: TenantContext,
@@ -242,21 +242,21 @@ impl UserLifecycleService {
         Ok(())
     }
 
-    /// 利用者へ発行済みの refresh token をまとめて失効させる（画面上は「トークンの再発行」。
-    /// ADR-0047）。本人がセキュリティ画面から押すのと同じ操作を、管理者が対象を指定して行う。
+    /// Revokes all refresh tokens issued to the user at once (shown on screen as "token reissue".
+    /// ADR-0047). The same operation the user presses from the security screen, performed by an admin specifying the target.
     ///
-    /// **落とすのはトークンだけ**で、セッションにも認証器にも触れない。「アプリへ配った鍵が
-    /// 漏れたかもしれない」に対して、無効化（＝業務を止める）やパスワード再発行（＝本人に
-    /// 再設定を強いる）まで持ち出さずに済む一段を用意する。端末ごと切りたいなら無効化を、
-    /// 端末を失ったなら MFA 解除を使う。
+    /// **Only tokens are dropped**; sessions and authenticators are not touched. For "the keys handed out to apps
+    /// may have leaked", it provides a step that does not need to go as far as disabling (= stopping work) or password reissue
+    /// (= forcing the user to reset). To cut off whole devices use disable;
+    /// if a device was lost use MFA removal.
     ///
-    /// **自分自身にも実行できる。** 他のライフサイクル操作の自己禁止は誤操作によるロックアウト
-    /// 防止が目的だが、この操作はブラウザのログイン状態を残すので締め出しにならない
-    /// （ロック解除と同じ扱い）。
+    /// **It can be run on oneself too.** The self-ban on other lifecycle operations is meant to prevent lockout by
+    /// mistake, but this operation keeps the browser's signed-in state, so it does not lock anyone out
+    /// (same handling as unlocking).
     ///
-    /// **失効に失敗したら成功を返さない**（fail-closed）。パスワード再発行や無効化と違い、
-    /// ここには「資格情報が変わっている」「アカウントが無効」という別の防御線が無い。失効が
-    /// 唯一の結果である以上、それが漏れたなら操作は失敗である（MFA 解除と同じ基準）。
+    /// **If revocation fails, success is not returned** (fail-closed). Unlike password reissue or disabling,
+    /// there is no other line of defense here such as "credentials have changed" or "the account is disabled". Since revocation is
+    /// the only outcome, if it was missed the operation has failed (same standard as MFA removal).
     pub async fn reissue_tokens(
         &self,
         tenant: TenantContext,
@@ -271,7 +271,7 @@ impl UserLifecycleService {
             .await
             .map_err(internal)?;
 
-        // 監査には対象と本数のみ。トークンの値もハッシュも記録しない。
+        // Only the target and the count go into the audit. Neither token values nor hashes are recorded.
         self.audit
             .record(
                 AuditEventType::RefreshTokenRevoked,
@@ -289,14 +289,14 @@ impl UserLifecycleService {
         })
     }
 
-    /// 利用者のいま有効な refresh token の本数を数える（task #83）。
+    /// Counts the user's currently valid refresh tokens (task #83).
     ///
-    /// 対象の判定は再発行と同じ [`Self::find_home_user`]（所属元が要求テナントの利用者だけ）。
-    /// 他テナントの利用者は数えず、不存在と同じ `NotFound` を返す（存在を推測させない）。
-    /// 数える範囲はテナントで絞らない —— 再発行が落とすのは利用者の全トークンなので、
-    /// 見せる本数もそれに揃える（ADR-0047「テナントで絞らない」）。
+    /// The target is determined by [`Self::find_home_user`], same as reissue (only users whose home is the requested tenant).
+    /// Users of other tenants are not counted, and `NotFound` is returned as if missing (existence cannot be guessed).
+    /// The counting scope is not narrowed by tenant: reissue drops all of the user's tokens, so
+    /// the count shown matches that (ADR-0047 "not narrowed by tenant").
     ///
-    /// 読み取りだけなので監査には残さない（利用者の詳細を開くのと同じ扱い）。
+    /// It is read-only, so nothing is audited (same handling as opening the user's details).
     pub async fn count_active_tokens(
         &self,
         tenant: TenantContext,
@@ -314,22 +314,22 @@ impl UserLifecycleService {
         })
     }
 
-    /// アカウントロックを即時解除する（AP6。仕様 §17.1・§24.6）。
+    /// Immediately releases an account lock (AP6. Spec §17.1, §24.6).
     ///
-    /// ロックは期限付き（恒久ロックはしない）ため放っておけば解けるが、段階的ロックで時間が
-    /// 伸びると「本人が打ち間違えただけなのに翌日まで入れない」が起きる。ヘルプデスクが
-    /// **待たせずに戻せる**手段が要る。
+    /// Locks have an expiry (no permanent lock), so they clear if left alone, but as progressive locking extends the time,
+    /// "the user just mistyped yet cannot get in until tomorrow" happens. The helpdesk needs a way to
+    /// **restore without making them wait**.
     ///
-    /// 解除は `locked_until` のクリアと**失敗回数のリセットを必ず同時に行う**。期限だけ消すと、
-    /// 失敗回数は閾値を超えたままなので**次の 1 回の失敗で即座に再ロック**され、しかも段階的
-    /// ロックの段が 1 つ進む（前より長くなる）。解除したつもりが悪化する。
+    /// Releasing **always clears `locked_until` and resets the failure count together**. Clearing only the expiry would leave
+    /// the failure count over the threshold, so **the next single failure re-locks immediately**, and the progressive
+    /// lock advances one stage (longer than before). What was meant as a release makes it worse.
     ///
-    /// 自分自身にも実行できる（他のライフサイクル操作の自己禁止はロックアウト防止が目的で、
-    /// ロック解除はその逆向きの操作である）。ロックされていない利用者への実行は成功として扱う
-    /// （冪等。「解除されている」という結果は同じで、失敗を返すと画面が無駄に赤くなる）。
+    /// It can be run on oneself too (the self-ban on other lifecycle operations is meant to prevent lockout, and
+    /// unlocking is the opposite operation). Running it on a user who is not locked is treated as success
+    /// (idempotent. The outcome "released" is the same, and returning failure would make the screen red for nothing).
     ///
-    /// 戻り値は「実際にロックが掛かっていたか」。画面が「解除しました」と
-    /// 「元からロックされていません」を出し分けるために使う。
+    /// The return value is "whether a lock was actually in place". Used by the screen to distinguish "released" from
+    /// "was not locked to begin with".
     pub async fn unlock_account(
         &self,
         tenant: TenantContext,
@@ -362,19 +362,19 @@ impl UserLifecycleService {
         Ok(was_locked)
     }
 
-    /// 利用者のプロフィール（メール・ログイン識別子・表示名）を編集する（MT25）。
+    /// Edits a user's profile (email, sign-in identifier, display name) (MT25).
     ///
-    /// 対象は他のライフサイクル操作と同じく**所属元（HOME）が要求テナントの利用者のみ**。ただし
-    /// **自分自身も編集できる**（他操作の自己禁止はロックアウト防止が目的で、表示名やメールの変更は
-    /// ロックアウトを招かない。管理者が自分のメールを直せないと運用が詰まる）。
+    /// Like other lifecycle operations, targets are **only users whose home (HOME) is the requested tenant**. However,
+    /// **one can edit oneself too** (the self-ban on other operations is meant to prevent lockout, and changing display name or email
+    /// does not cause lockout. Operations would get stuck if admins could not fix their own email).
     ///
-    /// 変更後の email は**管理者がメール所有を保証する扱い**とし、検証済み（`email_verified`）を
-    /// 維持する（管理者作成ユーザーと同じ方針。ADR-0009 §5・SEC6b）。これによりメール変更直後に
-    /// 本人がログイン不能になることを避ける。
+    /// The changed email is **treated as ownership guaranteed by the admin**, and stays verified (`email_verified`)
+    /// (same policy as admin-created users. ADR-0009 §5, SEC6b). This avoids the user being unable to sign in
+    /// right after an email change.
     ///
-    /// `preferred_username` はログイン識別子（ADR-0009 §8）であり、変更するとその利用者の**ログイン
-    /// 名が変わる**。空文字は解除を意味するが、解除するとパスワードログインできなくなるため
-    /// `Validation` で拒否する。
+    /// `preferred_username` is the sign-in identifier (ADR-0009 §8), and changing it **changes that user's sign-in
+    /// name**. An empty string means clearing, but clearing would make password sign-in impossible, so
+    /// it is rejected with `Validation`.
     pub async fn update_profile(
         &self,
         tenant: TenantContext,
@@ -390,7 +390,7 @@ impl UserLifecycleService {
         let email = match cmd.email.as_deref().map(str::trim) {
             Some(email) if email != user.email => {
                 validate_email(email).map_err(UserLifecycleError::Validation)?;
-                // 一意性の事前チェック（分かりやすいエラー）。最終的な保証は DB の UNIQUE 制約。
+                // Pre-check uniqueness (for an understandable error). The final guarantee is the DB UNIQUE constraint.
                 if self
                     .users
                     .find_by_email(tenant_id, email)
@@ -416,10 +416,10 @@ impl UserLifecycleService {
                     )));
                 }
                 validate_preferred_username(value).map_err(UserLifecycleError::Validation)?;
-                // 解決経路と同じ引き方（AP8）。別名のログイン識別子（登録簿だけにある値）へ
-                // 改名すると、`users` 側の一意制約はすり抜けるのに登録簿の同期で落ちる。
-                // 自分自身の別名でも同じ衝突になるため、一律に弾く（曖昧な値も「使用中」。
-                // `LoginIdentifierMatch::is_taken`）。
+                // Same lookup as the resolution path (AP8). Renaming to an alias sign-in identifier (a value only in the registry)
+                // slips past the unique constraint on `users` but fails when syncing the registry.
+                // Even one's own alias causes the same conflict, so it is rejected uniformly (ambiguous values are also "in use".
+                // `LoginIdentifierMatch::is_taken`).
                 if self
                     .users
                     .find_by_login_identifier(tenant_id, value)
@@ -440,7 +440,7 @@ impl UserLifecycleService {
         let name = match cmd.name.as_deref().map(str::trim) {
             Some(value) => {
                 validate_display_name(value).map_err(UserLifecycleError::Validation)?;
-                // 空文字は表示名の解除（`NULL`）。
+                // An empty string clears the display name (`NULL`).
                 let next = (!value.is_empty()).then(|| value.to_string());
                 if next != user.name {
                     changed.push("name");
@@ -451,7 +451,7 @@ impl UserLifecycleService {
         };
 
         if changed.is_empty() {
-            // 変更が無いなら書き込みも監査もしない（監査ログを無内容な行で埋めない）。
+            // If nothing changed, neither write nor audit (do not fill the audit log with empty rows).
             return Ok(user);
         }
 
@@ -464,14 +464,14 @@ impl UserLifecycleService {
             )
             .await
             .map_err(|e| match e {
-                // 事前チェックとの競合（同時更新）のみ。どちらの一意キーかは DB からは特定できない。
+                // Only a race with the pre-check (concurrent update). The DB does not tell which unique key it was.
                 crate::domain::error::DomainError::Conflict(_) => {
                     UserLifecycleError::Conflict(MessageKey::new("api-user-identity-conflict"))
                 }
                 other => internal(other),
             })?;
 
-        // 監査には対象と「変更した項目名」のみ記録する（メール・表示名そのものは PII のため出さない）。
+        // Only the target and "names of changed fields" are recorded in the audit (email and display name themselves are PII, so not output).
         self.audit
             .record(
                 AuditEventType::UserProfileUpdated,
@@ -492,8 +492,8 @@ impl UserLifecycleService {
         })
     }
 
-    /// 利用者を削除する。関連行（メンバーシップ・権限・セッション・トークン・MFA 資格情報）は
-    /// DB の FK CASCADE / SET NULL で後始末される。
+    /// Deletes a user. Related rows (memberships, permissions, sessions, tokens, MFA credentials) are
+    /// cleaned up by the DB's FK CASCADE / SET NULL.
     pub async fn delete_user(
         &self,
         tenant: TenantContext,
@@ -518,22 +518,22 @@ impl UserLifecycleService {
         Ok(())
     }
 
-    /// 利用者の MFA（TOTP・Passkey）を解除する（MT21）。本人が端末を失って自分では解除できない
-    /// 状態からの復旧手段。
+    /// Removes a user's MFA (TOTP, Passkey) (MT21). A recovery means for when the user lost their device and cannot
+    /// remove it themselves.
     ///
-    /// TOTP と Passkey を**両方まとめて**外す。片方だけ残ると本人はログインできないままで、
-    /// 復旧手段として成立しないため。すでに未設定でもエラーにせず、何を外したかを結果で返す
-    /// （管理者が「効いたのか」を確認できるようにする）。
+    /// Removes TOTP and Passkey **both together**. If one remained, the user still could not sign in,
+    /// and it would not work as a recovery means. Even if already unset it is not an error; the result says what was removed
+    /// (so the admin can confirm "did it take effect").
     ///
-    /// 併せて当該利用者の SSO セッション・refresh token・未消費 code を失効させる。この操作の
-    /// 契機は「端末の紛失・盗難」であり、その端末が生きたセッションを保持している可能性がある
-    /// ためである（MFA を外すだけでは、紛失した端末のログイン状態はそのまま残る）。
+    /// Also revokes that user's SSO sessions, refresh tokens and unconsumed codes. The trigger for this operation
+    /// is "a lost or stolen device", and that device may hold a live session
+    /// (just removing MFA leaves the lost device's signed-in state as is).
     ///
-    /// **失効に失敗したらこの操作全体を失敗させる**（他のライフサイクル操作と違い fail-open に
-    /// しない）。パスワード再発行や無効化では、失効が漏れても資格情報そのものが変わっている／
-    /// アカウントが無効になっているという別の防御線が残る。MFA 解除では失効が唯一の防御線で、
-    /// 「盗まれた端末のセッションは切れた」と管理者へ伝えたのに実際は生きている、という取り違えを
-    /// 生む。MFA の削除は済んでいるが、再実行は冪等なので失効だけをやり直せる。
+    /// **If revocation fails, the whole operation fails** (unlike other lifecycle operations, not fail-open).
+    /// With password reissue or disabling, even if revocation is missed another line of defense remains: the credentials themselves have changed /
+    /// the account is disabled. For MFA removal revocation is the only line of defense, and it would create
+    /// the mix-up of telling the admin "the stolen device's session was cut" while it is actually alive.
+    /// MFA deletion has completed, but re-running is idempotent, so only the revocation can be redone.
     pub async fn reset_mfa(
         &self,
         tenant: TenantContext,
@@ -544,7 +544,7 @@ impl UserLifecycleService {
         let user = self.find_home_user(tenant, target).await?;
         self.ensure_not_self(user.id, actor)?;
 
-        // 「外した件数」を返すため、削除の前に TOTP の有無を確認する（delete は冪等で件数を返さない）。
+        // To return "how many were removed", check whether TOTP exists before deleting (delete is idempotent and returns no count).
         let totp_removed = self
             .totp_secrets
             .find_by_user_id(user.id)
@@ -560,8 +560,8 @@ impl UserLifecycleService {
             .await
             .map_err(internal)?;
 
-        // 認証器の登録簿（AP9）も同じ操作で失効させる。ここが漏れると、解除したはずの認証器が
-        // 一覧に残り、リカバリーコードの古い束も生き続ける（＝古い紙で入れてしまう）。
+        // Also revoke the authenticator registry (AP9) in the same operation. If missed, authenticators supposed to be removed
+        // remain in the list, and old batches of recovery codes stay alive (= one could get in with the old paper).
         let now = self.clock.now();
         for authenticator_type in [
             AuthenticatorType::Totp,
@@ -575,10 +575,10 @@ impl UserLifecycleService {
                 .map_err(internal)?;
         }
 
-        // 失効できなければ成功を返さない（紛失端末のセッションが生き残る）。監査も記録しない。
+        // If revocation fails, do not return success (the lost device's session would survive). Do not audit either.
         self.revoke_credentials_strict(&user).await?;
 
-        // 監査には対象と外した要素の粒度のみ記録する（シークレット・クレデンシャルは出さない）。
+        // Only the target and the granularity of removed factors are recorded in the audit (no secrets or credentials).
         self.audit
             .record(
                 AuditEventType::UserMfaReset,
@@ -610,13 +610,13 @@ impl UserLifecycleService {
         actor: &AdminActor,
         ctx: &RequestContext,
     ) -> Result<ResetUserPassword, UserLifecycleError> {
-        // ⚠ **誰にも渡さない値で埋める**（ADR-0062）。再発行の目的は「いまのパスワードを
-        //    通らなくする」ことなので、置き換える値そのものは知られないほうがよい。
-        //    本人は設定リンクで決め直す。
+        // ⚠ **Fill with a value given to nobody** (ADR-0062). The purpose of reissue is to "make the current password
+        //    stop working", so it is better that the replacing value itself is not known.
+        //    The user sets it again via the setup link.
         let unknown_password = crypto::random_token(GENERATED_PASSWORD_BYTES);
         let password_hash = self.hasher.hash(&unknown_password).map_err(internal)?;
-        // 現行ハッシュを条件にした置き換え（AP7）。負けた場合に成功を返すと、管理者へ渡した
-        // 生成パスワードが実際には設定されていない状態になる（本人へ伝える値が嘘になる）。
+        // Replacement conditioned on the current hash (AP7). Returning success after losing would leave the generated
+        // password handed to the admin not actually set (the value told to the user would be a lie).
         let replaced = self
             .users
             .reset_password_forced(user.id, &user.password_hash, &password_hash)
@@ -630,10 +630,10 @@ impl UserLifecycleService {
         self.password_policy
             .record_change(user.tenant_id, user.id, &user.password_hash)
             .await;
-        // 旧資格情報で発行済みのセッション・トークンを失効させる（fail-open にしない: 失敗はログのみ。
-        // パスワードは既に更新済みで、旧パスワードでのログインはできない）。
+        // Revoke sessions and tokens issued under the old credentials (not fail-open: failures are only logged.
+        // The password has already been updated, and signing in with the old password is impossible).
         self.revoke_credentials(user).await;
-        // 監査には内部 ID のみ記録する（生成パスワードは出さない。§5）。
+        // Only the internal ID is recorded in the audit (the generated password is not output. §5).
         self.audit
             .record(
                 AuditEventType::UserPasswordReset,
@@ -645,9 +645,9 @@ impl UserLifecycleService {
                 ctx,
             )
             .await;
-        // 本人が自分で決め直すためのリンク。⚠ **出せなかったら失敗として返す** —— 古いパスワードは
-        // もう無効なので、リンクの無い結果を成功として返すと「入れない人が 1 人できたこと」だけが
-        // 伝わらない。再発行はもう一度押せば新しいリンクごとやり直せる。
+        // A link for the user to set it again themselves. ⚠ **If it cannot be issued, return failure**: the old password
+        // is already invalid, so returning a result without a link as success would fail to convey only one thing, "someone can no longer get in".
+        // Pressing reissue again redoes it with a new link.
         let setup_link = self
             .account_setup
             .issue(user.tenant_id, user.id)
@@ -660,8 +660,8 @@ impl UserLifecycleService {
         })
     }
 
-    /// 所属元（HOME）が要求テナントの利用者を解決する。不存在・テナント越しは一律 `NotFound`
-    /// （存在推測を防ぐ）。
+    /// Resolves a user whose home (HOME) is the requested tenant. Missing or cross-tenant is uniformly `NotFound`
+    /// (prevents guessing existence).
     async fn find_home_user(
         &self,
         tenant: TenantContext,
@@ -673,10 +673,10 @@ impl UserLifecycleService {
         }
     }
 
-    /// 自分自身への操作（無効化・削除・パスワード再発行等）を拒む。
+    /// Refuses operations on oneself (disable, delete, password reissue, etc.).
     ///
-    /// クライアント主体は利用者ではないので、どの利用者とも一致しない（＝常に通す）。機械が
-    /// 「自分を無効化して詰む」経路は存在しない。
+    /// A client principal is not a user, so it matches no user (= always passes). There is no path
+    /// for a machine to "disable itself and get stuck".
     fn ensure_not_self(&self, target: Uuid, actor: &AdminActor) -> Result<(), UserLifecycleError> {
         if actor.user_id() == Some(target) {
             return Err(UserLifecycleError::Forbidden(MessageKey::new(
@@ -686,12 +686,12 @@ impl UserLifecycleService {
         Ok(())
     }
 
-    /// 資格情報を失効させ、**失敗はログに留めて先へ進む**（fail-open）。
+    /// Revokes credentials, **logging failures and moving on** (fail-open).
     ///
-    /// パスワード再発行・無効化から使う。これらは失効が漏れても「パスワードが変わっている」
-    /// 「アカウントが無効」という別の防御線が残るため、一過性の DB エラーで操作全体を失敗させる
-    /// 方が運用上の害が大きい。失効が唯一の防御線になる MFA 解除では
-    /// [`revoke_credentials_strict`](Self::revoke_credentials_strict) を使う。
+    /// Used from password reissue and disabling. For these, even if revocation is missed, other lines of defense remain,
+    /// "the password has changed" and "the account is disabled", so failing the whole operation on a transient DB error
+    /// does more operational harm. For MFA removal, where revocation is the only line of defense, use
+    /// [`revoke_credentials_strict`](Self::revoke_credentials_strict).
     async fn revoke_credentials(&self, user: &User) {
         let user_id = user.id;
         let now = self.clock.now();
@@ -712,9 +712,9 @@ impl UserLifecycleService {
             .await;
     }
 
-    /// 資格情報を失効させ、**1 つでも失敗したら呼び出し元へ伝える**（fail-closed）。
+    /// Revokes credentials, **reporting to the caller if even one fails** (fail-closed).
     ///
-    /// 途中で失敗しても残りは試みる（部分的にでも失効させた方が安全側）。返すのは最初のエラー。
+    /// Even if one fails midway the rest are attempted (revoking partially is the safer side). Returns the first error.
     async fn revoke_credentials_strict(&self, user: &User) -> Result<(), UserLifecycleError> {
         let user_id = user.id;
         let now = self.clock.now();
@@ -743,8 +743,8 @@ impl UserLifecycleService {
         match first_error {
             Some(e) => Err(e),
             None => {
-                // 失効しきった場合だけ知らせる。失敗した状態で「止まった」と伝えると、RP 側は
-                // 閉じたのに assay 側にはセッションが残る（食い違いが後から追えなくなる）。
+                // Notify only when fully revoked. Saying "stopped" in a failed state would make the RP
+                // close while the session remains on the assay side (the inconsistency could not be traced later).
                 self.stop_announcement
                     .announce_all_sessions_ended(user.tenant_id, user.sub)
                     .await;
@@ -812,8 +812,8 @@ mod tests {
     }
     #[async_trait]
     impl UserRepository for FakeUsers {
-        /// 本番の sqlx 実装は 1 文の UPDATE で加算する（SEC13）。フェイクは単一スレッドの
-        /// テストでしか動かないので、同じ結果になる素朴な加算で足りる。
+        /// The production sqlx implementation increments in a single UPDATE (SEC13). The fake only runs in
+        /// single-threaded tests, so a naive increment with the same result suffices.
         async fn record_login_failure(
             &self,
             id: Uuid,
@@ -893,7 +893,7 @@ mod tests {
             password_hash: &str,
         ) -> DomainResult<bool> {
             let mut rows = self.rows.lock().unwrap();
-            // 本番実装と同じ compare-and-swap（現行ハッシュが一致するときだけ書き換える）。
+            // The same compare-and-swap as the production implementation (rewrites only when the current hash matches).
             let Some(user) = rows
                 .iter_mut()
                 .find(|u| u.id == id && u.password_hash == expected)
@@ -944,8 +944,8 @@ mod tests {
         }
     }
 
-    /// 認証器の登録簿のフェイク。MFA 解除で「どの種別を失効させたか」だけ記録する
-    /// （他のメソッドはトレイトの既定実装 ＝ 見つからない、で足りる）。
+    /// Fake of the authenticator registry. Records only "which kinds were revoked" by MFA removal
+    /// (other methods are fine with the trait's default implementation = not found).
     #[derive(Default)]
     struct FakeAuthenticators {
         revoked_types: Mutex<Vec<AuthenticatorType>>,
@@ -972,7 +972,7 @@ mod tests {
     #[derive(Default)]
     struct FakeSsoSessions {
         revoked_users: Mutex<Vec<Uuid>>,
-        /// `true` のとき失効が DB エラーで失敗する（fail-closed の検証用）。
+        /// When `true`, revocation fails with a DB error (for verifying fail-closed).
         fail_revoke: Mutex<bool>,
     }
     #[async_trait]
@@ -1001,7 +1001,7 @@ mod tests {
     #[derive(Default)]
     struct FakeRefreshTokens {
         revoked_users: Mutex<Vec<Uuid>>,
-        /// `count_active_for_user` が数えた相手（数えに行ったかどうかを確かめる）。
+        /// Whom `count_active_for_user` counted (to check whether it went to count).
         counted_users: Mutex<Vec<Uuid>>,
     }
     #[async_trait]
@@ -1028,8 +1028,8 @@ mod tests {
             _user_id: Uuid,
             _now: DateTime<Utc>,
         ) -> DomainResult<()> {
-            // ライフサイクル操作はユーザー単位で全失効させる（テナント単位の失効はゲストの
-            // 一時停止（MT24）専用）。
+            // Lifecycle operations revoke everything per user (per-tenant revocation is only for suspending
+            // guests (MT24)).
             unreachable!()
         }
         async fn create(&self, _t: &RefreshToken) -> DomainResult<()> {
@@ -1232,8 +1232,8 @@ mod tests {
         svc: UserLifecycleService,
     }
 
-    /// 「止めたことを RP へ伝えたか」だけを見る。実際の配送は
-    /// `StopAnnouncementService` の責務で、ここでは呼ばれた事実を記録する。
+    /// Looks only at "was the stop told to RPs". Actual delivery is the responsibility of
+    /// `StopAnnouncementService`; here the fact that it was called is recorded.
     #[derive(Default)]
     struct RecordingAnnouncer {
         announced: std::sync::Mutex<Vec<(TenantId, Uuid)>>,
@@ -1316,18 +1316,18 @@ mod tests {
             .await
             .expect("reset");
 
-        // ⚠ **返るのはリンクだけ**（ADR-0062）。置き換えたパスワードは誰も知らない。
+        // ⚠ **Only the link is returned** (ADR-0062). Nobody knows the replaced password.
         assert!(reset.setup_link.token.len() >= 32);
         assert!(reset.setup_link.url.contains(&reset.setup_link.token));
         let stored = f.users.rows.lock().unwrap()[0].clone();
-        // 古い値はもう通らない（別の値で置き換わっている）。
+        // The old value no longer passes (replaced by a different value).
         assert!(stored.password_hash.starts_with("hash:"));
         assert_ne!(stored.password_hash, "hash:old-password");
         assert!(stored.must_change_password);
         assert_eq!(*f.sso.revoked_users.lock().unwrap(), vec![target]);
         assert_eq!(*f.refresh.revoked_users.lock().unwrap(), vec![target]);
         assert_eq!(*f.codes.revoked_users.lock().unwrap(), vec![target]);
-        // 監査にリンクのトークンが漏れていない。
+        // The link token has not leaked into the audit.
         let events = f.sink.events.lock().unwrap();
         assert_eq!(events[0].event_type, AuditEventType::UserPasswordReset);
         assert!(events.iter().all(|e| e
@@ -1365,7 +1365,7 @@ mod tests {
         let target = Uuid::now_v7();
         f.users.create(&user(target, other)).await.unwrap();
 
-        // テナント越し: 不存在と同じ NotFound。
+        // Cross-tenant: NotFound, same as missing.
         assert!(matches!(
             f.svc
                 .reset_password(
@@ -1378,7 +1378,7 @@ mod tests {
             Err(UserLifecycleError::NotFound)
         ));
 
-        // 自分自身: Forbidden。
+        // Oneself: Forbidden.
         let own = Uuid::now_v7();
         f.users.create(&user(own, tenant)).await.unwrap();
         assert!(matches!(
@@ -1414,7 +1414,7 @@ mod tests {
         assert_eq!(f.users.rows.lock().unwrap()[0].status, UserStatus::Disabled);
         assert_eq!(*f.sso.revoked_users.lock().unwrap(), vec![target]);
 
-        // 再有効化はセッション失効を伴わない。
+        // Re-enabling does not involve session revocation.
         f.svc
             .set_status(
                 TenantContext::new(tenant),
@@ -1429,10 +1429,10 @@ mod tests {
         assert_eq!(f.sso.revoked_users.lock().unwrap().len(), 1);
     }
 
-    /// ADR-0049 I7: 止めたことは RP まで届かせる。
+    /// ADR-0049 I7: the stop must reach the RPs.
     ///
-    /// ⚠ assay 側でセッションを消すだけでは、RP は自分が発行したトークンで動き続ける。
-    /// 止める理由が「乗っ取られた」である以上、ここが伝わらないと止めた意味が無い。
+    /// ⚠ Just deleting sessions on the assay side leaves RPs running on tokens they issued themselves.
+    /// Since the reason for stopping is "the account was taken over", stopping is pointless unless this gets through.
     #[tokio::test]
     async fn telling_the_relying_parties_is_part_of_disabling_a_user() {
         let tenant: TenantId = Uuid::now_v7().into();
@@ -1453,11 +1453,11 @@ mod tests {
             .await
             .expect("disable");
 
-        // 名乗るのは内部 ID ではなく `sub`。RP が知っているのはこちらだけ。
+        // Identified by `sub`, not the internal ID. That is the only thing the RP knows.
         assert_eq!(*f.announcer.announced.lock().unwrap(), vec![(tenant, sub)]);
     }
 
-    /// 再有効化は誰にも知らせない（失効させていないため）。
+    /// Re-enabling notifies nobody (nothing was revoked).
     #[tokio::test]
     async fn re_enabling_a_user_announces_nothing() {
         let tenant: TenantId = Uuid::now_v7().into();
@@ -1479,7 +1479,7 @@ mod tests {
         assert!(f.announcer.announced.lock().unwrap().is_empty());
     }
 
-    /// パスワード再発行と MFA 解除も「そのセッションはもう使えない」なので同じ扱いにする。
+    /// Password reissue and MFA removal also mean "that session can no longer be used", so they are handled the same.
     #[tokio::test]
     async fn resetting_a_password_also_reaches_the_relying_parties() {
         let tenant: TenantId = Uuid::now_v7().into();
@@ -1522,7 +1522,7 @@ mod tests {
         ));
     }
 
-    /// MT21: TOTP と Passkey を両方外し、紛失端末が握っているセッション・トークンも失効させる。
+    /// MT21: removes both TOTP and Passkey, and also revokes sessions and tokens held by the lost device.
     #[tokio::test]
     async fn resets_both_mfa_factors_and_revokes_credentials() {
         let tenant: TenantId = Uuid::now_v7().into();
@@ -1531,7 +1531,7 @@ mod tests {
         let other = Uuid::now_v7();
         f.users.create(&user(target, tenant)).await.unwrap();
         f.totp.upsert(&totp_secret(target)).await.unwrap();
-        // 他人の分・対象の分を混在させ、対象の分だけが消えることを見る。
+        // Mix others' and the target's entries, and check that only the target's disappear.
         f.passkeys.rows.lock().unwrap().extend([
             (Uuid::now_v7(), target),
             (Uuid::now_v7(), target),
@@ -1563,7 +1563,7 @@ mod tests {
             vec![other],
             "other users' passkeys must survive"
         );
-        // 紛失した端末の生きたセッションを残さない。
+        // Do not leave the lost device's live sessions.
         assert_eq!(*f.sso.revoked_users.lock().unwrap(), vec![target]);
         assert_eq!(*f.refresh.revoked_users.lock().unwrap(), vec![target]);
         assert_eq!(*f.codes.revoked_users.lock().unwrap(), vec![target]);
@@ -1573,11 +1573,11 @@ mod tests {
         let reason = events[0].reason.clone().unwrap_or_default();
         assert!(reason.contains("totp=removed"), "{reason}");
         assert!(reason.contains("passkeys=2"), "{reason}");
-        // 監査にシークレットを出さない。
+        // Do not output secrets to the audit.
         assert!(!reason.contains("secret"), "{reason}");
     }
 
-    /// MFA 未設定の利用者でも失敗させない（管理者は設定の有無を知らずに操作する）。
+    /// Does not fail even for users without MFA (admins operate without knowing whether it is set).
     #[tokio::test]
     async fn resetting_mfa_is_idempotent_when_nothing_is_configured() {
         let tenant: TenantId = Uuid::now_v7().into();
@@ -1600,10 +1600,10 @@ mod tests {
         assert!(f.totp.deleted.lock().unwrap().is_empty());
     }
 
-    /// MT21: 失効に失敗したら MFA 解除は成功を返さない（fail-closed）。
+    /// MT21: if revocation fails, MFA removal does not return success (fail-closed).
     ///
-    /// 「盗まれた端末のセッションは切れた」と管理者へ伝えたのに実際は生きている、という取り違えを
-    /// 防ぐ。ここが fail-open に戻ると、監査には成功が残り応答も 200 になってしまう。
+    /// Prevents the mix-up of telling the admin "the stolen device's session was cut" while it is actually alive.
+    /// If this reverted to fail-open, the audit would record success and the response would be 200.
     #[tokio::test]
     async fn mfa_reset_fails_when_credentials_cannot_be_revoked() {
         let tenant: TenantId = Uuid::now_v7().into();
@@ -1624,13 +1624,13 @@ mod tests {
             .await
             .expect_err("revocation failure must fail the reset");
         assert!(matches!(err, UserLifecycleError::Internal(_)), "{err:?}");
-        // 失敗したときは監査へ成功を残さない。
+        // On failure, no success is recorded in the audit.
         assert!(f.sink.events.lock().unwrap().is_empty());
-        // 失効できなかった側があっても、残りは試みる（部分的にでも失効させる）。
+        // Even if one side could not be revoked, the rest are attempted (revoke even partially).
         assert_eq!(*f.refresh.revoked_users.lock().unwrap(), vec![target]);
         assert_eq!(*f.codes.revoked_users.lock().unwrap(), vec![target]);
 
-        // 再実行は冪等: 失効が回復すれば成功する（MFA は既に外れているので totp_removed = false）。
+        // Re-running is idempotent: succeeds once revocation recovers (MFA is already removed, so totp_removed = false).
         *f.sso.fail_revoke.lock().unwrap() = false;
         let reset = f
             .svc
@@ -1650,7 +1650,7 @@ mod tests {
         );
     }
 
-    /// 他テナントの利用者・自分自身は他のライフサイクル操作と同じ扱い。
+    /// Users of other tenants and oneself are handled the same as other lifecycle operations.
     #[tokio::test]
     async fn resetting_mfa_rejects_cross_tenant_and_self() {
         let tenant: TenantId = Uuid::now_v7().into();
@@ -1709,7 +1709,7 @@ mod tests {
         );
     }
 
-    // ── プロフィール編集（MT25）────────────────────────────────────────────────
+    // ── Profile editing (MT25) ────────────────────────────────────────────────
 
     #[tokio::test]
     async fn updates_profile_and_audits_only_the_changed_field_names() {
@@ -1737,7 +1737,7 @@ mod tests {
         assert_eq!(updated.email, "renamed@example.com");
         assert_eq!(updated.preferred_username.as_deref(), Some("renamed"));
         assert_eq!(updated.name.as_deref(), Some("Renamed User"));
-        // 管理者が所有を保証する扱いのため検証済みを維持する（メール変更でログイン不能にしない）。
+        // Treated as ownership guaranteed by the admin, so it stays verified (an email change must not make sign-in impossible).
         assert!(updated.email_verified);
 
         let stored = f.users.rows.lock().unwrap()[0].clone();
@@ -1751,7 +1751,7 @@ mod tests {
             reason.contains("fields=email,preferred_username,name"),
             "{reason}"
         );
-        // 値そのもの（PII）は監査に出さない。
+        // The values themselves (PII) are not output to the audit.
         assert!(!reason.contains("renamed@example.com"), "{reason}");
         assert!(!reason.contains("Renamed User"), "{reason}");
     }
@@ -1766,7 +1766,7 @@ mod tests {
         existing.preferred_username = Some("keep-me".into());
         f.users.create(&existing).await.unwrap();
 
-        // name のみ空文字 = 表示名の解除。email / preferred_username は未指定なので現状維持。
+        // Only name as an empty string = clearing the display name. email / preferred_username are unspecified, so unchanged.
         let updated = f
             .svc
             .update_profile(
@@ -1890,7 +1890,7 @@ mod tests {
             .await,
             Err(UserLifecycleError::Validation(_))
         ));
-        // ログイン識別子の解除はパスワードログイン不能を招くため拒否する。
+        // Clearing the sign-in identifier would make password sign-in impossible, so it is rejected.
         assert!(matches!(
             invalid(UpdateUserProfileCommand {
                 preferred_username: Some("".into()),
@@ -1899,7 +1899,7 @@ mod tests {
             .await,
             Err(UserLifecycleError::Validation(_))
         ));
-        // カラム長超過は永続化前に入力エラーとして返す。
+        // Column length overflow is returned as an input error before persisting.
         assert!(matches!(
             invalid(UpdateUserProfileCommand {
                 name: Some("x".repeat(256)),
@@ -1910,8 +1910,8 @@ mod tests {
         ));
     }
 
-    /// プロフィール編集は他のライフサイクル操作と違い自分自身も対象にできる（ロックアウトを招かない）。
-    /// 一方、テナント越し（所属元が他テナント）は他操作と同じく `NotFound`。
+    /// Unlike other lifecycle operations, profile editing can target oneself (it does not cause lockout).
+    /// On the other hand, cross-tenant (home is another tenant) is `NotFound`, same as other operations.
     #[tokio::test]
     async fn updating_own_profile_is_allowed_but_cross_tenant_is_not() {
         let tenant: TenantId = Uuid::now_v7().into();
@@ -1951,10 +1951,10 @@ mod tests {
         ));
     }
 
-    /// 管理者のトークン再発行は**トークンだけ**を落とす（ADR-0047）。
+    /// An admin's token reissue drops **only tokens** (ADR-0047).
     ///
-    /// セッションまで切ると業務が止まり、無効化やパスワード再発行と区別が付かなくなる。
-    /// 「配った鍵だけ入れ替える」一段として置いている以上、他へ波及させない。
+    /// Cutting sessions too would stop work and make it indistinguishable from disabling or password reissue.
+    /// Since it is placed as a step that "replaces only the handed-out keys", it must not spread to anything else.
     #[tokio::test]
     async fn reissuing_tokens_revokes_tokens_only() {
         let tenant: TenantId = Uuid::now_v7().into();
@@ -1987,7 +1987,7 @@ mod tests {
             .is_some_and(|r| r.contains("refresh_tokens=1")));
     }
 
-    /// 自分自身にも実行できる（無効化・削除と違い、これは締め出しにならない）。
+    /// It can be run on oneself too (unlike disable and delete, it does not lock anyone out).
     #[tokio::test]
     async fn reissuing_your_own_tokens_is_allowed() {
         let tenant: TenantId = Uuid::now_v7().into();
@@ -2007,7 +2007,7 @@ mod tests {
             .is_ok());
     }
 
-    /// 所属元が別テナントの利用者には届かない（他のライフサイクル操作と同じ判定）。
+    /// It does not reach users whose home is another tenant (same check as other lifecycle operations).
     #[tokio::test]
     async fn reissuing_tokens_for_another_tenants_user_is_not_found() {
         let tenant: TenantId = Uuid::now_v7().into();
@@ -2030,7 +2030,7 @@ mod tests {
         assert!(f.refresh.revoked_users.lock().unwrap().is_empty());
     }
 
-    /// 有効なトークンの本数は、所属元の利用者についてだけ数え、何も落とさない（task #83）。
+    /// The number of valid tokens is counted only for home users, and nothing is dropped (task #83).
     #[tokio::test]
     async fn counting_active_tokens_reads_without_revoking() {
         let tenant: TenantId = Uuid::now_v7().into();
@@ -2050,11 +2050,11 @@ mod tests {
         assert!(f.refresh.revoked_users.lock().unwrap().is_empty());
         assert!(
             f.sink.events.lock().unwrap().is_empty(),
-            "読み取りは監査に残さない"
+            "reads are not audited"
         );
     }
 
-    /// 所属元が別テナントの利用者は数えない（再発行と同じ判定。存在も推測させない）。
+    /// Users whose home is another tenant are not counted (same check as reissue. Existence cannot be guessed either).
     #[tokio::test]
     async fn counting_active_tokens_for_another_tenants_user_is_not_found() {
         let tenant: TenantId = Uuid::now_v7().into();

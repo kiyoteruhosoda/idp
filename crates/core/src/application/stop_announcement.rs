@@ -1,16 +1,16 @@
-//! 利用者が止まったことを RP へ知らせる（ADR-0049 I7）。
+//! Notify RPs that a user has been stopped (ADR-0049 I7).
 //!
-//! assay がセッションを失効させても、それだけでは RP 側のログイン状態は残る。RP は自分が
-//! 発行したトークンで動いているので、こちらが黙って消しても気付けない。**止めた側から言う**
-//! 必要があり、その手段が Back-Channel Logout 1.0 の通知である。
+//! Even when assay revokes sessions, that alone leaves the sign-in state on the RP side. RPs run on
+//! tokens they issued themselves, so they cannot notice if we silently delete ours. **The side that stopped it must say so**,
+//! and the means is a Back-Channel Logout 1.0 notification.
 //!
-//! これまで通知を送っていたのは**利用者本人がログアウトしたとき**だけだった（`logout`）。
-//! 管理者が利用者を無効化した・パスワードを再発行した・MFA を解除したときは、assay 側の
-//! セッションとトークンだけが消え、RP 側は**何も知らないまま**だった。止める理由が
-//! 「乗っ取られた」である以上、ここが伝わらないのは穴になる。
+//! Until now notifications were sent only **when the user signed out themselves** (`logout`).
+//! When an admin disabled a user, reissued the password, or removed MFA, only assay's
+//! sessions and tokens disappeared, and the RPs **knew nothing**. Since the reason for stopping
+//! is "the account was taken over", failing to convey this is a hole.
 //!
-//! ⚠ **`sid` は付けない。** 管理操作が失効させるのはその利用者の**全セッション**であり、
-//! 1 つを名指しするものではない。`sid` を付けると RP は該当の 1 セッションしか閉じない。
+//! ⚠ **No `sid`.** What an admin operation revokes is **all sessions** of that user,
+//! not one specific session. With a `sid`, the RP would close only that one session.
 
 use crate::application::backchannel_logout::{
     BackchannelLogoutDeliveryService, LogoutNotification,
@@ -20,18 +20,18 @@ use crate::domain::tenant::TenantId;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// 「この利用者は止まった」を RP へ伝える出口。
+/// The outlet that tells RPs "this user has been stopped".
 ///
-/// 管理操作（`UserLifecycleService`）はこのトレイト越しにだけ知らせる。具象は RP の一覧と
-/// 配送キューの両方を握るため、トレイトで挟まないと管理操作のテストが配送の仕掛けを丸ごと
-/// 組み立てる羽目になる。
+/// Admin operations (`UserLifecycleService`) notify only through this trait. The concrete type holds both the RP list
+/// and the delivery queue, so without a trait in between, admin-operation tests would have to assemble
+/// the whole delivery machinery.
 #[async_trait::async_trait]
 pub trait SessionStopAnnouncer: Send + Sync {
-    /// 利用者の全セッションが失効したことを知らせる。**失敗しても返らない**（fail-open）。
+    /// Notifies that all of the user's sessions have been revoked. **Failures are not returned** (fail-open).
     async fn announce_all_sessions_ended(&self, tenant_id: TenantId, subject: Uuid);
 }
 
-/// 「この利用者は止まった」を、通知を受け取れる全 RP へ伝える。
+/// Tells every RP that can receive notifications that "this user has been stopped".
 pub struct StopAnnouncementService {
     clients: Arc<dyn ClientRepository>,
     delivery: Arc<BackchannelLogoutDeliveryService>,
@@ -46,10 +46,10 @@ impl StopAnnouncementService {
     }
 }
 
-/// **fail-open**（失敗はログに留める）。呼び出し元の管理操作——無効化・パスワード再発行・
-/// MFA 解除——は assay 側では既に成立しており、通知が積めなかったからといって巻き戻すと、
-/// 「止めたのに止まっていない」というより悪い状態になる。積めた通知の送信自体は
-/// [`BackchannelLogoutDeliveryService::deliver_due`] が再試行する。
+/// **fail-open** (failures are only logged). The calling admin operation (disable, password reissue,
+/// MFA removal) has already taken effect on the assay side; rolling it back because a notification could not be queued
+/// would lead to a worse state: "stopped but not actually stopped". Sending the queued notifications
+/// is retried by [`BackchannelLogoutDeliveryService::deliver_due`].
 #[async_trait::async_trait]
 impl SessionStopAnnouncer for StopAnnouncementService {
     async fn announce_all_sessions_ended(&self, tenant_id: TenantId, subject: Uuid) {
@@ -79,7 +79,7 @@ impl SessionStopAnnouncer for StopAnnouncementService {
             .enqueue(tenant_id, &subject.to_string(), None, &notifications)
             .await
         {
-            // 積めなかった通知は復旧できない。RP 側にログイン状態が残るため ERROR で残す。
+            // A notification that could not be queued cannot be recovered. Sign-in state remains on the RP, so log it at ERROR.
             tracing::error!(error = %e, "failed to enqueue stop announcement");
         }
     }

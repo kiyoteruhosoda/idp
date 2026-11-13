@@ -2,8 +2,8 @@
 {% block content %}
 <h2 class="h4 mb-3">{{ messages.get("admin-settings-title") }}</h2>
 
-{#- 目次。この画面は区画が多く縦に長いので、先頭から目的の区画へ 1 回で行けるようにする。
-    出すのは、この管理者に見えている区画だけ（下の各区画の出し分けと同じ条件）。 -#}
+{#- Table of contents. This screen has many sections and is long, so allow jumping from the top to a section in one step.
+    Only sections visible to this admin are listed (same conditions as each section below). -#}
 <nav class="settings-index mb-4" aria-label="{{ messages.get("admin-settings-index-label") }}">
   <a href="#tenant-settings">{{ messages.get("admin-settings-tenant-heading") }}</a>
   {% if tenant_settings.is_some() %}<a href="#tenant-values">{{ messages.get("admin-tenant-values-heading") }}</a>{% endif %}
@@ -32,8 +32,8 @@
 </div>
 {% endif %}
 
-{#- 設定の絞り込み。GET でサーバ側が一覧を絞る（メンバー・監査ログと同じ作り。スクリプトは足さない）。
-    ランタイム設定の種類は、その一覧を見られる管理者（root）にだけ出す。 -#}
+{#- Settings filter. The server filters the list via GET (same design as members and audit logs; no added scripts).
+    The runtime-setting kind is shown only to admins who can view that list (root). -#}
 {% if tenant_settings.is_some() || system.is_some() %}
 <form method="get" action="{{ tenant }}/admin/settings" class="card mb-4 admin-settings-filter" role="search" id="settings-filter">
   <div class="card-body">
@@ -99,9 +99,9 @@
 </div>
 
 
-{#- テナントの設定値（ADR-0058）。項目は api が返す定義から並べる（web は項目を知らない）。
-    ⚠ 値だけを見せない: 「全体の値に従っている」か「このテナントで決めた」かと、全体の値を必ず並べる。
-    「全体の値に戻す」は行を消す操作で、同じ値を書き込むのとは違う（以後は全体の変更に追随する）。 -#}
+{#- Tenant setting values (ADR-0058). Items are listed from the definitions the api returns (web does not know the items).
+    ⚠ Never show only the value: always show whether it "follows the global value" or "was set by this tenant", and the global value.
+    "Revert to global" deletes the row, which differs from writing the same value (afterwards it follows global changes). -#}
 {% if let Some(values) = tenant_settings %}
 <div class="card mb-4 admin-settings-tenant-values" id="tenant-values">
   <div class="card-header d-flex align-items-center"><i class="fa-solid fa-sliders me-2" aria-hidden="true"></i>{{ messages.get("admin-tenant-values-heading") }}</div>
@@ -111,10 +111,10 @@
     {% if values.settings.is_empty() %}<p class="text-muted mb-0">{{ messages.get("admin-settings-filter-none") }}</p>{% endif %}
     <ul class="list-group list-group-flush">
       {% for item in values.settings %}
-      {#- 1 件は 2 列。左に「何の設定か」、右に「値を変える」。
-          ⚠ 「現在の値」と「全体の値」は必ず並べて出す（上の注記）。全体の値に従っているときの
-          説明は区画の先頭の 1 回だけにする —— 20 件すべてに同じ 2 行を繰り返すと、画面の半分が
-          その文になる。 -#}
+      {#- Each item has 2 columns: left "what setting", right "change the value".
+          ⚠ "Current value" and "global value" are always shown side by side (note above). The explanation for following
+          the global value appears only once at the top of the section -- repeating the same 2 lines for all 20 items would make
+          half the screen that text. -#}
       <li class="list-group-item px-0 py-3" id="tenant-value-{{ item.key }}">
         <div class="row g-2">
           <div class="col-lg-7">
@@ -175,9 +175,9 @@
 </div>
 {% endif %}
 
-{#- テナント自身のメールの経路（ADR-0058 §8）。`idp.smtp:read` が無ければ区画ごと出さない。
-    ⚠ 全体に従っているとき、api は全体の宛先・利用者名を返さない（テナントへ見せない）ので、欄は空で出る。
-    ⚠ 経路は塊で使われる。欠けた項目が全体の値で埋まることは無い。 -#}
+{#- The tenant's own mail route (ADR-0058 §8). Without `idp.smtp:read` the whole section is hidden.
+    ⚠ When following global, the api does not return the global host or user name (not shown to tenants), so the fields are empty.
+    ⚠ A route is used as a whole. Missing items are never filled from global values. -#}
 {% if let Some(smtp) = tenant_smtp %}
 <div class="card mb-4 admin-settings-tenant-smtp" id="tenant-smtp">
   <div class="card-header d-flex align-items-center"><i class="fa-solid fa-envelope me-2" aria-hidden="true"></i>{{ messages.get("admin-tenant-smtp-heading") }}</div>
@@ -276,8 +276,8 @@
         <input type="checkbox" class="form-check-input" id="smtp_use_tls" name="smtp_use_tls" value="true" {% if sys.smtp_use_tls %}checked{% endif %}>
         <label class="form-check-label" for="smtp_use_tls">{{ messages.get("admin-settings-smtp-tls") }}</label>
       </div>
-      {#- SMS ゲートウェイ（AP13）。SMTP と同じフォームで保存する（画面が 1 枚なので、
-          別々に保存させると片方だけ更新した状態が生まれる）。 -#}
+      {#- SMS gateway (AP13). Saved with the same form as SMTP (one screen, so saving them
+          separately would create a state where only one was updated). -#}
       <hr class="my-4">
       <h3 class="h6">{{ messages.get("admin-settings-sms-heading") }}</h3>
       <p class="text-muted small">{{ messages.get("admin-settings-sms-note") }}</p>
@@ -313,9 +313,9 @@
     <p class="text-muted small">{{ messages.get("admin-settings-runtime-note") }}</p>
     {% if filter.is_active() %}<p class="small mb-2" role="status">{{ messages.get_arg("admin-settings-filter-count", "count", self.runtime_count().as_str()) }}</p>{% endif %}
     {% if sys.runtime_settings.is_empty() %}<p class="text-muted mb-0">{{ messages.get("admin-settings-filter-none") }}</p>{% endif %}
-    {#- 表は 60 件を超え、開いたままだとこの画面の半分以上を占める（再起動の区画がその下に沈む）。
-        ふだんは閉じておき、ここを目当てに来たとき —— 絞り込んだ・保存して戻った・エラーで戻った ——
-        だけ開いて出す。保存とエラーの戻り先は `#runtime-settings`（この区画）である。 -#}
+    {#- The table exceeds 60 rows and when open takes over half this screen (the restart section sinks below it).
+        Keep it closed normally and open it only when this is what you came for -- filtered, returned after saving, returned with an error.
+        The return target for save and error is `#runtime-settings` (this section). -#}
     <details class="settings-runtime-list"{% if filter.is_active() || saved || error_key.is_some() %} open{% endif %}>
     <summary>{{ messages.get_arg("admin-settings-runtime-toggle", "count", sys.runtime_settings.len().to_string().as_str()) }}</summary>
     <div class="table-responsive mt-3">
@@ -335,8 +335,8 @@
               {% if !item.description.is_empty() %}<div class="text-muted small mt-1">{{ item.description }}</div>{% endif %}
               {% if item.restart_required %}<div class="form-text">{% if item.shared_with_web %}{{ messages.get("admin-settings-runtime-restart-required-both") }}{% else %}{{ messages.get("admin-settings-runtime-restart-required") }}{% endif %}</div>{% endif %}
               {% if item.pending_restart %}<div class="mt-1"><span class="badge text-bg-warning">{{ messages.get("admin-settings-runtime-pending") }}</span></div>{% endif %}
-              {#- テナントが上書きできるキー（ADR-0058 §6）。全体の値は既定であって下限ではないので干渉は
-                  しないが、変更の影響範囲（従っているテナント・外れているテナント）は見えるようにする。 -#}
+              {#- Keys tenants can override (ADR-0058 §6). The global value is a default, not a floor, so it does not
+                  interfere, but the scope of a change (following tenants, deviating tenants) is made visible. -#}
               {% if item.tenant_overridable %}
               <div class="small mt-2 admin-settings-runtime-tenants">
                 <span class="badge text-bg-info">{{ messages.get("admin-settings-runtime-tenant-overridable") }}</span>
@@ -395,9 +395,9 @@
   </div>
 </div>
 
-{#- 保存したランタイム設定を反映するための再起動（ADR-0017）。設定を変えられるのに反映だけ
-    シェル作業が要る、という状態を無くすための導線。押した瞬間に全リクエストが切れるので、
-    確認ダイアログ（data-confirm）と前提条件の説明を必ず添える。 -#}
+{#- Restart to apply saved runtime settings (ADR-0017). Removes the state where settings can be changed but
+    applying them needs shell work. Pressing it cuts all requests instantly, so always attach a
+    confirmation dialog (data-confirm) and an explanation of the preconditions. -#}
 <div class="card mb-4 admin-settings-restart" id="restart">
   <div class="card-header d-flex align-items-center"><i class="fa-solid fa-power-off me-2" aria-hidden="true"></i>{{ messages.get("admin-restart-heading") }}</div>
   <div class="card-body">

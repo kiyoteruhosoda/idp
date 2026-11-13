@@ -1,21 +1,21 @@
-//! Step-up 認証の本人確認画面（web。`/{tenant_id}/settings/verify`。AP5）。
+//! Step-up authentication re-verification screen (web. `/{tenant_id}/settings/verify`. AP5).
 //!
-//! 重要操作（認証器の追加削除・セッション失効など）の入口で [`require_step_up`] を呼び、足りなければ
-//! この画面へ誘導する。確認が通ったら元の画面（`next`）へ戻す。
+//! [`require_step_up`] is called at the entry of sensitive operations (adding/removing authenticators, revoking sessions, etc.),
+//! and if insufficient, the user is led to this screen. Once verified, it returns to the original screen (`next`).
 //!
-//! 判定と検証は api（`/internal/step-up/*`）が行い、web は画面と `next` の安全性だけを担う。
+//! Decisions and verification are done by the api (`/internal/step-up/*`); web handles only the screen and the safety of `next`.
 //!
-//! 確認の手段は 2 つある。**パスワード**（要件が多要素なら TOTP も）と**パスキー**（T38）で、
-//! 後者はパスキーで入った利用者のための経路である —— 認証器の管理は step-up の対象なので、
-//! パスワードしか受け付けないと「パスキーで入ったのにパスキーを足せない」になる。
-//! パスキー経路はブラウザの WebAuthn API を通るため JSON の 2 段構え（begin / complete）で、
-//! ログイン画面と同じ `assets/passkey-login.js` を共有する（完了先だけが違う）。
+//! There are two means of verification: **password** (plus TOTP if multi-factor is required) and **passkey** (T38).
+//! The latter is the path for users who signed in with a passkey — authenticator management is subject to step-up,
+//! so accepting only passwords would mean "signed in with a passkey but cannot add a passkey".
+//! The passkey path goes through the browser's WebAuthn API, so it is a two-step JSON exchange (begin / complete),
+//! sharing `assets/passkey-login.js` with the login screen (only the completion target differs).
 //!
-//! # `next` の扱い
+//! # Handling `next`
 //!
-//! `next` はブラウザから任意の値が渡る。同一オリジン内の**このテナントのパス**に限って受け付ける
-//! （オープンリダイレクトを作らないため）。`//evil.example.com` のような「スキームなし絶対 URL」は
-//! ブラウザが別オリジンとして解決するので、単に先頭が `/` かどうかでは足りない。
+//! `next` can carry any value from the browser. Only **this tenant's paths** within the same origin are accepted
+//! (to avoid an open redirect). A "scheme-less absolute URL" like `//evil.example.com` is resolved
+//! by the browser as another origin, so merely checking for a leading `/` is not enough.
 
 use super::{api_internal_error, internal_call_status};
 use crate::client_ip::ClientIp;
@@ -39,22 +39,22 @@ use axum::{Form, Json};
 use serde::Deserialize;
 use serde_json::json;
 
-/// 重要操作の識別子（api の `domain::step_up::SensitiveOperation` の文字列表現と一致させる）。
-/// web 側の呼び出しはこの定数を使い、リテラルを散らさない（綴りがずれると api が
-/// `UnknownOperation` を返し、画面が 500 になる）。
+/// Identifiers of sensitive operations (keep equal to the string form of the api's `domain::step_up::SensitiveOperation`).
+/// web-side callers use these constants instead of scattering literals (a misspelling makes the api return
+/// `UnknownOperation` and the screen a 500).
 pub const MANAGE_AUTHENTICATORS: &str = "manage_authenticators";
 pub const REVOKE_SESSION: &str = "revoke_session";
-/// 端末の登録（task #872）。パスキーでしか通らない。
+/// Device registration (task #872). Passable only by passkey.
 pub const REGISTER_DEVICE: &str = "register_device";
-/// SSH の公開鍵の登録・取り消し（task #885）。パスキーでしか通らない。
+/// Registering/revoking SSH public keys (task #885). Passable only by passkey.
 pub const MANAGE_SSH_KEYS: &str = "manage_ssh_keys";
 
 #[derive(Debug, Deserialize)]
 pub struct StepUpQuery {
-    /// 確認後に戻る先（このテナント配下のパスのみ）。
+    /// Where to return after verification (only paths under this tenant).
     #[serde(default)]
     pub next: Option<String>,
-    /// 対象操作（api の `SensitiveOperation` と同じ文字列）。
+    /// Target operation (same string as the api's `SensitiveOperation`).
     #[serde(default)]
     pub operation: Option<String>,
     #[serde(default)]
@@ -71,19 +71,19 @@ pub struct StepUpForm {
     pub csrf_token: String,
 }
 
-/// ゲートの判定結果（応答の形は呼び出し側の経路で変わるため、ここでは判定だけを返す）。
+/// The gate's decision (the response shape depends on the caller's path, so only the decision is returned here).
 enum Gate {
-    /// 操作を続けてよい。
+    /// The operation may proceed.
     Pass,
-    /// 本人確認が要る。値は誘導先の画面。
+    /// Re-verification needed. The value is the screen to lead to.
     Challenge(String),
-    /// ログインからやり直し。
+    /// Start over from login.
     LoginRequired,
-    /// この経路の都合ではない失敗（api 不達・実装の不整合）。
+    /// A failure not due to this path (api unreachable, implementation inconsistency).
     Failed(StatusCode),
 }
 
-/// ゲートの判定を 1 箇所に閉じる（HTML 経路も JSON 経路もここを通す）。
+/// Confines the gate decision to one place (both HTML and JSON paths go through here).
 async fn evaluate(
     state: &WebState,
     correlation: &CorrelationId,
@@ -107,13 +107,13 @@ async fn evaluate(
         }
         Ok(InternalStepUpCheckResponse::SessionExpired) => Gate::LoginRequired,
         Ok(InternalStepUpCheckResponse::UnknownOperation) => {
-            // 呼び出し側が定数で渡す値なので、ここに来るのは実装の不整合。fail-closed で止める。
+            // The caller passes a constant, so reaching here means an implementation inconsistency. Stop fail-closed.
             tracing::error!(operation, "step-up check rejected an unknown operation");
             Gate::Failed(StatusCode::INTERNAL_SERVER_ERROR)
         }
         Ok(InternalStepUpCheckResponse::Internal) => {
-            // ここは**ゲートの入口**で、落ちると画面が丸ごと 500 になる。どの呼び出しで
-            // 止まったかを残さないと、利用者から見えるのは素の 500 だけになる。
+            // This is **the gate's entry**; failing makes the whole screen a 500. Unless we record which call
+            // it stopped at, all users see is a bare 500.
             tracing::error!(call = "step_up_check", "api reported an internal error");
             Gate::Failed(StatusCode::INTERNAL_SERVER_ERROR)
         }
@@ -124,10 +124,10 @@ async fn evaluate(
     }
 }
 
-/// 重要操作の入口で呼ぶゲート（画面遷移を伴う HTML 経路用）。
+/// Gate called at the entry of sensitive operations (for HTML paths with screen transitions).
 ///
-/// `Ok(())` なら操作を続けてよい。`Err(response)` は呼び出し側がそのまま返す（本人確認画面への
-/// リダイレクト、または未ログイン時のログイン画面への誘導）。
+/// `Ok(())` means the operation may proceed. `Err(response)` is returned by the caller as is (a redirect to the
+/// re-verification screen, or leading to the login screen when not signed in).
 pub async fn require_step_up(
     state: &WebState,
     correlation: &CorrelationId,
@@ -144,12 +144,12 @@ pub async fn require_step_up(
     }
 }
 
-/// 同じゲートの JSON API 用（`fetch` から呼ばれる更新系エンドポイント）。
+/// The same gate for JSON APIs (mutating endpoints called from `fetch`).
 ///
-/// **画面を出すハンドラだけを守っても意味がない。** 画面は入口の案内に過ぎず、実際に認証器を
-/// 作るのは JSON エンドポイントで、盗んだ Cookie を持つ呼び出し元は画面を経由せず直接叩ける。
-/// リダイレクトを返すと `fetch` が黙って追ってしまい HTML が JSON として読まれるため、こちらは
-/// 403 に誘導先を載せて返し、遷移はスクリプトに行わせる。
+/// **Protecting only the screen handlers is pointless.** The screen is just the entry guide; what actually creates
+/// authenticators is the JSON endpoint, which a caller holding a stolen cookie can hit directly without the screen.
+/// Returning a redirect would make `fetch` silently follow it and read HTML as JSON, so this one returns
+/// 403 carrying the destination and lets the script do the navigation.
 pub async fn require_step_up_api(
     state: &WebState,
     correlation: &CorrelationId,
@@ -170,7 +170,7 @@ pub async fn require_step_up_api(
     }
 }
 
-/// 本人確認画面（`GET /{tenant_id}/settings/verify`）。
+/// Re-verification screen (`GET /{tenant_id}/settings/verify`).
 pub async fn page(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -186,7 +186,7 @@ pub async fn page(
     let next = safe_next(&tenant, query.next.as_deref());
     let csrf = console_csrf_token(&sso, state.config.csrf_secret());
 
-    // 第二要素まで求めるかは api の判定に従う（画面が独自に推測すると要件とずれる）。
+    // Whether to require the second factor follows the api's decision (if the screen guessed on its own it would diverge from the requirement).
     let request = InternalStepUpCheckRequest {
         tenant_id: Some(tenant.0.clone()),
         sso_session_id: sso,
@@ -199,7 +199,7 @@ pub async fn page(
                 passkey_available,
                 passkey_only,
             }) => (second_factor_required, passkey_available, passkey_only),
-            // もう満たしている（別タブで確認済み等）なら、そのまま戻す。
+            // If already satisfied (verified in another tab etc.), return as is.
             Ok(InternalStepUpCheckResponse::Satisfied) => return found(&next),
             Ok(InternalStepUpCheckResponse::SessionExpired) => {
                 return found(&format!("{}/login", tenant.prefix()));
@@ -231,7 +231,7 @@ pub async fn page(
     .into_response()
 }
 
-/// 本人確認の実行（`POST /{tenant_id}/settings/verify`）。
+/// Performs re-verification (`POST /{tenant_id}/settings/verify`).
 pub async fn verify(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -293,16 +293,16 @@ pub async fn verify(
     }
 }
 
-// ─── パスキーでの本人確認（T38） ─────────────────────────────────────────────
+// ─── Re-verification with a passkey (T38) ─────────────────────────────────────────────
 //
-// ブラウザの WebAuthn API を通るため、フォーム送信ではなく JSON の 2 段構えになる。画面側は
-// ログイン画面と同じ `assets/passkey-login.js` を使い、開始・完了のパスだけを差し替える。
+// It goes through the browser's WebAuthn API, so it is a two-step JSON exchange rather than a form submission. The screen
+// uses the same `assets/passkey-login.js` as the login screen, swapping only the begin/complete paths.
 //
-// CSRF トークンを取らないのは、ログイン・登録のパスキー JSON API と同じ理由である。JSON を
-// 受けるエンドポイントへの別オリジンからの POST はプリフライトを要し（CORS 許可は出していない）、
-// そもそも通らない。加えて完了には**その利用者の認証器が今この場で作った署名**が要る。
+// No CSRF token is taken for the same reason as the login/registration passkey JSON APIs. A cross-origin POST
+// to an endpoint accepting JSON requires a preflight (no CORS permission is granted)
+// and does not get through at all. Moreover, completion needs **a signature made on the spot by that user's authenticator**.
 
-/// パスキーでの本人確認の開始（`POST /{tenant_id}/settings/verify/passkey/begin`）。
+/// Starts passkey re-verification (`POST /{tenant_id}/settings/verify/passkey/begin`).
 pub async fn passkey_begin(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -337,9 +337,9 @@ pub async fn passkey_begin(
     }
 }
 
-/// 完了 API が受け取る本文。`operation` と `next` は画面が `#passkey-error` の data 属性で
-/// スクリプトへ渡した値がそのまま返ってくる（`next` はここで改めてこのテナントのパスに限定する ——
-/// ブラウザから来た値を信用しない）。
+/// Body received by the completion API. `operation` and `next` come back exactly as the screen passed them to the script
+/// via `#passkey-error`'s data attributes (`next` is again restricted here to this tenant's paths —
+/// values from the browser are not trusted).
 #[derive(Debug, Deserialize)]
 pub struct PasskeyCompleteBody {
     pub challenge_id: String,
@@ -350,9 +350,9 @@ pub struct PasskeyCompleteBody {
     pub next: Option<String>,
 }
 
-/// パスキーでの本人確認の完了（`POST /{tenant_id}/settings/verify/passkey/complete`）。
+/// Completes passkey re-verification (`POST /{tenant_id}/settings/verify/passkey/complete`).
 ///
-/// 成功時は `{ redirect_to }` を返し、スクリプトがそこへ遷移する（フォーム経路の 303 に当たる）。
+/// On success returns `{ redirect_to }`, and the script navigates there (equivalent to the form path's 303).
 pub async fn passkey_complete(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -387,12 +387,12 @@ pub async fn passkey_complete(
         Ok(InternalStepUpPasskeyVerifyResponse::RateLimited) => {
             Json(json!({ "error": "rate_limited" }))
         }
-        // 文言を出しても打つ手が無いので、ログインからやり直させる（登録画面の 401 と同じ扱い）。
+        // Showing wording would leave nothing to do, so make the user start over from login (same as the registration screen's 401).
         Ok(InternalStepUpPasskeyVerifyResponse::SessionExpired) => {
             Json(json!({ "redirect_to": format!("{}/login", tenant.prefix()) }))
         }
         Ok(InternalStepUpPasskeyVerifyResponse::UnknownOperation) => {
-            // 画面が渡す値なので、ここに来るのは実装の不整合。fail-closed で止める。
+            // A value passed by the screen, so reaching here means an implementation inconsistency. Stop fail-closed.
             tracing::error!("step-up passkey verify rejected an unknown operation");
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
@@ -407,7 +407,7 @@ pub async fn passkey_complete(
     .into_response()
 }
 
-/// 本人確認画面への URL を組み立てる。
+/// Builds the URL to the re-verification screen.
 fn challenge_path(tenant: &WebTenant, operation: &str, next: &str) -> String {
     fn encode(value: &str) -> String {
         percent_encoding::utf8_percent_encode(value, percent_encoding::NON_ALPHANUMERIC).to_string()
@@ -420,29 +420,29 @@ fn challenge_path(tenant: &WebTenant, operation: &str, next: &str) -> String {
     )
 }
 
-/// `next` をこのテナント配下のパスに限定する（オープンリダイレクト防止）。
+/// Restricts `next` to paths under this tenant (open redirect prevention).
 ///
-/// 受け付けるのは `/{tenant_id}` で始まり、かつ 2 文字目が `/` でないパスだけ。`//host` は
-/// スキーム相対 URL としてブラウザが別オリジンへ解決するため、先頭が `/` であることだけでは
-/// 不十分。条件を満たさない値は設定画面へ倒す。
+/// Only paths starting with `/{tenant_id}` whose second character is not `/` are accepted. `//host` is
+/// resolved by the browser as a scheme-relative URL to another origin, so a leading `/` alone is
+/// insufficient. Values not meeting the conditions fall back to the settings screen.
 pub(crate) fn safe_next(tenant: &WebTenant, next: Option<&str>) -> String {
     let fallback = format!("{}/settings", tenant.prefix());
     let Some(candidate) = next.filter(|v| !v.is_empty()) else {
         return fallback;
     };
     let prefix = tenant.prefix();
-    // 接頭辞の一致は `strip_prefix` で見る。**バイト位置で切ってはいけない** —— 接頭辞より短い
-    // `next`（`/settings` など。テナント接頭辞は UUID で 37 文字ある）や、途中が文字境界でない
-    // 値でパニックする。
+    // Check prefix matching with `strip_prefix`. **Never slice by byte position** — it panics on a `next`
+    // shorter than the prefix (`/settings` etc.; the tenant prefix is a UUID of 37 chars) or on values
+    // where the position is not a char boundary.
     let Some(rest) = candidate.strip_prefix(prefix.as_str()) else {
         return fallback;
     };
-    // `\` はブラウザによって `/` として解釈されるため、`//` と同じ理由で拒否する。
+    // `\` is interpreted as `/` by some browsers, so it is rejected for the same reason as `//`.
     if candidate.starts_with("//") || candidate.contains('\\') {
         return fallback;
     }
-    // 「別テナントの接頭辞が偶然一致する」ことを避けるため、接頭辞の直後が区切りか終端かまで見る
-    // （`/t1` に対する `/t123/...` を通さない）。
+    // To avoid "another tenant's prefix happening to match", also check that right after the prefix is a separator or the end
+    // (do not let `/t123/...` pass for `/t1`).
     if rest.is_empty() || rest.starts_with('/') || rest.starts_with('?') {
         candidate.to_string()
     } else {
@@ -468,7 +468,7 @@ mod tests {
         WebTenant("t1".to_string())
     }
 
-    /// 同一テナント配下のパスだけを受け付ける（オープンリダイレクトを作らない）。
+    /// Only paths under the same tenant are accepted (no open redirect).
     #[test]
     fn next_is_restricted_to_this_tenants_paths() {
         let t = tenant();
@@ -480,7 +480,7 @@ mod tests {
         assert_eq!(safe_next(&t, Some("/t1?x=1")), "/t1?x=1");
 
         let fallback = "/t1/settings";
-        // 外部オリジン・スキーム相対・バックスラッシュ・別テナント・空。
+        // External origin, scheme-relative, backslash, other tenant, empty.
         assert_eq!(safe_next(&t, Some("https://evil.example.com")), fallback);
         assert_eq!(safe_next(&t, Some("//evil.example.com")), fallback);
         assert_eq!(safe_next(&t, Some("/t1\\@evil.example.com")), fallback);
@@ -490,19 +490,19 @@ mod tests {
         assert_eq!(safe_next(&t, None), fallback);
     }
 
-    /// **接頭辞より短い `next` で落ちない。** テナント接頭辞は UUID で 37 文字あるので、
-    /// `?next=/x` のような短い値はごく普通に飛んでくる（バイト位置で切ると添字が範囲外になる）。
+    /// **Does not crash on a `next` shorter than the prefix.** The tenant prefix is a UUID of 37 chars, so
+    /// short values like `?next=/x` come in all the time (slicing by byte position would go out of range).
     #[test]
     fn a_next_shorter_than_the_tenant_prefix_falls_back_instead_of_panicking() {
         let t = WebTenant("00000000-0000-7000-8000-000000000001".to_string());
         let fallback = "/00000000-0000-7000-8000-000000000001/settings";
         assert_eq!(safe_next(&t, Some("/x")), fallback);
         assert_eq!(safe_next(&t, Some("https://evil.example.com/")), fallback);
-        // 文字境界でない位置で切らない（マルチバイト文字を含む値）。
+        // Do not slice at a non-char-boundary position (values containing multibyte characters).
         assert_eq!(safe_next(&t, Some("/日本語のパス")), fallback);
     }
 
-    /// 画面 URL は operation・next をパーセントエンコードして埋め込む。
+    /// The screen URL embeds operation and next percent-encoded.
     #[test]
     fn challenge_path_encodes_its_parameters() {
         let path = challenge_path(&tenant(), "manage_authenticators", "/t1/account/passkey");

@@ -1,16 +1,16 @@
-//! アカウント設定のワンタイムリンク（ADR-0062）。
+//! One-time account setup links (ADR-0062).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test account_setup
 //!
-//! 管理者が利用者を作ると、生成パスワードの代わりに**本人へ渡すリンク**が返る。検証する保証:
+//! When an admin creates a user, a **link to hand to the user** is returned instead of a generated password. Guarantees checked:
 //!
-//! 1. **作成はもうパスワードを返さない。** 代わりにリンクが返り、そのリンクは本人を指している。
-//! 2. ⚠ **開いただけでは消費しない。** チャットに貼ったリンクはプレビューの bot が先に取りに
-//!    来るので、読み出し（`describe`）で消費してはいけない。
-//! 3. **リンクでパスワードを決められる**（忘失時の再設定と同じ口を通る）。決めた時点で
-//!    リンクは死ぬ。
-//! 4. ⚠ **忘失時の再設定リンクではパスキーを登録できない**（用途で分ける。ADR-0062 の決定 2）。
+//! 1. **Creation no longer returns a password.** A link is returned instead, and it points at the user.
+//! 2. ⚠ **Merely opening it does not consume it.** A preview bot fetches a link pasted in chat first,
+//!    so reading (`describe`) must not consume it.
+//! 3. **The link lets the user set a password** (through the same endpoint as the forgotten-password reset). Once set,
+//!    the link is dead.
+//! 4. ⚠ **A forgotten-password reset link cannot register a passkey** (split by purpose; ADR-0062 decision 2).
 
 mod support;
 
@@ -21,7 +21,7 @@ use support::{
     setup as support_setup, unique, TestEnv, SERVICE_TOKEN,
 };
 
-/// メンバーの画面が読む「仮登録か」（ADR-0064）。
+/// "Provisional or not" as read by the members screen (ADR-0064).
 async fn pending_setup(env: &TestEnv, admin_tok: &str, user_id: &str) -> bool {
     let res = send(
         &env.app,
@@ -45,7 +45,7 @@ async fn tok(env: &TestEnv, sso: &str, tenant_id: &str) -> String {
     exchange_admin_token(&env.app, tenant_id, sso).await
 }
 
-/// 管理者が root テナントへ利用者を作り、`(user_id, setup_url, token)` を返す。
+/// An admin creates a user in the root tenant and returns `(user_id, setup_url, token)`.
 async fn create_user(env: &TestEnv, admin_tok: &str) -> (String, String, String) {
     let res = send(
         &env.app,
@@ -116,7 +116,7 @@ async fn creating_a_user_hands_out_a_setup_link_instead_of_a_password() {
     );
 }
 
-/// ⚠ 読み出しでは消費しない（プレビューの bot に食われないため）。
+/// ⚠ Reading does not consume it (so preview bots cannot eat it).
 #[tokio::test]
 async fn reading_the_link_does_not_use_it_up() {
     let Some(env) = setup().await else { return };
@@ -129,9 +129,9 @@ async fn reading_the_link_does_not_use_it_up() {
     }
 }
 
-/// リンクでパスワードを決められる。決めたらリンクは死ぬ。
+/// The link lets the user set a password. Once set, the link is dead.
 ///
-/// ADR-0064: 作った直後は仮登録で、本人が決めた時点で外れる。
+/// ADR-0064: provisional right after creation, cleared once the user sets it.
 #[tokio::test]
 async fn the_link_sets_a_password_once() {
     let Some(env) = setup().await else { return };
@@ -164,7 +164,7 @@ async fn the_link_sets_a_password_once() {
         "the setup link goes through the same door as a forgotten-password reset"
     );
 
-    // 使い切ったリンクはもう読めない。
+    // A used-up link can no longer be read.
     assert_eq!(describe(&env, &token).await["result"], "invalid_or_expired");
     assert!(
         !pending_setup(&env, &admin_tok, &user_id).await,
@@ -172,7 +172,7 @@ async fn the_link_sets_a_password_once() {
     );
 }
 
-/// 管理者の再発行も**リンクだけ**を返す（置き換えたパスワードは誰も知らない）。
+/// An admin reissue also returns **only a link** (nobody knows the replaced password).
 #[tokio::test]
 async fn reissuing_a_password_also_hands_out_only_a_link() {
     let Some(env) = setup().await else { return };
@@ -202,14 +202,14 @@ async fn reissuing_a_password_also_hands_out_only_a_link() {
         .as_str()
         .is_some_and(|u| u.contains("token=")));
 
-    // ⚠ **出し直すと前のリンクは死ぬ**（生きたリンクが 2 本あると、どれを渡したか分からなくなる）。
+    // ⚠ **Reissuing kills the previous link** (with two live links nobody knows which was handed over).
     assert_eq!(
         describe(&env, &first_token).await["result"],
         "invalid_or_expired"
     );
 }
 
-/// ⚠ 忘失時の再設定リンクでパスキーを足せない（用途で分ける）。
+/// ⚠ A forgotten-password reset link cannot add a passkey (split by purpose).
 #[tokio::test]
 async fn a_forgotten_password_link_may_not_add_a_passkey() {
     let Some(env) = setup().await else { return };
@@ -238,8 +238,8 @@ async fn a_forgotten_password_link_may_not_add_a_passkey() {
         .expect("count reset tokens")
     };
 
-    // ⚠ ADR-0064: 仮登録のあいだは「パスワードを忘れた」から再設定リンクを出さない
-    //   （本人は設定リンクを持っている。メールを読める相手に仮登録を終わらせない）。
+    // ⚠ ADR-0064: while provisional, "Forgot password" issues no reset link
+    //   (the user has the setup link; do not let someone who can read the mail finish the provisional signup).
     let res = send(&env.app, request_reset()).await;
     assert_eq!(
         res.status(),
@@ -248,7 +248,7 @@ async fn a_forgotten_password_link_may_not_add_a_passkey() {
     );
     assert_eq!(reset_tokens().await, 0, "no reset link for a pending user");
 
-    // 本人が設定を終えてから「パスワードを忘れた」を押す（再設定用途のトークンが 1 本立つ）。
+    // After the user finishes setup, press "Forgot password" (one reset-purpose token is created).
     let res = send(
         &env.app,
         post_internal(
@@ -266,8 +266,8 @@ async fn a_forgotten_password_link_may_not_add_a_passkey() {
     let res = send(&env.app, request_reset()).await;
     assert_eq!(res.status(), StatusCode::OK, "reset requested");
 
-    // ⚠ トークンの平文はメール（か起動ログ）にしか出ないので、この試験では DB の行から
-    //   「用途」が `reset` になっていることを確かめる。パスキーを断る判定はその列で行う。
+    // ⚠ The token plaintext appears only in the mail (or startup log), so this test checks from the DB row
+    //   that the "purpose" is `reset`. Refusing passkeys is decided by that column.
     let purpose: String = sqlx::query_scalar(
         "SELECT purpose FROM password_reset_tokens \
          WHERE user_id = ? AND used_at IS NULL ORDER BY created_at DESC LIMIT 1",

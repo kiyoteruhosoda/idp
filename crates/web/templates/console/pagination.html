@@ -1,4 +1,4 @@
-{#- 一覧のページャ（G7）。`prev_href` / `next_href` / `messages` を持つテンプレートから include する。 -#}
+{#- List pager (G7). Included from templates that have `prev_href` / `next_href` / `messages`. -#}
 {% if prev_href.is_some() || next_href.is_some() %}
 <nav aria-label="{{ messages.get("admin-pagination-label") }}">
   <ul class="pagination">

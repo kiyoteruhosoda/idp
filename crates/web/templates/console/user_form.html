@@ -18,8 +18,8 @@
         <label class="form-label" for="user-name">{{ messages.get("admin-users-field-name") }}</label>
         <input type="text" class="form-control" id="user-name" name="name" value="{{ name }}">
       </div>
-      {#- 管理者メモ（ADR-0063）。作ったときがいちばん経緯を覚えているので、作成と同時に書けるようにする。
-          メンバーの画面の欄と同じもの（本人・アプリには渡らない）。 -#}
+      {#- Admin note (ADR-0063). The history is best remembered at creation, so it can be written then.
+          Same as the field on the member screen (never passed to the person or apps). -#}
       <div class="mb-3">
         <label class="form-label" for="user-note">{{ messages.get("admin-member-note-title") }}</label>
         <textarea class="form-control" id="user-note" name="note" rows="3" maxlength="{{ crate::templates::ACCOUNT_NOTE_MAX_LEN }}" aria-describedby="user-note-help" placeholder="{{ messages.get("admin-member-note-placeholder") }}">{{ note }}</textarea>

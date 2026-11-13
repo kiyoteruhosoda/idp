@@ -1,44 +1,44 @@
-//! Cookie の名前と `Set-Cookie` 値の組み立て（api ↔ web 契約）。
+//! Cookie names and building `Set-Cookie` values (api <-> web contract).
 //!
-//! ADR-0018 決定 2 により **api はブラウザ Cookie を読み書きしない**。`sso_session_id` /
-//! `auth_session_id` はブラウザに対しては web だけが発行・読取する host-only Cookie になったが、
-//! 名前は引き続き契約である（web の `api_client` が管理 JSON API へのサーバ間呼び出しで
-//! `Cookie: sso_session_id=...` を明示付与し、api の admin extractor が同じ名前で読むため）。
-//! 名前と属性の組み立ては csrf・cookie_domain と同様に本 crate に単一定義し、web はこれを使う。
+//! Per decision 2 of ADR-0018, **api does not read or write browser cookies**. `sso_session_id` /
+//! `auth_session_id` became host-only cookies issued and read only by web toward the browser, but the
+//! names remain a contract (web's `api_client` explicitly sends `Cookie: sso_session_id=...` in server-to-server
+//! calls to the admin JSON API, and api's admin extractor reads the same name).
+//! Building names and attributes is defined once in this crate, like csrf and cookie_domain, and web uses it.
 //!
-//! 属性は設計仕様 §2.4 に従い `HttpOnly` / `Secure` / `SameSite=Lax` / `Path=/` を付与する
-//! （`Secure` は web が自身の公開オリジンのスキームから決める。ADR-0012 §2）。
-//! `Domain` は付与しない（host-only が既定。ADR-0018 決定 4）。`COOKIE_DOMAIN` は
-//! ADR-0012 §3 の旧構成でブラウザに残った `Domain` 付き Cookie を掃除するためだけに残る
-//! （[`CookiePolicy`] 参照）。
+//! Per design spec §2.4, the attributes are `HttpOnly` / `Secure` / `SameSite=Lax` / `Path=/`
+//! (`Secure` is decided by web from its own public origin scheme; ADR-0012 §2).
+//! No `Domain` is set (host-only is the default; decision 4 of ADR-0018). `COOKIE_DOMAIN` remains only
+//! to clean up `Domain` cookies left in browsers by the old setup of ADR-0012 §3
+//! (see [`CookiePolicy`]).
 //!
-//! axum には依存しない（本 crate の制約）。`HeaderMap` からの読み出し・`Set-Cookie` ヘッダ化は
-//! 各サービスの `cookies` モジュールが薄いアダプタとして担う。
+//! No dependency on axum (a constraint of this crate). Reading from `HeaderMap` and turning into `Set-Cookie` headers
+//! are done by each service's `cookies` module as a thin adapter.
 
-/// SSO セッション Cookie（値は session_id 平文。DB にはハッシュのみ保存）。ブラウザへは web だけが
-/// 発行・読取し、api へはサーバ間呼び出しのヘッダ（admin API）またはボディ（`/internal/*`）で渡す。
+/// SSO session cookie (the value is the plain session_id; only the hash is stored in the DB). Only web issues and reads
+/// it toward the browser; it is passed to api in a server-to-server header (admin API) or body (`/internal/*`).
 pub const SSO_SESSION_COOKIE: &str = "sso_session_id";
-/// `auth_session_id` Cookie（`/authorize` ハンドオフ〜 `/login` 完了の短命 Cookie）。web だけが読む。
+/// `auth_session_id` cookie (short-lived, from the `/authorize` handoff to `/login` completion). Read only by web.
 pub const AUTH_SESSION_COOKIE: &str = "auth_session_id";
 
-/// `Secure` のとき `__Host-` を前置するセッション Cookie（task #583。脆弱性確認 2026-10-20 の中-3）。
+/// Session cookies prefixed with `__Host-` when `Secure` (task #583; medium-3 of the 2026-10-20 vulnerability review).
 ///
-/// 前置しないと、同じ親ドメインの別のサブドメイン（`*.nolumia.com` のどれか）を握った攻撃者が
-/// `Domain=nolumia.com; Path=/<tenant>` の同名 Cookie を差し込め、Path の長い Cookie が先に送られる
-/// 性質で攻撃者のセッションが勝つ（攻撃者のアカウントでログインさせる・セッションを妨げる）。
-/// ⚠ **名前は契約のまま**（api への サーバ間呼び出しは前置なしの名前で渡す）。前置するのは
-/// ブラウザとの間だけで、受け取った側は [`CookiePolicy::bind_session_cookie_names`] で読み替える。
+/// Without the prefix, an attacker holding another subdomain of the same parent (any of `*.nolumia.com`) could
+/// inject a same-name cookie with `Domain=nolumia.com; Path=/<tenant>`, and since longer-Path cookies are sent first,
+/// the attacker's session would win (logging the victim into the attacker's account, disrupting the session).
+/// ⚠ **The names stay the contract** (server-to-server calls to api pass the unprefixed name). The prefix applies
+/// only toward the browser, and the receiver maps it with [`CookiePolicy::bind_session_cookie_names`].
 pub const ORIGIN_BOUND_SESSION_COOKIES: &[&str] = &[SSO_SESSION_COOKIE, AUTH_SESSION_COOKIE];
 
-/// `__Host-` プレフィックス（RFC 6265bis §4.1.3.2）。この名前で送られた Cookie をブラウザは
-/// 「`Secure` かつ `Domain` 無しかつ `Path=/`」でしか受け付けない。結果として **発行元オリジンに
-/// 束縛**され、同一親ドメインの別サブドメイン（`Domain=親` を付けられる位置）から上書き・強制できない。
+/// The `__Host-` prefix (RFC 6265bis §4.1.3.2). Browsers accept a cookie sent with this name only if it is
+/// "`Secure`, without `Domain`, and `Path=/`". As a result it is **bound to the issuing origin**,
+/// and cannot be overwritten or forced from another subdomain of the same parent (where `Domain=parent` could be set).
 pub const HOST_PREFIX: &str = "__Host-";
 
-/// `Cookie` ヘッダの生文字列（複数ヘッダ可）から `name` の値を取り出す。
+/// Extracts the value of `name` from raw `Cookie` header strings (multiple headers allowed).
 ///
-/// 名前は完全一致で比較する（`sso_session_id` が `x_sso_session_id` に一致しない）。値に `=` を
-/// 含む Cookie（base64 等）は最初の `=` だけを区切りとして扱う。
+/// Names are compared exactly (`sso_session_id` does not match `x_sso_session_id`). For cookies whose value contains
+/// `=` (base64 etc.), only the first `=` is treated as the separator.
 pub fn read<'a>(raw_headers: impl IntoIterator<Item = &'a str>, name: &str) -> Option<String> {
     raw_headers.into_iter().find_map(|raw| {
         raw.split(';').find_map(|pair| {
@@ -48,13 +48,13 @@ pub fn read<'a>(raw_headers: impl IntoIterator<Item = &'a str>, name: &str) -> O
     })
 }
 
-/// Cookie に付与する属性の方針（`Secure` と旧 `Domain` Cookie の掃除）。設定から一度組み立てて使い回す。
+/// Policy for cookie attributes (`Secure` and cleanup of old `Domain` cookies). Built once from settings and reused.
 ///
-/// ADR-0018 決定 2・4: セッション Cookie（`sso_session_id`・`auth_session_id`）は **常に host-only**
-/// で発行する。`legacy_cleanup_domain`（`COOKIE_DOMAIN`）が設定されている場合は、ADR-0012 §3 の
-/// 旧構成でブラウザに残った `Domain` 付き同名 Cookie を削除する Cookie を併送する（Cookie の識別子は
-/// 名前だけでなく `Domain` を含むため、能動的に消さないと二重送信で古いセッションが新しいセッションを
-/// 覆い隠す）。掃除が完了した環境では `COOKIE_DOMAIN` を未設定にする（既定）。
+/// Decisions 2 and 4 of ADR-0018: session cookies (`sso_session_id`, `auth_session_id`) are **always issued
+/// host-only**. If `legacy_cleanup_domain` (`COOKIE_DOMAIN`) is set, a cookie deleting the same-name `Domain` cookie
+/// left in browsers by the old setup of ADR-0012 §3 is sent along (a cookie's identity includes `Domain`, not just
+/// the name, so unless actively deleted, the old session hides the new one through double sending). Once cleanup
+/// is done in an environment, leave `COOKIE_DOMAIN` unset (the default).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CookiePolicy {
     secure: bool,
@@ -62,8 +62,8 @@ pub struct CookiePolicy {
 }
 
 impl CookiePolicy {
-    /// `secure` は自サービスの公開オリジンのスキーム由来、`legacy_cleanup_domain` は `COOKIE_DOMAIN`
-    /// （検証済みの値。[`crate::cookie_domain::validate_cookie_domain`]）。
+    /// `secure` derives from this service's public origin scheme; `legacy_cleanup_domain` is `COOKIE_DOMAIN`
+    /// (a validated value; [`crate::cookie_domain::validate_cookie_domain`]).
     pub fn new(secure: bool, legacy_cleanup_domain: Option<&str>) -> Self {
         Self {
             secure,
@@ -75,19 +75,19 @@ impl CookiePolicy {
         self.secure
     }
 
-    /// 掃除対象の旧 `Domain`（`COOKIE_DOMAIN`）。`None` = 掃除なし（既定）。
+    /// The old `Domain` to clean up (`COOKIE_DOMAIN`). `None` = no cleanup (default).
     pub fn legacy_cleanup_domain(&self) -> Option<&str> {
         self.legacy_cleanup_domain.as_deref()
     }
 
-    /// セッション Cookie（`sso_session_id`・`auth_session_id`）を発行する `Set-Cookie` 値一式。
+    /// The set of `Set-Cookie` values issuing a session cookie (`sso_session_id`, `auth_session_id`).
     ///
-    /// - 常に host-only の 1 本を発行する（`Domain` は付けない。ADR-0018 決定 2・4）。
-    /// - `COOKIE_DOMAIN` 設定時（旧 ADR-0012 構成からの移行期間）: 加えて `Domain` 属性付きの
-    ///   同名削除 Cookie（`Max-Age=0`）を併送し、ブラウザに残った旧 Cookie を掃除する。
+    /// - Always issues one host-only cookie (no `Domain`; decisions 2 and 4 of ADR-0018).
+    /// - When `COOKIE_DOMAIN` is set (migration period from the old ADR-0012 setup): also sends a same-name
+    ///   deletion cookie (`Max-Age=0`) with the `Domain` attribute to clean up the old cookie left in the browser.
     ///
-    /// `Secure` のとき、[`ORIGIN_BOUND_SESSION_COOKIES`] は `__Host-` を前置した名前で発行し、
-    /// 前置しない名前の同名 Cookie（前置する前に発行したもの）を消す削除 Cookie を併送する。
+    /// When `Secure`, [`ORIGIN_BOUND_SESSION_COOKIES`] are issued with the `__Host-` prefixed name, and a deletion
+    /// cookie is sent along to remove the same-name unprefixed cookie (issued before prefixing).
     pub fn set_session(&self, name: &str, value: &str, max_age_secs: u64) -> Vec<String> {
         let bound = self.origin_bound_session_name(name);
         let mut cookies = vec![build(&bound, value, max_age_secs, self.secure, None)];
@@ -100,14 +100,14 @@ impl CookiePolicy {
         cookies
     }
 
-    /// セッション Cookie を失効させる `Set-Cookie` 値一式。削除 Cookie は発行時と同じ形（host-only）
-    /// に加え、`COOKIE_DOMAIN` 設定時は旧 `Domain` 付き削除も併送する（`Domain` が違う Cookie は
-    /// 消えないため）。
+    /// The set of `Set-Cookie` values expiring the session cookie. Deletion cookies have the same shape as issuance
+    /// (host-only), plus, when `COOKIE_DOMAIN` is set, an old `Domain` deletion (cookies with a different `Domain`
+    /// are not removed otherwise).
     pub fn expire_session(&self, name: &str) -> Vec<String> {
         self.set_session(name, "", 0)
     }
 
-    /// セッション Cookie のブラウザ上の名前（`Secure` のとき `__Host-` 前置。task #583）。
+    /// The session cookie's name in the browser (`__Host-` prefixed when `Secure`; task #583).
     fn origin_bound_session_name(&self, name: &str) -> String {
         if self.secure && ORIGIN_BOUND_SESSION_COOKIES.contains(&name) {
             format!("{HOST_PREFIX}{name}")
@@ -116,12 +116,12 @@ impl CookiePolicy {
         }
     }
 
-    /// 受け取った `Cookie` ヘッダを、セッション Cookie の名前について読み替えた値を返す（task #583）。
+    /// Returns the received `Cookie` header with session cookie names mapped (task #583).
     ///
-    /// `Secure` のときだけ働き、`__Host-sso_session_id` を `sso_session_id` に読み替え、**前置しない
-    /// `sso_session_id` は捨てる**（前置しない名前は別のサブドメインから差し込める。前置する前に
-    /// 発行した Cookie も同じ扱いで、その人は一度ログインし直す）。読む側は契約の名前のまま読める。
-    /// 変える必要が無いとき（`Secure` でない・該当の Cookie が無い）は `None`。
+    /// Works only when `Secure`: maps `__Host-sso_session_id` to `sso_session_id` and **drops an unprefixed
+    /// `sso_session_id`** (an unprefixed name can be injected from another subdomain; cookies issued before
+    /// prefixing are treated the same, and that person logs in once more). Readers can read by the contract name as is.
+    /// `None` when there is nothing to change (not `Secure`, or no relevant cookie).
     pub fn bind_session_cookie_names<'a>(
         &self,
         raw_headers: impl IntoIterator<Item = &'a str>,
@@ -153,35 +153,35 @@ impl CookiePolicy {
         changed.then(|| pairs.join("; "))
     }
 
-    /// サービスローカル Cookie（CSRF・言語・MFA チケット等）を発行する `Set-Cookie` 値。
-    /// セッション Cookie と同じく host-only だが、旧 `Domain` 掃除の対象ではない。
+    /// `Set-Cookie` value issuing a service-local cookie (CSRF, language, MFA ticket etc.).
+    /// Host-only like session cookies, but not subject to the old `Domain` cleanup.
     pub fn set_local(&self, name: &str, value: &str, max_age_secs: u64) -> String {
         build(name, value, max_age_secs, self.secure, None)
     }
 
-    /// 画面のスクリプトから読める表示設定 Cookie を発行する `Set-Cookie` 値（`HttpOnly` を付けない）。
+    /// `Set-Cookie` value issuing a display setting cookie readable by page scripts (no `HttpOnly`).
     ///
-    /// **`HttpOnly` を外すのはこの用途に限る。** 配色は最初の描画より前に確定していないと画面が
-    /// 白から黒へちらつくため、`<head>` の同期スクリプトが自分で読む必要がある。運べるのは
-    /// `light` / `dark` / `system` のいずれかで、盗まれて困る値も、書き換えられて権限が動く値も
-    /// 含まない（配色が変わるだけで、サーバは何の判断にも使わない）。資格情報・セッション識別子を
-    /// この関数で発行しないこと。
+    /// **Dropping `HttpOnly` is limited to this use.** Unless the color scheme is fixed before the first paint, the
+    /// screen flickers from white to black, so a synchronous script in `<head>` must read it itself. It can carry
+    /// only `light` / `dark` / `system`, neither a value harmful if stolen nor one that shifts permissions if
+    /// rewritten (only the colors change; the server uses it for no decision). Never issue credentials or session
+    /// identifiers with this function.
     pub fn set_preference(&self, name: &str, value: &str, max_age_secs: u64) -> String {
         build_preference(name, value, max_age_secs, self.secure)
     }
 
-    /// サービスローカル Cookie を失効させる `Set-Cookie` 値。
+    /// `Set-Cookie` value expiring a service-local cookie.
     pub fn expire_local(&self, name: &str) -> String {
         self.set_local(name, "", 0)
     }
 
-    /// 他のサイトからの POST でも届く必要があるローカル Cookie（`SameSite=None`）。
+    /// A local cookie that must arrive even with a POST from another site (`SameSite=None`).
     ///
-    /// **用途は外部 SAML IdP の ACS に限る**（task #581）。相手の IdP はアサーションを
-    /// ブラウザ経由の**サイトをまたぐ POST** で運んでくるので、`SameSite=Lax` の Cookie は
-    /// 送られない。値は「このブラウザで始めた」ことを示す一度きりの乱数で、権限は運ばない。
-    /// ⚠ `SameSite=None` はブラウザが `Secure` 無しでは受け付けないので、平文 HTTP（開発環境）では
-    /// `Lax` へ落とす（その環境で SAML の ACS は通らないが、OIDC の戻りは通る）。
+    /// **Used only for an external SAML IdP's ACS** (task #581). The other IdP carries the assertion with a
+    /// **cross-site POST** through the browser, so a `SameSite=Lax` cookie is not
+    /// sent. The value is a one-time random showing "started in this browser" and carries no permission.
+    /// ⚠ Browsers do not accept `SameSite=None` without `Secure`, so over plain HTTP (development) it
+    /// falls back to `Lax` (SAML ACS does not work there, but the OIDC return does).
     pub fn set_cross_site_local(&self, name: &str, value: &str, max_age_secs: u64) -> String {
         if !self.secure {
             return self.set_local(name, value, max_age_secs);
@@ -189,18 +189,18 @@ impl CookiePolicy {
         format!("{name}={value}; Max-Age={max_age_secs}; Path=/; HttpOnly; SameSite=None; Secure")
     }
 
-    /// [`Self::set_cross_site_local`] で置いた Cookie を失効させる。
+    /// Expires the cookie set with [`Self::set_cross_site_local`].
     pub fn expire_cross_site_local(&self, name: &str) -> String {
         self.set_cross_site_local(name, "", 0)
     }
 
-    /// オリジン束縛が要るローカル Cookie（CSRF の種・MFA チケット・SAML 進行状態）の実名を返す
-    /// （SEC5）。`set_local` / `expire_local` が付ける属性は `__Host-` の要件（`Secure` /
-    /// `Domain` 無し / `Path=/`）をすでに満たすため、前置するのは名前だけでよい。
+    /// Returns the real name of a local cookie needing origin binding (CSRF seed, MFA ticket, SAML progress state)
+    /// (SEC5). The attributes `set_local` / `expire_local` add already meet the `__Host-` requirements (`Secure` /
+    /// no `Domain` / `Path=/`), so only the name needs the prefix.
     ///
-    /// **平文 HTTP（`secure == false`）では前置しない。** `__Host-` 付きの Cookie はブラウザが
-    /// `Secure` 無しでは保存を拒否するため、前置すると開発環境（`http://localhost`）で CSRF の種が
-    /// 一切保存されずログインできなくなる。本番は必ず HTTPS（`COOKIE_SECURE`）なので保護は効く。
+    /// **No prefix over plain HTTP (`secure == false`).** Browsers refuse to store `__Host-` cookies
+    /// without `Secure`, so prefixing would mean no CSRF seed is ever stored in development (`http://localhost`)
+    /// and login becomes impossible. Production is always HTTPS (`COOKIE_SECURE`), so the protection applies.
     pub fn origin_bound_name(&self, base_name: &str) -> String {
         if self.secure {
             format!("{HOST_PREFIX}{base_name}")
@@ -210,7 +210,7 @@ impl CookiePolicy {
     }
 }
 
-/// スクリプトから読める Cookie（`HttpOnly` 無し）。属性は [`build`] と揃える。
+/// A cookie readable by scripts (no `HttpOnly`). Attributes match [`build`].
 fn build_preference(name: &str, value: &str, max_age_secs: u64, secure: bool) -> String {
     let mut cookie = format!("{name}={value}; Max-Age={max_age_secs}; Path=/; SameSite=Lax");
     if secure {
@@ -240,14 +240,14 @@ mod tests {
         let header = "a=1; auth_session_id=abc123; b=2";
         assert_eq!(read([header], "auth_session_id").as_deref(), Some("abc123"));
         assert_eq!(read([header], "missing"), None);
-        // 部分一致では拾わない（`sso_session_id` が `x_sso_session_id` に一致しない）。
+        // Partial matches are not picked up (`sso_session_id` does not match `x_sso_session_id`).
         assert_eq!(read(["x_sso_session_id=other"], "sso_session_id"), None);
         assert_eq!(read(["sso_session_id_2=other"], "sso_session_id"), None);
     }
 
     #[test]
     fn reads_a_cookie_across_multiple_headers() {
-        // ブラウザ・プロキシは `Cookie` ヘッダを複数本に分けて送ることがある。
+        // Browsers and proxies may split the `Cookie` header into several.
         assert_eq!(
             read(["a=1", "sso_session_id=xyz"], "sso_session_id").as_deref(),
             Some("xyz")
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn keeps_values_containing_equals_signs() {
-        // base64 値の末尾パディング（`=`）が切り落とされない。
+        // Trailing padding (`=`) of base64 values is not cut off.
         assert_eq!(read(["t=YWJj=="], "t").as_deref(), Some("YWJj=="));
     }
 
@@ -273,8 +273,8 @@ mod tests {
         );
     }
 
-    /// HTTPS では、前置した名前だけを契約の名前として読む。前置しない同名（別のサブドメインから
-    /// 差し込める）は捨てる（task #583）。
+    /// Over HTTPS, only the prefixed name is read as the contract name. An unprefixed same name (injectable
+    /// from another subdomain) is dropped (task #583).
     #[test]
     fn session_cookie_names_are_bound_to_the_origin_over_https() {
         let policy = CookiePolicy::new(true, None);
@@ -285,14 +285,14 @@ mod tests {
             ]),
             Some("lang=ja; sso_session_id=mine; auth_session_id=a".to_string())
         );
-        // 差し込まれた Cookie しか無ければ、ログインしていないのと同じ。
+        // If only an injected cookie exists, it is the same as not being logged in.
         assert_eq!(
             policy.bind_session_cookie_names(["sso_session_id=planted"]),
             Some(String::new())
         );
-        // セッションの Cookie が無ければ触らない。
+        // Without a session cookie, nothing is touched.
         assert_eq!(policy.bind_session_cookie_names(["lang=ja"]), None);
-        // 平文 HTTP（開発環境）は前置しないので読み替えない。
+        // Plain HTTP (development) has no prefix, so nothing is mapped.
         assert_eq!(
             CookiePolicy::new(false, None).bind_session_cookie_names(["sso_session_id=v"]),
             None
@@ -305,7 +305,7 @@ mod tests {
             CookiePolicy::new(true, None).set_cross_site_local("__Host-b", "v", 600),
             "__Host-b=v; Max-Age=600; Path=/; HttpOnly; SameSite=None; Secure"
         );
-        // 平文 HTTP では None を付けられない（ブラウザが捨てる）ので Lax へ落とす。
+        // Over plain HTTP, None cannot be set (browsers drop it), so it falls back to Lax.
         assert_eq!(
             CookiePolicy::new(false, None).expire_cross_site_local("b"),
             "b=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax"
@@ -314,19 +314,19 @@ mod tests {
 
     #[test]
     fn origin_bound_names_carry_the_host_prefix_over_https() {
-        // SEC5: HTTPS では `__Host-` 前置でオリジン束縛する。
+        // SEC5: over HTTPS, origin-bind with the `__Host-` prefix.
         let policy = CookiePolicy::new(true, Some("example.com"));
         assert_eq!(
             policy.origin_bound_name("portal_csrf_id"),
             "__Host-portal_csrf_id"
         );
-        // 前置した名前で発行しても、属性は `__Host-` の要件（Secure / Domain 無し / Path=/）を満たす。
+        // Even issued with the prefixed name, the attributes meet the `__Host-` requirements (Secure / no Domain / Path=/).
         let issued = policy.set_local(&policy.origin_bound_name("portal_csrf_id"), "seed", 900);
         assert_eq!(
             issued,
             "__Host-portal_csrf_id=seed; Max-Age=900; Path=/; HttpOnly; SameSite=Lax; Secure"
         );
-        // 平文 HTTP ではブラウザが `__Host-` を拒否するため前置しない（開発環境）。
+        // Over plain HTTP browsers reject `__Host-`, so no prefix (development).
         assert_eq!(
             CookiePolicy::new(false, None).origin_bound_name("portal_csrf_id"),
             "portal_csrf_id"
@@ -335,7 +335,7 @@ mod tests {
 
     #[test]
     fn local_cookie_never_gets_the_domain_attribute() {
-        // CSRF・言語・MFA チケットは host-only。旧 Domain 掃除の対象でもない。
+        // CSRF, language and MFA ticket are host-only, and not subject to the old Domain cleanup.
         let policy = CookiePolicy::new(true, Some("example.com"));
         assert_eq!(
             policy.set_local("portal_csrf_id", "v", 600),
@@ -346,8 +346,8 @@ mod tests {
 
     #[test]
     fn session_cookie_is_host_only_by_default() {
-        // COOKIE_DOMAIN 未設定（既定。ADR-0018 決定 4）: host-only。HTTPS では `__Host-` を前置し、
-        // 前置しない名前の古い Cookie を消す（task #583）。
+        // COOKIE_DOMAIN unset (default; decision 4 of ADR-0018): host-only. Over HTTPS, prefix with `__Host-` and
+        // delete old cookies with the unprefixed name (task #583).
         let policy = CookiePolicy::new(true, None);
         assert_eq!(
             policy.set_session(SSO_SESSION_COOKIE, "v", 600),
@@ -364,8 +364,8 @@ mod tests {
 
     #[test]
     fn session_cookie_never_carries_the_domain_attribute() {
-        // ADR-0018 決定 2: COOKIE_DOMAIN が設定されていても、発行する Cookie 本体は host-only。
-        // Domain は旧 Cookie の削除（Max-Age=0）にだけ現れる。
+        // Decision 2 of ADR-0018: even with COOKIE_DOMAIN set, the issued cookie itself is host-only.
+        // Domain appears only in deleting the old cookie (Max-Age=0).
         let issued =
             CookiePolicy::new(true, Some("example.com")).set_session(SSO_SESSION_COOKIE, "v", 600);
         assert_eq!(
@@ -376,7 +376,7 @@ mod tests {
                 "sso_session_id=; Max-Age=0; Domain=example.com; Path=/; HttpOnly; SameSite=Lax; Secure",
             ]
         );
-        // 失効も host-only 削除 + 旧 Domain 削除の併送。
+        // Expiry also sends host-only deletion + old Domain deletion together.
         assert_eq!(
             CookiePolicy::new(false, Some("example.com")).expire_session(AUTH_SESSION_COOKIE),
             vec![
@@ -388,7 +388,7 @@ mod tests {
 
     #[test]
     fn session_cookie_is_readable_back_by_the_same_name() {
-        // 発行 → ブラウザ → 読み出しの往復で名前が一致する（発行と読取の名前ずれ防止）。
+        // Names match in the issue -> browser -> read round trip (prevents name drift between issuing and reading).
         let issued =
             CookiePolicy::new(false, None).set_session(SSO_SESSION_COOKIE, "session-value", 600);
         let sent_back = issued[0].split(';').next().unwrap();

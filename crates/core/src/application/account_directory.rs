@@ -1,17 +1,17 @@
-//! アカウント一覧の参照ユースケース（`GET /{tenant_id}/admin/accounts`。ADR-0065）。
+//! Use case: view the account list (`GET /{tenant_id}/admin/accounts`; ADR-0065).
 //!
-//! 人とサービスアカウントを 1 つの一覧に並べる。参照専用のため監査記録は行わない
-//! （[`crate::application::member_directory`] と同じ位置づけ）。
+//! Lists people and service accounts in one list. Read-only, so nothing is audited
+//! (same standing as [`crate::application::member_directory`]).
 //!
-//! # 読める種別だけを並べる
+//! # List only the readable kinds
 //!
-//! 人を読む権限（`idp.members:read`）とサービスアカウントを読む権限（`idp.clients:read`）は別である。
-//! 一覧は**呼んだ主体が読める種別だけ**を並べる。新しい権限コード（「アカウントを読む」）は作らない
-//! ——作ると既存の 2 つとの含意をもう 1 本決め直すことになる（ADR-0065 の捨てた案 D）。
+//! The permission to read people (`idp.members:read`) differs from the one to read service accounts (`idp.clients:read`).
+//! The list shows **only the kinds the calling principal can read**. No new permission code ("read accounts") is
+//! made: that would mean redefining one more implication against the existing two (rejected option D of ADR-0065).
 //!
-//! - 種別を指定しない: 読める種別をすべて並べる。1 つも読めなければ [`AccountDirectoryError::Forbidden`]
-//! - 種別を指定する: その種別を読めなければ `Forbidden`。⚠ **黙って空にしない** ——空の一覧は
-//!   「居ない」と読まれる
+//! - No kind specified: list every readable kind. If none is readable, [`AccountDirectoryError::Forbidden`]
+//! - Kind specified: `Forbidden` if that kind is not readable. ⚠ **Never silently return empty**: an empty list
+//!   reads as "nobody there"
 
 use crate::application::member_directory::{DEFAULT_LIMIT, MAX_LIMIT};
 use crate::domain::account::{AccountFilter, AccountKind, AccountPage, ServiceAccount};
@@ -22,34 +22,34 @@ use std::sync::Arc;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum AccountDirectoryError {
-    /// 求められた種別（または、どの種別も）を読む権限が無い。
+    /// No permission to read the requested kind (or any kind).
     Forbidden,
     Internal(String),
 }
 
-/// 検索パラメータ（Presentation から受け取る素の値。`limit`/`offset` は未クランプ）。
+/// Search parameters (raw values from Presentation; `limit`/`offset` are not clamped).
 #[derive(Debug, Clone, Default)]
 pub struct AccountSearchParams {
-    /// 並べる種別。`None` は「読めるものすべて」。
+    /// Kinds to list. `None` means "everything readable".
     pub kind: Option<AccountKind>,
     pub search: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
 
-/// 検索結果。`limit` / `offset` は実際に適用した値、`kinds` は実際に並べた種別。
+/// Search result. `limit` / `offset` are the values actually applied; `kinds` are the kinds actually listed.
 #[derive(Debug)]
 pub struct AccountSearchResult {
     pub page: AccountPage,
     pub kinds: Vec<AccountKind>,
-    /// この主体が読める種別（画面が絞り込みの選択肢を出すため。`kinds` とは別 ——種別を
-    /// 指定したときも、ほかに何を選べるかは要る）。
+    /// Kinds this principal can read (so the screen can offer filter options). Separate from `kinds`:
+    /// even when a kind is specified, what else can be chosen is still needed.
     pub readable: Vec<AccountKind>,
     pub limit: i64,
     pub offset: i64,
 }
 
-/// 種別を読むのに要る権限コード。
+/// Permission code needed to read a kind.
 fn read_permission(kind: AccountKind) -> &'static str {
     match kind {
         AccountKind::User => permission::MEMBERS_READ,
@@ -57,7 +57,7 @@ fn read_permission(kind: AccountKind) -> &'static str {
     }
 }
 
-/// 保有権限から、読める種別を返す（並びは [`AccountKind::ALL`] の順）。
+/// Returns the readable kinds from the held permissions (in [`AccountKind::ALL`] order).
 pub fn readable_kinds<S: AsRef<str>>(held: &[S]) -> Vec<AccountKind> {
     AccountKind::ALL
         .into_iter()
@@ -74,9 +74,9 @@ impl AccountDirectoryService {
         Self { accounts }
     }
 
-    /// 条件に一致するアカウントを 1 ページ分返す。テナントは要求テナントに固定する。
+    /// Returns one page of accounts matching the criteria. The tenant is fixed to the requested tenant.
     ///
-    /// `held` は呼んだ主体の保有権限コード（管理トークンの `perms`。含意は未展開）。
+    /// `held` is the calling principal's held permission codes (the admin token's `perms`; implications not expanded).
     pub async fn search<S: AsRef<str>>(
         &self,
         tenant: TenantContext,
@@ -117,8 +117,8 @@ impl AccountDirectoryService {
         })
     }
 
-    /// サービスアカウント 1 件を `client_id` で引く（1 件の画面）。要求テナントのサービスアカウントで
-    /// なければ `None`（連携先・削除済み・他テナントを区別しない）。
+    /// Looks up one service account by `client_id` (single-item screen). `None` unless it is a service
+    /// account of the requested tenant (integrations, deleted ones and other tenants are not distinguished).
     pub async fn find_service_account(
         &self,
         tenant: TenantContext,
@@ -229,7 +229,10 @@ mod tests {
         )
         .await;
         assert_eq!(result.unwrap_err(), AccountDirectoryError::Forbidden);
-        assert!(seen.is_empty(), "読めない種別で DB を引かない");
+        assert!(
+            seen.is_empty(),
+            "must not query the DB for an unreadable kind"
+        );
     }
 
     #[tokio::test]

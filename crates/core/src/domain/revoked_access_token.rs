@@ -1,5 +1,5 @@
-//! RevokedAccessTokens エンティティ（F5: Token 管理 §9.4）。
-//! JWT Access Token のリボーク済み jti を記録し、/userinfo・/introspect で即時失効を実現する。
+//! RevokedAccessTokens entity (F5: token management §9.4). Records revoked jti values of JWT access
+//! tokens so /userinfo and /introspect revoke them immediately.
 #![allow(dead_code)]
 
 use chrono::{DateTime, Utc};
@@ -8,6 +8,6 @@ use chrono::{DateTime, Utc};
 pub struct RevokedAccessToken {
     pub jti: String,
     pub revoked_at: DateTime<Utc>,
-    /// 元の Access Token の exp。expires_at を過ぎたエントリは cleanup 可能。
+    /// The exp of the original access token. Entries past expires_at can be cleaned up.
     pub expires_at: DateTime<Utc>,
 }

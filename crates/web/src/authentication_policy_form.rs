@@ -1,19 +1,19 @@
-//! 認証ポリシーの条件を **HTML フォームで往復できる文字列**へ写す（AP1）。
+//! Maps authentication policy conditions to **strings that can round-trip through an HTML form** (AP1).
 //!
-//! 認証ポリシーの条件は「文字列のリスト」（対象クライアント・利用者・CIDR・`acr_values`）と
-//! 「時間帯のリスト」（曜日 × 時刻帯 × UTC オフセット）でできている。どちらも**個数が可変**で、
-//! HTML のフォームには 1 対 1 で置けない。
+//! Authentication policy conditions consist of "lists of strings" (target clients, users, CIDRs, `acr_values`) and
+//! "lists of time windows" (days of week x time range x UTC offset). Both have a **variable count**
+//! and can't be placed 1:1 in an HTML form.
 //!
-//! 個数固定の入力欄（例: 時間帯は 1 つだけ）にすると、API から 2 つ設定されたポリシーを管理画面で
-//! 開いて保存した瞬間に**もう 1 つが黙って消える**。編集画面は全項目置換で送るため、表示できない
-//! 値は保存時に失われる。そこで可変長の条件はテキスト領域に文字列として出し、**読める形のまま
-//! 往復させる**。
+//! With fixed-count inputs (e.g. only one time window), opening and saving in the admin screen a policy configured with 2 via the API
+//! would **silently drop the other one**. The edit screen submits a full replacement, so values that can't be shown
+//! are lost on save. So variable-length conditions are put in text areas as strings and **round-trip in
+//! readable form**.
 //!
-//! # 時間帯の書式
+//! # Time window format
 //!
-//! 1 行 1 帯で `曜日 開始-終了 オフセット` と書く。曜日は `sun`〜`sat` のカンマ区切り、`*` は全曜日。
-//! 時刻は `HH:MM`（終了が開始より小さい行は日をまたぐ帯）。オフセットは `+09:00` 形式で、省略時は
-//! `+00:00`（UTC）。
+//! One window per line, written as `days start-end offset`. Days are comma-separated `sun`..`sat`; `*` means all days.
+//! Times are `HH:MM` (a line whose end is earlier than its start spans midnight). The offset is `+09:00` style, defaulting to
+//! `+00:00` (UTC) when omitted.
 //!
 //! ```text
 //! mon,tue,wed,thu,fri 09:00-18:00 +09:00
@@ -22,10 +22,10 @@
 
 use assay_contracts::admin::TimeWindowPayload;
 
-/// 曜日の表記（0 = 日曜 … 6 = 土曜）。API の数値表現との唯一の対応表。
+/// Day-of-week notation (0 = Sunday ... 6 = Saturday). The only mapping to the API's numeric representation.
 const DAY_NAMES: [&str; 7] = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 
-/// 改行・カンマ区切りのテキストを値のリストへ写す（空行と前後の空白は捨てる）。
+/// Maps newline/comma-separated text to a list of values (empty lines and surrounding whitespace are dropped).
 pub fn parse_list(raw: &str) -> Vec<String> {
     raw.split(['\n', ','])
         .map(str::trim)
@@ -34,14 +34,14 @@ pub fn parse_list(raw: &str) -> Vec<String> {
         .collect()
 }
 
-/// 値のリストをテキスト領域の初期値へ戻す（1 行 1 件）。
+/// Turns a list of values back into the text area's initial value (one per line).
 pub fn format_list(values: &[String]) -> String {
     values.join("\n")
 }
 
-/// 時間帯のテキストを解析する。1 行でも読めなければ**全体を拒否**し、その行番号（1 始まり）を返す。
+/// Parses time window text. If even one line can't be read, **the whole thing is rejected** and that line number (1-based) is returned.
 ///
-/// 読めた行だけ通す作りにしない。全項目置換で保存するため、読み飛ばした行はそのまま消える。
+/// It doesn't pass just the readable lines. Saving is a full replacement, so skipped lines would simply vanish.
 pub fn parse_time_windows(raw: &str) -> Result<Vec<TimeWindowPayload>, usize> {
     let mut windows = Vec::new();
     for (index, line) in raw.lines().enumerate() {
@@ -54,7 +54,7 @@ pub fn parse_time_windows(raw: &str) -> Result<Vec<TimeWindowPayload>, usize> {
     Ok(windows)
 }
 
-/// 時間帯のリストをテキスト領域の初期値へ戻す（[`parse_time_windows`] が読み直せる形）。
+/// Turns a list of time windows back into the text area's initial value (a form [`parse_time_windows`] can re-read).
 pub fn format_time_windows(windows: &[TimeWindowPayload]) -> String {
     windows
         .iter()
@@ -73,7 +73,7 @@ fn parse_time_window(line: &str) -> Option<TimeWindowPayload> {
         Some(offset) => parse_offset(offset)?,
         None => 0,
     };
-    // 余分な語が続く行は書式違いとして弾く（黙って無視すると、書いたつもりの条件が効かない）。
+    // Lines with extra words are rejected as malformed (silently ignoring them would leave intended conditions ineffective).
     if parts.next().is_some() {
         return None;
     }
@@ -150,10 +150,10 @@ fn format_offset(minutes: i16) -> String {
     format!("{sign}{:02}:{:02}", abs / 60, abs % 60)
 }
 
-/// 方式ごとのチェックボックス（`Option<String>`）を、api へ送るコードの一覧へ写す。
+/// Maps per-method checkboxes (`Option<String>`) to the list of codes sent to the api.
 ///
-/// 並びは [`assay_contracts::admin::AUTHENTICATION_METHOD_CODES`] に従える（表示順と保存順を
-/// 揃え、更新のたびに順序だけが変わる差分を出さない）。
+/// The order follows [`assay_contracts::admin::AUTHENTICATION_METHOD_CODES`] (aligning display and save order
+/// so no diff that only changes the order appears on every update).
 pub fn selected_methods(form: &crate::dto::AdminAuthenticationPolicyForm) -> Vec<String> {
     [
         ("password", &form.method_password),
@@ -192,7 +192,7 @@ mod tests {
         assert_eq!(parsed[0].start_minute, 540);
         assert_eq!(parsed[0].end_minute, 1080);
         assert_eq!(parsed[0].utc_offset_minutes, 540);
-        // 全曜日は空リスト（API の「空 = 全曜日」と同じ表現）。
+        // All days is an empty list (same representation as the API's "empty = all days").
         assert!(parsed[1].days.is_empty());
         assert_eq!(format_time_windows(&parsed), text);
     }
@@ -211,8 +211,8 @@ mod tests {
         assert_eq!(format_time_windows(&parsed), "mon 08:00-17:00 -05:30");
     }
 
-    /// 1 行でも読めなければ全体を拒否する。読める行だけ保存すると、書いたはずの条件が
-    /// 黙って消えたまま「保存しました」と表示されてしまう。
+    /// If even one line can't be read the whole is rejected. Saving only readable lines would show "saved"
+    /// while the intended conditions silently vanished.
     #[test]
     fn one_unreadable_line_rejects_the_whole_field_with_its_line_number() {
         assert_eq!(parse_time_windows("* 09:00-18:00\nnonsense"), Err(2));

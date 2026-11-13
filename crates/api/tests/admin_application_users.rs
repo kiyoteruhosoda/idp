@@ -1,25 +1,25 @@
-//! 自分のアプリの名簿（`GET /{tenant_id}/admin/applications/self/users`。ADR-0057 / ADR-0059）。
+//! The roster of one's own app (`GET /{tenant_id}/admin/applications/self/users`; ADR-0057 / ADR-0059).
 //!
-//! ここで固定するもの:
+//! What this pins down:
 //!
-//! - ⚠ **宛先は呼んできたサービスアカウントの名乗りで決まる**。RP は経路に何も書かない
-//! - ⚠ **権限コードでは通らない**。`idp.applications:read` を持っていても、名乗りが無ければ 403
-//! - ⚠ **結び付いていない主体（利用者・名乗りの無いサービスアカウント）は 403**。空の名簿を返すと、
-//!   RP は全員を止める
-//! - ⚠ **ログイン用の名乗り（`oidc`）では通らない**（同じ `client_id` 列でも種類が違う）
-//! - 名乗りだけを持つサービスアカウント（権限コード 0 件）に**管理トークンが出る**
-//! - 他のアプリの名簿は読めない
-//! - 旧口 `/admin/applications/oidc/{client_id}/users` は無い
-//! - 「個別」の候補＝割り当てのある人。⚠ 止まっているアカウントは消えずに `blocked` で出る
-//! - ⚠ **サービスアカウントの割り当ては名簿に載らない**
-//! - 「全員」の候補＝テナントのメンバー
-//! - ⚠ **止めたアプリは「空」ではなく「全員 `blocked`」**（「引けなかった」と取り違えさせない）
-//! - ⚠ **`subs` を渡したときだけ `unknown`（消えた）が返る**。聞いた `sub` は必ず 1 行で返る
-//! - ⚠ `sub` が 1 つでも読めなければ 400（読めたものだけで答えると、綴り違いが「消えた」に化ける）
-//! - ページングは**実際に適用した値**を返す
+//! - ⚠ **The target is determined by the calling service account's identity**. The RP writes nothing in the path
+//! - ⚠ **Permission codes do not get through**. Even with `idp.applications:read`, no identity means 403
+//! - ⚠ **Unbound principals (users, service accounts without an identity) get 403**. Returning an empty roster
+//!   would make the RP block everyone
+//! - ⚠ **A login identity (`oidc`) does not get through** (same `client_id` column, different kind)
+//! - A service account with only an identity (zero permission codes) **gets an admin token**
+//! - Other apps' rosters cannot be read
+//! - The old endpoint `/admin/applications/oidc/{client_id}/users` does not exist
+//! - "Individual" candidates = people with an assignment. ⚠ Suspended accounts do not disappear; they show as `blocked`
+//! - ⚠ **Service account assignments are not in the roster**
+//! - "Everyone" candidates = the tenant's members
+//! - ⚠ **A suspended app is not "empty" but "everyone `blocked`"** (so it is not mistaken for "could not fetch")
+//! - ⚠ **`unknown` (gone) is returned only when `subs` is passed**. Every asked `sub` comes back as exactly one row
+//! - ⚠ If even one `sub` cannot be parsed, 400 (answering with only the parsed ones turns typos into "gone")
+//! - Paging returns **the values actually applied**
 //!
-//! ⚠ 一覧はテナント全体を見るので、他のテストが足した行が混ざる。件数ではなく
-//! 「自分が作った `sub` がどう出るか」で確かめる。
+//! ⚠ The list looks at the whole tenant, so rows added by other tests get mixed in. Check
+//! "how the `sub`s we created appear" rather than counts.
 
 mod support;
 
@@ -32,7 +32,7 @@ use support::{
     TestEnv,
 };
 
-/// 割り当てのモードを倒す（`open_client_as_application` は `EVERYONE` で開く）。
+/// Flips the assignment mode (`open_client_as_application` opens with `EVERYONE`).
 async fn set_mode(pool: &MySqlPool, application_id: &str, mode: &str) {
     sqlx::query("UPDATE applications SET assignment_mode = ? WHERE id = ?")
         .bind(mode)
@@ -80,7 +80,7 @@ async fn sub_of(pool: &MySqlPool, user_id: &str) -> String {
         .expect("the user must exist")
 }
 
-/// 応答から `sub` の状態を引く。載っていなければ `None`。
+/// Looks up the state of a `sub` in the response. `None` if absent.
 fn state_of(body: &Value, sub: &str) -> Option<String> {
     body["users"]
         .as_array()
@@ -103,7 +103,7 @@ async fn client_row_id(pool: &MySqlPool, tenant_id: &str, client_id: &str) -> St
         .expect("the client must exist")
 }
 
-/// 名乗りを直接足す（`kind` を試験で自由に選ぶため、管理 API を通さない）。
+/// Adds an identity directly (bypasses the admin API so the test can pick `kind` freely).
 async fn bind(pool: &MySqlPool, application_id: &str, kind: &str, client_row_id: &str) {
     sqlx::query(
         "INSERT INTO application_bindings (id, application_id, kind, client_id) VALUES (?, ?, ?, ?)",
@@ -126,7 +126,7 @@ async fn grant(pool: &MySqlPool, client_row_id: &str, code: &str) {
         .expect("grant permission");
 }
 
-/// 管理トークンを取る（取れることを前提にする）。
+/// Gets an admin token (assumes it can be obtained).
 async fn management_token(env: &TestEnv, client_id: &str, secret: &str) -> String {
     let res = request_management_token(
         &env.app,
@@ -147,7 +147,7 @@ async fn management_token(env: &TestEnv, client_id: &str, secret: &str) -> Strin
         .to_string()
 }
 
-/// アプリを 1 件開き、そのサービスアカウントの名乗りを付けて `(application_id, 管理トークン)` を返す。
+/// Opens one app, binds the identity of its service account and returns `(application_id, admin token)`.
 async fn application_with_service_account(env: &TestEnv) -> (String, String) {
     let (login_client, _) =
         insert_confidential_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
@@ -160,8 +160,8 @@ async fn application_with_service_account(env: &TestEnv) -> (String, String) {
     (application_id, token)
 }
 
-/// 名乗りだけを持つサービスアカウント（権限コード 0 件）に管理トークンが出て、自分のアプリの名簿が
-/// 読める。⚠ **定期照合は人が回すものではない**。
+/// A service account with only an identity (zero permission codes) gets an admin token and can read its
+/// own app's roster. ⚠ **Periodic reconciliation is not something a person runs**.
 #[tokio::test]
 async fn a_bound_service_account_reads_its_own_roster_without_any_permission() {
     let Some(env) = support::setup("application users self").await else {
@@ -178,7 +178,7 @@ async fn a_bound_service_account_reads_its_own_roster_without_any_permission() {
     let body = body_json(res).await;
     assert_eq!(state_of(&body, &sub).as_deref(), Some("allowed"));
 
-    // 権限コードは増えていない ——他の管理 API は 403 のまま。
+    // Permission codes have not increased — other admin APIs stay 403.
     let res = send(
         &env.app,
         get(
@@ -194,7 +194,7 @@ async fn a_bound_service_account_reads_its_own_roster_without_any_permission() {
     );
 }
 
-/// ⚠ 他のアプリの名簿は読めない（宛先を選ぶ手段がそもそも無い）。
+/// ⚠ Other apps' rosters cannot be read (there is no way to choose the target at all).
 #[tokio::test]
 async fn a_service_account_does_not_see_another_applications_roster() {
     let Some(env) = support::setup("application users other app").await else {
@@ -223,8 +223,8 @@ async fn a_service_account_does_not_see_another_applications_roster() {
     assert_eq!(body["total"], 0, "my application has nobody assigned");
 }
 
-/// ⚠ **結び付いていない主体は 403**（空の名簿を返さない）。テナント全体の
-/// `idp.applications:read` を持っていても通らない。
+/// ⚠ **Unbound principals get 403** (no empty roster). Tenant-wide `idp.applications:read`
+/// does not get through either.
 #[tokio::test]
 async fn callers_without_an_own_application_are_refused() {
     let Some(env) = support::setup("application users refused").await else {
@@ -235,12 +235,12 @@ async fn callers_without_an_own_application_are_refused() {
     let res = send(&env.app, anonymous(Method::GET, &uri, None)).await;
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "no token -> 401");
 
-    // 利用者（テナント管理者であっても）には自分のアプリが無い。
+    // A user (even a tenant admin) has no app of their own.
     let admin = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let res = send(&env.app, get(&admin, &uri)).await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "a user -> 403");
 
-    // 名乗りの無いサービスアカウント。権限コードがあってもトークンが取れるだけで、名簿は読めない。
+    // A service account without an identity. Permission codes only get it a token; the roster stays unreadable.
     let (unbound, secret) = insert_service_account(&env.pool, &env.root_tenant_id).await;
     let row_id = client_row_id(&env.pool, &env.root_tenant_id, &unbound).await;
     grant(&env.pool, &row_id, "idp.applications:read").await;
@@ -258,8 +258,8 @@ async fn callers_without_an_own_application_are_refused() {
     );
 }
 
-/// ⚠ **ログイン用の名乗りでは通らない。** ログイン用とサービスアカウントは同じ `client_id` 列を
-/// 使うので、種類を見ないと取り違える。
+/// ⚠ **A login identity does not get through.** Login clients and service accounts use the same `client_id`
+/// column, so without checking the kind they get mixed up.
 #[tokio::test]
 async fn a_login_binding_does_not_count_as_a_service_account_binding() {
     let Some(env) = support::setup("application users kind").await else {
@@ -271,7 +271,7 @@ async fn a_login_binding_does_not_count_as_a_service_account_binding() {
         open_client_as_application(&env.pool, &env.root_tenant_id, &login_client).await;
     let (service_account, secret) = insert_service_account(&env.pool, &env.root_tenant_id).await;
     let row_id = client_row_id(&env.pool, &env.root_tenant_id, &service_account).await;
-    // わざと種類を取り違えて結び付ける。
+    // Deliberately bind with the wrong kind.
     bind(&env.pool, &application_id, "oidc", &row_id).await;
 
     let res = request_management_token(
@@ -294,7 +294,7 @@ async fn a_login_binding_does_not_count_as_a_service_account_binding() {
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
 }
 
-/// 旧口（RP が `client_id` を経路に書く形）は無い。
+/// The old endpoint (where the RP writes `client_id` in the path) does not exist.
 #[tokio::test]
 async fn the_old_client_id_route_is_gone() {
     let Some(env) = support::setup("application users old route").await else {
@@ -316,8 +316,8 @@ async fn the_old_client_id_route_is_gone() {
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
 }
 
-/// 「個別」の候補は割り当てのある人。⚠ 止まっているアカウントは**消えずに `blocked`** で出る
-/// （RP は「止まった＝戻る可能性がある」と「消えた」を分けて扱う）。
+/// "Individual" candidates are people with an assignment. ⚠ Suspended accounts **do not disappear; they show as `blocked`**
+/// (the RP treats "suspended = may come back" differently from "gone").
 #[tokio::test]
 async fn individual_mode_lists_the_assigned_and_marks_stopped_accounts() {
     let Some(env) = support::setup("application users individual").await else {
@@ -346,16 +346,16 @@ async fn individual_mode_lists_the_assigned_and_marks_stopped_accounts() {
     assert_eq!(
         state_of(&body, &stopped_sub).as_deref(),
         Some("blocked"),
-        "止まっている人は名簿から消えず blocked で出る"
+        "a suspended person stays in the roster as blocked"
     );
     assert_eq!(
         state_of(&body, &outsider_sub),
         None,
-        "割り当ての無い人は候補に入らない"
+        "a person without an assignment is not a candidate"
     );
-    assert_eq!(body["total"], 2, "候補は割り当ての件数");
+    assert_eq!(body["total"], 2, "candidates = number of assignments");
 
-    // 聞けば、候補に居ない人の消息まで分かる。
+    // Asking also reveals the fate of people who are not candidates.
     let gone = uuid::Uuid::now_v7().to_string();
     let res = send(
         &env.app,
@@ -367,23 +367,26 @@ async fn individual_mode_lists_the_assigned_and_marks_stopped_accounts() {
     .await;
     assert_eq!(res.status(), StatusCode::OK);
     let body = body_json(res).await;
-    assert_eq!(body["total"], 4, "聞いた sub は必ず 1 行で返る");
+    assert_eq!(
+        body["total"], 4,
+        "every asked sub comes back as exactly one row"
+    );
     assert_eq!(state_of(&body, &assigned_sub).as_deref(), Some("allowed"));
     assert_eq!(state_of(&body, &stopped_sub).as_deref(), Some("blocked"));
     assert_eq!(
         state_of(&body, &outsider_sub).as_deref(),
         Some("blocked"),
-        "居るが使えない（⚠ 結び付きは残す側）"
+        "present but not allowed (⚠ the side that keeps the link)"
     );
     assert_eq!(
         state_of(&body, &gone).as_deref(),
         Some("unknown"),
-        "assay に居ない＝消えた（結び付きごと落としてよい）"
+        "not in assay = gone (the link may be dropped)"
     );
 }
 
-/// ⚠ **名簿に載るのは人だけ**（ADR-0059 の決定 5）。サービスアカウントの割り当ては候補にも件数にも
-/// 入らない ——RP はローカル口座と突き合わせるので、口座の無い相手が混ざると照合が崩れる。
+/// ⚠ **Only people are in the roster** (ADR-0059 decision 5). Service account assignments count neither as
+/// candidates nor in totals — the RP matches against local accounts, so counterparts without one break matching.
 #[tokio::test]
 async fn service_account_assignments_are_not_part_of_the_roster() {
     let Some(env) = support::setup("application users no service accounts").await else {
@@ -421,13 +424,13 @@ async fn service_account_assignments_are_not_part_of_the_roster() {
     assert_eq!(body["users"].as_array().unwrap().len(), 1);
 }
 
-/// 「全員」の候補はテナントのメンバー。⚠ **返る形は「個別」と同じ**（RP はモードを知らない）。
+/// "Everyone" candidates are the tenant's members. ⚠ **The shape is the same as "Individual"** (the RP does not know the mode).
 #[tokio::test]
 async fn everyone_mode_lists_the_tenant_members() {
     let Some(env) = support::setup("application users everyone").await else {
         return;
     };
-    // `open_client_as_application` は `EVERYONE` で開く。
+    // `open_client_as_application` opens with `EVERYONE`.
     let (_, token) = application_with_service_account(&env).await;
     let member = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let member_sub = sub_of(&env.pool, &member).await;
@@ -445,12 +448,12 @@ async fn everyone_mode_lists_the_tenant_members() {
     assert_eq!(
         state_of(&body, &member_sub).as_deref(),
         Some("allowed"),
-        "割り当てが無くても、テナントのメンバーなら使ってよい"
+        "a tenant member may use it even without an assignment"
     );
 }
 
-/// ⚠ 止めたアプリは**空にならない**。全員が `blocked` で返る
-/// ——空を返すと、RP は「引けなかった」と区別できない。
+/// ⚠ A suspended app **does not become empty**. Everyone comes back as `blocked`
+/// — returning empty would leave the RP unable to tell it from "could not fetch".
 #[tokio::test]
 async fn a_disabled_application_blocks_everyone_without_emptying_the_roster() {
     let Some(env) = support::setup("application users disabled app").await else {
@@ -466,12 +469,12 @@ async fn a_disabled_application_blocks_everyone_without_emptying_the_roster() {
     let res = send(&env.app, get(&token, &roster_uri(&env.root_tenant_id))).await;
     assert_eq!(res.status(), StatusCode::OK);
     let body = body_json(res).await;
-    assert_eq!(body["total"], 1, "候補は消えない");
+    assert_eq!(body["total"], 1, "candidates do not disappear");
     assert_eq!(state_of(&body, &sub).as_deref(), Some("blocked"));
 }
 
-/// ⚠ 読めたものだけで答えない。綴りを 1 文字間違えた `sub` が黙って「消えた」に化けると、
-/// RP はその人の結び付きを落とす。
+/// ⚠ Do not answer with only what parsed. If a `sub` with a one-character typo silently became "gone",
+/// the RP would drop that person's link.
 #[tokio::test]
 async fn an_unreadable_sub_is_refused() {
     let Some(env) = support::setup("application users bad sub").await else {
@@ -499,11 +502,11 @@ async fn an_unreadable_sub_is_refused() {
     assert_eq!(
         res.status(),
         StatusCode::BAD_REQUEST,
-        "一度に聞ける sub には上限がある"
+        "there is a cap on how many subs can be asked at once"
     );
 }
 
-/// ページングは**要求値ではなく適用値**を返す（他の一覧と同じ）。
+/// Paging returns **the applied values, not the requested ones** (same as other lists).
 #[tokio::test]
 async fn paging_reports_the_values_it_actually_applied() {
     let Some(env) = support::setup("application users paging").await else {
@@ -519,13 +522,13 @@ async fn paging_reports_the_values_it_actually_applied() {
 
     let body = body_json(send(&env.app, get(&token, &format!("{uri}?limit=2"))).await).await;
     assert_eq!(body["users"].as_array().unwrap().len(), 2);
-    assert_eq!(body["total"], 3, "総件数はページに左右されない");
+    assert_eq!(body["total"], 3, "the total does not depend on the page");
     assert_eq!(body["limit"], 2);
 
     let body = body_json(send(&env.app, get(&token, &format!("{uri}?limit=100000"))).await).await;
-    assert_eq!(body["limit"], 200, "上限で丸めた値を返す");
+    assert_eq!(body["limit"], 200, "returns the value clamped to the cap");
 
-    // ページを跨いで重複・欠落が無い（並びは `sub` 昇順で安定）。
+    // No duplicates or gaps across pages (order is stable by ascending `sub`).
     let first =
         body_json(send(&env.app, get(&token, &format!("{uri}?limit=2&offset=0"))).await).await;
     let second =
@@ -541,5 +544,5 @@ async fn paging_reports_the_values_it_actually_applied() {
     subs.sort();
     subs.dedup();
     assert_eq!(before, 3);
-    assert_eq!(subs.len(), 3, "ページ間で重複しない");
+    assert_eq!(subs.len(), 3, "no duplicates across pages");
 }

@@ -1,13 +1,13 @@
-//! アカウント一覧（人とサービスアカウント。読み取りモデル）の sqlx 実装（`AccountQuery`。ADR-0065）。
+//! sqlx implementation of the account list (people and service accounts; a read model) (`AccountQuery`, ADR-0065).
 //!
-//! 2 種類を `UNION ALL` した 1 クエリで、絞り込み・並び替え・ページングまで DB 側で行う。片方ずつ
-//! 引いて web で混ぜると、総件数もページの境目も合わない。
+//! One query `UNION ALL`-ing the 2 kinds, with filtering, sorting and paging all done in the DB. Fetching each side
+//! separately and merging in web would get neither the total count nor the page boundaries right.
 //!
-//! 2 つの枝は**同じ列を同じ順に同じ名前で**出す（`UNION` の列名は最初の枝から付くので、どちらの枝が
-//! 先に来ても読めるよう、両方の枝で名前を付ける）。その種別に無い列は `NULL`。
+//! The 2 branches output **the same columns in the same order under the same names** (`UNION` takes column names from the first
+//! branch, so both branches name them so it reads correctly whichever comes first). Columns a kind lacks are `NULL`.
 //!
-//! 人の側の `FROM … WHERE …`（絞り込みの規則）はメンバー一覧と共有する
-//! （[`super::tenant_member_query::push_member_source`]）。
+//! The people side's `FROM … WHERE …` (filtering rules) is shared with the member list
+//! ([`super::tenant_member_query::push_member_source`]).
 
 use super::tenant_member_query::{escape_like, map_note, map_row, push_member_source};
 use crate::domain::account::{
@@ -42,7 +42,7 @@ fn parse_uuid(raw: &str) -> Result<Uuid> {
     Uuid::parse_str(raw).map_err(|e| DomainError::Repository(format!("invalid UUID `{raw}`: {e}")))
 }
 
-/// 人の枝の列。見出し（`sort_key`）は一覧の見出しと同じ規則（メール → ユーザー名）。
+/// Columns of the people branch. The heading (`sort_key`) follows the same rule as the list heading (email -> username).
 const USER_COLUMNS: &str = "'USER' AS kind, \
      COALESCE(u.email, (SELECT p.display_value FROM user_login_identifiers p \
         WHERE p.primary_of_user = u.id), '') AS sort_key, \
@@ -58,7 +58,7 @@ const USER_COLUMNS: &str = "'USER' AS kind, \
      NULL AS client_created_at, NULL AS identity_application_id, NULL AS identity_display_name, \
      n.note AS note, n.updated_at AS note_updated_at, n.updated_by AS note_updated_by";
 
-/// サービスアカウントの枝の列。見出しは登録名。
+/// Columns of the service account branch. The heading is the registered name.
 const SERVICE_ACCOUNT_COLUMNS: &str = "'SERVICE_ACCOUNT' AS kind, \
      c.app_name AS sort_key, \
      c.id AS account_id, \
@@ -72,10 +72,10 @@ const SERVICE_ACCOUNT_COLUMNS: &str = "'SERVICE_ACCOUNT' AS kind, \
      a.display_name AS identity_display_name, \
      n.note AS note, n.updated_at AS note_updated_at, n.updated_by AS note_updated_by";
 
-/// サービスアカウントの `FROM … WHERE …`。
+/// `FROM … WHERE …` for service accounts.
 ///
-/// サービスアカウントの定義は [`crate::domain::client::Client::is_service_account`] と同じ
-/// （confidential・`client_credentials` あり・`authorization_code` なし）。論理削除（ADR-0035）は並べない。
+/// The definition of a service account is the same as [`crate::domain::client::Client::is_service_account`]
+/// (confidential, has `client_credentials`, no `authorization_code`). Logically deleted ones (ADR-0035) are not listed.
 fn push_service_account_source(
     builder: &mut QueryBuilder<MySql>,
     tenant_id: String,
@@ -100,14 +100,14 @@ fn push_service_account_source(
         builder.push_bind(pattern.clone());
         builder.push(" ESCAPE '!' OR c.client_id LIKE ");
         builder.push_bind(pattern.clone());
-        // メモも探す（人の側と同じ。ADR-0065）。
+        // Notes are searched too (same as the people side; ADR-0065).
         builder.push(" ESCAPE '!' OR n.note LIKE ");
         builder.push_bind(pattern);
         builder.push(" ESCAPE '!')");
     }
 }
 
-/// 種別ごとの枝を `UNION ALL` で繋ぐ。`rows` が偽なら件数用（`SELECT 1`）。
+/// Joins the per-kind branches with `UNION ALL`. If `rows` is false, it is for counting (`SELECT 1`).
 fn push_union(builder: &mut QueryBuilder<MySql>, filter: &AccountFilter, rows: bool) {
     for (i, kind) in filter.kinds.iter().enumerate() {
         if i > 0 {
@@ -175,7 +175,7 @@ fn map_account(row: &MySqlRow) -> Result<Account> {
 impl AccountQuery for SqlxAccountQuery {
     async fn search(&self, filter: &AccountFilter) -> Result<AccountPage> {
         if filter.kinds.is_empty() {
-            // 呼び出し側が 403 にする約束。ここへ来たら配線ミスで、空の UNION は SQL として成り立たない。
+            // The caller promises to return 403. Reaching here is a wiring bug, and an empty UNION is not valid SQL.
             return Err(DomainError::Repository(
                 "account search needs at least one kind".to_string(),
             ));
@@ -193,7 +193,7 @@ impl AccountQuery for SqlxAccountQuery {
 
         let mut page = QueryBuilder::<MySql>::new("SELECT * FROM (");
         push_union(&mut page, filter, true);
-        // 並びはページ間で安定していなければならない（重複・欠落を防ぐ）。見出しが同じ行は種別・ID で決める。
+        // The order must be stable across pages (prevents duplicates/gaps). Rows with the same heading are ordered by kind and ID.
         page.push(") AS accounts ORDER BY sort_key ASC, kind ASC, account_id ASC LIMIT ");
         page.push_bind(filter.limit);
         page.push(" OFFSET ");

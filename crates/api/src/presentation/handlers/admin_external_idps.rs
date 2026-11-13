@@ -1,11 +1,11 @@
-//! 外部 IdP 設定の管理 API（`/{tenant_id}/admin/external-idps`。AP10）。
+//! External IdP settings management API (`/{tenant_id}/admin/external-idps`, AP10).
 //!
-//! テナント管理者が、テナントで使える外部 IdP（OpenID Provider・SAML IdP）を登録・更新・削除する。
-//! 一覧は `idp.external-idps:read`、登録・更新・削除とメタデータ・discovery の取り込みは
-//! `idp.external-idps:write` が要る（`RequirePerms<ExternalIdpsRead>` / `<ExternalIdpsWrite>`。
-//! `idp.tenant.admin` は両方を含意する）。
-//! クライアントシークレットは**書き込み専用**で、応答には含めない（保存は暗号化。復号するのは
-//! 外部 IdP へトークン要求を出す瞬間だけ）。
+//! Tenant admins register, update and delete the external IdPs (OpenID Providers, SAML IdPs) usable in the tenant.
+//! Listing needs `idp.external-idps:read`; register/update/delete and importing metadata/discovery need
+//! `idp.external-idps:write` (`RequirePerms<ExternalIdpsRead>` / `<ExternalIdpsWrite>`;
+//! `idp.tenant.admin` implies both).
+//! Client secrets are **write-only** and never included in responses (stored encrypted; decrypted only
+//! at the moment a token request is sent to the external IdP).
 
 use crate::application::external_idp_discovery::DiscoveryImportError;
 use crate::application::external_idp_management::{
@@ -27,34 +27,34 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-/// 外部 IdP の公開表現（`client_secret` は返さない）。
+/// Public representation of an external IdP (`client_secret` is not returned).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ExternalIdpResponse {
     pub id: String,
     pub provider_code: String,
     pub display_name: String,
     pub issuer: String,
-    /// `oidc` / `saml`（ADR-0027）。以降の項目はプロトコルによって使う・使わないが分かれる。
+    /// `oidc` / `saml` (ADR-0027). Which of the following fields are used depends on the protocol.
     pub protocol: String,
-    /// OIDC のみ。
+    /// OIDC only.
     pub authorization_endpoint: Option<String>,
     pub token_endpoint: Option<String>,
     pub jwks_uri: Option<String>,
     pub client_id: Option<String>,
-    /// OIDC のみ。シークレットを設定済みか（値は返さない）。
+    /// OIDC only. Whether a secret is set (the value is not returned).
     pub has_client_secret: bool,
     pub scopes: Vec<String>,
-    /// SAML のみ。IdP の `SingleSignOnService` URL。
+    /// SAML only. The IdP's `SingleSignOnService` URL.
     pub saml_sso_url: Option<String>,
-    /// SAML のみ。署名検証に使う証明書（base64 DER）。秘密ではないので返す。
+    /// SAML only. Certificates used for signature verification (base64 DER). Not secret, so returned.
     pub saml_certificates: Vec<String>,
     pub saml_name_id_format: Option<String>,
-    /// SAML のみ。外部 IdP へ登録すべき assay の entityID と ACS URL。
+    /// SAML only. assay's entityID and ACS URL to register with the external IdP.
     pub saml_sp_entity_id: Option<String>,
     pub saml_acs_url: Option<String>,
     pub enabled: bool,
     pub allow_auto_link: bool,
-    /// 外部 IdP へ登録すべきコールバック URL（設定作業の手掛かりとして返す）。
+    /// Callback URL to register with the external IdP (returned as a hint for the setup work).
     pub redirect_uri: String,
     pub created_at: String,
     pub updated_at: String,
@@ -65,10 +65,10 @@ pub struct ExternalIdpRegisterRequest {
     pub provider_code: String,
     pub display_name: String,
     pub issuer: String,
-    /// `oidc`（既定）/ `saml`。
+    /// `oidc` (default) / `saml`.
     #[serde(default = "default_protocol")]
     pub protocol: String,
-    /// OIDC のとき必須。
+    /// Required for OIDC.
     #[serde(default)]
     pub authorization_endpoint: Option<String>,
     #[serde(default)]
@@ -77,13 +77,13 @@ pub struct ExternalIdpRegisterRequest {
     pub jwks_uri: Option<String>,
     #[serde(default)]
     pub client_id: Option<String>,
-    /// 平文のクライアントシークレット（public クライアントとして登録するなら省略）。
+    /// Plaintext client secret (omit when registering as a public client).
     #[serde(default)]
     pub client_secret: Option<String>,
-    /// 省略時は `openid profile email`。
+    /// `openid profile email` when omitted.
     #[serde(default)]
     pub scopes: Option<Vec<String>>,
-    /// SAML のとき必須。
+    /// Required for SAML.
     #[serde(default)]
     pub saml_sso_url: Option<String>,
     #[serde(default)]
@@ -92,7 +92,7 @@ pub struct ExternalIdpRegisterRequest {
     pub saml_name_id_format: Option<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// 検証済みメール一致で既存利用者へ自動連携するか（既定 false）。
+    /// Whether to auto-link to an existing user on a verified email match (default false).
     #[serde(default)]
     pub allow_auto_link: bool,
 }
@@ -105,8 +105,8 @@ fn default_protocol() -> String {
     "oidc".to_string()
 }
 
-/// 入力からプロトコル固有の設定を組み立てる。**片方のプロトコルの項目だけ**を読む——
-/// 両方読めるようにすると、OIDC の設定に SAML の欄が混ざった半端な登録ができてしまう。
+/// Builds the protocol-specific settings from the input. Reads **only one protocol's fields** --
+/// reading both would allow half-baked registrations with SAML fields mixed into OIDC settings.
 #[allow(clippy::too_many_arguments)]
 fn config_command(
     protocol: &str,
@@ -142,14 +142,14 @@ fn config_command(
     }
 }
 
-/// 部分更新。指定した項目のみ更新する。`client_secret` を空文字にすると削除（public 化）。
+/// Partial update. Only the given fields are updated. Setting `client_secret` to an empty string deletes it (becomes public).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ExternalIdpUpdateRequest {
     #[serde(default)]
     pub display_name: Option<String>,
     #[serde(default)]
     pub issuer: Option<String>,
-    /// プロトコル固有の設定を差し替えるときだけ指定する（プロトコルそのものは変更できない）。
+    /// Given only when replacing the protocol-specific settings (the protocol itself cannot be changed).
     #[serde(default)]
     pub protocol: Option<String>,
     #[serde(default)]
@@ -176,7 +176,7 @@ pub struct ExternalIdpUpdateRequest {
     pub allow_auto_link: Option<bool>,
 }
 
-/// 外部 IdP を一覧する。
+/// Lists external IdPs.
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/external-idps",
@@ -206,7 +206,7 @@ pub async fn list_external_idps(
     ))
 }
 
-/// 外部 IdP を登録する。
+/// Registers an external IdP.
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/external-idps",
@@ -265,7 +265,7 @@ pub async fn register_external_idp(
     Ok((StatusCode::CREATED, Json(response(&state, &provider))))
 }
 
-/// 外部 IdP を部分更新する。
+/// Partially updates an external IdP.
 #[utoipa::path(
     patch,
     path = "/{tenant_id}/admin/external-idps/{id}",
@@ -296,13 +296,13 @@ pub async fn update_external_idp(
         state.config.trust_forwarded_headers(),
     );
     let id = Uuid::parse_str(&id).map_err(|_| ApiError::NotFound("not found".to_string()))?;
-    // 空文字は「シークレットを外す」意図として扱う（未指定＝維持と区別する）。
+    // An empty string means the intent "remove the secret" (distinguished from unspecified = keep).
     let client_secret = body.client_secret.map(|s| {
         let trimmed = s.trim().to_string();
         (!trimmed.is_empty()).then_some(trimmed)
     });
-    // プロトコル固有の設定は**まとめて**差し替える（`protocol` を指定したときだけ）。項目ごとの
-    // 部分更新にすると、中途半端な組み合わせを作れてしまう。
+    // Protocol-specific settings are replaced **as a whole** (only when `protocol` is given). Per-field
+    // partial updates would allow half-baked combinations.
     let config = match body.protocol.as_deref() {
         Some(protocol) => Some(config_command(
             protocol,
@@ -339,15 +339,15 @@ pub async fn update_external_idp(
     Ok(Json(response(&state, &provider)))
 }
 
-/// 外部 IdP のメタデータ XML を解析し、登録フォームの初期値を返す（AP12）。データは永続化しない。
+/// Parses an external IdP's metadata XML and returns initial values for the registration form (AP12). Nothing is persisted.
 ///
-/// entityID・SSO URL・署名証明書の貼り付けは、管理者が IdP のメタデータから 1 項目ずつ写す作業に
-/// なりやすい。証明書は base64 が数行続くため、写し間違えても**利用者のログイン時**まで表に出ない。
+/// Pasting the entityID, SSO URL and signing certificate tends to become admins copying them one by one from the IdP's metadata.
+/// Certificates span several lines of base64, so a copy mistake doesn't surface until **a user signs in**.
 ///
-/// 入出力は api 側の `utoipa` 付き DTO（[`SamlIdpMetadataImportRequest`] /
-/// [`SamlIdpMetadataImportResponse`]）で受け渡す（discovery 取り込みと同じ作り。task #124）。web が使う
-/// `assay_contracts::admin` の DTO（`assay_contracts` は `utoipa` を持たない）と形が食い違うと取り込みが
-/// 静かに壊れるため、食い違いはテスト（`saml_metadata_import_contract_matches_the_api_dto`）が落とす。
+/// Input/output use api-side DTOs with `utoipa` ([`SamlIdpMetadataImportRequest`] /
+/// [`SamlIdpMetadataImportResponse`]) (same design as the discovery import, task #124). If their shape diverges from
+/// the `assay_contracts::admin` DTOs web uses (`assay_contracts` has no `utoipa`), the import silently
+/// breaks, so a test (`saml_metadata_import_contract_matches_the_api_dto`) catches any divergence.
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/external-idps/import-metadata",
@@ -367,9 +367,9 @@ pub async fn import_external_idp_metadata(
     Extension(_tenant): Extension<ResolvedTenant>,
     Json(body): Json<SamlIdpMetadataImportRequest>,
 ) -> Result<Json<SamlIdpMetadataImportResponse>, ApiError> {
-    // 解析の失敗理由（entityID が無い・SSO が無い等）はそのまま返す。管理者向けの検証メッセージ
-    // なので翻訳しない（CLAUDE.md「翻訳の対象外」）。取り違え——SP のメタデータを貼った——を
-    // 「IdP の SingleSignOnService が無い」と言えるかどうかで、気づけるかが変わる。
+    // Parse failure reasons (no entityID, no SSO, etc.) are returned as is. They are validation messages for admins,
+    // so not translated (CLAUDE.md "翻訳の対象外"). Whether a mix-up -- pasting the SP's metadata -- can be
+    // reported as "the IdP has no SingleSignOnService" decides whether it gets noticed.
     let parsed =
         parse_idp_metadata(&body.metadata_xml).map_err(|e| ApiError::BadRequest(e.to_string()))?;
     Ok(Json(SamlIdpMetadataImportResponse {
@@ -381,55 +381,55 @@ pub async fn import_external_idp_metadata(
     }))
 }
 
-/// SAML IdP メタデータ取り込みの要求（web が使う `assay_contracts::admin::SamlMetadataImportRequest`
-/// と同じ形）。
+/// SAML IdP metadata import request (same shape as `assay_contracts::admin::SamlMetadataImportRequest`
+/// used by web).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SamlIdpMetadataImportRequest {
-    /// SAML メタデータ XML（IdP の `EntityDescriptor`）。
+    /// SAML metadata XML (the IdP's `EntityDescriptor`).
     pub metadata_xml: String,
 }
 
-/// SAML IdP メタデータ取り込みの応答（登録フォームの初期値。**登録はしていない**。web が使う
-/// `assay_contracts::admin::SamlIdpMetadataImportResponse` と同じ形）。
+/// SAML IdP metadata import response (initial values for the registration form; **nothing is registered**. Same shape as
+/// `assay_contracts::admin::SamlIdpMetadataImportResponse` used by web).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SamlIdpMetadataImportResponse {
-    /// メタデータの表示名（無ければ空文字）。
+    /// Display name from the metadata (empty string if none).
     pub display_name: String,
-    /// IdP の entityID。登録時の `issuer`（アサーションの `<Issuer>` と完全一致で照合する値）になる。
+    /// The IdP's entityID. Becomes `issuer` on registration (the value matched exactly against the assertion's `<Issuer>`).
     pub entity_id: String,
-    /// IdP の `SingleSignOnService` URL。登録時の `saml_sso_url` になる。
+    /// The IdP's `SingleSignOnService` URL. Becomes `saml_sso_url` on registration.
     pub sso_url: String,
-    /// 署名検証に使う証明書（base64 DER）。**複数返る**（証明書更新期間は新旧 2 枚が同時に有効）。
+    /// Certificates used for signature verification (base64 DER). **May be several** (old and new are both valid during rollover).
     pub certificates: Vec<String>,
-    /// NameID フォーマット（無ければ空文字）。
+    /// NameID format (empty string if none).
     pub name_id_format: String,
 }
 
-/// discovery 取り込みの要求。
+/// Discovery import request.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct OidcDiscoveryImportRequest {
-    /// 外部 IdP の issuer（https。`{issuer}/.well-known/openid-configuration` を読む）。
+    /// The external IdP's issuer (https; `{issuer}/.well-known/openid-configuration` is read).
     pub issuer: String,
 }
 
-/// discovery 取り込みの応答（登録フォームの初期値。**登録はしていない**）。
+/// Discovery import response (initial values for the registration form; **nothing is registered**).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct OidcDiscoveryImportResponse {
-    /// 文書の `issuer`（入力と完全一致したもの）。登録時の `issuer` になる。
+    /// The document's `issuer` (exactly matching the input). Becomes `issuer` on registration.
     pub issuer: String,
     pub authorization_endpoint: String,
     pub token_endpoint: String,
     pub jwks_uri: String,
 }
 
-/// 外部 OIDC IdP の discovery ドキュメントを読み、登録フォームの初期値を返す（task #77）。
-/// **データは永続化しない**（SAML の IdP メタデータ取り込みと同じく、管理者が値を確かめてから登録する）。
+/// Reads an external OIDC IdP's discovery document and returns initial values for the registration form (task #77).
+/// **Nothing is persisted** (like the SAML IdP metadata import, admins check the values before registering).
 ///
-/// SAML の取り込みと違い、api が管理者の入れた issuer へ HTTP を出す。そのため取りに行く前に
-/// 登録時と同じ宛先の検査（https のみ・内部宛先を拒否。ADR-0023 決定 5）を通し、取得は
-/// リダイレクトを追わず、タイムアウトと大きさの上限を持つ。文書の `issuer` が入力と一致しなければ
-/// 断る（OIDC Discovery §4.3）。権限は登録と同じ `idp.external-idps:write`（登録の前段の管理操作であり、
-/// 外へ HTTP を出させる操作でもある）。
+/// Unlike the SAML import, the api sends HTTP to the issuer the admin entered. So before fetching it runs
+/// the same destination check as registration (https only, internal destinations rejected, ADR-0023 decision 5), and the fetch
+/// doesn't follow redirects and has timeout and size limits. If the document's `issuer` doesn't match the input,
+/// it is rejected (OIDC Discovery §4.3). The permission is the same `idp.external-idps:write` as registration (an admin operation
+/// preceding registration, and also one that makes us send HTTP outward).
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/external-idps/import-discovery",
@@ -449,8 +449,8 @@ pub async fn import_external_idp_discovery(
     Extension(_tenant): Extension<ResolvedTenant>,
     Json(body): Json<OidcDiscoveryImportRequest>,
 ) -> Result<Json<OidcDiscoveryImportResponse>, ApiError> {
-    // 失敗理由は管理者向けの検証メッセージなので翻訳しない（CLAUDE.md「翻訳の対象外」。SAML の
-    // 取り込みと同じ）。接続段の詳細（届かない理由）は取得の実装が運用ログにだけ残す。
+    // Failure reasons are validation messages for admins, so not translated (CLAUDE.md "翻訳の対象外"; same as the SAML
+    // import). Connection-level details (why it was unreachable) are left only in the ops log by the fetch implementation.
     let imported = state
         .external_idp_discovery
         .import(&body.issuer)
@@ -468,7 +468,7 @@ pub async fn import_external_idp_discovery(
     }))
 }
 
-/// 外部 IdP を削除する（連携済みの利用者の対応行も FK CASCADE で消える）。
+/// Deletes an external IdP (the linked users' mapping rows are deleted by FK CASCADE too).
 #[utoipa::path(
     delete,
     path = "/{tenant_id}/admin/external-idps/{id}",
@@ -531,8 +531,8 @@ fn response(state: &AppState, p: &ExternalIdentityProvider) -> ExternalIdpRespon
             .map(|s| s.certificates.clone())
             .unwrap_or_default(),
         saml_name_id_format: p.config.as_saml().map(|s| s.name_id_format.clone()),
-        // SAML の設定作業に要る値（外部 IdP 側へ登録してもらう）。組み立て規則を管理者に
-        // 推測させない。
+        // Values needed for SAML setup (to have registered on the external IdP side). Don't make admins
+        // guess the composition rules.
         saml_sp_entity_id: p.config.as_saml().map(|_| {
             format!(
                 "{}/{}/saml/sp",
@@ -550,7 +550,7 @@ fn response(state: &AppState, p: &ExternalIdentityProvider) -> ExternalIdpRespon
         }),
         enabled: p.enabled,
         allow_auto_link: p.allow_auto_link,
-        // 外部 IdP 側に登録してもらう値。組み立て規則を管理者に推測させない。
+        // Value to have registered on the external IdP side. Don't make admins guess the composition rules.
         redirect_uri: format!(
             "{}/{}/external/{}/callback",
             state.config.public_web_base_url(),
@@ -564,8 +564,8 @@ fn response(state: &AppState, p: &ExternalIdentityProvider) -> ExternalIdpRespon
 
 fn map_error(e: ExternalIdpManagementError) -> ApiError {
     match e {
-        // 検証メッセージは管理者向け（利用者向けではない）ため、翻訳せず英語で返す
-        // （OAuth の `error_description` と同じ扱い。CLAUDE.md「翻訳の対象外」）。
+        // Validation messages are for admins (not end users), so returned in English untranslated
+        // (same treatment as OAuth's `error_description`; CLAUDE.md "翻訳の対象外").
         ExternalIdpManagementError::Validation(m) => ApiError::BadRequest(m),
         ExternalIdpManagementError::NotFound => {
             ApiError::NotFound("external identity provider not found".to_string())
@@ -579,8 +579,8 @@ fn map_error(e: ExternalIdpManagementError) -> ApiError {
 mod tests {
     use super::*;
 
-    /// web が使う契約（`assay_contracts::admin`）と api の DTO の形が一致する。食い違うと、
-    /// 管理コンソールの取り込みが黙って壊れる。
+    /// The contract web uses (`assay_contracts::admin`) and the api DTO have the same shape. If they diverge,
+    /// the admin console's import silently breaks.
     #[test]
     fn discovery_import_contract_matches_the_api_dto() {
         let shared = assay_contracts::admin::OidcDiscoveryImportRequest {
@@ -604,7 +604,7 @@ mod tests {
         assert_eq!(shared.jwks_uri, api.jwks_uri);
     }
 
-    /// SAML IdP メタデータ取り込みも同じ（task #124 で api 側の DTO に `ToSchema` を付けるため分けた）。
+    /// The same for the SAML IdP metadata import (split because task #124 added `ToSchema` to the api-side DTO).
     #[test]
     fn saml_metadata_import_contract_matches_the_api_dto() {
         let shared = assay_contracts::admin::SamlMetadataImportRequest {

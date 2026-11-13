@@ -1,17 +1,19 @@
-//! 実行中サービスのライフサイクル操作（ADR-0017）。
+//! Lifecycle operations on the running service (ADR-0017).
 //!
-//! ランタイム設定の DB 上書きは起動時にしか読まれない（ADR-0014）ため、反映には再起動が要る。
-//! その再起動を設定画面から行えるようにするための DIP 境界を置く。
+//! DB overrides of runtime settings are read only at startup (ADR-0014), so applying them needs a
+//! restart. This places a DIP boundary so that restart can be triggered from the settings screen.
 //!
-//! **アプリは自分を起動し直せない。** できるのは自分を綺麗に終わらせることだけで、新しい
-//! プロセスを起こすのは配置側（Compose・systemd・k8s）の再起動ポリシーである。トレイト名を
-//! `Restarter` ではなく[`ServiceStopper`] としないのは、利用者から見た操作が「再起動」であり
-//! ユビキタス言語をそちらに合わせるためだが、実装が担うのは停止までである点をここに明記しておく。
+//! **The app cannot restart itself.** All it can do is shut itself down cleanly; starting a new
+//! process is the deployment side's restart policy (Compose, systemd, k8s). The trait is not named
+//! [`ServiceStopper`] instead of `Restarter` because users see the operation as a "restart" and the
+//! ubiquitous language follows that; note here, though, that the implementation only does the
+//! stopping.
 
-/// 実行中サービスの再起動（= graceful shutdown の要求）。
+/// Restart of the running service (= a graceful shutdown request).
 ///
-/// 実装はプロセス制御を持つ層が提供する（api の `service_restart::ServiceRestart`）。
+/// Provided by the layer that controls the process (`service_restart::ServiceRestart` in api).
 pub trait ServiceRestarter: Send + Sync {
-    /// 再起動を要求する。**即座には止まらない**（実装は稼働中のリクエストを流し終えてから停止する）。
+    /// Requests a restart. **Does not stop immediately** (the implementation stops after draining
+    /// in-flight requests).
     fn request_restart(&self);
 }

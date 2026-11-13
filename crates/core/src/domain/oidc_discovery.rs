@@ -1,46 +1,51 @@
-//! 外部 OpenID Provider の discovery ドキュメントの取り込み（task #77。OIDC Discovery 1.0）。
+//! Importing an external OpenID Provider's discovery document (task #77; OIDC Discovery 1.0).
 //!
-//! 外部 IdP（OIDC）を登録するには `authorization_endpoint` / `token_endpoint` / `jwks_uri` を
-//! 相手の文書から 1 項目ずつ写す必要がある。相手はそれを `{issuer}/.well-known/openid-configuration`
-//! に公開しているので、issuer だけを入れれば残りを埋められる。SAML の IdP メタデータ取り込み
-//! （[`crate::domain::saml_metadata`]）と同じく、**取り込みは登録ではない**——ここで作るのは登録
-//! フォームの初期値で、管理者が確かめてから登録する。
+//! Registering an external IdP (OIDC) requires copying `authorization_endpoint` / `token_endpoint`
+//! / `jwks_uri` one by one from the provider's document. Providers publish it at
+//! `{issuer}/.well-known/openid-configuration`, so entering just the issuer can fill in the rest.
+//! As with SAML IdP metadata import ([`crate::domain::saml_metadata`]), **import is not
+//! registration** — what is built here is the initial value of the registration form; the admin
+//! checks it before registering.
 //!
-//! SAML の取り込みと違い、**assay のサーバが管理者の入れた URL へ自ら HTTP を出す。** そのため:
+//! Unlike SAML import, **assay's server itself sends HTTP to an admin-entered URL.** Therefore:
 //!
-//! - 取りに行く先は [`DiscoveryUrl`] でしか表せない。この型は issuer を ADR-0023 決定 5 の検査
-//!   （https のみ・内部宛先を拒否。[`ExternalIdentityProvider::validate_endpoint`]）に通したときにしか
-//!   作れず、取得のポート（[`crate::domain::external_oidc_port::OidcDiscoveryClient`]）はこの型しか
-//!   受け取らない。検査を通していない URL を取りに行く経路は型の上で作れない。
-//! - 文書に書かれた `issuer` が入力と 1 文字でも違えば断る（OIDC Discovery §4.3）。違う issuer の
-//!   文書を受け入れると、ID Token の `iss` 照合（完全一致）がログインのたびに失敗するか、別の
-//!   発行者の値を登録してしまう。
-//! - 文書から得たエンドポイントも登録時と同じ検査に通す。相手の文書は管理者の入力ではないが、
-//!   登録すれば assay がそこへつなぐ先になる（フォームに内部宛先を埋めて見せない）。
+//! - The fetch target can only be expressed as a [`DiscoveryUrl`]. This type can only be built
+//!   after the issuer passed the ADR-0023 decision 5 check (https only, internal destinations
+//!   refused; [`ExternalIdentityProvider::validate_endpoint`]), and the fetch port
+//!   ([`crate::domain::external_oidc_port::OidcDiscoveryClient`]) accepts only this type. A path
+//!   that fetches an unchecked URL cannot be built at the type level.
+//! - If the `issuer` in the document differs from the input by even one character, refuse (OIDC
+//!   Discovery §4.3). Accepting a document with a different issuer would make the ID Token `iss`
+//!   check (exact match) fail on every login, or register another issuer's values.
+//! - Endpoints from the document go through the same check as at registration. The document is not
+//!   admin input, but once registered assay connects there (internal destinations are never filled
+//!   into the form).
 
 use crate::domain::error::DomainError;
 use crate::domain::external_idp::ExternalIdentityProvider;
 
-/// discovery ドキュメントの置き場所（OIDC Discovery §4）。
+/// Location of the discovery document (OIDC Discovery §4).
 pub const WELL_KNOWN_PATH: &str = "/.well-known/openid-configuration";
 
-/// 宛先の検査を通した discovery ドキュメントの URL。
+/// URL of a discovery document whose destination passed the check.
 ///
-/// **検査を通さずに作る口を持たない**（`#[cfg(test)]` の試験用を除く）。取得の実装はこの型しか
-/// 受け取らないので、SSRF の検査を呼び忘れる経路を作れない。
+/// **Has no way to be built without the check** (except the `#[cfg(test)]` test helper). The fetch
+/// implementation accepts only this type, so no path can forget to call the SSRF check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveryUrl {
-    /// 取り込みを求められた issuer（前後の空白を除いた値）。§4.3 の照合に使う。
+    /// The issuer requested for import (trimmed of surrounding whitespace). Used for the §4.3
+    /// match.
     issuer: String,
     url: String,
 }
 
 impl DiscoveryUrl {
-    /// issuer から discovery ドキュメントの URL を組み立てる。
+    /// Builds the discovery document URL from the issuer.
     ///
-    /// issuer は https で内部宛先でないこと（登録時の `issuer` の検査と同じ）。クエリ・フラグメントを
-    /// 持つ issuer は OIDC では不正なので断る（OIDC Discovery §2 / Core §2 の `iss`）。
-    /// 末尾の `/` は除いてから `/.well-known/openid-configuration` を足す（§4.1）。
+    /// The issuer must be https and not an internal destination (same as the `issuer` check at
+    /// registration). Issuers with a query or fragment are invalid in OIDC and refused (OIDC
+    /// Discovery §2 / Core §2 `iss`). The trailing `/` is removed before appending
+    /// `/.well-known/openid-configuration` (§4.1).
     pub fn for_issuer(issuer: &str) -> Result<Self, DomainError> {
         let issuer = issuer.trim();
         ExternalIdentityProvider::validate_endpoint(issuer, "issuer")?;
@@ -52,8 +57,9 @@ impl DiscoveryUrl {
             ));
         }
         let url = format!("{}{WELL_KNOWN_PATH}", issuer.trim_end_matches('/'));
-        // 組み立てた後の URL も同じ検査に通す（文字列を足したことで宛先の解釈が変わらないことを、
-        // 組み立て方の推論ではなく検査で保証する）。
+        // The built URL also goes through the same check (guaranteeing by check, not by reasoning
+        // about the construction, that appending strings did not change how the destination is
+        // interpreted).
         ExternalIdentityProvider::validate_endpoint(&url, "issuer")?;
         Ok(Self {
             issuer: issuer.to_string(),
@@ -61,7 +67,7 @@ impl DiscoveryUrl {
         })
     }
 
-    /// 試験用: 宛先の検査を通さずに作る（wiremock は `http://127.0.0.1` で待つため）。
+    /// For tests: builds without the destination check (wiremock listens on `http://127.0.0.1`).
     #[cfg(test)]
     pub(crate) fn unchecked_for_test(issuer: &str, url: &str) -> Self {
         Self {
@@ -79,7 +85,7 @@ impl DiscoveryUrl {
     }
 }
 
-/// discovery ドキュメントのうち、外部 IdP の登録に使う項目（取得したそのままの値。未検証）。
+/// Items of the discovery document used to register an external IdP (as fetched; unverified).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OidcDiscoveryDocument {
     pub issuer: Option<String>,
@@ -88,7 +94,8 @@ pub struct OidcDiscoveryDocument {
     pub jwks_uri: Option<String>,
 }
 
-/// 取り込んだ登録候補値（検証済み）。登録フォームの初期値として提示する。
+/// Imported candidate values for registration (verified). Presented as the registration form's
+/// initial values.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportedOidcProvider {
     pub issuer: String,
@@ -98,12 +105,14 @@ pub struct ImportedOidcProvider {
 }
 
 impl OidcDiscoveryDocument {
-    /// 取り込みを求めた issuer に対して文書を検証し、登録候補値を返す。
+    /// Verifies the document against the issuer requested for import and returns candidate values.
     ///
-    /// 1. 文書の `issuer` が求めた issuer と**完全一致**（§4.3。末尾の `/` も区別する——ID Token の
-    ///    `iss` もこの値と完全一致で照合するため、ここで丸めると登録後のログインが全部落ちる）
-    /// 2. 3 つのエンドポイントがすべてある（assay は authorization code + JWKS 検証しか使わない）
-    /// 3. 各エンドポイントが登録時と同じ検査（https のみ・内部宛先を拒否）を通る
+    /// 1. The document's `issuer` **exactly matches** the requested issuer (§4.3; a trailing `/`
+    ///    counts too — the ID Token's `iss` is also matched exactly against this value, so rounding
+    ///    here breaks every login after registration)
+    /// 2. All three endpoints are present (assay uses only authorization code + JWKS verification)
+    /// 3. Each endpoint passes the same check as at registration (https only, internal destinations
+    ///    refused)
     pub fn verify_for(self, requested: &DiscoveryUrl) -> Result<ImportedOidcProvider, DomainError> {
         let issuer = self.issuer.unwrap_or_default();
         if issuer != requested.issuer() {
@@ -147,8 +156,8 @@ mod tests {
         }
     }
 
-    /// 末尾の `/` を除いてから well-known を足す（§4.1）。パスを持つ issuer（テナント別の IdP）でも
-    /// パスの後ろに付く。
+    /// The trailing `/` is removed before appending well-known (§4.1). For an issuer with a path
+    /// (per-tenant IdP) it goes after the path.
     #[test]
     fn the_discovery_url_is_built_under_the_issuer() {
         assert_eq!(
@@ -165,7 +174,8 @@ mod tests {
         );
     }
 
-    /// **取りに行く前に**宛先を検査する（SSRF の踏み台にしない。ADR-0023 決定 5）。
+    /// Checks the destination **before fetching** (not becoming an SSRF stepping stone; ADR-0023
+    /// decision 5).
     #[test]
     fn internal_or_plain_http_issuers_are_rejected_before_any_request() {
         for bad in [
@@ -202,7 +212,8 @@ mod tests {
         assert_eq!(imported.jwks_uri, "https://idp.example.com/jwks");
     }
 
-    /// 文書の `issuer` が入力と違えば断る（§4.3）。末尾の `/` の違いも違いとして扱う。
+    /// Refuses when the document's `issuer` differs from the input (§4.3). A trailing `/`
+    /// difference counts as a difference.
     #[test]
     fn an_issuer_mismatch_is_rejected() {
         let url = DiscoveryUrl::for_issuer("https://idp.example.com").unwrap();
@@ -221,7 +232,8 @@ mod tests {
         assert!(missing.verify_for(&url).is_err());
     }
 
-    /// 文書から得たエンドポイントも登録時と同じ検査に通す（内部宛先をフォームに埋めない）。
+    /// Endpoints from the document go through the same check as at registration (internal
+    /// destinations are not filled into the form).
     #[test]
     fn endpoints_from_the_document_must_be_public_https() {
         let url = DiscoveryUrl::for_issuer("https://idp.example.com").unwrap();
