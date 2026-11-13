@@ -1,20 +1,20 @@
-//! ログインのユースケース（設計仕様 §4.3）。
+//! Login use case (design spec §4.3).
 //!
-//! AuthSession（Cookie）→ CSRF → レート制限 → 資格情報 → アカウント状態・ロックの順に検証し、
-//! 成功時は SSO セッション発行 → 同意チェック → 同意済みなら code 発行（`code_issuance` 共通モジュール）
-//! → AuthSession 削除。同意未完なら `/consent` へ誘導する（F3）。
+//! Verifies in the order AuthSession (cookie) -> CSRF -> rate limit -> credentials -> account state and lock;
+//! on success: issue SSO session -> consent check -> if consented, issue code (shared `code_issuance` module)
+//! -> delete AuthSession. If consent is incomplete, send to `/consent` (F3).
 //!
-//! ロックポリシー: username 単位で連続 `LOGIN_MAX_FAILED_ATTEMPTS` 回失敗 →
-//! `LOGIN_LOCK_DURATION_SECS` 秒ロック（利用者の所属元テナントの値。既定 10 回 / 15 分）。IP 単位のレート制限。
-//! 失敗カウンタのリセット（`failed_login_count = 0` / `locked_until = NULL`）は、**認証が最後まで
-//! 通った時点**でのみ行う。MFA 待ちで返す経路ではリセットせず、TOTP 成功時に
-//! [`crate::application::mfa_login::MfaLoginService`] が行う（SEC3。パスワード成功のたびに消すと、
-//! パスワードを知る攻撃者が TOTP のロックを永久に回避できる）。
+//! Lock policy: `LOGIN_MAX_FAILED_ATTEMPTS` consecutive failures per username ->
+//! locked for `LOGIN_LOCK_DURATION_SECS` seconds (values of the user's home tenant; default 10 times / 15 minutes). Per-IP rate limit.
+//! The failure counter reset (`failed_login_count = 0` / `locked_until = NULL`) happens only **when authentication
+//! has fully completed**. Paths that return awaiting MFA don't reset it; on TOTP success
+//! [`crate::application::mfa_login::MfaLoginService`] does (SEC3; clearing it on every password success would let
+//! an attacker who knows the password bypass the TOTP lock forever).
 //!
-//! 認証ポリシー（ユーザー認証・認証ポリシー仕様書 §7〜§9）: パスワード検証成功後に
-//! テナントの有効ポリシーを評価し、`deny` は拒否（`PolicyDenied`）、`require_mfa` は
-//! TOTP 未設定なら拒否（`MfaEnrollmentRequired`）・設定済みなら既存の MFA ステップへ倒す。
-//! パスワード検証後に評価することで、資格情報を知らない攻撃者からはポリシーの存在を観測できない。
+//! Authentication policy (user authentication & authentication policy spec §7–§9): after the password is verified,
+//! the tenant's enabled policies are evaluated; `deny` refuses (`PolicyDenied`), and `require_mfa`
+//! refuses if TOTP is not set up (`MfaEnrollmentRequired`) or falls to the existing MFA step if it is.
+//! Evaluating after password verification keeps the existence of policies unobservable to attackers without credentials.
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authentication_policy_gate::{
@@ -42,25 +42,25 @@ use crate::domain::user::User;
 use crate::domain::values::AuthenticationMethod;
 use std::sync::Arc;
 
-/// `auth_session_id` に紐づく CSRF トークンを導出する。
+/// Derives the CSRF token tied to `auth_session_id`.
 ///
-/// 導出は web（フォーム描画）と api（検証）で一致させる必要があるため `assay-contracts` に一元化する
-/// （ADR-0007 §6。同期トークン方式。サーバ側の追加保存は不要）。
+/// The derivation must match between web (form rendering) and api (verification), so it is centralized in `assay-contracts`
+/// (ADR-0007 §6. Synchronizer token pattern; no extra server-side storage needed).
 pub fn csrf_token(auth_session_id: &str, key: &[u8]) -> String {
     assay_contracts::csrf::login_csrf_token(auth_session_id, key)
 }
 
 pub struct LoginCommand {
-    /// `auth_session_id` Cookie の値。
+    /// Value of the `auth_session_id` cookie.
     pub auth_session_id: Option<String>,
-    /// ログイン識別子（ユーザー名 = `preferred_username`。ADR-0009 §8）。
+    /// Login identifier (user name = `preferred_username`. ADR-0009 §8).
     pub username: String,
     pub password: String,
     pub csrf_token: String,
 }
 
-/// ⚠ 秘密（`auth_session_id`, `password`, `csrf_token`）を `Debug` に出さない（task #593）。`{:?}` でログへ
-/// 落としても値が漏れないよう、手書きで載せる項目を選ぶ。
+/// ⚠ Don't put secrets (`auth_session_id`, `password`, `csrf_token`) in `Debug` (task #593). Fields are chosen by hand
+/// so values don't leak even if logged with `{:?}`.
 impl std::fmt::Debug for LoginCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LoginCommand")
@@ -70,92 +70,92 @@ impl std::fmt::Debug for LoginCommand {
 }
 
 pub enum LoginOutcome {
-    /// 認証成功かつ同意済み。`redirect_uri?code=...&state=...` へ 302 し、SSO Cookie を発行する。
+    /// Authenticated and consented. 302 to `redirect_uri?code=...&state=...` and issue the SSO cookie.
     Success {
         location: String,
-        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        /// Hidden fields to POST for `form_post` (G12). `None` means `query`.
         form_post: Option<Vec<(String, String)>>,
         sso_session_id: String,
-        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        /// `Max-Age` of the SSO cookie (seconds until the established session's absolute expiry. ADR-0058).
         sso_absolute_ttl_secs: u64,
-        /// ユーザーの表示言語設定（MT20）。web は `lang` Cookie をこの値で上書きする。
+        /// The user's display language setting (MT20). web overwrites the `lang` cookie with this value.
         user_language: Option<String>,
     },
-    /// 認証成功だが未同意 scope あり。同意画面へリダイレクトする。
-    /// SSO Cookie は発行済み（`sso_session_id`）。AuthSession は認証済み状態で残す。
+    /// Authenticated but some scopes are not consented. Redirect to the consent screen.
+    /// The SSO cookie is already issued (`sso_session_id`). The AuthSession is kept in the authenticated state.
     ConsentRequired {
         auth_session_id: String,
         sso_session_id: String,
-        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        /// `Max-Age` of the SSO cookie (seconds until the established session's absolute expiry. ADR-0058).
         sso_absolute_ttl_secs: u64,
     },
-    /// パスワード認証成功だが MFA（TOTP）が設定済み。TOTP 入力画面へ誘導する。
-    /// `auth_session_id` Cookie はそのまま維持し、SSO Cookie はまだ発行しない。
+    /// Password authentication succeeded but MFA (TOTP) is set up. Send to the TOTP input screen.
+    /// The `auth_session_id` cookie is kept as-is, and the SSO cookie is not issued yet.
     MfaRequired {
         auth_session_id: String,
     },
-    /// パスワード認証成功だが `must_change_password`（ADR-0009 §5）。パスワード変更画面へ誘導する。
-    /// `auth_session_id` Cookie はそのまま維持し、SSO Cookie はまだ発行しない。認可フローは
-    /// 変更完了まで完了させない（[`crate::application::change_password::ChangePasswordService`]）。
+    /// Password authentication succeeded but `must_change_password` (ADR-0009 §5). Send to the password change screen.
+    /// The `auth_session_id` cookie is kept as-is, and the SSO cookie is not issued yet. The authorization flow
+    /// is not completed until the change is done ([`crate::application::change_password::ChangePasswordService`]).
     PasswordChangeRequired {
         auth_session_id: String,
     },
-    /// パスワード認証成功だが自己登録アカウントのメール未検証（SEC6b）。確認リンクを踏むまでは
-    /// ログインを許可しない。SSO Cookie は発行しない。パスワード検証後に判定するため、資格情報を
-    /// 知らない攻撃者からはメール検証状態を観測できない（列挙防止）。
+    /// Password authentication succeeded but the self-registered account's email is unverified (SEC6b). Login is not
+    /// allowed until the confirmation link is followed. No SSO cookie. Decided after password verification, so
+    /// attackers without credentials can't observe the email verification state (enumeration prevention).
     EmailVerificationRequired,
-    /// 認証ポリシーにより拒否（仕様 §7.4 `deny`）。資格情報の成否は既に確認済みのため、
-    /// 資格情報エラーとは別の文言で「組織のポリシーで拒否された」ことを表示してよい。
+    /// Denied by the authentication policy (spec §7.4 `deny`). The credentials are already confirmed, so
+    /// it may be shown with wording distinct from a credential error: "denied by the organization's policy".
     PolicyDenied,
-    /// 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
-    /// SSO セッションは発行する（assay には入れている）ので、他のアプリへはそのまま進める。
+    /// Authentication passed, but use of this application is not permitted (ADR-0054). ⚠ **Do not return to the RP.**
+    /// The SSO session is issued (the user is signed in to assay), so other applications proceed as usual.
     ApplicationNotPermitted {
-        /// 画面に出すアプリ名。どのアプリで断られたかが分からないと、次に誰へ頼めばよいかを
-        /// 利用者が決められない。
+        /// Application name shown on screen. Without knowing which application refused them, the user
+        /// cannot decide whom to ask next.
         application_name: String,
         sso_session_id: String,
-        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        /// `Max-Age` of the SSO cookie (seconds until the established session's absolute expiry. ADR-0058).
         sso_absolute_ttl_secs: u64,
     },
-    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916）。SSO Cookie は
-    /// 発行しない。web は `ticket` を Cookie に置いて端末の登録の画面へ回す。AuthSession は残す
-    /// （登録してからログイン画面を開き直すと、できた SSO から認可フローを続ける）。
+    /// Authentication passed, but in an organization limited to registered devices this device is not registered (task #916).
+    /// No SSO cookie. web puts `ticket` in a cookie and sends the user to the device registration screen. The AuthSession is kept
+    /// (after registering, reopening the login screen continues the authorization flow from the new SSO).
     DeviceEnrollmentRequired {
         ticket: String,
     },
-    /// 認証ポリシーが MFA を必須としたが、ユーザーに使用可能な認証器（確認済み TOTP）が無い。
-    /// ポータルから MFA を設定するよう案内する。SSO Cookie は発行しない。
+    /// The authentication policy requires MFA, but the user has no usable authenticator (verified TOTP).
+    /// Guide the user to set up MFA from the portal. No SSO cookie.
     MfaEnrollmentRequired,
-    /// AuthSession が無い・期限切れ（`/authorize` からやり直し）。
+    /// No AuthSession, or expired (start over from `/authorize`).
     SessionExpired,
-    /// CSRF トークン不一致。
+    /// CSRF token mismatch.
     CsrfMismatch,
-    /// IP 単位のレート制限超過。
+    /// Per-IP rate limit exceeded.
     RateLimited,
-    /// 資格情報不正（ユーザー不存在・パスワード不一致・無効アカウントを区別しない）。
+    /// Invalid credentials (missing user, wrong password and disabled account are not distinguished).
     InvalidCredentials,
-    /// アカウントロック中。
+    /// Account locked.
     Locked,
     Internal(String),
 }
 
 pub struct LoginService {
     users: Arc<dyn UserRepository>,
-    /// テナントへ割り当てたドメイン（ADR-0029）。ログイン欄の入力が `local@domain` の形のとき、
-    /// 所属元テナントを 1 つに決めるために引く（`login_user_resolution`）。
+    /// Domains assigned to tenants (ADR-0029). Looked up when the login input has the form `local@domain`,
+    /// to pin down a single home tenant (`login_user_resolution`).
     tenant_domains: Arc<dyn TenantDomainRepository>,
     auth_sessions: Arc<dyn AuthSessionRepository>,
     totp_secrets: Arc<dyn TotpSecretRepository>,
-    /// 認証ポリシーの評価（材料の引き当てと評価。`authentication_policy_gate`）。
+    /// Authentication policy evaluation (looking up inputs and evaluating. `authentication_policy_gate`).
     policy_gate: Arc<AuthenticationPolicyGate>,
-    /// 認証が成立した後の共通の後段（SSO の確立・認可フローの続き）。
+    /// Shared tail after authentication succeeds (establishing SSO, continuing the authorization flow).
     sign_in: Arc<SignInCompletion>,
     hasher: Arc<dyn PasswordHasher>,
     rate_limiter: Arc<dyn LoginRateLimiter>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
-    /// テナントが上書きできる設定（ADR-0058）。参照のたびに引く。一致するポリシーが無い場合の
-    /// 既定動作（AP2・§4）もここから引く。
+    /// Settings tenants can override (ADR-0058). Looked up every time. The default behavior when no policy
+    /// matches (AP2, §4) is also taken from here.
     settings: Arc<dyn EffectiveTenantSettings>,
     csrf_secret: [u8; 32],
 }
@@ -201,7 +201,7 @@ impl LoginService {
         let now = self.clock.now();
         let tenant_id = tenant.tenant_id();
 
-        // 1. Cookie の auth_session_id から AuthSession を取得する（フローのテナントに限る）。
+        // 1. Fetch the AuthSession from the cookie's auth_session_id (limited to the flow's tenant).
         let Some(session_id) = cmd.auth_session_id.as_deref().filter(|s| !s.is_empty()) else {
             tracing::warn!(
                 correlation_id = %ctx.correlation_id,
@@ -209,8 +209,8 @@ impl LoginService {
             );
             return LoginOutcome::SessionExpired;
         };
-        // 認証成功時に id を再生成する（SEC7）ため mut。以降 `session.id_hash()` は常に「今この
-        // ブラウザが持つべき値」のハッシュを指す。
+        // mut because the id is regenerated on successful authentication (SEC7). From here on `session.id_hash()` always
+        // points at the hash of "the value this browser should hold now".
         let mut session = match self
             .auth_sessions
             .find(tenant_id, &AuthSessionIdHash::of_plain(session_id))
@@ -235,8 +235,8 @@ impl LoginService {
             return LoginOutcome::SessionExpired;
         }
 
-        // 2. CSRF トークン検証。不一致は攻撃だけでなく「別タブでの新フローによる Cookie 差し替え」等の
-        //    正規操作でも起こるため、監査に記録して web 側でフォーム再表示（PRG）に載せる。
+        // 2. Verify the CSRF token. A mismatch happens not only in attacks but also in legitimate operations such as
+        //    "cookie replaced by a new flow in another tab", so it is audited and web re-renders the form (PRG).
         if !assay_contracts::csrf::verify(
             &csrf_token(session_id, &self.csrf_secret),
             &cmd.csrf_token,
@@ -257,7 +257,7 @@ impl LoginService {
 
         let client_id = session.client_id().to_string();
 
-        // 3. IP 単位のレート制限。
+        // 3. Per-IP rate limit.
         if let Some(ip) = &ctx.ip_address {
             if !self.rate_limiter.check_and_record(ip, now) {
                 self.audit
@@ -275,9 +275,9 @@ impl LoginService {
             }
         }
 
-        // 4. ユーザー検索（ログイン識別子。AP8 の登録簿で解決する）。対象はこのテナントの ACTIVE な
-        //    メンバー = 所属元（HOME）と、招待で参加している GUEST（ADR-0009 §8。解決の規則は
-        //    `login_user_resolution`）。
+        // 4. Look up the user (login identifier, resolved via the AP8 registry). Targets are this tenant's ACTIVE
+        //    members = home (HOME) users and GUESTs joined by invitation (ADR-0009 §8; resolution rules in
+        //    `login_user_resolution`).
         let user = match resolve_login_user(
             self.users.as_ref(),
             self.tenant_domains.as_ref(),
@@ -287,10 +287,10 @@ impl LoginService {
         .await
         {
             Ok(LoginIdentifierMatch::Resolved(u)) => u,
-            // 不在と曖昧で応答は変えない（存在の露呈を避ける）。監査に残す理由だけを分ける。
+            // The response is the same for missing and ambiguous (avoid revealing existence). Only the audit reason differs.
             Ok(LoginIdentifierMatch::Unresolved(reason)) => {
-                // 実在利用者と同じ argon2 検証を 1 回消費し、応答時間で利用者の有無を
-                // 推し量れないようにする（列挙対策）。
+                // Spend one argon2 verification, same as for a real user, so the user's existence can't be
+                // inferred from response time (enumeration countermeasure).
                 crate::domain::password::verify_against_dummy(self.hasher.as_ref(), &cmd.password);
                 self.audit
                     .record(
@@ -308,9 +308,9 @@ impl LoginService {
             Err(e) => return LoginOutcome::Internal(e.to_string()),
         };
 
-        // 5. ロック状態の確認。
+        // 5. Check the lock state.
         if user.is_locked_at(now) {
-            // 不在のときと同じだけ argon2 の検証を消費する（応答時間で状態を推し量らせない。task #590）。
+            // Spend the same argon2 verification as for a missing user (don't let the state be inferred from response time. task #590).
             crate::domain::password::verify_against_dummy(self.hasher.as_ref(), &cmd.password);
             self.audit
                 .record(
@@ -326,9 +326,9 @@ impl LoginService {
             return LoginOutcome::Locked;
         }
 
-        // 6. アカウント状態の確認（存在の露呈を避けるため資格情報エラーと同じ応答にする）。
+        // 6. Check the account state (same response as a credential error to avoid revealing existence).
         if !user.is_active() {
-            // 不在のときと同じだけ argon2 の検証を消費する（応答時間で状態を推し量らせない。task #590）。
+            // Spend the same argon2 verification as for a missing user (don't let the state be inferred from response time. task #590).
             crate::domain::password::verify_against_dummy(self.hasher.as_ref(), &cmd.password);
             self.audit
                 .record(
@@ -344,7 +344,7 @@ impl LoginService {
             return LoginOutcome::InvalidCredentials;
         }
 
-        // 7. パスワード検証。
+        // 7. Verify the password.
         let verified = match self.hasher.verify(&cmd.password, &user.password_hash) {
             Ok(v) => v,
             Err(e) => return LoginOutcome::Internal(e.to_string()),
@@ -355,15 +355,15 @@ impl LoginService {
                 .await;
         }
 
-        // 8. パスワード検証成功。**ここでは失敗カウンタをリセットしない**（SEC3）。
-        //    リセットは「認証が最後まで通った時点」（10. の直前、または MFA 成功時に
-        //    `MfaLoginService`）で行う。ここで消すと、パスワードを知っている攻撃者が
-        //    「TOTP を上限手前まで失敗 → 正しいパスワードで再ログインしてカウンタを 0 に戻す」を
-        //    繰り返してロックを永久に回避できる。
+        // 8. Password verified. **The failure counter is not reset here** (SEC3).
+        //    The reset happens "when authentication has fully completed" (right before 10., or in
+        //    `MfaLoginService` on MFA success). Clearing it here would let an attacker who knows the password
+        //    repeat "fail TOTP up to just below the limit -> log in again with the correct password to zero the counter"
+        //    and bypass the lock forever.
         //
-        // 8.1. メール検証ゲート（SEC6b）。自己登録アカウントは `email_verified` が立つまでログイン不可。
-        //      管理者作成・招待ユーザーは検証済みで作られるため掛からない。パスワード検証成功後に判定する
-        //      ことで、資格情報を知らない攻撃者からは検証状態を観測できない（列挙防止）。
+        // 8.1. Email verification gate (SEC6b). Self-registered accounts can't log in until `email_verified` is set.
+        //      Admin-created and invited users are created verified, so they aren't affected. Deciding after password
+        //      verification keeps the verification state unobservable to attackers without credentials (enumeration prevention).
         if !user.email_verified {
             self.audit
                 .record(
@@ -379,10 +379,10 @@ impl LoginService {
             return LoginOutcome::EmailVerificationRequired;
         }
 
-        // 8.2. 認証ポリシー評価（ユーザー認証・認証ポリシー仕様書 §9）。パスワード検証成功後に
-        //      評価する（資格情報を知らない攻撃者にポリシーの存在・内容を観測させない）。
-        //      `deny` は即拒否。`require_mfa` は後段の MFA 判定（9.）で強制する。
-        // 認可要求の `acr_values`（AP3 の `requested_acr` 条件が参照する）。
+        // 8.2. Authentication policy evaluation (user authentication & authentication policy spec §9). Evaluated after
+        //      password verification (attackers without credentials can't observe a policy's existence or content).
+        //      `deny` refuses immediately. `require_mfa` is enforced by the later MFA decision (9.).
+        // `acr_values` of the authorization request (used by AP3's `requested_acr` condition).
         let requested_acr = session.request().requested_acr();
         let policy_decision = match self
             .policy_gate
@@ -414,14 +414,14 @@ impl LoginService {
             return LoginOutcome::PolicyDenied;
         }
 
-        // 8.5. 強制パスワード変更（ADR-0009 §5）。自動生成パスワードで作成・再発行された利用者は、
-        //      MFA・同意より先にパスワード変更画面へ誘導する（変更完了までは他の操作を許可しない）。
-        //      TOTP の検証・ポリシーの MFA 要件は変更完了時に `ChangePasswordService` が適用する
-        //      （`must_change_password` は管理者による既存ユーザーのパスワード再発行でも立つため、
-        //      「この状態のユーザーに MFA 判定は不要」とは限らない）。
-        //      有効期限切れ（AP7）も同じ誘導に載せる。期限はログイン時にしか判定できず、
-        //      ここで通してしまうと次の判定機会は次回ログイン = 期限が実質効かなくなる。
-        // ポリシーは利用者の所属元テナントの値（ADR-0058。パスワードは所属元が管理する）。
+        // 8.5. Forced password change (ADR-0009 §5). Users created or reissued with a generated password are sent to
+        //      the password change screen before MFA and consent (no other operations until the change completes).
+        //      TOTP verification and the policy's MFA requirement are applied by `ChangePasswordService` on completion
+        //      (`must_change_password` is also set when an admin reissues an existing user's password, so
+        //      "no MFA check needed for users in this state" does not hold).
+        //      Expiry (AP7) goes through the same redirect. Expiry can only be checked at login, and
+        //      letting it pass here makes the next chance the next login = the expiry effectively doesn't work.
+        // The policy is the value of the user's home tenant (ADR-0058; the password is managed by the home tenant).
         let password_policy = match self.settings.password_policy(user.tenant_id).await {
             Ok(policy) => policy,
             Err(e) => return LoginOutcome::Internal(e.to_string()),
@@ -440,16 +440,16 @@ impl LoginService {
             };
         }
 
-        // 9. MFA（TOTP）が設定済みか確認する。設定済みなら TOTP 入力ステップへ誘導する。
-        //    認証ポリシーが MFA 必須（`require_mfa`）なのに使用可能な認証器が無い場合は、
-        //    単一要素での成立を許さず拒否する（仕様 §24.4「MFA 必須ユーザーが単一要素のみでは
-        //    認証完了しないこと」）。
+        // 9. Check whether MFA (TOTP) is set up. If so, send to the TOTP input step.
+        //    If the authentication policy requires MFA (`require_mfa`) but there's no usable authenticator,
+        //    single-factor completion is not allowed and it is refused (spec §24.4 "a user who requires MFA must not
+        //    complete authentication with a single factor only").
         let has_totp = match user_has_confirmed_totp(self.totp_secrets.as_ref(), user.id).await {
             Ok(v) => v,
             Err(e) => return LoginOutcome::Internal(e.to_string()),
         };
         if has_totp {
-            // パスワード検証成功を AuthSession に記録（MFA pending 状態）。id も再生成する（SEC7）。
+            // Record password verification success in the AuthSession (MFA pending). Also regenerate the id (SEC7).
             let verification = session.record_password_verification(user.id, now);
             if let Err(e) = self
                 .auth_sessions
@@ -476,11 +476,11 @@ impl LoginService {
                 .await;
             return LoginOutcome::MfaEnrollmentRequired;
         }
-        // 9.1. `require_specific_method`（AP3。仕様 §12.2）。ここへ来た時点で使った方式は
-        //      パスワードだけなので、方式指定を満たしていなければ成立させない。TOTP を要求する
-        //      ポリシーは上の MFA ステップ（`has_totp`）で満たされる経路へ入っており、そこで
-        //      `MfaLoginService` が最終的な方式集合に対して再評価する。パスキーを要求する
-        //      ポリシーはログイン画面のパスキーボタン（`PasskeyAuthenticationService`）が満たす。
+        // 9.1. `require_specific_method` (AP3. spec §12.2). At this point the only method used is the
+        //      password, so if the method requirement isn't met it doesn't complete. Policies requiring TOTP
+        //      take the path satisfied by the MFA step above (`has_totp`), where
+        //      `MfaLoginService` re-evaluates against the final set of methods. Policies requiring a passkey
+        //      are satisfied by the login screen's passkey button (`PasskeyAuthenticationService`).
         if let Some(unmet) =
             policy_decision.unmet_method_requirement(&[AuthenticationMethod::Password], false)
         {
@@ -502,15 +502,15 @@ impl LoginService {
             return LoginOutcome::PolicyDenied;
         }
 
-        // 9.5. ここまで来た＝単一要素で認証が成立した（MFA 待ちではない）。失敗カウンタと
-        //      ロックをリセットする（SEC3。MFA 待ちの経路では `MfaLoginService` が TOTP 成功時に行う）。
+        // 9.5. Reaching here = authentication completed with a single factor (not awaiting MFA). Reset the failure
+        //      counter and lock (SEC3; on the MFA-pending path `MfaLoginService` does it on TOTP success).
         if user.failed_login_count > 0 || user.locked_until.is_some() {
             if let Err(e) = self.users.update_login_state(user.id, 0, None).await {
                 return LoginOutcome::Internal(e.to_string());
             }
         }
 
-        // 10. SSO セッションを確立し、認可フローを続ける（同意の確認 → code 発行）。
+        // 10. Establish the SSO session and continue the authorization flow (consent check -> code issuance).
         let sso = match self
             .sign_in
             .establish_sso(
@@ -566,7 +566,7 @@ impl LoginService {
         }
     }
 
-    /// パスワード不一致時の失敗カウント更新とロック判定。
+    /// Updates the failure count and decides locking on a password mismatch.
     async fn handle_password_failure(
         &self,
         tenant_id: TenantId,
@@ -575,12 +575,12 @@ impl LoginService {
         ctx: &RequestContext,
     ) -> LoginOutcome {
         let now = self.clock.now();
-        // 閾値は利用者の所属元テナントの値（ロックの状態は利用者の行にある。ADR-0058）。
+        // The threshold is the value of the user's home tenant (the lock state lives on the user row. ADR-0058).
         let lockout = match self.settings.login_lockout(user.tenant_id).await {
             Ok(lockout) => lockout,
             Err(e) => return LoginOutcome::Internal(e.to_string()),
         };
-        // 加算とロック判定は 1 文の UPDATE に閉じる（SEC13）。
+        // The increment and lock decision are kept in a single UPDATE statement (SEC13).
         let failure = match self.users.record_login_failure(user.id, lockout, now).await {
             Ok(f) => f,
             Err(e) => return LoginOutcome::Internal(e.to_string()),
@@ -626,12 +626,12 @@ mod tests {
         let a = csrf_token("session-a", &key);
         assert_eq!(a, csrf_token("session-a", &key));
         assert_ne!(a, csrf_token("session-b", &key));
-        // HMAC-SHA256 hex（64 文字）でフォームに埋め込める安全な文字のみ。
+        // HMAC-SHA256 hex (64 chars): only characters safe to embed in a form.
         assert_eq!(a.len(), 64);
         assert!(a.bytes().all(|b| b.is_ascii_hexdigit()));
     }
 
-    // ── SEC3: MFA 待ちのパスワード成功では失敗カウンタを消さない ──────────────
+    // ── SEC3: a password success awaiting MFA does not clear the failure counter ──────────────
 
     use crate::application::code_issuance::CodeIssuanceService;
     use crate::domain::authentication_policy::AuthenticationPolicy;
@@ -667,8 +667,8 @@ mod tests {
     }
 
     thread_local! {
-        /// このテストのスレッドで `verify` が呼ばれた回数（task #590。応答時間を揃えるための
-        /// 検証が走ったかを数える）。`#[tokio::test]` は 1 スレッドで動くので、テスト同士で混ざらない。
+        /// Number of times `verify` was called on this test's thread (task #590; counts whether the verification
+        /// that equalizes response time ran). `#[tokio::test]` runs on one thread, so tests don't mix.
         static VERIFIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     }
 
@@ -705,8 +705,8 @@ mod tests {
     }
     #[async_trait]
     impl UserRepository for FakeUsers {
-        /// 本番の sqlx 実装は 1 文の UPDATE で加算する（SEC13）。フェイクは単一スレッドの
-        /// テストでしか動かないので、同じ結果になる素朴な加算で足りる。
+        /// The production sqlx implementation increments in a single UPDATE (SEC13). The fake only runs in
+        /// single-threaded tests, so a naive increment giving the same result is enough.
         async fn record_login_failure(
             &self,
             id: Uuid,
@@ -793,7 +793,7 @@ mod tests {
         }
     }
 
-    /// TOTP 設定済み／未設定を切り替えるだけのフェイク。
+    /// A fake that only toggles TOTP set up / not set up.
     struct FakeTotpSecrets {
         confirmed: bool,
     }
@@ -820,8 +820,8 @@ mod tests {
     }
 
     #[derive(Default)]
-    /// ドメインを持たないテナント（ADR-0029 の経路を通らない既定）。トレイトの既定実装が
-    /// 「割り当て無し」を返すので、ログインの解決は従来の 2 段（所属元 → ゲスト走査）になる。
+    /// A tenant without domains (the default, not taking the ADR-0029 path). The trait's default implementation
+    /// returns "no assignment", so login resolution uses the previous two steps (home tenant -> guest scan).
     struct NoTenantDomains;
 
     #[async_trait]
@@ -940,7 +940,7 @@ mod tests {
         user_id: Uuid,
     }
 
-    /// `failed_login_count` を `initial_failures` にした利用者で 1 回ログインする土台。
+    /// Setup that logs in once as a user whose `failed_login_count` is `initial_failures`.
     fn harness(has_totp: bool, initial_failures: i32) -> Harness {
         let tenant_id: TenantId = Uuid::now_v7().into();
         let user_id = Uuid::now_v7();
@@ -1052,59 +1052,62 @@ mod tests {
             self.users.rows.lock().unwrap()[0].failed_login_count
         }
 
-        /// 保存されている auth_session の現在の id_hash。
+        /// Current id_hash of the stored auth_session.
         fn stored_session_id_hash(&self) -> String {
             self.auth_sessions.rows()[0].id_hash().as_str().to_string()
         }
     }
 
-    /// SEC3 の要: MFA 待ちで止まる経路では失敗カウンタを消さない。消してしまうと、パスワードを
-    /// 知っている攻撃者が「TOTP を上限手前まで失敗 → 再ログインでカウンタを 0 に戻す」を
-    /// 繰り返してロックを永久に回避できる。
+    /// Core of SEC3: paths that stop awaiting MFA don't clear the failure counter. Clearing it would let an attacker
+    /// who knows the password repeat "fail TOTP up to just below the limit -> log in again to zero the counter"
+    /// and bypass the lock forever.
     #[tokio::test]
     async fn mfa_pending_login_keeps_the_failure_counter() {
         let h = harness(true, 4);
         assert!(matches!(h.login().await, LoginOutcome::MfaRequired { .. }));
-        assert_eq!(h.failed_count(), 4, "MFA 待ちではリセットしない");
+        assert_eq!(h.failed_count(), 4, "not reset while awaiting MFA");
     }
 
-    /// SEC7: パスワード検証を通した時点で `auth_session_id` を再生成する。認証前に発行した
-    /// Cookie 値をそのまま使い回すと、事前に値を仕込めた攻撃者が MFA 待ちの認可セッションへ
-    /// 相乗りできる（`sso_session_id` はログインのたびに再生成しており、非対称にしない）。
+    /// SEC7: `auth_session_id` is regenerated once password verification passes. Reusing the cookie value issued
+    /// before authentication would let an attacker who planted the value in advance ride along on the authorization
+    /// session awaiting MFA (`sso_session_id` is regenerated on every login; don't make them asymmetric).
     #[tokio::test]
     async fn mfa_pending_login_rotates_the_auth_session_id() {
         let h = harness(true, 0);
         let LoginOutcome::MfaRequired { auth_session_id } = h.login().await else {
             panic!("expected MfaRequired");
         };
-        assert_ne!(auth_session_id, SESSION_ID, "認証前の値を使い回さない");
+        assert_ne!(
+            auth_session_id, SESSION_ID,
+            "pre-authentication value must not be reused"
+        );
         assert_eq!(
             h.stored_session_id_hash(),
             AuthSessionIdHash::of_plain(&auth_session_id).into_string(),
-            "DB 側も新しい id のハッシュに置き換わり、旧 id では引けない"
+            "the DB side is also replaced by the new id's hash and can't be found by the old id"
         );
         assert_ne!(
             h.stored_session_id_hash(),
             auth_session_id,
-            "DB には平文を置かない（SEC6）"
+            "the DB must not hold plaintext (SEC6)"
         );
     }
 
-    /// SEC7: 認証成立まで進む経路でも再生成する。ここは code 発行後に auth_session を削除する
-    /// ため id を直接は観測できないが、**行が消えている**ことが再生成後の id で削除できた証拠になる
-    /// （記録と削除で id がずれていれば行が残る）。
+    /// SEC7: also regenerated on paths that proceed to completed authentication. Here the auth_session is deleted
+    /// after code issuance so the id can't be observed directly, but **the row being gone** proves deletion worked
+    /// with the regenerated id (if the id differed between recording and deletion, the row would remain).
     #[tokio::test]
     async fn completed_login_deletes_the_session_through_the_rotated_id() {
         let h = harness(false, 0);
         assert!(matches!(h.login().await, LoginOutcome::Success { .. }));
         assert!(
             h.auth_sessions.rows().is_empty(),
-            "code 発行後に auth_session が残っている = 再生成した id で削除できていない"
+            "auth_session remains after code issuance = deletion with the regenerated id failed"
         );
     }
 
-    /// 停止中・ロック中のアカウントでも、不在のときと同じだけパスワードの検証を消費する（task #590）。
-    /// 早く返すと、応答時間で「そのアカウントは在る（が止まっている）」と推し量れる。
+    /// Even for disabled or locked accounts, spend the same password verification as for a missing one (task #590).
+    /// Returning early would let "the account exists (but is stopped)" be inferred from response time.
     #[tokio::test]
     async fn disabled_and_locked_accounts_spend_the_same_password_check() {
         let h = harness(false, 0);
@@ -1120,14 +1123,14 @@ mod tests {
         assert_eq!(VERIFIES.with(|n| n.get()), 1, "locked account");
     }
 
-    /// 単一要素で認証が成立する経路（TOTP 未設定）は従来どおりリセットする。
+    /// Paths where single-factor authentication completes (TOTP not set up) reset as before.
     #[tokio::test]
     async fn completed_single_factor_login_resets_the_failure_counter() {
         let h = harness(false, 4);
         let outcome = h.login().await;
         assert!(
             matches!(outcome, LoginOutcome::Success { .. }),
-            "TOTP 未設定なら単一要素で成立する"
+            "without TOTP, single-factor login completes"
         );
         assert_eq!(h.failed_count(), 0);
         let _ = h.user_id;

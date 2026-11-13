@@ -1,29 +1,29 @@
-//! セルフサービス・パスワードリセットユースケース（忘失時。MT18）。
+//! Self-service password reset use case (forgotten password. MT18).
 //!
-//! ログイン画面の「パスワードをお忘れですか」から、メールアドレスを入力 → リセットリンク付き
-//! メールを受信 → リンク先で新パスワードを設定する。SMTP はシステム設定（MT14）から解決し、
-//! メール配送は MT17 の [`Mailer`] ポートを再利用する。管理コンソールのログイン画面も同じ経路を
-//! 使う（管理者だけの別経路は設けない。ADR-0009 §5 の管理者による再発行は別機能）。
+//! From "Forgot your password?" on the login screen: enter an email address -> receive an email with a reset link
+//! -> set a new password at the link. SMTP is resolved from system settings (MT14), and mail delivery reuses
+//! MT17's [`Mailer`] port. The admin console's login screen uses the same path
+//! (no separate admin-only path. Reissue by an admin per ADR-0009 §5 is a different feature).
 //!
-//! **SMTP で送れないときはリンクをサーバのコンソール（標準出力）へ出す**。メール配送を用意して
-//! いない環境で、パスワードを忘れた管理者が自力で復旧するための経路で、運用者は `docker logs` から
-//! URL を拾う。「送れないとき」は SMTP 未設定に限らず、**SMTP 設定の読み出しに失敗したとき**
-//! （DB 障害・`KEY_ENCRYPTION_KEY` 不一致でパスワードを復号できない等）も含む —— 障害時に復旧手段
-//! まで失わないため。したがって SMTP を設定した環境でもコンソールに出ることがある。
-//! `PASSWORD_RESET_CONSOLE_LINK_ENABLED=false` で塞げる（その場合は SMTP で送れない＝機能が使えない）。
+//! **When SMTP can't send, the link is printed to the server console (stdout).** This is a path for an admin who forgot
+//! their password to recover on their own in environments without mail delivery; the operator picks the URL from
+//! `docker logs`. "Can't send" isn't limited to SMTP being unset; it includes **failing to read the SMTP settings**
+//! (DB failure, password undecryptable due to a `KEY_ENCRYPTION_KEY` mismatch, etc.) —— so a failure doesn't also take away
+//! the means of recovery. Therefore it may appear on the console even in environments with SMTP configured.
+//! It can be closed with `PASSWORD_RESET_CONSOLE_LINK_ENABLED=false` (then, without SMTP, the feature is unavailable).
 //!
-//! セキュリティ方針:
-//! - **メールアドレスの列挙防止**: 要求はアカウントの有無・状態に関わらず同一の応答（`Accepted`）
-//!   を返す。リンクを届ける手段が無いときだけ `Unavailable`（アカウント非依存の情報のため
-//!   列挙にはならない）。
-//! - **トークン**: 32 バイトのランダム値。保存は SHA-256 hex のみ・TTL 付き（既定 1 時間）・
-//!   単回消費。再要求時は当該ユーザーの未使用トークンを失効させる（有効リンクは常に最新の 1 本）。
-//! - **リセット成功時の全セッション失効**: 忘失リセットは資格情報漏えいの可能性を含むため、
-//!   SSO セッション・refresh token・未消費 authorization code をユーザー単位で全失効させる。
-//! - **レート制限**: IP 単位で要求回数を制限する。
-//! - メールアドレスはログ・監査に出さない（PII 方針）。トークンも同様だが、上記のコンソール出力
-//!   だけは例外で、URL を INFO で標準出力へ出す（`log` テーブルへは WARN 以上しか取り込まれない
-//!   ため、DB・管理コンソールのログ画面には残らない）。
+//! Security policy:
+//! - **Preventing email enumeration**: requests get the same response (`Accepted`) regardless of whether the account
+//!   exists or its state. Only when there's no means to deliver the link is it `Unavailable` (account-independent
+//!   information, so not enumeration).
+//! - **Token**: 32 random bytes. Stored only as SHA-256 hex, with a TTL (default 1 hour),
+//!   consumed once. On a new request, the user's unused tokens are revoked (the valid link is always the single latest one).
+//! - **Revoke all sessions on successful reset**: a forgotten-password reset may involve leaked credentials, so
+//!   SSO sessions, refresh tokens and unconsumed authorization codes are all revoked per user.
+//! - **Rate limiting**: the number of requests is limited per IP.
+//! - Email addresses never appear in logs or audit (PII policy). Tokens likewise, except for the console output
+//!   above, which prints the URL to stdout at INFO (only WARN and above are ingested into the `log` table,
+//!   so it doesn't remain in the DB or the admin console's log screen).
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::password_policy::PasswordPolicyService;
@@ -49,26 +49,26 @@ use crate::domain::tenant_context::TenantContext;
 use crate::domain::user::User;
 use std::sync::Arc;
 
-/// リセットトークンのバイト長（base64url で 43 文字程度）。
+/// Byte length of the reset token (about 43 chars in base64url).
 const RESET_TOKEN_BYTES: usize = 32;
 
-/// リセット要求の結果。アカウントの有無では分岐しない（列挙防止）。
+/// Result of a reset request. Doesn't branch on whether the account exists (enumeration prevention).
 pub enum RequestResetOutcome {
-    /// 受理（アカウントが存在すればリンクを届けた。存在しなくても同じ応答）。
+    /// Accepted (if the account exists, the link was delivered; the same response if it doesn't).
     Accepted,
-    /// リンクを届ける手段が無い（SMTP で送れず、かつコンソール出力も無効）。
-    /// 機能自体が利用できない状態でアカウントに依存しないため、返しても列挙にはならない。
+    /// No means to deliver the link (SMTP can't send and console output is disabled).
+    /// The feature itself is unavailable, independent of accounts, so returning it is not enumeration.
     Unavailable,
-    /// IP 単位のレート制限超過。
+    /// Per-IP rate limit exceeded.
     RateLimited,
 }
 
-/// リセットリンクの届け先。SMTP で送れるならメール、送れない（未設定・設定の読み出しに失敗）
-/// ならサーバのコンソール（標準出力。`docker logs` で読む）へ出す。
+/// Where the reset link goes. Email if SMTP can send; if not (unset, or failed to read the settings),
+/// the server console (stdout; read with `docker logs`).
 ///
-/// コンソール出力はメール配送を用意していない環境での復旧経路であり、リンクを読めた者は
-/// そのアカウントのパスワードを再設定できる。運用者以外がログを読める環境では
-/// `PASSWORD_RESET_CONSOLE_LINK_ENABLED=false` で塞ぐ。
+/// Console output is a recovery path for environments without mail delivery, and anyone who can read the link
+/// can reset that account's password. In environments where non-operators can read the logs,
+/// close it with `PASSWORD_RESET_CONSOLE_LINK_ENABLED=false`.
 enum ResetLinkDelivery {
     Email(SmtpServerConfig),
     Console,
@@ -76,9 +76,9 @@ enum ResetLinkDelivery {
 
 pub enum ResetPasswordOutcome {
     Ok,
-    /// トークンが無効・期限切れ・使用済み・別テナント。
+    /// The token is invalid, expired, used, or for another tenant.
     InvalidOrExpired,
-    /// 新パスワードがポリシーを満たさない（長さ・漏えい済み・再利用。AP7）。
+    /// The new password doesn't satisfy the policy (length, breached, reused. AP7).
     WeakPassword(PasswordRejection),
     Internal(String),
 }
@@ -96,9 +96,9 @@ pub struct PasswordResetService {
     rate_limiter: Arc<dyn LoginRateLimiter>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
-    /// テナントが上書きできる設定の解決（ADR-0058）。参照のたびに引く。
+    /// Resolution of settings tenants can override (ADR-0058). Looked up every time.
     settings: Arc<dyn EffectiveTenantSettings>,
-    /// リセットリンクの土台となる公開ベース URL（web 画面。末尾スラッシュ無し）。
+    /// Public base URL the reset link is built on (web screens; no trailing slash).
     console_base_url: String,
 }
 
@@ -138,22 +138,22 @@ impl PasswordResetService {
         }
     }
 
-    /// リセット対象の利用者を、要求テナント（ログイン画面のテナント）から解決する（MT26）。
+    /// Resolves the user to reset from the requested tenant (the login screen's tenant) (MT26).
     ///
-    /// **所属元 → 参加先のゲスト**の順で引く。ログイン欄の解決
-    /// （[`crate::application::login_user_resolution`]）と同じ順序で、ゲストが参加先テナントの
-    /// 「パスワードをお忘れですか？」からも要求できるようにするためである。ゲストは参加先の画面から
-    /// ログインできる（ADR-0009 §8）のに再設定だけ所属元限定では、行き止まりになる。
+    /// Looked up in the order **home tenant -> guest in host tenants**. Same order as login field resolution
+    /// ([`crate::application::login_user_resolution`]), so guests can also request it from "Forgot your password?"
+    /// on a host tenant. Guests can log in from the host tenant's screen (ADR-0009 §8), so limiting only reset
+    /// to the home tenant would be a dead end.
     ///
-    /// 突き合わせるのは `users.email`（メールの届け先そのもの）で、登録簿は引かない。
-    /// メールでのログインを有効にしていないテナントでも再設定は使えなければならない（ADR-0025 §5）。
+    /// Matched against `users.email` (the mail destination itself); the registry is not looked up.
+    /// Reset must work even in tenants that haven't enabled email login (ADR-0025 §5).
     ///
-    /// **ドメイン経路（ADR-0029）は通さない。** ドメイン修飾から所属元を 1 つに決める利点は
-    /// 「曖昧なとき誰も返せない」を減らすことだが、ここでの応答は成否によらず常に `Accepted` で、
-    /// 曖昧なときの結果は「メールが来ない」＝解決できない場合と同じである。経路を増やして
-    /// 得られるものが無い。
+    /// **The domain path (ADR-0029) is not used.** The benefit of pinning the home tenant from a domain qualifier is
+    /// reducing "nobody can be returned when ambiguous", but the response here is always `Accepted` regardless,
+    /// and the result when ambiguous is "no email arrives" = the same as unresolvable. Adding a path
+    /// gains nothing.
     ///
-    /// 無効（`is_active` でない）利用者は対象にしない。パスワードを設定し直せても入れないため。
+    /// Inactive users (not `is_active`) are excluded. Even if they reset the password, they can't get in.
     async fn find_resettable_user(
         &self,
         tenant: TenantContext,
@@ -169,8 +169,8 @@ impl PasswordResetService {
         Ok(guest.filter(User::is_active))
     }
 
-    /// リセットを要求する。`tenant` はログイン画面のテナント（所属元・参加先のゲストの順で引く）。
-    /// アカウントの有無・状態に関わらず `Accepted` を返す（列挙防止）。
+    /// Requests a reset. `tenant` is the login screen's tenant (looked up home tenant first, then as a guest in host tenants).
+    /// Returns `Accepted` regardless of whether the account exists or its state (enumeration prevention).
     pub async fn request_reset(
         &self,
         tenant: TenantContext,
@@ -184,11 +184,11 @@ impl PasswordResetService {
             return RequestResetOutcome::RateLimited;
         }
 
-        // 届け先を先に決める。SMTP も コンソール出力も無ければ機能自体が使えない
-        //（アカウント非依存のため、ここで分岐しても列挙にはならない）。コンソール出力の可否は
-        // 利用者を解決する前なので**要求テナント**の値で見る（所属元の値は解決後にもう一度見る）。
-        // ⚠ メールの経路も**ログイン画面のテナント**で決める（ADR-0058 §8）。利用者を引いてから
-        //   所属元で決めると、「使えない / 受け付けた」の違いから利用者の有無が漏れる。
+        // Decide the destination first. Without either SMTP or console output, the feature itself is unavailable
+        // (account-independent, so branching here is not enumeration). Whether console output is allowed is checked
+        // with the **requested tenant's** value since the user isn't resolved yet (the home tenant's value is checked again after).
+        // ⚠ The mail channel is also decided by **the login screen's tenant** (ADR-0058 §8). Deciding by the home tenant
+        //   after looking up the user would leak the user's existence through the "unavailable / accepted" difference.
         let delivery = match self
             .system_settings
             .smtp_server_for(tenant.tenant_id())
@@ -201,10 +201,10 @@ impl PasswordResetService {
             },
             Err(e) => {
                 tracing::warn!(error = %e, "failed to load SMTP settings for password reset");
-                // 設定を読めないだけで、コンソール経路は使える（SMTP 未設定と同じ扱いにすると
-                // 障害時に復旧手段まで失う）。**SMTP を設定済みの環境でもここを通り得る**ため、
-                // 「SMTP を設定すればコンソールには出ない」とは言えない（設定の説明・OPERATIONS
-                // にも明記する）。
+                // Only the settings can't be read; the console path still works (treating it like SMTP unset would
+                // lose the recovery means during an outage). **This can be reached even in environments with SMTP configured**,
+                // so "configuring SMTP keeps it off the console" doesn't hold (also stated in the settings description and
+                // OPERATIONS).
                 match self.console_link_delivery(tenant.tenant_id()).await {
                     Some(delivery) => delivery,
                     None => return RequestResetOutcome::Unavailable,
@@ -212,7 +212,7 @@ impl PasswordResetService {
             }
         };
 
-        // ここから先はアカウントの有無・状態・送信結果に関わらず Accepted（列挙防止）。
+        // From here on, Accepted regardless of account existence, state or send result (enumeration prevention).
         let user = match self.find_resettable_user(tenant, email.trim()).await {
             Ok(Some(user)) => user,
             Ok(None) => return RequestResetOutcome::Accepted,
@@ -222,9 +222,9 @@ impl PasswordResetService {
             }
         };
 
-        // リンクは所属元テナントを指し、再設定も所属元でしか通らない（MT26）ので、所属元の値で決める
-        // （ADR-0058）。ゲストが参加先の画面から要求した場合、上で見た要求テナントの可否に加えて
-        // 所属元でもコンソール出力が許されていなければ出さない（どちらかが塞いだら塞ぐ）。
+        // The link points at the home tenant and reset only passes there (MT26), so decide by the home tenant's value
+        // (ADR-0058). If a guest requested from a host tenant's screen, in addition to the requested tenant's setting above,
+        // it is not printed unless the home tenant also allows console output (closed if either closes it).
         if matches!(delivery, ResetLinkDelivery::Console) && user.tenant_id != tenant.tenant_id() {
             match self
                 .settings
@@ -245,7 +245,7 @@ impl PasswordResetService {
                 }
             }
         }
-        // 旧トークンを失効させる前に引く（引けずに終わったとき、有効なリンクが 1 本も無くならないように）。
+        // Looked up before revoking old tokens (so a failed lookup doesn't leave no valid link at all).
         let reset_ttl = match self.settings.password_reset_ttl(user.tenant_id).await {
             Ok(ttl) => ttl,
             Err(e) => {
@@ -255,7 +255,7 @@ impl PasswordResetService {
         };
 
         let now = self.clock.now();
-        // 再要求時は旧トークンを失効させ、有効なリセットリンクを常に最新の 1 本にする。
+        // On a new request, revoke old tokens so the valid reset link is always the single latest one.
         if let Err(e) = self
             .reset_tokens
             .invalidate_all_for_user(user.id, now)
@@ -270,7 +270,7 @@ impl PasswordResetService {
         let record = PasswordResetToken {
             token_hash: crypto::sha256_hex(&token),
             user_id: user.id,
-            // 本人が要求した再設定。⚠ この用途のリンクではパスキーを登録させない（ADR-0062）。
+            // A reset requested by the person. ⚠ Links for this purpose don't allow registering a passkey (ADR-0062).
             purpose: ResetPurpose::Reset,
             expires_at,
             used_at: None,
@@ -281,7 +281,7 @@ impl PasswordResetService {
             return RequestResetOutcome::Accepted;
         }
 
-        // 監査には内部 ID のみ記録する（トークン・メールアドレスは出さない）。
+        // Only internal IDs are recorded in the audit (no tokens or email addresses).
         self.audit
             .record(
                 AuditEventType::PasswordResetRequested,
@@ -294,13 +294,13 @@ impl PasswordResetService {
             )
             .await;
 
-        // トークンは base64url（URL 安全）なのでそのまま連結できる。
-        // 文言は MT19（API の多言語化）まで日英併記の固定文とする。
+        // The token is base64url (URL-safe), so it can be concatenated as-is.
+        // Until MT19 (API i18n), the wording is fixed text in both Japanese and English.
         //
-        // **リンクは要求テナントではなく所属元テナント（`user.tenant_id`）を指す**（MT26）。
-        // 再設定の実行（[`Self::reset_password`]）は「トークンの利用者の所属元 == 要求テナント」を
-        // 要求するため、参加先テナントを指すリンクでは必ず弾かれる。所属元を指しておけば、ゲストが
-        // 参加先の画面から要求しても、そのまま再設定まで進める。
+        // **The link points at the home tenant (`user.tenant_id`), not the requested tenant** (MT26).
+        // Performing the reset ([`Self::reset_password`]) requires "home tenant of the token's user == requested tenant",
+        // so a link pointing at a host tenant would always be rejected. Pointing at the home tenant lets a guest
+        // who requested from a host tenant's screen go straight through to the reset.
         let reset_url = format!(
             "{}/{}/password-reset?token={}",
             self.console_base_url, user.tenant_id, token
@@ -326,15 +326,15 @@ impl PasswordResetService {
                     ),
                 };
                 if let Err(e) = self.mailer.send(&server, &mail).await {
-                    // 宛先等の PII はログに出さない。応答も Accepted のまま（列挙防止）。
+                    // PII such as the destination is not logged. The response stays Accepted (enumeration prevention).
                     tracing::warn!(error = %e, "password reset email delivery failed");
                 }
             }
-            // メール配送が無い環境の復旧経路。運用者が `docker logs` から URL を拾う。
+            // Recovery path for environments without mail delivery. The operator picks the URL from `docker logs`.
             //
-            // **INFO で出す**のは意図的。取り込み層は WARN 以上だけを `log` テーブルへ書くため、
-            // INFO なら URL（＝リセットトークン）が DB に残らず、管理コンソールのログ画面にも
-            // 出ない。宛先メールアドレスは出さず、監査と同じ内部 ID だけを添える。
+            // **Printing at INFO** is intentional. The ingestion layer writes only WARN and above to the `log` table, so
+            // at INFO the URL (= reset token) doesn't remain in the DB and doesn't appear in the admin console's log
+            // screen. The destination email address is not printed; only the same internal IDs as the audit are attached.
             ResetLinkDelivery::Console => tracing::info!(
                 user_id = %user.id,
                 expires_at = %expires_at.to_rfc3339(),
@@ -345,9 +345,9 @@ impl PasswordResetService {
         RequestResetOutcome::Accepted
     }
 
-    /// SMTP で送れないときの届け先。コンソール出力が無効なら `None`（＝機能を提供できない）。
+    /// Destination when SMTP can't send. `None` if console output is disabled (= the feature can't be offered).
     ///
-    /// 設定を読めなければ `None` に倒す（塞ぐ側へ落とす。リンクを読めた者はパスワードを再設定できる）。
+    /// If the setting can't be read, falls back to `None` (to the closed side; anyone who can read the link can reset the password).
     async fn console_link_delivery(&self, tenant_id: TenantId) -> Option<ResetLinkDelivery> {
         match self
             .settings
@@ -362,9 +362,9 @@ impl PasswordResetService {
         }
     }
 
-    /// トークンを消費して新パスワードを設定する。成功時は当該ユーザーの SSO セッション・
-    /// refresh token・未消費 authorization code を全失効させる（忘失リセットは資格情報漏えいの
-    /// 可能性を含むため）。
+    /// Consumes the token and sets a new password. On success, revokes all of the user's SSO sessions,
+    /// refresh tokens and unconsumed authorization codes (a forgotten-password reset may involve leaked
+    /// credentials).
     pub async fn reset_password(
         &self,
         tenant: TenantContext,
@@ -375,10 +375,10 @@ impl PasswordResetService {
         if token.is_empty() {
             return ResetPasswordOutcome::InvalidOrExpired;
         }
-        // 利用者に依らない要件（長さ・漏えい済み。AP7）をトークン消費より先に見る（入力ミスで
-        // 単回トークンを無駄に消費させない）。再利用の判定は利用者を解決した後に行う。
-        // 要求テナントはこの後で所属元と一致することを確かめる（一致しなければトークンを返さない）ので、
-        // ここで見るのは所属元のポリシーである。
+        // Check the user-independent requirements (length, breached. AP7) before consuming the token (so a typo
+        // doesn't waste the single-use token). The reuse check is done after resolving the user.
+        // The requested tenant is confirmed to match the home tenant afterwards (otherwise no token is returned), so
+        // what is checked here is the home tenant's policy.
         match self
             .password_policy
             .validate_input(tenant.tenant_id(), new_password)
@@ -400,10 +400,10 @@ impl PasswordResetService {
             Err(e) => return ResetPasswordOutcome::Internal(e.to_string()),
         };
 
-        // トークンの所有者を解決し、リンクのテナント（画面の経路）と所属元が一致することを確認する
-        // （他テナントの reset 画面へトークンを持ち込ませない）。ACTIVE でないユーザーも拒否。
-        // ⚠ 仮登録（ADR-0064）の利用者を通すのは**設定リンクだけ**。忘失時の再設定リンクで
-        //   仮登録を終わらせられると、メールを一時的に読める相手が本人より先に入れてしまう。
+        // Resolve the token's owner and confirm the link's tenant (the screen's route) matches the home tenant
+        // (so a token can't be carried to another tenant's reset screen). Non-ACTIVE users are also refused.
+        // ⚠ Provisionally registered users (ADR-0064) are let through **only by setup links**. If a forgotten-password reset link
+        //   could complete provisional registration, someone who can temporarily read the email could get in before the person.
         let may_use = |user: &User| match record.purpose {
             ResetPurpose::Setup => user.can_finish_setup(),
             ResetPurpose::Reset => user.is_active(),
@@ -414,9 +414,9 @@ impl PasswordResetService {
             Err(e) => return ResetPasswordOutcome::Internal(e.to_string()),
         };
 
-        // 過去パスワードの再利用禁止（AP7）。忘失リセットは「思い出した古いパスワードへ戻す」
-        // 経路になりやすいため、変更経路と同じ規則を適用する。トークンは既に消費済みなので、
-        // 拒否された利用者は再発行からやり直すことになる。
+        // No reuse of past passwords (AP7). A forgotten-password reset easily becomes a path "back to the old password I remembered",
+        // so the same rules as the change path apply. The token is already consumed, so
+        // a refused user has to start over from reissue.
         match self
             .password_policy
             .validate_reuse(
@@ -436,8 +436,8 @@ impl PasswordResetService {
             Ok(h) => h,
             Err(e) => return ResetPasswordOutcome::Internal(e.to_string()),
         };
-        // 現行ハッシュを条件にした置き換え（AP7）。`false` は読んでから書くまでの間に別の要求が
-        // パスワードを変えたこと。トークンは消費済みなので、やり直すには再発行が要る。
+        // Replace conditioned on the current hash (AP7). `false` means another request changed the password between
+        // read and write. The token is consumed, so starting over needs a reissue.
         match self
             .users
             .update_password(user.id, &user.password_hash, &new_hash)
@@ -454,16 +454,16 @@ impl PasswordResetService {
             .record_change(user.tenant_id, user.id, &user.password_hash)
             .await;
 
-        // 本人がパスワードを決めたので、仮登録を外す（ADR-0064）。⚠ 外せなければ成功と言わない
-        // ——パスワードはあるのに入れない人になり、リンクはもう使い切っている。
+        // The person chose a password, so remove the provisional registration (ADR-0064). ⚠ If it can't be removed, don't report success
+        // ——they'd be someone with a password who can't get in, and the link is already used up.
         if user.pending_setup {
             if let Err(e) = self.users.finish_setup(user.id).await {
                 return ResetPasswordOutcome::Internal(e.to_string());
             }
         }
 
-        // 全セッション・トークンの失効（fail-open にしない: 失敗はログのみ。パスワードは既に
-        // 更新済みで、旧資格情報でのログインはできない）。
+        // Revoke all sessions and tokens (not fail-open: failures are only logged. The password is already
+        // updated, so login with old credentials is impossible).
         if let Err(e) = self.sso_sessions.delete_all_for_user(user.id).await {
             tracing::warn!(error = %e, "failed to revoke SSO sessions after password reset");
         }
@@ -553,8 +553,8 @@ mod tests {
     }
     #[async_trait]
     impl UserRepository for FakeUsers {
-        /// 本番の sqlx 実装は 1 文の UPDATE で加算する（SEC13）。フェイクは単一スレッドの
-        /// テストでしか動かないので、同じ結果になる素朴な加算で足りる。
+        /// The production sqlx implementation increments in a single UPDATE (SEC13). The fake only runs in
+        /// single-threaded tests, so a naive increment giving the same result is enough.
         async fn record_login_failure(
             &self,
             id: Uuid,
@@ -619,7 +619,7 @@ mod tests {
             password_hash: &str,
         ) -> DomainResult<bool> {
             let mut rows = self.rows.lock().unwrap();
-            // 本番実装と同じ compare-and-swap（現行ハッシュが一致するときだけ書き換える）。
+            // Same compare-and-swap as the production implementation (rewrite only when the current hash matches).
             match rows
                 .iter_mut()
                 .find(|u| u.id == id && u.password_hash == expected)
@@ -916,7 +916,7 @@ mod tests {
         settings: crate::application::tenant_settings::testing::TenantSettingsFixture,
     }
 
-    /// SMTP のみを設定した検証台（コンソール出力は無効）。
+    /// Test bed with only SMTP configured (console output disabled).
     fn harness(smtp_configured: bool, limiter_allowance: usize) -> Harness {
         harness_with(smtp_configured, limiter_allowance, false)
     }
@@ -933,7 +933,7 @@ mod tests {
         let codes = Arc::new(FakeCodes::default());
         let mailer = Arc::new(FakeMailer::default());
         let sink = Arc::new(CapturingSink::default());
-        // 全体の値。テナントの行は各試験が `settings` へ直接入れる。
+        // Global values. Tenant rows are put directly into `settings` by each test.
         let settings = crate::application::tenant_settings::testing::tenant_settings();
         settings.set_global("PASSWORD_HISTORY_COUNT", "0");
         settings.set_global("PASSWORD_RESET_TTL_SECS", "3600");
@@ -992,7 +992,7 @@ mod tests {
         }
     }
 
-    /// コンソール出力（標準出力）を検証するための書き出し先。
+    /// Sink for verifying console output (stdout).
     #[derive(Clone, Default)]
     struct SharedBuffer(Arc<Mutex<Vec<u8>>>);
 
@@ -1019,11 +1019,11 @@ mod tests {
         }
     }
 
-    /// コンソール出力（INFO 以上）を拾いながら `future` を走らせる。
+    /// Runs `future` while capturing console output (INFO and above).
     ///
-    /// ⚠ **コンソールへリンクを出す経路を通す試験は、必ずこれで包む。** 購読者の無いスレッドが同じ
-    /// `tracing::info!` を先に踏むと、並行に走る別の試験の中でもその呼び出しが「誰も聞いていない」と
-    /// キャッシュされ、出力を拾えなくなる（手元では通り、CI でだけ落ちる）。
+    /// ⚠ **Tests that go through the path printing the link to the console must always be wrapped in this.** If a thread
+    /// with no subscriber hits the same `tracing::info!` first, that call site is cached as "nobody listening" even inside
+    /// another test running concurrently, and the output can't be captured (passes locally, fails only in CI).
     async fn capture_console<F: std::future::Future>(future: F) -> (F::Output, String) {
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::Layer;
@@ -1042,7 +1042,7 @@ mod tests {
         (output, logs.contents())
     }
 
-    /// 送信メール本文からリセットトークンを取り出す（`token=` 以降を行末まで）。
+    /// Extracts the reset token from the sent mail body (from `token=` to end of line).
     fn token_from_mail(mail: &OutgoingEmail) -> String {
         let body = &mail.body_text;
         let start = body.find("token=").expect("token in body") + "token=".len();
@@ -1064,7 +1064,7 @@ mod tests {
             .unwrap()
             .push(test_user(user, tenant, "known@example.com"));
 
-        // 実在アカウント・不存在アカウントとも Accepted（列挙防止）。
+        // Both existing and nonexistent accounts get Accepted (enumeration prevention).
         assert!(matches!(
             h.svc
                 .request_reset(TenantContext::new(tenant), "known@example.com", &ctx())
@@ -1077,14 +1077,14 @@ mod tests {
                 .await,
             RequestResetOutcome::Accepted
         ));
-        // メールは実在アカウントの 1 通だけ送られ、本文にリセットリンクを含む。
+        // Only one mail is sent, for the existing account, and its body contains the reset link.
         let sent = h.mailer.sent.lock().unwrap();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].1.to, "known@example.com");
         assert!(sent[0].1.body_text.contains(&format!(
             "https://idp.example.com/{tenant}/password-reset?token="
         )));
-        // 保存されるのはハッシュのみ。
+        // Only the hash is stored.
         let token = token_from_mail(&sent[0].1);
         let rows = h.tokens.rows.lock().unwrap();
         assert_eq!(rows.len(), 1);
@@ -1092,8 +1092,8 @@ mod tests {
         assert_ne!(rows[0].token_hash, token);
     }
 
-    /// SMTP が無い環境では、リセットリンクをサーバのコンソールへ出して復旧できること。
-    /// メールは送らず、トークンはハッシュのみ保存される（メール経路と同じ）。
+    /// In environments without SMTP, recovery works by printing the reset link to the server console.
+    /// No mail is sent, and only the token hash is stored (same as the mail path).
     #[tokio::test]
     async fn request_prints_the_link_to_the_console_when_smtp_is_missing() {
         let tenant: TenantId = Uuid::now_v7().into();
@@ -1115,13 +1115,13 @@ mod tests {
 
         let prefix = format!("https://idp.example.com/{tenant}/password-reset?token=");
         assert!(printed.contains(&prefix), "{printed}");
-        // 出力は INFO。取り込み層（`application_log::CaptureFilter`）は WARN 以上だけを `log` テーブルへ
-        // 書くため、リンクは DB にも管理コンソールのログ画面にも残らない。
+        // Output is at INFO. The ingestion layer (`application_log::CaptureFilter`) writes only WARN and above to the `log` table,
+        // so the link remains neither in the DB nor in the admin console's log screen.
         assert!(printed.contains("INFO"), "{printed}");
-        // 宛先メールアドレス（PII）は出さない。
+        // The destination email address (PII) is not printed.
         assert!(!printed.contains("admin@example.com"), "{printed}");
 
-        // メールは送られず、保存されるのはトークンのハッシュのみ。
+        // No mail is sent, and only the token hash is stored.
         assert!(h.mailer.sent.lock().unwrap().is_empty());
         let token = printed
             .split_once(&prefix)
@@ -1137,8 +1137,8 @@ mod tests {
         assert_eq!(rows[0].token_hash, crypto::sha256_hex(&token));
     }
 
-    /// コンソール出力を無効にした運用（ログを運用者以外が読める環境）では、SMTP が無ければ
-    /// 従来どおり「利用できない」を返す。
+    /// In operations with console output disabled (environments where non-operators can read logs), without SMTP
+    /// it returns "unavailable" as before.
     #[tokio::test]
     async fn request_is_unavailable_without_smtp_and_rate_limited() {
         let tenant: TenantId = Uuid::now_v7().into();
@@ -1188,16 +1188,16 @@ mod tests {
                 .await,
             ResetPasswordOutcome::Ok
         ));
-        // パスワードが更新される。
+        // The password is updated.
         assert_eq!(
             h.users.rows.lock().unwrap()[0].password_hash,
             "hash:new-password-123"
         );
-        // 全セッション・refresh token・未消費 code が失効する。
+        // All sessions, refresh tokens and unconsumed codes are revoked.
         assert_eq!(*h.sso.revoked_users.lock().unwrap(), vec![user]);
         assert_eq!(*h.refresh.revoked_users.lock().unwrap(), vec![user]);
         assert_eq!(*h.codes.revoked_users.lock().unwrap(), vec![user]);
-        // 監査に requested + completed が記録され、トークンは漏れない。
+        // requested + completed are recorded in the audit, and the token doesn't leak.
         {
             let events = h.sink.events.lock().unwrap();
             assert!(events
@@ -1213,7 +1213,7 @@ mod tests {
                 .unwrap_or(true)));
         }
 
-        // 同じトークンの再利用は拒否される（単回消費）。
+        // Reusing the same token is refused (consumed once).
         assert!(matches!(
             h.svc
                 .reset_password(
@@ -1242,7 +1242,7 @@ mod tests {
             .await;
         let token = token_from_mail(&h.mailer.sent.lock().unwrap()[0].1);
 
-        // 弱いパスワードはトークンを消費しない（先に強度検証）。
+        // A weak password doesn't consume the token (strength is checked first).
         assert!(matches!(
             h.svc
                 .reset_password(TenantContext::new(tenant), &token, "short", &ctx())
@@ -1250,8 +1250,8 @@ mod tests {
             ResetPasswordOutcome::WeakPassword(_)
         ));
 
-        // 別テナントの reset 画面へトークンを持ち込むと拒否（このとき消費される。
-        // 消費後の所有者照合のため。安全側: 攻撃者に再試行させない）。
+        // Carrying the token to another tenant's reset screen is refused (it is consumed at that point,
+        // because owner matching happens after consumption. Safe side: the attacker can't retry).
         let other: TenantId = Uuid::now_v7().into();
         assert!(matches!(
             h.svc
@@ -1264,7 +1264,7 @@ mod tests {
                 .await,
             ResetPasswordOutcome::InvalidOrExpired
         ));
-        // パスワードは変わらない。
+        // The password doesn't change.
         assert_eq!(
             h.users.rows.lock().unwrap()[0].password_hash,
             "hash:old-password"
@@ -1291,7 +1291,7 @@ mod tests {
             .await;
         let second = token_from_mail(&h.mailer.sent.lock().unwrap()[1].1);
 
-        // 旧トークンは失効し、新トークンだけが使える。
+        // The old token is revoked; only the new token works.
         assert!(matches!(
             h.svc
                 .reset_password(
@@ -1316,8 +1316,8 @@ mod tests {
         ));
     }
 
-    /// リンクの有効期間は利用者の所属元テナントの値。⚠ 2 テナントで確かめる ——行のあるテナントは
-    /// その値、行の無いテナントは全体（1 時間）に従う。
+    /// The link lifetime is the value of the user's home tenant. ⚠ Checked with 2 tenants ——a tenant with a row uses
+    /// that value, a tenant without a row follows the global value (1 hour).
     #[tokio::test]
     async fn the_link_lifetime_follows_the_home_tenant() {
         let short: TenantId = Uuid::now_v7().into();
@@ -1353,8 +1353,8 @@ mod tests {
         );
     }
 
-    /// コンソール出力の可否もテナントごと。全体で塞いであっても、許したテナントでは使え、
-    /// 行の無いテナントは全体に従って使えない（アカウントに依らない `Unavailable`）。
+    /// Whether console output is allowed is also per tenant. Even if closed globally, it works in a tenant that allows it,
+    /// and a tenant without a row follows the global value and can't use it (account-independent `Unavailable`).
     #[tokio::test]
     async fn the_console_link_is_decided_per_tenant() {
         let allows: TenantId = Uuid::now_v7().into();
@@ -1394,7 +1394,7 @@ mod tests {
         ));
     }
 
-    /// 仮登録の利用者に、指定した用途のトークンを直接置く（ADR-0064 の試験用）。
+    /// Puts a token of the given purpose directly on a provisionally registered user (for ADR-0064 tests).
     fn pending_user_with_token(
         h: &Harness,
         tenant: TenantId,
@@ -1416,7 +1416,7 @@ mod tests {
         (user, token)
     }
 
-    /// ADR-0064: 設定リンクでパスワードを決めると、仮登録が外れる。
+    /// ADR-0064: choosing a password via a setup link removes the provisional registration.
     #[tokio::test]
     async fn a_setup_link_ends_the_pending_state() {
         let tenant: TenantId = Uuid::now_v7().into();
@@ -1438,7 +1438,7 @@ mod tests {
         assert!(row.is_active());
     }
 
-    /// ⚠ 忘失時の再設定リンクでは仮登録を終わらせない（メールを読める相手が本人より先に入れる）。
+    /// ⚠ A forgotten-password reset link doesn't complete provisional registration (someone who can read the email would get in before the person).
     #[tokio::test]
     async fn a_reset_link_cannot_end_the_pending_state() {
         let tenant: TenantId = Uuid::now_v7().into();

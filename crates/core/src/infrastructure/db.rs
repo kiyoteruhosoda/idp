@@ -1,21 +1,21 @@
-//! MariaDB 接続プールと、起動時のスキーマバージョン照合。
+//! MariaDB connection pool and schema version check at startup.
 
 use crate::config::Config;
 use sqlx::mysql::{MySqlPool, MySqlPoolOptions};
 use sqlx::Executor;
 
-/// アプリ全体で共有する DB プールの型エイリアス。
+/// Type alias for the DB pool shared across the app.
 pub type Db = MySqlPool;
 
-/// 埋め込みマイグレーション（リポジトリルートの `migrations/`）。CI・照合で参照する。
-/// パスは crate（`assay-core`）のマニフェスト基準。ワークスペースルートの `migrations/` を指す。
+/// Embedded migrations (`migrations/` at the repository root). Referenced by CI and the version check.
+/// The path is relative to the crate (`assay-core`) manifest and points at `migrations/` at the workspace root.
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
 
 pub async fn connect(config: &Config) -> Result<Db, sqlx::Error> {
     MySqlPoolOptions::new()
         .max_connections(config.db_max_connections())
-        // 全接続のセッションタイムゾーンを UTC に固定する。これにより CURRENT_TIMESTAMP(6) や
-        // DATETIME の読み書きが常に UTC で一貫する（CLAUDE.md「時刻は常に UTC」）。
+        // Pin the session time zone of every connection to UTC, so that CURRENT_TIMESTAMP(6) and
+        // DATETIME reads/writes are always consistently UTC (CLAUDE.md "time is always UTC").
         .after_connect(|conn, _meta| {
             Box::pin(async move {
                 conn.execute("SET time_zone = '+00:00'").await?;
@@ -26,22 +26,22 @@ pub async fn connect(config: &Config) -> Result<Db, sqlx::Error> {
         .await
 }
 
-/// スキーマ整合性の fail-fast チェック。
+/// Fail-fast schema consistency check.
 ///
-/// 埋め込みマイグレーションの最新 version を「アプリが期待する version」とし、DB に適用済みの
-/// 最大 version と突合する。**DB が期待 version 未満なら起動を失敗**させる。厳密一致にはせず
-/// 「DB がアプリの期待 version 以上」を許容する（ローリングデプロイ対応）。
+/// Treats the latest embedded migration version as "the version the app expects" and compares it with the
+/// maximum version applied to the DB. **Startup fails if the DB is below the expected version.** It is not an exact match;
+/// "DB at or above the app's expected version" is allowed (supports rolling deploys).
 ///
-/// 設計根拠: `docs/adr/0004-schema-version-sync.md`（Alembic→sqlx version と読み替え）。
-/// マイグレーションの**適用そのもの**はアプリでは行わず、専用ジョブ（`sqlx migrate run`）が担う。
-/// アプリ（このバイナリ）が期待するスキーマ version ＝ 埋め込みマイグレーションの最大 version。
-/// マイグレーションが 1 件も無ければ `None`。DB を参照しない。
+/// Rationale: `docs/adr/0004-schema-version-sync.md` (read Alembic as sqlx version).
+/// **Applying** migrations is not done by the app but by a dedicated job (`sqlx migrate run`).
+/// The schema version this app (binary) expects = the maximum embedded migration version.
+/// `None` if there are no migrations. Does not touch the DB.
 pub fn embedded_schema_version() -> Option<i64> {
     MIGRATOR.iter().map(|m| m.version).max()
 }
 
-/// DB に適用済み（成功記録あり）のマイグレーション最大 version。未適用・空テーブルなら `Ok(None)`。
-/// `_sqlx_migrations` を読めない（未 migrate 等）場合は `Err`。
+/// Maximum version of migrations applied to the DB (with a success record). `Ok(None)` if none applied or the table is empty.
+/// `Err` if `_sqlx_migrations` can't be read (not migrated, etc.).
 pub async fn applied_schema_version(pool: &Db) -> anyhow::Result<Option<i64>> {
     sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations WHERE success = TRUE")
         .fetch_one(pool)
@@ -82,8 +82,8 @@ pub async fn verify_schema_version(pool: &Db) -> anyhow::Result<()> {
 mod tests {
     use super::embedded_schema_version;
 
-    /// 埋め込みマイグレーション（コンパイル時に `migrations/` を取り込む）の最大 version を返せること。
-    /// バージョン情報画面の「期待バージョン」の出所であり、0013 追加後は 13 以上になる（DB 不要）。
+    /// Must return the maximum version of the embedded migrations (`migrations/` included at compile time).
+    /// It is the source of "expected version" on the version info screen; after adding 0013 it is 13 or more (no DB needed).
     #[test]
     fn embedded_schema_version_reflects_latest_migration() {
         let version = embedded_schema_version().expect("migrations must be embedded");

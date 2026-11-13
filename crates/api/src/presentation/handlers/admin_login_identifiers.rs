@@ -1,12 +1,12 @@
-//! ログイン識別子の管理 API（`/{tenant_id}/admin/users/{user_id}/login-identifiers`。AP8）。
+//! Login identifier management API (`/{tenant_id}/admin/users/{user_id}/login-identifiers`, AP8).
 //!
-//! テナント管理者が、利用者に**複数のログイン識別子**（電話番号・社員番号・別名のユーザー名・
-//! メールアドレス）を割り当てる。一覧は `idp.users:read`、追加・更新・削除・主たるメールへの昇格は
-//! `idp.users:write` が要る（`RequirePerms<UsersRead>` / `<UsersWrite>`。`idp.tenant.admin` は両方を含意する）。
+//! Tenant admins assign **multiple login identifiers** to a user (phone number, employee number, alias username,
+//! email address). Listing needs `idp.users:read`; add/update/delete/promote to primary email need
+//! `idp.users:write` (`RequirePerms<UsersRead>` / `<UsersWrite>`; `idp.tenant.admin` implies both).
 //!
-//! 応答には登録どおりの `display_value` と照合キーの `normalized_value` を両方返す。管理者が
-//! 「登録した値」と「実際に一致する値」を突き合わせられないと、電話番号のように書き方が
-//! 揺れる識別子の設定ミスに気づけない。
+//! Responses return both the `display_value` as registered and the match key `normalized_value`. Unless admins
+//! can compare "the value registered" with "the value that actually matches", they cannot notice misconfigured
+//! identifiers whose notation varies, like phone numbers.
 
 use crate::application::login_identifier_management::{
     AddLoginIdentifierCommand, LoginIdentifierEntry, LoginIdentifierManagementError,
@@ -28,20 +28,20 @@ use uuid::Uuid;
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct LoginIdentifierResponse {
-    /// 登録簿の行 id。`null` は**主たるログイン識別子**（`users.preferred_username`）を
-    /// 読み出し時に合成した行で、保存されていない。`is_primary` が `true` になる。
+    /// Registry row id. `null` is a row for the **primary login identifier** (`users.preferred_username`)
+    /// synthesized on read, not stored. `is_primary` is `true` for it.
     pub id: Option<String>,
-    /// `username` / `email` / `phone_number` / `employee_number`。
+    /// `username` / `email` / `phone_number` / `employee_number`.
     pub identifier_type: String,
-    /// 登録されたままの値（表示用）。
+    /// The value as registered (for display).
     pub display_value: String,
-    /// 照合キー（種別ごとの正規化を適用した値）。
+    /// Match key (the value with per-kind normalization applied).
     pub normalized_value: String,
     pub is_active: bool,
-    /// 主たるログイン識別子か。`true` の行は識別子単位では変更・削除できない
-    /// （変えるならプロフィール編集、止めるならアカウントの無効化）。
+    /// Whether this is the primary login identifier. Rows with `true` cannot be changed or deleted per identifier
+    /// (to change it edit the profile; to stop it disable the account).
     pub is_primary: bool,
-    /// 主メールアドレスの行か（ADR-0050）。主識別子と同じく個別の操作の対象にならない。
+    /// Whether this is the primary email row (ADR-0050). Like the primary identifier, not subject to individual operations.
     pub is_primary_email: bool,
     pub created_at: String,
     pub updated_at: String,
@@ -71,10 +71,10 @@ impl From<UserLoginIdentifier> for LoginIdentifierResponse {
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct LoginIdentifierCreateRequest {
-    /// `username` / `email` / `phone_number` / `employee_number`。
+    /// `username` / `email` / `phone_number` / `employee_number`.
     pub identifier_type: String,
     pub value: String,
-    /// 省略時は有効。
+    /// Enabled when omitted.
     #[serde(default = "default_true")]
     pub is_active: bool,
 }
@@ -88,7 +88,7 @@ pub struct LoginIdentifierUpdateRequest {
     pub is_active: bool,
 }
 
-/// 利用者のログイン識別子を一覧する。無効な行も返す（無効化した識別子は管理対象として残るため）。
+/// Lists the user's login identifiers. Also returns disabled rows (disabled identifiers remain managed).
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/users/{user_id}/login-identifiers",
@@ -118,7 +118,7 @@ pub async fn list_login_identifiers(
     ))
 }
 
-/// ログイン識別子を追加する。
+/// Adds a login identifier.
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/users/{user_id}/login-identifiers",
@@ -182,7 +182,7 @@ pub async fn add_login_identifier(
     Ok((StatusCode::CREATED, Json(added.into())))
 }
 
-/// 識別子単位で有効/無効を切り替える（仕様 §4）。行は残るため、値が他の利用者へ移ることはない。
+/// Toggles enabled/disabled per identifier (spec §4). The row remains, so the value never moves to another user.
 #[utoipa::path(
     patch,
     path = "/{tenant_id}/admin/users/{user_id}/login-identifiers/{identifier_id}",
@@ -237,11 +237,11 @@ pub async fn update_login_identifier(
     Ok(Json(updated.into()))
 }
 
-/// 別名のメールアドレスを主メールへ昇格させる（ADR-0052）。
+/// Promotes an alias email address to the primary email (ADR-0052).
 ///
-/// **`PATCH` の項目にしない。** 昇格は「この行の値を `true` にする」のではなく、いまの主メール行の
-/// 降格と選んだ行の昇格の**入れ替え**である。項目として書けるようにすると `is_primary_email: false`
-/// （＝誰も主メールでない状態）が要求として書けてしまい、それは受け付けられない。
+/// **Not a `PATCH` field.** Promotion is not "set this row's value to `true`" but a **swap** of demoting the current
+/// primary email row and promoting the chosen row. As a writable field, `is_primary_email: false`
+/// (= no primary email at all) could be written as a request, which cannot be accepted.
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/users/{user_id}/login-identifiers/{identifier_id}/primary-email",
@@ -288,7 +288,7 @@ pub async fn promote_primary_email(
     Ok(Json(promoted.into()))
 }
 
-/// 識別子を削除する。主たるログイン識別子（`is_primary`）は登録簿に無いため対象にならない。
+/// Deletes an identifier. The primary login identifier (`is_primary`) is not in the registry, so it is not a target.
 #[utoipa::path(
     delete,
     path = "/{tenant_id}/admin/users/{user_id}/login-identifiers/{identifier_id}",

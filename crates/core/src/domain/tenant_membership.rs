@@ -1,7 +1,8 @@
-//! TenantMemberships エンティティ（招待とゲスト参加。ADR-0009 §3）。
+//! TenantMemberships entity (invitations and guest participation; ADR-0009 §3).
 //!
-//! HOME 行はユーザー作成時に自動生成する投影（所属元の単一の出所は `users.tenant_id`）。
-//! GUEST 行は招待フローで作成し、`INVITED`（未承諾）→ `ACTIVE`（承諾済み）と遷移する。
+//! HOME rows are a projection generated automatically at user creation (the single source of home
+//! is `users.tenant_id`). GUEST rows are created by the invitation flow and transition `INVITED`
+//! (not accepted) → `ACTIVE` (accepted).
 #![allow(dead_code)]
 
 use crate::domain::account_note::AccountNote;
@@ -10,65 +11,68 @@ use crate::domain::values::{MembershipStatus, MembershipType, UserStatus};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-/// メンバー一覧の 1 件（読み取りモデル）。HOME / GUEST を問わず、当該テナントに参加している
-/// 利用者を表す。メンバーシップと利用者を結合した表示専用の行であり、エンティティではない。
+/// One entry of the member list (read model). Represents a user participating in the tenant,
+/// whether HOME or GUEST. A display-only row joining membership and user, not an entity.
 ///
-/// email / name は表示用に所属元照合なしで解決する（招待作成は内部 ID で行うため、参加先管理者が
-/// 被招待者を識別できるよう最小限の情報のみ返す）。
+/// email / name are resolved for display without the home check (invitations are created by
+/// internal ID, so only the minimum needed for the joined tenant's admin to identify the invitee is
+/// returned).
 #[derive(Debug, Clone)]
 pub struct TenantMember {
     pub user_id: Uuid,
     pub email: Option<String>,
-    /// 主たるログイン識別子（ユーザー名。AP15b 以降は登録簿の `primary_of_user` 行が正本）。
+    /// Primary login identifier (username; since AP15b the registry's `primary_of_user` row is
+    /// authoritative).
     ///
-    /// 表示値（`display_value`）をそのまま返す。照合に使う正規化値ではないのは、一覧は
-    /// **利用者が登録したままの綴りで読めなければならない**ためである（ADR-0025）。
-    /// 主識別子を持たない利用者（ユーザー名を付けずに作られたアカウント）は `None`。
+    /// Returns the display value (`display_value`) as is. Not the normalized value used for
+    /// matching, because the list **must read in the spelling the user registered** (ADR-0025).
+    /// `None` for users without a primary identifier (accounts created without a username).
     pub preferred_username: Option<String>,
     pub name: Option<String>,
     pub membership_type: MembershipType,
     pub status: MembershipStatus,
-    /// 利用者アカウント自体の状態（ACTIVE / DISABLED / LOCKED）。不存在ユーザーは `None`。
-    /// 管理コンソールのメンバー一覧が無効化状態を表示するために返す。
+    /// State of the user account itself (ACTIVE / DISABLED / LOCKED). `None` for nonexistent users.
+    /// Returned so the admin console's member list can show disabled state.
     pub user_status: Option<UserStatus>,
-    /// ログイン失敗によるロックの期限（AP6）。`None` はロックされていない。
+    /// Lock expiry due to failed logins (AP6). `None` means not locked.
     ///
-    /// `user_status` とは別に返す。ロックは `users.status` ではなく `users.locked_until` で
-    /// 表され（`status = LOCKED` は管理操作では設定できない）、しかも**期限切れかどうかは
-    /// 読んだ時点で判定する**必要がある。状態列に丸めると、期限が切れているのに
-    /// 「ロック中」と表示され続ける。
+    /// Returned separately from `user_status`. Locks are represented by `users.locked_until`, not
+    /// `users.status` (`status = LOCKED` cannot be set by admin operations), and **whether it has
+    /// expired must be judged at read time**. Folding it into the state column would keep showing
+    /// "locked" even after the expiry passed.
     pub locked_until: Option<DateTime<Utc>>,
-    /// 仮登録（ADR-0064）。本人がまだ設定リンクで資格情報を決めていない。
+    /// Provisional registration (ADR-0064). The user has not yet set credentials via the setup
+    /// link.
     pub pending_setup: bool,
-    /// いま生きている（未使用の）設定リンクの期限。出し直すと前のリンクは使用済みになるので、
-    /// 未使用のうち最も新しいものがいまのリンクである。無ければ `None`。
+    /// Expiry of the currently live (unused) setup link. Reissuing marks the previous link used, so
+    /// the newest unused one is the current link. `None` if there is none.
     ///
-    /// ⚠ **期限切れかどうかは読んだ時点で判定する**（`locked_until` と同じ理由）。仮登録のまま
-    /// 期限が切れた人は、管理者が出し直すまで誰も入れない。
+    /// ⚠ **Whether it has expired is judged at read time** (same reason as `locked_until`). Someone
+    /// whose provisional link expired cannot get in until an admin reissues it.
     pub setup_link_expires_at: Option<DateTime<Utc>>,
-    /// 管理者メモ（ADR-0063）。書かれていなければ `None`。⚠ **管理画面の外へ出さない。**
+    /// Admin note (ADR-0063). `None` if empty. ⚠ **Never expose outside the admin screen.**
     pub note: Option<AccountNote>,
 }
 
-/// メンバー一覧の絞り込み条件（MT22）。SQL の組み立ては infrastructure が行う。
+/// Filter conditions for the member list (MT22). The SQL is built by infrastructure.
 ///
-/// テナント越しの閲覧を防ぐため `tenant_id` は必須（`Option` にしない）。`search` はメール
-/// アドレス・氏名・**ユーザー名**の部分一致で、正規化（trim・空を `None`）は Application 層が
-/// 済ませてから渡す。ユーザー名を対象に含めるのは、一覧に出ている値で引けないと
-/// 「見えているのに探せない」列になるためである。
+/// `tenant_id` is required (not an `Option`) to prevent cross-tenant viewing. `search` is a partial
+/// match on email address, name, and **username**; normalization (trim, empty to `None`) is done by
+/// the Application layer before passing. Usernames are included because if the shown values could
+/// not be searched, the column would be "visible but unsearchable".
 #[derive(Debug, Clone)]
 pub struct TenantMemberFilter {
     pub tenant_id: TenantId,
-    /// 1 人を名指しで引くとき（メンバーの詳細画面）。⚠ **`search` と併用しない**
-    /// ——名指しは完全一致で、部分一致の絞り込みとは別の問い。
+    /// When looking up one person by name (member detail screen). ⚠ **Do not combine with
+    /// `search`** — naming is an exact match, a different question from partial-match filtering.
     pub user_id: Option<uuid::Uuid>,
     pub search: Option<String>,
     pub limit: i64,
     pub offset: i64,
 }
 
-/// メンバー一覧の 1 ページ分。`total` は `limit` / `offset` を無視した該当総数で、
-/// 画面が「全 N 件」と次ページの有無を確定できるようにする。
+/// One page of the member list. `total` is the total matching count ignoring `limit` / `offset`,
+/// so the screen can determine "N in total" and whether there is a next page.
 #[derive(Debug, Clone)]
 pub struct TenantMemberPage {
     pub members: Vec<TenantMember>,
@@ -77,14 +81,14 @@ pub struct TenantMemberPage {
 
 #[derive(Debug, Clone)]
 pub struct TenantMembership {
-    /// 参加先テナント。
+    /// The joined tenant.
     pub tenant_id: TenantId,
     pub user_id: Uuid,
     pub membership_type: MembershipType,
     pub status: MembershipStatus,
-    /// 招待を作成した管理者ユーザー（GUEST のみ）。
+    /// The admin user who created the invitation (GUEST only).
     pub invited_by: Option<Uuid>,
-    /// 招待トークンのハッシュ（`INVITED` の間のみ保持する）。
+    /// Hash of the invitation token (kept only while `INVITED`).
     pub invitation_token_hash: Option<String>,
     pub invitation_expires_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -92,7 +96,7 @@ pub struct TenantMembership {
 }
 
 impl TenantMembership {
-    /// HOME メンバーシップ（ユーザー作成時に自動生成する投影。ADR-0009 §3）。
+    /// HOME membership (a projection generated automatically at user creation; ADR-0009 §3).
     pub fn new_home(tenant_id: TenantId, user_id: Uuid, now: DateTime<Utc>) -> Self {
         Self {
             tenant_id,
@@ -107,9 +111,10 @@ impl TenantMembership {
         }
     }
 
-    /// 作成者を新テナントのブートストラップ管理者にするための、直接 `ACTIVE` な GUEST メンバーシップ
-    /// （ADR-0009 §4）。招待フローを経ないため `invited_by`・トークンは持たない。テナント作成時に
-    /// 作成者（root の system 管理者）へ `idp.tenant.admin` と併せて付与し、以後の初期設定を可能にする。
+    /// A GUEST membership that is directly `ACTIVE`, to make the creator the bootstrap admin of the
+    /// new tenant (ADR-0009 §4). It skips the invitation flow, so it has no `invited_by` or token.
+    /// Granted at tenant creation to the creator (root's system admin) together with
+    /// `idp.tenant.admin`, enabling the initial setup.
     pub fn new_active_guest(tenant_id: TenantId, user_id: Uuid, now: DateTime<Utc>) -> Self {
         Self {
             tenant_id,
@@ -132,22 +137,23 @@ impl TenantMembership {
         self.status == MembershipStatus::Active
     }
 
-    /// 一時停止中か（MT24）。停止中はアクセスできないが、メンバーシップ行と当該テナント scope の
-    /// 権限行は残っており、再開すれば元の状態に戻る（解除＝削除との違い）。
+    /// Whether suspended (MT24). While suspended there is no access, but the membership row and the
+    /// permission rows scoped to that tenant remain, and resuming restores the original state (the
+    /// difference from removal = deletion).
     pub fn is_suspended(&self) -> bool {
         self.status == MembershipStatus::Suspended
     }
 
-    /// 一時停止できる状態か（MT24）。GUEST の `ACTIVE` のみ。
+    /// Whether it can be suspended (MT24). Only GUEST `ACTIVE`.
     ///
-    /// HOME は所属元そのもので、停止するとログインする先が無くなる（無効化は
-    /// [`crate::application::user_lifecycle`] のアカウント無効化を使う）。`INVITED` は
-    /// まだアクセスを持たないため止める対象が無い。
+    /// HOME is the home tenant itself; suspending it would leave nowhere to sign in (for disabling,
+    /// use account disabling in [`crate::application::user_lifecycle`]). `INVITED` has no access
+    /// yet, so there is nothing to stop.
     pub fn can_be_suspended(&self) -> bool {
         !self.is_home() && self.status == MembershipStatus::Active
     }
 
-    /// 停止から再開できる状態か（MT24）。
+    /// Whether it can be resumed from suspension (MT24).
     pub fn can_be_resumed(&self) -> bool {
         !self.is_home() && self.status == MembershipStatus::Suspended
     }
@@ -183,7 +189,7 @@ mod tests {
         assert!(membership(MembershipType::Guest, MembershipStatus::Active).is_active());
     }
 
-    /// MT24: 停止中はアクセスできない（`is_active` が false）。
+    /// MT24: no access while suspended (`is_active` is false).
     #[test]
     fn suspended_guest_is_not_active() {
         let suspended = membership(MembershipType::Guest, MembershipStatus::Suspended);
@@ -191,8 +197,8 @@ mod tests {
         assert!(suspended.is_suspended());
     }
 
-    /// 停止できるのは GUEST の ACTIVE だけ。HOME は所属元そのもので、止めるとログイン先が無くなる。
-    /// INVITED はまだアクセスを持たないため止める対象が無い。
+    /// Only GUEST ACTIVE can be suspended. HOME is the home tenant itself; stopping it leaves
+    /// nowhere to sign in. INVITED has no access yet, so there is nothing to stop.
     #[test]
     fn only_active_guests_can_be_suspended_and_only_suspended_ones_resumed() {
         let cases = [

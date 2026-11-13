@@ -1,11 +1,11 @@
-//! ログイン画面の文脈 API（`/internal/authorize/login-context`。G12）の統合テスト（DB あり）。
+//! Integration tests (with DB) for the login screen context API (`/internal/authorize/login-context`; G12).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test authorize_login_context
 //!
-//! `/authorize` が受け取った `login_hint` / `ui_locales` は auth_session に保存されるが、web は
-//! resume の 303 でこれらを手元に残せない。web が `auth_session_id` から引き直せることと、
-//! 他テナント・未知のセッションでは何も返らない（fail-closed）ことを検証する。
+//! The `login_hint` / `ui_locales` received by `/authorize` are stored in the auth_session, but web cannot keep them
+//! across the resume 303. Checks that web can re-read them from the `auth_session_id`, and that nothing is returned
+//! for other tenants or unknown sessions (fail-closed).
 
 mod support;
 
@@ -13,7 +13,7 @@ use axum::http::StatusCode;
 use serde_json::{json, Value};
 use support::{body_json, post_internal, send, CODE_CHALLENGE, REDIRECT_URI_ENC, SERVICE_TOKEN};
 
-/// `login_hint` / `ui_locales` 付きの認可リクエスト URI。
+/// Authorization request URI with `login_hint` / `ui_locales`.
 fn authorize_uri(tenant: &str, client_id: &str, login_hint: &str, ui_locales: &str) -> String {
     format!(
         "/{tenant}/authorize?response_type=code&client_id={client_id}&redirect_uri={REDIRECT_URI_ENC}\
@@ -47,7 +47,7 @@ async fn returns_the_hints_the_rp_sent_to_authorize() {
     let auth_session = support::begin_login(
         &app,
         &root_tenant_id,
-        // `%20` 区切りの複数タグ・地域コード付きも RP は送ってくる。
+        // RPs also send multiple `%20`-separated tags and tags with region codes.
         &authorize_uri(
             &root_tenant_id,
             &client_id,
@@ -63,7 +63,7 @@ async fn returns_the_hints_the_rp_sent_to_authorize() {
     assert_eq!(body["ui_locales"], "fr en-GB");
 }
 
-/// サービストークン無しは 401（他の `/internal/*` と同じ多層防御）。
+/// No service token is 401 (same defence in depth as other `/internal/*`).
 #[tokio::test]
 async fn requires_the_service_token() {
     let Some(env) = support::setup("authorize login context auth").await else {
@@ -81,7 +81,7 @@ async fn requires_the_service_token() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
-/// 未知の `auth_session_id`・他テナントからの問い合わせは `session_expired`（存在も漏らさない）。
+/// Unknown `auth_session_id` and queries from other tenants give `session_expired` (without leaking existence).
 #[tokio::test]
 async fn unknown_session_and_other_tenants_get_nothing() {
     let Some(env) = support::setup("authorize login context isolation").await else {
@@ -100,16 +100,16 @@ async fn unknown_session_and_other_tenants_get_nothing() {
     )
     .await;
 
-    // 実在する別テナントからは、セッションはあっても何も読めない（auth_session の引きが
-    // テナント scope のため）。**実在する ACTIVE なテナントを使う** —— 架空の UUID では
-    // `require_internal_tenant` が先に 400 で弾き、テナント scope の検証にならない。
+    // From another tenant that exists, nothing can be read even though the session exists (auth_session lookup is
+    // tenant-scoped). **Use an existing ACTIVE tenant** — with a fictitious UUID
+    // `require_internal_tenant` rejects with 400 first and it would not test the tenant scope.
     let other_tenant = insert_active_tenant(&pool, &root_tenant_id).await;
     let body = login_context(&app, &other_tenant, &auth_session).await;
     assert_eq!(body["result"], "session_expired", "{body}");
 
-    // 実在しない（あるいは無効化された）テナントは、資格情報やセッションを見る前に 400 で落ちる
-    // （内部 API はテナントプレフィクスを持たず `TenantResolver` を通らないため、
-    // `require_internal_tenant` がこの防御線を担う。ADR-0009 §7・§8）。
+    // A nonexistent (or disabled) tenant fails with 400 before credentials or sessions are looked at
+    // (the internal API has no tenant prefix and does not go through `TenantResolver`, so
+    // `require_internal_tenant` is this line of defence; ADR-0009 §7, §8).
     let response = send(
         &app,
         post_internal(
@@ -127,8 +127,8 @@ async fn unknown_session_and_other_tenants_get_nothing() {
         StatusCode::BAD_REQUEST,
         "an unknown tenant must be rejected before the session is looked up"
     );
-    // 拒否の理由は**機械的に区別できる**必要がある。web はこのコードだけを 404 の画面へ倒し、
-    // 他の非 2xx は 502 に倒す（MT28）。説明文で判別すると、文言を直した瞬間に静かに壊れる。
+    // The reason for rejection must be **machine-distinguishable**. web maps only this code to the 404 screen and
+    // other non-2xx to 502 (MT28). Distinguishing by description would break silently the moment the wording changes.
     assert_eq!(
         body_json(response).await["error"],
         assay_contracts::auth::UNKNOWN_TENANT_ERROR_CODE,
@@ -136,8 +136,8 @@ async fn unknown_session_and_other_tenants_get_nothing() {
     );
 }
 
-/// ACTIVE な子テナントを 1 つ直接作る（このテストが要るのは「実在する別テナント」だけで、
-/// 管理者・メンバーシップは要らない）。
+/// Creates one ACTIVE child tenant directly (this test needs only "an existing other tenant",
+/// no admins or memberships).
 async fn insert_active_tenant(pool: &sqlx::MySqlPool, parent_id: &str) -> String {
     let id = uuid::Uuid::now_v7().to_string();
     sqlx::query(
@@ -152,7 +152,7 @@ async fn insert_active_tenant(pool: &sqlx::MySqlPool, parent_id: &str) -> String
     id
 }
 
-/// `login_hint` / `ui_locales` を送らない RP では、両方とも `null` の `ok` が返る。
+/// For RPs sending neither `login_hint` nor `ui_locales`, `ok` comes back with both `null`.
 #[tokio::test]
 async fn omitted_hints_are_null() {
     let Some(env) = support::setup("authorize login context empty").await else {

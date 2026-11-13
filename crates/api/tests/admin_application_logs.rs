@@ -1,10 +1,10 @@
-//! エラー・警告ログ（`log` テーブル）の取り込み・参照 API の E2E 統合テスト（CLAUDE.md「ログ」）。
+//! E2E integration tests for ingesting and reading error / warning logs (`log` table) (CLAUDE.md "Logs").
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test admin_application_logs
 //!
-//! web からの取り込み（`POST /internal/logs`）でレコードを作り、`GET /admin/logs` の絞り込みで
-//! 取得できること・権限制御（`idp.system.admin` 必須）を検証する。
+//! Creates records via ingestion from web (`POST /internal/logs`) and checks they can be fetched with
+//! `GET /admin/logs` filters, plus access control (`idp.system.admin` required).
 
 mod support;
 
@@ -12,7 +12,7 @@ use axum::http::StatusCode;
 use serde_json::{json, Value};
 use support::{admin_token, body_json, create_plain_user, get, post_internal, send, SERVICE_TOKEN};
 
-/// 取り込み用のレコード 1 件。`correlation_id` で後から特定できるようにする。
+/// One record to ingest. Identifiable later by `correlation_id`.
 fn record(level: &str, service: &str, target: &str, correlation_id: &str) -> Value {
     json!({
         "occurred_at": "2026-07-27T12:00:00Z",
@@ -60,7 +60,7 @@ async fn ingested_logs_are_queryable_with_filters() {
                 "assay_api::presentation::token",
                 &correlation_id
             ),
-            // 解釈できない行（INFO は記録対象外・未知サービス）は捨てられ、残りだけ書かれる。
+            // Unparseable lines (INFO is not recorded, unknown service) are discarded; only the rest are written.
             record("INFO", "api", "assay_api::presentation", &correlation_id),
             record("ERROR", "worker", "idp_worker::jobs", &correlation_id),
         ]),
@@ -69,7 +69,7 @@ async fn ingested_logs_are_queryable_with_filters() {
     assert_eq!(res.status(), StatusCode::OK);
     assert_eq!(body_json(res).await["accepted"], 2);
 
-    // correlation_id で絞り込む → 取り込めた 2 件だけが新しい順で返る。
+    // Filter by correlation_id → only the 2 ingested records come back, newest first.
     let res = send(
         app,
         get(
@@ -88,7 +88,7 @@ async fn ingested_logs_are_queryable_with_filters() {
         .collect();
     assert!(levels.contains(&"ERROR") && levels.contains(&"WARN"));
 
-    // level で絞り込む。
+    // Filter by level.
     let res = send(
         app,
         get(
@@ -103,7 +103,7 @@ async fn ingested_logs_are_queryable_with_filters() {
     assert_eq!(entries[0]["service"], "web");
     assert_eq!(entries[0]["target"], "assay_web::handlers::login");
 
-    // target は前方一致で絞り込む。
+    // target is filtered by prefix match.
     let res = send(
         app,
         get(
@@ -117,7 +117,7 @@ async fn ingested_logs_are_queryable_with_filters() {
     let entries = body_json(res).await;
     assert_eq!(entries.as_array().expect("array").len(), 1);
 
-    // service で絞り込む。
+    // Filter by service.
     let res = send(
         app,
         get(
@@ -152,7 +152,7 @@ async fn non_system_admin_cannot_read_application_logs() {
     let Some(env) = support::setup("application logs authz").await else {
         return;
     };
-    // 権限を持たない利用者は 403（`idp.system.admin` 必須。テナント横断の運用情報のため）。
+    // Users without permission get 403 (`idp.system.admin` required; cross-tenant operational data).
     let user_id = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let plain_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &user_id).await;
     let res = send(
@@ -162,7 +162,7 @@ async fn non_system_admin_cannot_read_application_logs() {
     .await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
 
-    // 未認証は 401。
+    // Unauthenticated is 401.
     let res = send(
         &env.app,
         get("", &format!("/{}/admin/logs", env.root_tenant_id)),

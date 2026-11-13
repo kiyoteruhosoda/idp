@@ -1,15 +1,15 @@
-//! トークン系エンドポイント（`/token`・`/introspect`・`/revoke`）に共通するクライアント認証の判定。
+//! Client authentication shared by the token endpoints (`/token`, `/introspect`, `/revoke`).
 //!
-//! 3 つのエンドポイントは RFC 6749 §2.3.1 の同じクライアント認証を使う（RFC 7009 §2.1・
-//! RFC 7662 §2.1 がそれぞれ「トークンエンドポイントと同じ方式」と定める）。判定を 1 か所に
-//! 集めることで、方式を増やしたとき（G3 の `client_secret_post`）に取りこぼす経路が出ないようにする。
+//! The three endpoints use the same client authentication of RFC 6749 §2.3.1 (RFC 7009 §2.1 and
+//! RFC 7662 §2.1 each say "the same method as the token endpoint"). Gathering the decision in one
+//! place ensures no endpoint is missed when a method is added (G3's `client_secret_post`).
 //!
-//! ここが担うのは**どの資格情報を照合すべきかの選択**と、その**照合そのもの**である
-//! （[`ClientAuthenticator`]）。監査記録とエラー応答の形だけが経路ごとに違うので、それは
-//! 各ユースケース（`token` / `introspection` / `revocation`）に残す。
+//! This module owns **choosing which credential to check** and **the check itself**
+//! ([`ClientAuthenticator`]). Only the audit record and the shape of the error response differ per endpoint,
+//! so those stay in each use case (`token` / `introspection` / `revocation`).
 //!
-//! 照合まで 1 か所へ寄せているのは、方式が増えるたびに 3 経路へ書き足すと必ずどこかを取りこぼす
-//! ためである（`private_key_jwt` の追加で 4 方式になった。ADR-0030）。
+//! The check itself is gathered here too because adding to three endpoints every time a method is added always
+//! misses one somewhere (adding `private_key_jwt` made it four methods. ADR-0030).
 
 use crate::domain::client::Client;
 use crate::domain::client_assertion::{
@@ -22,46 +22,46 @@ use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::{ClientType, TokenEndpointAuthMethod};
 use std::sync::Arc;
 
-/// リクエストが提示したクライアント資格情報。
+/// Client credentials presented by the request.
 ///
-/// `Authorization: Basic` と body（`client_secret_post`）の両方を保持し、どちらを採るかは
-/// クライアントの登録方式（`token_endpoint_auth_method`）が決める。
+/// Holds both `Authorization: Basic` and the body (`client_secret_post`); which one is used is decided
+/// by the client's registered method (`token_endpoint_auth_method`).
 #[derive(Debug, Clone, Default)]
 pub struct PresentedClientCredentials {
-    /// `Authorization: Basic` から取り出した `(client_id, client_secret)`。
+    /// `(client_id, client_secret)` taken from `Authorization: Basic`.
     pub basic: Option<(String, String)>,
-    /// body の `client_id`（public client では必須。confidential でも `client_secret_post` で使う）。
+    /// Body `client_id` (required for public clients; also used by confidential ones with `client_secret_post`).
     pub body_client_id: Option<String>,
-    /// body の `client_secret`（`client_secret_post`）。
+    /// Body `client_secret` (`client_secret_post`).
     pub body_client_secret: Option<String>,
-    /// body の `client_assertion`（`private_key_jwt`。RFC 7523 §2.2）。
+    /// Body `client_assertion` (`private_key_jwt`. RFC 7523 §2.2).
     pub client_assertion: Option<String>,
-    /// body の `client_assertion_type`。`jwt-bearer` 以外は受け付けない。
+    /// Body `client_assertion_type`. Anything other than `jwt-bearer` is rejected.
     pub client_assertion_type: Option<String>,
 }
 
-/// クライアント認証の失敗理由。文字列は監査ログの `reason` にそのまま載せる。
+/// Why client authentication failed. The string goes into the audit log's `reason` as-is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientAuthFailure {
-    /// 1 リクエストで複数の認証方式を提示した（RFC 6749 §2.3.1 で禁止）。
+    /// Multiple authentication methods presented in one request (forbidden by RFC 6749 §2.3.1).
     MultipleAuthMethods,
-    /// `Authorization: Basic` の `client_id` と body の `client_id` が食い違う。
+    /// The `client_id` in `Authorization: Basic` differs from the body `client_id`.
     ClientIdMismatch,
-    /// client_id を特定できない（Basic も body も無い）。
+    /// Cannot identify the client_id (neither Basic nor body).
     MissingClientId,
-    /// 登録された方式の資格情報が提示されていない。
+    /// The credential for the registered method was not presented.
     MissingCredentials,
-    /// 登録された方式と違う方式で提示した（例: `client_secret_post` のクライアントが Basic を送る）。
+    /// Presented with a method other than the registered one (e.g. a `client_secret_post` client sends Basic).
     UnsupportedAuthMethod,
-    /// confidential として登録されているのに secret が保存されていない（データ不整合）。
+    /// Registered as confidential but no secret is stored (data inconsistency).
     ClientHasNoSecret,
-    /// `private_key_jwt` として登録されているのに検証鍵が保存されていない（データ不整合）。
+    /// Registered as `private_key_jwt` but no verification key is stored (data inconsistency).
     ClientHasNoJwks,
-    /// 提示された secret が登録ハッシュと一致しない。
+    /// The presented secret does not match the registered hash.
     InvalidClientSecret,
-    /// client assertion が検証を通らなかった（詳細は [`ClientAssertionFailure`]）。
+    /// The client assertion failed verification (details in [`ClientAssertionFailure`]).
     InvalidAssertion(ClientAssertionFailure),
-    /// 有効期間内に同じ `jti` の assertion が再提示された（ADR-0030 決定 5）。
+    /// An assertion with the same `jti` was presented again within its validity period (ADR-0030 decision 5).
     ReplayedAssertion,
 }
 
@@ -83,10 +83,10 @@ impl ClientAuthFailure {
 }
 
 impl PresentedClientCredentials {
-    /// RFC 6749 §2.3.1: クライアントは 1 リクエストで複数の認証方式を使ってはならない。
+    /// RFC 6749 §2.3.1: a client must not use more than one authentication method in a request.
     ///
-    /// 両方を受け入れて片方だけ照合すると、「Basic には誤った secret、body には正しい secret」の
-    /// ような組み合わせで、どちらが検証されたのかリクエストからは決められなくなる。
+    /// Accepting both and checking only one means that with a combination like "wrong secret in Basic,
+    /// correct secret in body", the request alone cannot tell which one was verified.
     pub fn ensure_single_method(&self) -> Result<(), ClientAuthFailure> {
         let presented = [
             self.basic.is_some(),
@@ -106,17 +106,17 @@ impl PresentedClientCredentials {
         Ok(())
     }
 
-    /// 提示された client assertion（空文字は未提示として落とす）。
+    /// The presented client assertion (an empty string is dropped as not presented).
     pub fn assertion(&self) -> Option<&str> {
         self.client_assertion.as_deref().filter(|s| !s.is_empty())
     }
 
-    /// `client_id` を Basic ヘッダ優先で解決する。body と食い違う場合はエラー。
+    /// Resolves `client_id`, preferring the Basic header. An error if it differs from the body.
     ///
-    /// どちらにも無い場合は client assertion の（**未検証の**）`sub` を使う。RFC 7521 §4.2 は
-    /// assertion を使うときの `client_id` の省略を認めており、この値だけが手がかりになる。
-    /// 未検証の値をここで使ってよいのは、決めているのが「どのクライアントの登録鍵で検証するか」
-    /// だけだからである —— 偽っても、その鍵では署名が検証できずに落ちる。
+    /// If neither has it, use the client assertion's (**unverified**) `sub`. RFC 7521 §4.2 allows
+    /// omitting `client_id` when using an assertion, and this value is the only clue.
+    /// Using an unverified value here is fine because all it decides is "which client's registered key
+    /// to verify with" —— if forged, the signature won't verify with that key and it fails.
     pub fn resolve_client_id(&self) -> Result<String, ClientAuthFailure> {
         let body_id = self.body_client_id.as_deref().filter(|s| !s.is_empty());
         match (&self.basic, body_id) {
@@ -132,11 +132,11 @@ impl PresentedClientCredentials {
         }
     }
 
-    /// クライアントの登録方式に対応する資格情報を選ぶ。
+    /// Chooses the credential matching the client's registered method.
     ///
-    /// 選ぶのは登録値（`token_endpoint_auth_method`）であって、リクエストが何を送ってきたかでは
-    /// ない。「登録は `private_key_jwt` だが secret でも通る」といった併存を認めると、強い方式を
-    /// 登録した意味が弱い方式の残存で消える（ADR-0030 決定 2）。
+    /// The choice is made by the registered value (`token_endpoint_auth_method`), not by what the request
+    /// sent. Allowing coexistence such as "registered as `private_key_jwt` but a secret also works" would make
+    /// registering a strong method meaningless while a weak one remains (ADR-0030 decision 2).
     pub fn select<'a>(
         &'a self,
         client: &Client,
@@ -163,7 +163,7 @@ impl PresentedClientCredentials {
                 }
             }
             TokenEndpointAuthMethod::PrivateKeyJwt => {
-                // 検証鍵が保存されていないクライアントは、どんな assertion でも通してはならない。
+                // A client with no stored verification key must not pass with any assertion.
                 if client.jwks.is_none() {
                     return Err(ClientAuthFailure::ClientHasNoJwks);
                 }
@@ -176,8 +176,8 @@ impl PresentedClientCredentials {
                     (None, _, _) => Err(ClientAuthFailure::UnsupportedAuthMethod),
                 }
             }
-            // confidential なのに `none`（＝認証なし）が登録されている状態。登録経路では作れないが、
-            // DB を直接編集されたときに素通ししないよう fail-closed で拒否する。
+            // Confidential but `none` (= no authentication) is registered. The registration path can't create this,
+            // but reject fail-closed so a directly edited DB row doesn't pass through.
             TokenEndpointAuthMethod::None => Err(ClientAuthFailure::UnsupportedAuthMethod),
         }
     }
@@ -191,38 +191,38 @@ impl PresentedClientCredentials {
     }
 }
 
-/// 登録方式から選ばれた、照合すべき資格情報。
+/// The credential to check, chosen from the registered method.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SelectedCredential<'a> {
-    /// 認証不要（public client ＝ `token_endpoint_auth_method` が `none`）。
+    /// No authentication needed (public client = `token_endpoint_auth_method` is `none`).
     NotRequired,
-    /// 共有秘密。`client.client_secret_hash` と照合する。
+    /// Shared secret. Checked against `client.client_secret_hash`.
     Secret(&'a str),
-    /// 署名済み assertion。`client.jwks` で検証する（ADR-0030）。
+    /// Signed assertion. Verified with `client.jwks` (ADR-0030).
     Assertion {
         assertion: &'a str,
         assertion_type: Option<&'a str>,
     },
 }
 
-/// クライアント認証の結果。
+/// Result of client authentication.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientAuthOutcome {
-    /// 資格情報の照合に成功した。
+    /// The credential check succeeded.
     Authenticated,
-    /// public client のため認証は不要だった。
+    /// Public client, so no authentication was needed.
     NotRequired,
 }
 
-/// クライアント認証そのもの（[`SelectedCredential`] の照合）。
+/// Client authentication itself (checking the [`SelectedCredential`]).
 ///
-/// トークン系 3 経路が共有する。各ユースケースが持つのは、失敗時に記録する監査イベントと
-/// クライアントへ返すエラーの形だけになる。
+/// Shared by the three token endpoints. Each use case only keeps the audit event recorded on failure and
+/// the shape of the error returned to the client.
 pub struct ClientAuthenticator {
     hasher: Arc<dyn PasswordHasher>,
     assertions: Arc<dyn ClientAssertionReplayRepository>,
     clock: Arc<dyn Clock>,
-    /// 基底 issuer（`https://<host>`）。assertion の `aud` 候補はここからテナントごとに合成する。
+    /// Base issuer (`https://<host>`). Candidate `aud` values for assertions are composed per tenant from this.
     base_issuer: String,
 }
 
@@ -241,10 +241,10 @@ impl ClientAuthenticator {
         }
     }
 
-    /// 提示された資格情報を照合する。
+    /// Checks the presented credentials.
     ///
-    /// `Err(Ok(failure))` は認証の失敗（クライアントへは `invalid_client`）、
-    /// `Err(Err(message))` は内部エラー（500 相当）。呼び出し側は前者だけを監査へ記録する。
+    /// `Err(Ok(failure))` is an authentication failure (`invalid_client` to the client),
+    /// `Err(Err(message))` is an internal error (equivalent to 500). Callers only audit the former.
     pub async fn authenticate(
         &self,
         tenant: TenantContext,
@@ -306,10 +306,10 @@ impl ClientAuthenticator {
         )
         .map_err(|failure| ClientAuthError::Failed(ClientAuthFailure::InvalidAssertion(failure)))?;
 
-        // 署名が通ってから `jti` を記録する。順序が逆だと、署名が通らない assertion の `jti` で
-        // 表を膨らませられる（外部から書き込める表になってしまう）。
-        // 記録は `exp` ではなく `replay_guard_until`（時計ずれの許容幅を足した時刻）まで残す
-        // ——「掃除で消えたが、まだ受理される」隙間を作らないため。
+        // Record the `jti` only after the signature passes. In the reverse order, the table could be bloated with
+        // `jti`s of assertions whose signatures fail (it would become a table writable from outside).
+        // The record is kept until `replay_guard_until` (time plus clock-skew allowance), not `exp`
+        // —— so there is no gap where "it was cleaned up but is still accepted".
         let unused = self
             .assertions
             .record_if_unused(
@@ -328,23 +328,23 @@ impl ClientAuthenticator {
         Ok(ClientAuthOutcome::Authenticated)
     }
 
-    /// assertion の `aud` として受理する値（ADR-0030 決定 6）。
+    /// Values accepted as an assertion's `aud` (ADR-0030 decision 6).
     ///
-    /// テナント issuer とトークンエンドポイント URL の両方を認める。どちらを入れるかは
-    /// クライアント実装によって分かれており、どちらもテナントを含むので、他テナント宛の
-    /// assertion がここを通ることはない。
+    /// Both the tenant issuer and the token endpoint URL are accepted. Which one is used varies by
+    /// client implementation, and both include the tenant, so an assertion meant for another tenant
+    /// never passes here.
     fn accepted_audiences(&self, tenant: TenantContext) -> Vec<String> {
         let issuer = crate::domain::issuer::tenant_issuer(&self.base_issuer, tenant.tenant_id());
         vec![format!("{issuer}/token"), issuer]
     }
 }
 
-/// [`ClientAuthenticator::authenticate`] の失敗。
+/// Failure of [`ClientAuthenticator::authenticate`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientAuthError {
-    /// 認証の失敗。監査ログの `reason` は `failure.as_str()`。
+    /// Authentication failure. The audit log `reason` is `failure.as_str()`.
     Failed(ClientAuthFailure),
-    /// 内部エラー（ハッシュ照合・DB）。クライアントへは 500 相当を返す。
+    /// Internal error (hash check, DB). Returns the equivalent of 500 to the client.
     Internal(String),
 }
 
@@ -399,7 +399,7 @@ mod tests {
             ClientType::Confidential,
             TokenEndpointAuthMethod::PrivateKeyJwt,
         );
-        // `private_key_jwt` のクライアントは secret を持たない（登録時に発行しない）。
+        // `private_key_jwt` clients have no secret (none is issued at registration).
         c.client_secret_hash = None;
         c.jwks = Some(jwks());
         c
@@ -442,7 +442,7 @@ mod tests {
             both.ensure_single_method(),
             Err(ClientAuthFailure::MultipleAuthMethods)
         );
-        // secret と assertion の併用も同じく禁止（どちらで認証されたのか決まらない）。
+        // Using a secret together with an assertion is likewise forbidden (can't tell which one authenticated).
         let secret_and_assertion = PresentedClientCredentials {
             body_client_id: Some("cid".into()),
             body_client_secret: Some("b".into()),
@@ -453,7 +453,7 @@ mod tests {
             secret_and_assertion.ensure_single_method(),
             Err(ClientAuthFailure::MultipleAuthMethods)
         );
-        // body に client_id だけを載せるのは認証方式ではないため許される（public client の経路）。
+        // Putting only client_id in the body is not an authentication method, so it is allowed (the public client path).
         assert!(PresentedClientCredentials {
             basic: Some(("cid".into(), "a".into())),
             body_client_id: Some("cid".into()),
@@ -482,8 +482,8 @@ mod tests {
         );
     }
 
-    /// `client_id` を省いた assertion 単独のリクエストでも、対象クライアントは決まる
-    /// （RFC 7521 §4.2）。値は未検証なので、選ばれた鍵で署名が通らなければ落ちる。
+    /// Even a request with only an assertion and no `client_id` determines the target client
+    /// (RFC 7521 §4.2). The value is unverified, so it fails if the signature doesn't pass with the chosen key.
     #[test]
     fn client_id_falls_back_to_the_unverified_assertion_subject() {
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -513,7 +513,7 @@ mod tests {
             Ok(SelectedCredential::Secret("s3cret"))
         );
 
-        // 方式違い（登録は Basic なのに body で送る／その逆）は素通しさせない。
+        // A method mismatch (registered as Basic but sent in body, or vice versa) is not let through.
         assert_eq!(
             post().select(&basic_client),
             Err(ClientAuthFailure::UnsupportedAuthMethod)
@@ -528,8 +528,8 @@ mod tests {
         );
     }
 
-    /// 登録が `private_key_jwt` なら、正しい secret を送られても通さない（ADR-0030 決定 2）。
-    /// 強い方式を登録した意味が、弱い方式の残存で消えないようにする。
+    /// If registered as `private_key_jwt`, even a correct secret does not pass (ADR-0030 decision 2).
+    /// So registering a strong method is not made meaningless by a weak one remaining.
     #[test]
     fn a_private_key_jwt_client_cannot_fall_back_to_a_secret() {
         let client = private_key_jwt_client();
@@ -554,7 +554,7 @@ mod tests {
         );
     }
 
-    /// 逆に、secret 方式のクライアントへ assertion を送っても通らない。
+    /// Conversely, sending an assertion to a secret-method client does not pass either.
     #[test]
     fn a_secret_client_cannot_authenticate_with_an_assertion() {
         let basic_client = client(
@@ -567,8 +567,8 @@ mod tests {
         );
     }
 
-    /// 検証鍵が保存されていない `private_key_jwt` クライアントは、どんな assertion でも通さない
-    /// （DB を直接編集された行が素通りしないよう fail-closed）。
+    /// A `private_key_jwt` client with no stored verification key passes no assertion
+    /// (fail-closed so a directly edited DB row doesn't pass through).
     #[test]
     fn a_private_key_jwt_client_without_keys_is_rejected() {
         let mut client = private_key_jwt_client();
@@ -586,7 +586,7 @@ mod tests {
             PresentedClientCredentials::default().select(&public),
             Ok(SelectedCredential::NotRequired)
         );
-        // public に secret を送りつけても認証扱いにはしない（従来どおり素通し）。
+        // Sending a secret to a public client does not count as authenticated (passed through as before).
         assert_eq!(post().select(&public), Ok(SelectedCredential::NotRequired));
     }
 }

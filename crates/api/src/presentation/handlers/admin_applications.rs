@@ -1,12 +1,12 @@
-//! アプリの管理（`/{tenant_id}/admin/applications`。ADR-0054）。
+//! App management (`/{tenant_id}/admin/applications`, ADR-0054).
 //!
-//! アプリは「利用者から見た 1 つのアプリ」であり、OIDC の `clients` や SAML の
-//! `saml_service_providers` は**そのアプリがどう繋がるか**（binding）でしかない。認証ポリシー・
-//! 利用者の割り当て・停止はこの段に付く。
+//! An app is "one app as users see it"; OIDC `clients` and SAML
+//! `saml_service_providers` are merely **how that app connects** (bindings). Authentication policies,
+//! user assignments and suspension attach at this level.
 //!
-//! 保護は `idp.applications:read` / `idp.applications:write`。クライアント管理（`idp.clients:*`）と
-//! 分けるのは、⚠ **「繋ぎ方を直せる人」と「誰が使ってよいかを決める人」が同じとは限らない**
-//! ためである。前者は RP を作る側の作業、後者は組織の判断になる。
+//! Protected by `idp.applications:read` / `idp.applications:write`. It is separate from client management (`idp.clients:*`)
+//! because ⚠ **"who can fix how it connects" and "who decides who may use it" are not necessarily the same**.
+//! The former is work for whoever builds the RP; the latter is an organizational decision.
 
 use crate::application::application_management::{
     ApplicationDetail, ApplicationManagementError, ApplicationSummary, CurrentUsers,
@@ -42,7 +42,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use uuid::Uuid;
 
-/// アプリを一覧する（`GET /{tenant_id}/admin/applications`）。
+/// Lists apps (`GET /{tenant_id}/admin/applications`).
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/applications",
@@ -71,10 +71,10 @@ pub async fn list_applications(
     }))
 }
 
-/// メンバー 1 人が使えるアプリ（`GET /{tenant_id}/admin/members/{user_id}/applications`。ADR-0063）。
+/// Apps one member can use (`GET /{tenant_id}/admin/members/{user_id}/applications`, ADR-0063).
 ///
-/// アプリの詳細（誰が使えるか）の裏返し。ログインの名乗り（OIDC / SAML）を持つアプリだけを載せ、
-/// 可否は判定と同じ規則で答える。
+/// The flip side of an app's detail (who can use it). Lists only apps with sign-in bindings (OIDC / SAML), and
+/// answers allow/deny by the same rule as the decision.
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/members/{user_id}/applications",
@@ -107,11 +107,11 @@ pub async fn list_member_applications(
     .await
 }
 
-/// サービスアカウント 1 つが使えるアプリ
-/// （`GET /{tenant_id}/admin/service-accounts/{client_id}/applications`。ADR-0065）。
+/// Apps one service account can use
+/// (`GET /{tenant_id}/admin/service-accounts/{client_id}/applications`, ADR-0065).
 ///
-/// 人の口と同じ形。宛名（`resource`）の名乗りを持つアプリだけを載せ、可否はトークン発行と同じ規則
-/// （アプリが有効で、割り当てがあること）で答える。⚠ 「全員」のアプリでもサービスアカウントは含まれない。
+/// Same shape as the people endpoint. Lists only apps with an audience (`resource`) binding, and answers allow/deny by the same rule
+/// as token issuance (the app is active and an assignment exists). ⚠ Service accounts are not included even for "everyone" apps.
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/service-accounts/{client_id}/applications",
@@ -144,7 +144,7 @@ pub async fn list_service_account_applications(
     .await
 }
 
-/// 人・サービスアカウントの「使えるアプリ」を同じ形で返す。
+/// Returns the "usable apps" of people and service accounts in the same shape.
 async fn account_applications(
     state: &AppState,
     tenant: &ResolvedTenant,
@@ -157,7 +157,7 @@ async fn account_applications(
         .account_applications(tenant.context(), account)
         .await
         .map_err(|e| match e {
-            // 相手が見つからないときに「アプリが無い」と言わない。
+            // Don't say "no apps" when the subject itself is not found.
             ApplicationManagementError::NotFound => {
                 ApiError::NotFound(ApiMessages::new(locale).get(not_found_key))
             }
@@ -179,7 +179,7 @@ async fn account_applications(
     }))
 }
 
-/// アプリ 1 件の詳細（`GET /{tenant_id}/admin/applications/{application_id}`）。
+/// Detail of one app (`GET /{tenant_id}/admin/applications/{application_id}`).
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/applications/{application_id}",
@@ -210,7 +210,7 @@ pub async fn get_application(
     Ok(Json(to_detail(&detail, enforcement)))
 }
 
-/// アプリを登録する（`POST /{tenant_id}/admin/applications`）。
+/// Registers an app (`POST /{tenant_id}/admin/applications`).
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/applications",
@@ -233,7 +233,7 @@ pub async fn create_application(
     headers: HeaderMap,
     Json(body): Json<CreateApplicationRequest>,
 ) -> Result<(StatusCode, Json<ApplicationResponse>), ApiError> {
-    // ⚠ 省略時は「個別」。既定を「全員」にすると、絞り忘れたアプリが全員に開いたままになる。
+    // ⚠ "Individual" when omitted. With "everyone" as the default, an app someone forgot to restrict would stay open to all.
     let assignment_mode = match body.assignment_mode.as_deref() {
         Some(raw) => parse_assignment_mode(raw, locale)?,
         None => AssignmentMode::Individual,
@@ -257,7 +257,7 @@ pub async fn create_application(
         )
         .await
         .map_err(|e| map_error(e, locale))?;
-    // 作った直後の詳細を返す（割り当てた本人が名簿に居ることを、呼び出し側が確かめられる）。
+    // Return the detail right after creation (so the caller can confirm the assigned person is on the roster).
     let detail = state
         .applications_admin
         .detail(tenant.context(), application.id)
@@ -266,7 +266,7 @@ pub async fn create_application(
     Ok((StatusCode::CREATED, Json(to_application_response(&detail))))
 }
 
-/// アプリを更新する（`PUT /{tenant_id}/admin/applications/{application_id}`）。
+/// Updates an app (`PUT /{tenant_id}/admin/applications/{application_id}`).
 #[utoipa::path(
     put,
     path = "/{tenant_id}/admin/applications/{application_id}",
@@ -322,9 +322,9 @@ pub async fn update_application(
     Ok(Json(to_application_response(&detail)))
 }
 
-/// アプリを削除する（`DELETE /{tenant_id}/admin/applications/{application_id}`）。
+/// Deletes an app (`DELETE /{tenant_id}/admin/applications/{application_id}`).
 ///
-/// ⚠ **ぶら下がっている RP の登録は消えない。** 消えるのは括りと名簿だけである。
+/// ⚠ **The registrations of RPs hanging off it are not deleted.** Only the grouping and the roster go away.
 #[utoipa::path(
     delete,
     path = "/{tenant_id}/admin/applications/{application_id}",
@@ -361,7 +361,7 @@ pub async fn delete_application(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// 名乗りを足す（`POST /{tenant_id}/admin/applications/{application_id}/bindings`。ADR-0059）。
+/// Adds a binding (`POST /{tenant_id}/admin/applications/{application_id}/bindings`, ADR-0059).
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/applications/{application_id}/bindings",
@@ -395,8 +395,8 @@ pub async fn add_binding(
         &correlation,
         state.config.trust_forwarded_headers(),
     );
-    // ⚠ `ApiMessages`（FluentBundle）は `Send` ではない。await をまたいで持てないので、
-    // **足す相手を先に決め切ってから**非同期の呼び出しへ入る。
+    // ⚠ `ApiMessages` (FluentBundle) is not `Send`. It can't be held across await, so
+    // **fully decide what to add first** before entering the async call.
     let request = parse_binding_request(&body, locale)?;
     let move_from = match body
         .move_from_application_id
@@ -420,11 +420,11 @@ pub async fn add_binding(
     Ok(Json(to_application_response(&detail)))
 }
 
-/// 名乗りの候補（`GET /{tenant_id}/admin/applications/{application_id}/binding-candidates`。ADR-0067）。
+/// Binding candidates (`GET /{tenant_id}/admin/applications/{application_id}/binding-candidates`, ADR-0067).
 ///
-/// テナントに登録済みのログイン用 client・SAML の SP・サービスアカウント・宛名を、種類の性質に
-/// 合うものだけ並べ、**いまどのアプリの名乗りか**を添える。画面が相手を ID の手入力ではなく
-/// 一覧から選ばせるための口。権限はアプリの詳細と同じ `idp.applications:read`。
+/// Lists the tenant's registered sign-in clients, SAML SPs, service accounts and audiences that fit the kind's
+/// nature, noting **which app each is currently bound to**. The endpoint lets the screen have targets picked
+/// from a list instead of typing IDs. Permission is the same `idp.applications:read` as the app detail.
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/applications/{application_id}/binding-candidates",
@@ -466,8 +466,8 @@ pub async fn binding_candidates(
     }))
 }
 
-/// 要求を種類と相手へ読む。⚠ **種類に対応する欄だけを読む** ——別の欄に値があっても黙って
-/// 使わない（`kind=oidc` で `resource_uri` だけを送った要求を、何かに読み替えない）。
+/// Reads the request into a kind and a target. ⚠ **Only the field matching the kind is read** -- values in other fields
+/// are silently not used (a request with `kind=oidc` sending only `resource_uri` is not reinterpreted as something else).
 fn parse_binding_request(
     body: &CreateApplicationBindingRequest,
     locale: ApiLocale,
@@ -509,8 +509,8 @@ fn parse_binding_request(
     }
 }
 
-/// 名乗りを外す
-/// （`DELETE /{tenant_id}/admin/applications/{application_id}/bindings/{binding_id}`）。
+/// Removes a binding
+/// (`DELETE /{tenant_id}/admin/applications/{application_id}/bindings/{binding_id}`).
 #[utoipa::path(
     delete,
     path = "/{tenant_id}/admin/applications/{application_id}/bindings/{binding_id}",
@@ -551,8 +551,8 @@ pub async fn remove_binding(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// 主体を割り当てる
-/// （`POST /{tenant_id}/admin/applications/{application_id}/assignments`。冪等。ADR-0059）。
+/// Assigns a principal
+/// (`POST /{tenant_id}/admin/applications/{application_id}/assignments`; idempotent, ADR-0059).
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/applications/{application_id}/assignments",
@@ -600,7 +600,7 @@ pub async fn assign_user(
     Ok(Json(to_detail(&detail, enforcement)))
 }
 
-/// 要求を種類と相手へ読む。⚠ 種類に対応する欄だけを読む（別の欄の値へ読み替えない）。
+/// Reads the request into a kind and a target. ⚠ Only the field matching the kind is read (not reinterpreted as another field's value).
 fn parse_assignment_request(
     body: &CreateApplicationAssignmentRequest,
     locale: ApiLocale,
@@ -633,8 +633,8 @@ fn parse_assignment_request(
     }
 }
 
-/// 人の割り当てを外す
-/// （`DELETE /{tenant_id}/admin/applications/{application_id}/assignments/users/{user_id}`）。
+/// Removes a person's assignment
+/// (`DELETE /{tenant_id}/admin/applications/{application_id}/assignments/users/{user_id}`).
 #[utoipa::path(
     delete,
     path = "/{tenant_id}/admin/applications/{application_id}/assignments/users/{user_id}",
@@ -675,8 +675,8 @@ pub async fn unassign_user(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// サービスアカウントの割り当てを外す
-/// （`DELETE /{tenant_id}/admin/applications/{application_id}/assignments/service-accounts/{client_id}`）。
+/// Removes a service account's assignment
+/// (`DELETE /{tenant_id}/admin/applications/{application_id}/assignments/service-accounts/{client_id}`).
 #[utoipa::path(
     delete,
     path = "/{tenant_id}/admin/applications/{application_id}/assignments/service-accounts/{client_id}",
@@ -716,11 +716,11 @@ pub async fn unassign_service_account(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// 「いま入れている人」を引く
-/// （`GET /{tenant_id}/admin/applications/{application_id}/current-users`）。
+/// Looks up "the people who can get in now"
+/// (`GET /{tenant_id}/admin/applications/{application_id}/current-users`).
 ///
-/// 「全員」から「個別」へ倒す前に、そのまま名簿へ写すための一覧である。⚠ **これを出さずに
-/// 切り替えさせると、空の名簿で保存した瞬間に全員が入れなくなる。**
+/// A list for copying straight into the roster before switching from "everyone" to "individual". ⚠ **Letting them switch
+/// without showing this means that the moment an empty roster is saved, nobody can get in.**
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/applications/{application_id}/current-users",
@@ -796,10 +796,10 @@ fn to_response(summary: &ApplicationSummary) -> ApplicationResponse {
     }
 }
 
-/// そのテナントでアプリの割り当てを断るか（`record_only` / `enforce`）。
+/// Whether the tenant rejects on app assignments (`record_only` / `enforce`).
 ///
-/// 画面が「いまは記録するだけ」を示すために応答へ載せる。⚠ **テナントの値を載せる**（ADR-0058 §4）。
-/// 判定（`ApplicationAccessService`）と同じ口から引くので、表示と判定は食い違わない。
+/// Put in the response so the screen can show "currently only recording". ⚠ **It carries the tenant's value** (ADR-0058 §4).
+/// It is read from the same place as the decision (`ApplicationAccessService`), so display and decision never diverge.
 async fn assignment_enforcement(
     state: &AppState,
     tenant: &ResolvedTenant,
@@ -876,17 +876,17 @@ fn to_current_users(users: CurrentUsers) -> ApplicationCurrentUsersResponse {
     }
 }
 
-/// 自分のアプリの名簿を引く
-/// （`GET /{tenant_id}/admin/applications/self/users`。ADR-0057 / ADR-0059）。
+/// Looks up the roster of one's own app
+/// (`GET /{tenant_id}/admin/applications/self/users`, ADR-0057 / ADR-0059).
 ///
-/// RP の定期照合（ADR-0049 の I7）が読む口である。⚠ **宛先は RP に言わせない**
-/// ——呼んできたサービスアカウントが名乗りとして結び付いたアプリの名簿を返す。権限コードは
-/// 要求しない（名乗りであることが、そのアプリの名簿を読んでよい理由）。
+/// The endpoint read by the RP's periodic reconciliation (ADR-0049's I7). ⚠ **The RP doesn't get to name the target**
+/// -- it returns the roster of the app the calling service account is bound to as a binding. No permission code is
+/// required (being the binding is the reason it may read that app's roster).
 ///
-/// ⚠ **結び付いていない主体には 403**。空の名簿を返すと、RP は全員を止める。
+/// ⚠ **403 for unbound principals**. Returning an empty roster would make the RP stop everyone.
 ///
-/// ⚠ **`subs` を指定したときだけ `unknown`（消えた）が返る。** 消えた人は、いない以上、候補の
-/// 一覧には現れない。
+/// ⚠ **`unknown` (gone) is returned only when `subs` is given.** People who are gone, being absent, don't
+/// appear in the candidate list.
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/applications/self/users",
@@ -933,16 +933,16 @@ pub async fn own_application_users(
             })
             .collect(),
         total: result.page.total,
-        // 要求値ではなくクランプ後の値を返す（他の一覧と同じ。呼び出し側がページ送りに使える）。
+        // Return the clamped value rather than the requested one (same as other lists; callers can use it for paging).
         limit: result.applied.limit(),
         offset: result.applied.offset(),
     }))
 }
 
-/// カンマ区切りの `sub` を読む。
+/// Reads comma-separated `sub`s.
 ///
-/// ⚠ **1 つでも読めなければ断る。** 読めたものだけで答えると、綴りを 1 文字間違えた `sub` が
-/// 黙って「消えた」に化け、RP がその人の結び付きを落とす。
+/// ⚠ **Reject if even one can't be read.** Answering with only the readable ones would silently turn a `sub` with a one-character
+/// typo into "gone", and the RP would drop that person's link.
 fn parse_subs(raw: &str, locale: ApiLocale) -> Result<Vec<Uuid>, ApiError> {
     raw.split(',')
         .map(str::trim)
@@ -960,7 +960,7 @@ fn parse_subs(raw: &str, locale: ApiLocale) -> Result<Vec<Uuid>, ApiError> {
 fn map_directory_error(e: ApplicationUserDirectoryError, locale: ApiLocale) -> ApiError {
     let msgs = ApiMessages::new(locale);
     match e {
-        // ⚠ 空の名簿ではなく 403。空を返すと RP は全員を止める（ADR-0059）。
+        // ⚠ 403, not an empty roster. Returning empty makes the RP stop everyone (ADR-0059).
         ApplicationUserDirectoryError::NotAServiceAccount => {
             ApiError::Forbidden(msgs.get("api-application-self-requires-service-account"))
         }

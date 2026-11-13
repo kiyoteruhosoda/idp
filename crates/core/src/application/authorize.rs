@@ -1,13 +1,13 @@
-//! 認可エンドポイントのユースケース（設計仕様 §4.2、ADR-0018 決定 2・3）。
+//! Authorization endpoint use case (design spec §4.2, ADR-0018 decisions 2 and 3).
 //!
-//! `/authorize` はブラウザ Cookie を読み書きしない。認可リクエストを検証して AuthSession を作成し、
-//! **単回・短命のハンドル**を発行して web へのハンドオフ（`{web}/{tenant}/login?auth_session=...`）
-//! に載せる（[`AuthorizeService::authorize`]）。SSO 復元・同意チェック・code 発行は、web が
-//! ハンドルと自ドメインの `sso_session_id` を `/internal/authorize/resume` で渡してきた時点で行う
-//! （[`AuthorizeService::resume`]）。`prompt` / `max_age` の評価も resume まで持ち越す。
+//! `/authorize` neither reads nor writes browser cookies. It validates the authorization request, creates an AuthSession,
+//! and issues a **single-use, short-lived handle** that it puts on the handoff to web (`{web}/{tenant}/login?auth_session=...`)
+//! ([`AuthorizeService::authorize`]). SSO restore, consent check and code issuance happen when web passes the
+//! handle and its own domain's `sso_session_id` via `/internal/authorize/resume`
+//! ([`AuthorizeService::resume`]). Evaluation of `prompt` / `max_age` is also deferred to resume.
 //!
-//! エラー方針: `client_id` / `redirect_uri` が無効な場合はリダイレクトせず、
-//! それ以外のエラーは `redirect_uri` にエラーコードを付与して返す。
+//! Error policy: if `client_id` / `redirect_uri` is invalid, don't redirect;
+//! other errors are returned with an error code appended to `redirect_uri`.
 
 use crate::application::audit::RequestContext;
 use crate::application::authentication_policy_gate::{
@@ -36,114 +36,114 @@ use chrono::{DateTime, Duration, Utc};
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// web ハンドオフ用ハンドルの有効期限（秒）。`/authorize` の 302 を web が受けて
-/// `/internal/authorize/resume` へ渡すまでの片道だけを覆えばよいため、auth_session 本体の
-/// TTL より大幅に短くする（単回・短命・固定束縛。ADR-0018 決定 3）。
+/// Expiry of the web handoff handle (seconds). It only needs to cover the one-way trip from web receiving `/authorize`'s 302
+/// to passing it to `/internal/authorize/resume`, so it is much shorter than the auth_session's own
+/// TTL (single-use, short-lived, fixed binding. ADR-0018 decision 3).
 const HANDLE_TTL_SECS: i64 = 60;
 
 pub enum AuthorizeOutcome {
-    /// 検証成功。AuthSession 作成済み。単回ハンドルを URL に載せて web の `/login` へ 302 する
-    /// （SSO の有無は web が resume で確かめる。ADR-0018 決定 2）。
+    /// Validation succeeded and the AuthSession is created. 302 to web's `/login` with the single-use handle in the URL
+    /// (web checks for SSO at resume. ADR-0018 decision 2).
     HandoffToWeb { handle: String },
-    /// `redirect_uri` にエラーを付与して 302。
+    /// 302 with the error appended to `redirect_uri`.
     ErrorRedirect { location: String },
-    /// リダイレクト不可のエラー（client_id / redirect_uri が無効）。
+    /// An error that can't be redirected (client_id / redirect_uri invalid).
     FatalError {
         error: OAuthErrorCode,
         description: String,
     },
 }
 
-/// `/internal/authorize/resume` のコマンド（web がハンドルと SSO Cookie 値を転送する）。
+/// Command for `/internal/authorize/resume` (web forwards the handle and the SSO cookie value).
 #[derive(Debug)]
 pub struct ResumeCommand {
-    /// `/authorize` が URL に載せた単回ハンドル。
+    /// The single-use handle `/authorize` put in the URL.
     pub handle: String,
-    /// web の host-only `sso_session_id` Cookie の値（無ければ未ログイン）。
+    /// Value of web's host-only `sso_session_id` cookie (not logged in if absent).
     pub sso_session_id: Option<String>,
 }
 
-/// `/internal/authorize/continue` のコマンド（web が `auth_session_id` と SSO Cookie 値を転送する）。
+/// Command for `/internal/authorize/continue` (web forwards `auth_session_id` and the SSO cookie value).
 ///
-/// ログイン画面を出したあと、**別のタブで認証を済ませてから**元のタブを開き直した場合に使う。
-/// ハンドルは最初の受領で消費済みなので、手元の `auth_session_id` から同じ認可要求を引き直す。
+/// Used when, after the login screen was shown, the user **finished authenticating in another tab** and reopened the original tab.
+/// The handle was consumed on first receipt, so the same authorization request is looked up again from the `auth_session_id` at hand.
 #[derive(Debug)]
 pub struct ContinueCommand {
-    /// web の host-only `auth_session_id` Cookie の値。
+    /// Value of web's host-only `auth_session_id` cookie.
     pub auth_session_id: String,
-    /// web の host-only `sso_session_id` Cookie の値（無ければ未ログイン）。
+    /// Value of web's host-only `sso_session_id` cookie (not logged in if absent).
     pub sso_session_id: Option<String>,
 }
 
 pub enum ResumeOutcome {
-    /// SSO 復元・同意済みにより code 発行済み。`query` なら `location` へ 302、`form_post` なら
-    /// `location` へ hidden フィールドを POST する自動送信フォームを描く（G12）。
+    /// Code issued thanks to SSO restore and existing consent. For `query`, 302 to `location`; for `form_post`,
+    /// render an auto-submitting form that POSTs hidden fields to `location` (G12).
     Redirect {
         location: String,
         form_post: Option<Vec<(String, String)>>,
-        /// 復元した SSO セッションの絶対期限までの長さ（秒）。web が Cookie を発行し直すときの
-        /// `Max-Age`（ADR-0058）。
+        /// Time until the restored SSO session's absolute expiry (seconds). The `Max-Age` when web reissues the cookie
+        /// (ADR-0058).
         sso_absolute_ttl_secs: u64,
     },
-    /// リクエスト続行不可（`prompt=none` で未ログイン・未同意など）。RP へエラーを返す。
-    /// 返し方は成功と同じく要求された `response_mode` に従う（G12）: `form_post` が `Some` なら
-    /// `location` へ hidden フィールドを POST する。
+    /// The request can't continue (not logged in or not consented with `prompt=none`, etc.). Return an error to the RP.
+    /// Like success, it follows the requested `response_mode` (G12): if `form_post` is `Some`,
+    /// POST hidden fields to `location`.
     ErrorRedirect {
         location: String,
         form_post: Option<Vec<(String, String)>>,
     },
-    /// SSO 有効だが同意が必要。web は `auth_session_id` を Cookie 化して `/consent` へ。
+    /// SSO valid but consent needed. web turns `auth_session_id` into a cookie and goes to `/consent`.
     ConsentRequired {
         auth_session_id: String,
-        /// `Redirect` と同じ（復元した SSO セッションの絶対期限までの長さ）。
+        /// Same as `Redirect` (time until the restored SSO session's absolute expiry).
         sso_absolute_ttl_secs: u64,
     },
-    /// 認証が必要。web は `auth_session_id` を Cookie 化してログインフォームを表示する。
+    /// Authentication needed. web turns `auth_session_id` into a cookie and shows the login form.
     LoginRequired { auth_session_id: String },
-    /// SSO は復元できたが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
-    /// SSO Cookie は既に手元にあるので、ここでは画面を出すだけでよい。
+    /// SSO was restored, but use of this application is not permitted (ADR-0054). ⚠ **Do not return to the RP.**
+    /// The SSO cookie is already at hand, so only showing a screen is needed here.
     ApplicationNotPermitted {
-        /// 画面に出すアプリ名。
+        /// Application name shown on screen.
         application_name: String,
     },
-    /// ハンドルが無効・期限切れ・使用済み（`/authorize` からやり直し）。`continue` では
-    /// `auth_session_id` が無効・期限切れのとき。
+    /// Handle invalid, expired or used (start over from `/authorize`). For `continue`,
+    /// when `auth_session_id` is invalid or expired.
     ExpiredHandle,
-    /// 内部エラー（RP へのリダイレクトも組み立てられない段階での失敗）。
+    /// Internal error (a failure at a stage where even the redirect to the RP can't be built).
     Internal(String),
 }
 
-/// ログイン画面の文脈取得（`/internal/authorize/login-context`。G12）の結果。
+/// Result of fetching the login screen context (`/internal/authorize/login-context`. G12).
 pub enum LoginContextOutcome {
-    /// 進行中の認可要求が持ち込んだ表示ヒント（いずれも未指定なら `None`）。
+    /// Display hints brought by the in-progress authorization request (`None` if none specified).
     Ok {
         login_hint: Option<String>,
         ui_locales: Option<String>,
-        /// この認可要求の `redirect_uri`。web がログイン画面の CSP `form-action` に許可する
-        /// オリジンの出所（SSO と同意が揃っていれば、ログインフォームの送信はそのまま RP へ
-        /// リダイレクトするため）。
+        /// This authorization request's `redirect_uri`. Source of the origin web allows in the login
+        /// screen's CSP `form-action` (if SSO and consent are in place, submitting the login form
+        /// redirects straight to the RP).
         redirect_uri: String,
-        /// 認可要求を出したクライアントの表示名（`Clients.app_name`）。ログイン画面が
-        /// 「どのアプリへログインするのか」を示すために使う。表示名が引けないときは `None`
-        /// （`client_id` は**出さない**。利用者に意味が無く、画面を汚すだけのため）。
+        /// Display name of the client that sent the authorization request (`Clients.app_name`). Used by the login screen
+        /// to show "which application you are logging in to". `None` if the display name can't be looked up
+        /// (`client_id` is **not shown**; it means nothing to users and only clutters the screen).
         client_name: Option<String>,
-        /// フローのテナントの表示名（`Tenants.name`）。同じ IdP が複数の組織を受け持つため、
-        /// 「どの組織のアカウントで入るのか」を示すために使う。引けないときは `None`。
+        /// Display name of the flow's tenant (`Tenants.name`). The same IdP serves several organizations, so this
+        /// shows "which organization's account you are signing in with". `None` if it can't be looked up.
         tenant_name: Option<String>,
     },
-    /// `auth_session_id` が無効・期限切れ（web は文脈なしで描画を続ける）。
+    /// `auth_session_id` invalid or expired (web continues rendering without context).
     SessionExpired,
-    /// 内部エラー。
+    /// Internal error.
     Internal(String),
 }
 
-/// 復元した SSO セッションに対するポリシー判定の結論。
+/// Conclusion of the policy check on a restored SSO session.
 enum RestoredPolicy {
-    /// 復元してよい。
+    /// May be restored.
     Ok,
-    /// 復元は認めないが、ログインし直せば通りうる（`max_age` 超過と同じ扱い）。
+    /// Restore not allowed, but logging in again may pass (treated the same as exceeding `max_age`).
     Reauthenticate,
-    /// 拒否。ログインし直しても通らないのでフローを終える。
+    /// Denied. Logging in again won't pass either, so the flow ends.
     Denied,
     Internal(String),
 }
@@ -151,17 +151,17 @@ enum RestoredPolicy {
 pub struct AuthorizeService {
     clients: Arc<dyn ClientRepository>,
     auth_sessions: Arc<dyn AuthSessionRepository>,
-    /// SSO 復元の共通判定（SAML SSO と共有。[`crate::application::sso_restore`]）。
+    /// Shared SSO restore checks (shared with SAML SSO. [`crate::application::sso_restore`]).
     sso_restorer: Arc<SsoRestorer>,
     client_consents: Arc<dyn ClientConsentRepository>,
     code_issuance: Arc<CodeIssuanceService>,
     clock: Arc<dyn Clock>,
     auth_session_ttl: Duration,
-    /// 認証ポリシーの評価（材料の引き当てと評価。`authentication_policy_gate`）。
+    /// Authentication policy evaluation (looking up inputs and evaluating. `authentication_policy_gate`).
     policy_gate: Arc<AuthenticationPolicyGate>,
-    /// ログイン画面へ出すテナント表示名の引き当て先（`login_context` でのみ使う）。
-    /// リポジトリを直に持たず解決サービスを通すのは、同じ行を同じリクエストの入口
-    /// （`TenantResolver`）が既に引いており、その TTL キャッシュに相乗りするためである。
+    /// Where the tenant display name for the login screen is looked up (used only by `login_context`).
+    /// It goes through the resolver service instead of holding the repository directly because the same row is already
+    /// looked up at the same request's entrance (`TenantResolver`), and this rides on its TTL cache.
     tenants: Arc<TenantResolutionService>,
 }
 
@@ -197,8 +197,8 @@ impl AuthorizeService {
         tenant: TenantContext,
         params: AuthorizationParameters,
     ) -> AuthorizeOutcome {
-        // 1. client の解決（無効ならリダイレクトしない）。client はフローのテナントに属するもの
-        // だけを解決する（テナント分離。ADR-0009 §8）。
+        // 1. Resolve the client (no redirect if invalid). Only clients belonging to the flow's tenant are
+        // resolved (tenant isolation. ADR-0009 §8).
         let Some(client_id) = non_empty(params.client_id.as_deref()) else {
             return fatal(OAuthErrorCode::InvalidRequest, "client_id is required");
         };
@@ -215,7 +215,7 @@ impl AuthorizeService {
             }
         };
 
-        // 2. 認可要求を受理する（検証はドメインが持つ）。
+        // 2. Accept the authorization request (validation is owned by the domain).
         let request = match AuthorizationRequest::accept(&params, &client) {
             Ok(request) => request,
             Err(AuthorizationRequestRejection::NotRedirectable { error, description }) => {
@@ -238,8 +238,8 @@ impl AuthorizeService {
             }
         };
 
-        // 3. AuthSession を作成し、単回ハンドルを発行して web へハンドオフする（ADR-0018 決定 2）。
-        //    SSO Cookie は api からは見えないため、SSO 復元・`prompt`/`max_age` の評価は resume で行う。
+        // 3. Create the AuthSession, issue a single-use handle and hand off to web (ADR-0018 decision 2).
+        //    The SSO cookie isn't visible from api, so SSO restore and `prompt`/`max_age` evaluation happen at resume.
         let (session, handle) = AuthSession::start(
             tenant.tenant_id(),
             request,
@@ -263,11 +263,11 @@ impl AuthorizeService {
         }
     }
 
-    /// web ハンドオフの再開（`/internal/authorize/resume`。ADR-0018 決定 2）。
+    /// Resuming the web handoff (`/internal/authorize/resume`. ADR-0018 decision 2).
     ///
-    /// ハンドルを単回消費して AuthSession を特定し、web から渡された `sso_session_id` で
-    /// SSO 復元 → `max_age` → 同意チェック → code 発行（従来 `/authorize` が Cookie で行っていた
-    /// 判定）を行う。`prompt=none` の失敗は RP へのエラーリダイレクトとして返す。
+    /// Consumes the handle once to identify the AuthSession, and with the `sso_session_id` passed from web does
+    /// SSO restore -> `max_age` -> consent check -> code issuance (the checks `/authorize` used to do with cookies).
+    /// A `prompt=none` failure is returned as an error redirect to the RP.
     pub async fn resume(
         &self,
         tenant: TenantContext,
@@ -276,14 +276,14 @@ impl AuthorizeService {
     ) -> ResumeOutcome {
         let now = self.clock.now();
 
-        // 1. ハンドルから AuthSession を特定し、単回使用として消費する。
+        // 1. Identify the AuthSession from the handle and consume it as single-use.
         let (mut session, auth_session_id) =
             match self.exchange_handoff(tenant, &cmd.handle, now).await {
                 Ok(exchanged) => exchanged,
                 Err(outcome) => return outcome,
             };
 
-        // 2. SSO 復元で完了できるならそこで終える。
+        // 2. If SSO restore can complete it, finish there.
         if let Some(outcome) = self
             .complete_with_sso(
                 tenant,
@@ -297,7 +297,7 @@ impl AuthorizeService {
             return outcome;
         }
 
-        // 3. SSO で完了できない: prompt=none はログイン画面を出せないのでエラー（フロー終了）。
+        // 3. SSO can't complete it: prompt=none can't show the login screen, so it's an error (flow ends).
         if session.request().forbids_interaction() {
             let _ = self.auth_sessions.delete(session.id_hash()).await;
             return resume_error(
@@ -312,12 +312,12 @@ impl AuthorizeService {
         }
     }
 
-    /// ログイン画面の開き直しで、その後に確立された SSO セッションから認可を続ける
-    /// （`/internal/authorize/continue`）。
+    /// When the login screen is reopened, continues authorization from an SSO session established since
+    /// (`/internal/authorize/continue`).
     ///
-    /// 復元できなければ同じ `auth_session_id` のまま `LoginRequired` を返し、web はフォームを
-    /// 描き直す。認証が途中まで進んでいる（第二要素・パスワード変更の待ち）セッションには触らない
-    /// ——その続きはその画面が持っている。
+    /// If it can't be restored, returns `LoginRequired` with the same `auth_session_id` and web re-renders the form.
+    /// Sessions where authentication is partway (waiting for a second factor or password change) are not touched
+    /// ——their continuation belongs to that screen.
     pub async fn continue_with_sso(
         &self,
         tenant: TenantContext,
@@ -362,7 +362,7 @@ impl AuthorizeService {
         }
     }
 
-    /// ハンドルを `auth_session_id` と交換する（単回。並行する交換は片方だけが勝つ）。
+    /// Exchanges the handle for `auth_session_id` (single-use; of concurrent exchanges only one wins).
     async fn exchange_handoff(
         &self,
         tenant: TenantContext,
@@ -386,16 +386,16 @@ impl AuthorizeService {
         };
         match self.auth_sessions.save_handoff_exchange(&exchange).await {
             Ok(true) => Ok((session, exchange.into_issued())),
-            // 並行する交換に負けた・再利用 → 単回使用として拒否する。
+            // Lost a concurrent exchange, or reuse -> refused as single-use.
             Ok(false) => Err(ResumeOutcome::ExpiredHandle),
             Err(e) => Err(ResumeOutcome::Internal(e.to_string())),
         }
     }
 
-    /// SSO セッションを復元して認可を完了させる。完了できない（＝ログインへ進む）なら `None`。
+    /// Restores the SSO session and completes authorization. `None` if it can't complete (= go to login).
     ///
-    /// `prompt=login` / `prompt=select_account` は常に再認証。SSO 確認の失敗は致命ではなく、
-    /// ログインへフォールバックする。
+    /// `prompt=login` / `prompt=select_account` always re-authenticate. A failed SSO check is not fatal;
+    /// it falls back to login.
     async fn complete_with_sso(
         &self,
         tenant: TenantContext,
@@ -420,11 +420,11 @@ impl AuthorizeService {
             }
         };
 
-        // 認証ポリシー（AP2/AP3）を**この認可要求の文脈で**評価する。復元対象のセッションが確立
-        // されたときとは、クライアントも `acr_values` も違いうる。評価しないと、RP が `acr_values`
-        // で WebAuthn 必須ポリシーを起動しても、パスワードだけで確立された既存 SSO が黙って再利用
-        // される。満たさない場合は `max_age` 超過と同じ扱い（＝再認証へ落とす）にする。拒否ポリシー
-        // だけは再認証しても通らないので、その場でフローを終える。
+        // Evaluate the authentication policy (AP2/AP3) **in the context of this authorization request**. The client and
+        // `acr_values` may differ from when the session being restored was established. Without evaluating, even if the RP
+        // triggers a WebAuthn-required policy via `acr_values`, an existing SSO established with only a password would be
+        // silently reused. If not satisfied, treat it like exceeding `max_age` (= fall back to re-authentication). Only deny
+        // policies won't pass even after re-authenticating, so the flow ends right there.
         let policy = self
             .evaluate_for_restored_session(
                 tenant,
@@ -448,7 +448,7 @@ impl AuthorizeService {
             }
             RestoredPolicy::Internal(e) => return Some(ResumeOutcome::Internal(e)),
         }
-        // `max_age` 超過 → ログインへ（SSO は復元しない）。
+        // `max_age` exceeded -> to login (SSO is not restored).
         if session
             .request()
             .authentication_is_too_old(restored.auth_time, now)
@@ -456,7 +456,7 @@ impl AuthorizeService {
             return None;
         }
 
-        // ID Token へ載せる `sid`（G5）は復元したセッションから導出する。
+        // The `sid` put in the ID Token (G5) is derived from the restored session.
         let authentication = Authentication::new(
             restored.user_id,
             restored.auth_time,
@@ -475,7 +475,7 @@ impl AuthorizeService {
         )
     }
 
-    /// 復元した SSO の認証で、同意を確かめて code を発行する（未同意なら同意画面へ）。
+    /// With the restored SSO's authentication, checks consent and issues the code (to the consent screen if not consented).
     async fn authorize_restored(
         &self,
         tenant: TenantContext,
@@ -484,7 +484,7 @@ impl AuthorizeService {
         sso_absolute_ttl_secs: u64,
         ctx: &RequestContext,
     ) -> ResumeOutcome {
-        // 同意チェック（`prompt=consent` の場合は既存同意を無視）。
+        // Consent check (existing consent is ignored with `prompt=consent`).
         let request = session.request();
         if !request.forces_consent()
             && self
@@ -496,14 +496,14 @@ impl AuthorizeService {
                 .await;
         }
 
-        // 未同意（または `prompt=consent`）。`prompt=none` では同意画面を出せないのでエラー。
+        // Not consented (or `prompt=consent`). With `prompt=none` the consent screen can't be shown, so it's an error.
         if request.forbids_interaction() {
             let _ = self.auth_sessions.delete(session.id_hash()).await;
             return resume_error(request, OAuthErrorCode::ConsentRequired, "consent required");
         }
 
-        // 同意画面へ: AuthSession を認証済み状態にして web に返す。SSO からの復元でも id を
-        // 再生成する（SEC7）。同意画面へ渡す `auth_session_id` は再生成後の値。
+        // To the consent screen: put the AuthSession in the authenticated state and return to web. The id is regenerated
+        // even when restoring from SSO (SEC7). The `auth_session_id` passed to the consent screen is the regenerated value.
         let completion = session.complete_authentication(authentication);
         if let Err(e) = self.auth_sessions.save_authentication(&completion).await {
             tracing::error!(error = %e, "failed to mark session for consent");
@@ -519,7 +519,7 @@ impl AuthorizeService {
         }
     }
 
-    /// 同意済みの SSO 復元で code を発行し、AuthSession を削除する。
+    /// Issues the code on an SSO restore with consent, and deletes the AuthSession.
     async fn issue_restored_code(
         &self,
         tenant: TenantContext,
@@ -534,9 +534,9 @@ impl AuthorizeService {
             authentication,
         };
         match self.code_issuance.issue(cmd, ctx).await {
-            // 復元した SSO は通っているが、このアプリの利用が許可されていない（ADR-0054）。
-            // `prompt=none` は画面を出さない約束なので `access_denied` で RP へ返す（RP は自分の
-            // 入口を出す。task #648）。それ以外は RP へ戻さず、assay の画面で断る。
+            // The restored SSO passes, but use of this application is not permitted (ADR-0054).
+            // `prompt=none` promises no screen, so return `access_denied` to the RP (the RP shows its own
+            // entry point. task #648). Otherwise don't return to the RP; refuse on assay's screen.
             Ok(CodeIssuance::ApplicationDenied { .. })
                 if session.request().forbids_interaction() =>
             {
@@ -576,12 +576,12 @@ impl AuthorizeService {
         }
     }
 
-    /// 復元した SSO セッションを、この認可要求の文脈で認証ポリシーに掛ける（AP2/AP3）。
+    /// Applies the authentication policy to the restored SSO session in the context of this authorization request (AP2/AP3).
     ///
-    /// 判定材料は「復元セッションが記録している認証方式」（AP4）。`require_mfa` は多要素で
-    /// 確立されたセッションなら満たし、`require_specific_method` は記録された方式が要求に
-    /// 一致するかで見る。User Verification は記録に無いため、WebAuthn を含むセッションのみ
-    /// UV 済みとみなす（パスキー登録・認証は UV 必須で行っている）。
+    /// The input is "the authentication methods recorded by the restored session" (AP4). `require_mfa` is satisfied by a
+    /// session established with multiple factors, and `require_specific_method` checks whether the recorded methods match
+    /// the requirement. User Verification isn't recorded, so only sessions including WebAuthn are considered
+    /// UV-done (passkey registration and authentication are done with UV required).
     async fn evaluate_for_restored_session(
         &self,
         tenant: TenantContext,
@@ -625,9 +625,9 @@ impl AuthorizeService {
         }
     }
 
-    /// 同意チェック: ユーザーがクライアントに対してすべての scope に同意済みか確認する。
+    /// Consent check: confirms the user has consented to all scopes for the client.
     ///
-    /// 確認に失敗したら「未同意」として扱う（同意画面へ進むだけで、誤って code を出すことはない）。
+    /// If the check fails, it is treated as "not consented" (it only goes to the consent screen; it never wrongly issues a code).
     async fn check_consent(
         &self,
         tenant: TenantContext,
@@ -650,17 +650,17 @@ impl AuthorizeService {
         }
     }
 
-    /// ログイン画面の文脈（`/internal/authorize/login-context`。G12）。
+    /// Login screen context (`/internal/authorize/login-context`. G12).
     ///
-    /// 認可要求が持ち込んだ `login_hint` / `ui_locales` を、進行中の `auth_session_id` から引き直す。
-    /// web は resume の 303 でこれらを手元に残せないため、画面描画のたびに取り直す口が要る。
+    /// Looks up the `login_hint` / `ui_locales` brought by the authorization request again from the in-progress `auth_session_id`.
+    /// web can't keep these at hand across resume's 303, so an endpoint to refetch them on every render is needed.
     ///
-    /// あわせて、ログイン画面が「どこへログインするのか」を示すための表示名
-    /// （クライアントの `app_name`・テナントの `name`）も返す。これは画面が持ち得ない情報で、
-    /// 無いと利用者はどのアプリのどの組織へ入るのか分からないまま資格情報を入力することになる。
+    /// It also returns display names so the login screen can show "where you are logging in"
+    /// (the client's `app_name` and the tenant's `name`). The screen can't have this information otherwise, and
+    /// without it users would enter credentials without knowing which application of which organization they're entering.
     ///
-    /// 返すのは**表示のためのヒントだけ**で、利用者・同意状態には触れない（`auth_session_id` は
-    /// 提示できれば認可セッションを操作できる bearer credential だが、この経路は読み出しのみ）。
+    /// It returns **only display hints** and doesn't touch the user or consent state (`auth_session_id` is a
+    /// bearer credential that can operate the authorization session if presented, but this path only reads).
     pub async fn login_context(
         &self,
         tenant: TenantContext,
@@ -682,8 +682,8 @@ impl AuthorizeService {
             return LoginContextOutcome::SessionExpired;
         }
         let request = session.request();
-        // 表示名は「あれば出す」だけの飾りで、引けなくてもログインは続けられなければならない。
-        // 取得に失敗しても文脈全体を落とさず、その欄だけ空にする。
+        // Display names are just decoration "shown if available", and login must continue even if they can't be looked up.
+        // Even if fetching fails, don't drop the whole context; just leave that field empty.
         let client_name = match self
             .clients
             .find_by_client_id(tenant.tenant_id(), request.client_id())
@@ -723,12 +723,12 @@ fn fatal(error: OAuthErrorCode, description: &str) -> AuthorizeOutcome {
     }
 }
 
-/// `/authorize` の失敗を `redirect_uri` へ返す URL（`state` を透過返却）。
+/// URL returning an `/authorize` failure to `redirect_uri` (`state` passed through).
 ///
-/// ⚠ **`/authorize` の失敗だけは `response_mode` を見ずにクエリで返す。** ここはブラウザへ api が
-/// 直接 302 を返す地点で、api は画面（自動送信フォーム）を描かない（HTML は web だけが描く）。
-/// 返すのは検証の失敗・保存の失敗で、code は載らない。resume 以降の失敗は [`resume_error`] が
-/// `response_mode` に従って返す。
+/// ⚠ **Only `/authorize` failures are returned in the query without looking at `response_mode`.** This is where api
+/// returns a 302 directly to the browser, and api doesn't render screens (auto-submitting forms; only web renders HTML).
+/// What is returned are validation and storage failures, with no code. Failures from resume onward are returned by
+/// [`resume_error`] according to `response_mode`.
 fn redirect_with_error(
     request: &AuthorizationRequest,
     error: OAuthErrorCode,
@@ -742,8 +742,8 @@ fn redirect_with_error(
     )
 }
 
-/// resume 以降の失敗を RP へ返す。成功と同じく要求された `response_mode` に従う（RP は同じ
-/// 受け口で待っている。OAuth 2.0 Form Post Response Mode）。web が 302 か自動送信フォームで返す。
+/// Returns failures from resume onward to the RP. Like success, follows the requested `response_mode` (the RP waits at the same
+/// endpoint. OAuth 2.0 Form Post Response Mode). web returns it with a 302 or an auto-submitting form.
 fn resume_error(
     request: &AuthorizationRequest,
     error: OAuthErrorCode,
@@ -756,12 +756,12 @@ fn resume_error(
     }
 }
 
-/// `redirect_uri` にクエリパラメータを足した URL を組み立てる。
+/// Builds a URL with query parameters added to `redirect_uri`.
 ///
-/// `redirect_uri` は登録済み値との完全一致を通っているが、**ここでパニックさせない**（SEC12）。
-/// 登録時の検証をすり抜けた値（DB の直接編集・過去の緩い検証で入った行）が 1 つあるだけで、
-/// その RP を使う認可要求が毎回リクエストごと落ちることになる。解析できない場合は素朴に
-/// クエリを連結して返し、壊れているのは当該 RP の設定だけに留める。
+/// `redirect_uri` has passed the exact match against registered values, but **don't panic here** (SEC12).
+/// A single value that slipped past registration-time validation (direct DB edit, a row from older loose validation)
+/// would make every authorization request using that RP fail. If it can't be parsed, the query is naively
+/// concatenated and returned, so only that RP's configuration is broken.
 fn append_query(redirect_uri: &str, pairs: &[(&str, &str)]) -> String {
     if let Ok(mut url) = url::Url::parse(redirect_uri) {
         {
@@ -785,20 +785,20 @@ fn append_query(redirect_uri: &str, pairs: &[(&str, &str)]) -> String {
     format!("{redirect_uri}{separator}{}", encoded.join("&"))
 }
 
-/// 認可応答を各ユースケースの outcome へ載せる形（G12）。
+/// The shape in which the authorization response is put into each use case's outcome (G12).
 ///
-/// `location` は **`query` なら 302 先の完成 URL、`form_post` ならフォームの送信先**
-/// （＝パラメータの付かない `redirect_uri`）である。`form_post` が `Some` のとき、
-/// 呼び出し側は `location` へ hidden フィールドを POST する自動送信フォームを描く。
+/// `location` is **the complete 302 target URL for `query`, and the form target for `form_post`**
+/// (= `redirect_uri` without parameters). When `form_post` is `Some`,
+/// the caller renders an auto-submitting form that POSTs hidden fields to `location`.
 ///
-/// 2 つの形を 1 つの型にまとめず「URL ＋任意のフィールド」にしてあるのは、既存の経路
-/// （`query`）を触らずに済ませるため。`form_post` を見落とした経路は `location` で 302 し、
-/// RP は「コードの無い戻り」を受け取ってエラーになる——認可コードが URL に載って履歴・
-/// `Referer` に残るよりは、目に見えて失敗する方がよい。
+/// The two shapes aren't merged into one type but kept as "URL + optional fields" so the existing path
+/// (`query`) needn't be touched. A path that overlooks `form_post` does a 302 to `location`, and
+/// the RP gets "a return without a code" and errors ——better to fail visibly than to have the authorization code in the URL
+/// left in history and `Referer`.
 #[derive(Debug, Clone, Default)]
 pub struct AuthorizationDispatch {
     pub location: String,
-    /// `form_post` のとき、POST する hidden フィールド（`code` / `state`、またはエラー）。
+    /// For `form_post`, the hidden fields to POST (`code` / `state`, or the error).
     pub form_post: Option<Vec<(String, String)>>,
 }
 
@@ -811,15 +811,15 @@ impl From<AuthorizationResponse> for AuthorizationDispatch {
     }
 }
 
-/// `redirect_uri?code=...&state=...` を構築する（state は透過返却、設計仕様 §2.2）。
+/// Builds `redirect_uri?code=...&state=...` (state passed through, design spec §2.2).
 ///
-/// `response_mode` を見ないため、認可セッションが手元にある経路では
-/// [`AuthorizationRequest::success_response`] を使う。
+/// It doesn't look at `response_mode`, so paths that have the authorization session at hand use
+/// [`AuthorizationRequest::success_response`].
 pub fn code_redirect(redirect_uri: &str, code: &str, state: &str) -> String {
     append_query(redirect_uri, &[("code", code), ("state", state)])
 }
 
-/// `redirect_uri?error=...&error_description=...&state=...` を構築する（state は省略可）。
+/// Builds `redirect_uri?error=...&error_description=...&state=...` (state optional).
 pub fn error_redirect_with_state(
     redirect_uri: &str,
     error: OAuthErrorCode,

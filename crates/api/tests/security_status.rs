@@ -1,12 +1,12 @@
-//! 本人が見る「状況」（task #896。ADR-0078）。
+//! The "status" the user sees about themselves (task #896, ADR-0078).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test security_status
 //!
-//! 「状況」は 8 つの表を読んで組み立てる。単体テストでは列の名前・結合の向きを証明できないので、
-//! ログイン → 端末の印 → コードの交換までを実 DB で通し、画面へ渡る形
-//! （`/internal/account/security/status`）で確かめる。結び付き＋登録済みの状態は、DBSC の署名を
-//! 作る代わりに、結び付けと登録が書く列（`sso_session_contexts.key_*`・`user_devices`）を直に置く。
+//! "Status" is assembled from 8 tables. Unit tests cannot prove column names or join directions, so
+//! this runs login -> device mark -> code exchange against a real DB and checks the shape handed to
+//! the screen (`/internal/account/security/status`). For bound + registered, instead of producing a
+//! DBSC signature, it writes the columns binding and registration write (`sso_session_contexts.key_*`, `user_devices`) directly.
 
 mod support;
 
@@ -119,7 +119,7 @@ async fn status(env: &TestEnv, sso_cookie: &str) -> Value {
     body_json(response).await
 }
 
-/// **結び付きも登録も無いログインは「短い・結び付きなし・未登録」、両方そろうと「長い」と読める。**
+/// **A login with neither binding nor registration reads "short, unbound, unregistered"; with both it reads "long".**
 #[tokio::test]
 async fn the_status_tells_a_bound_registered_session_from_a_plain_one() {
     let Some(env) = support::setup("security status").await else {
@@ -135,7 +135,7 @@ async fn the_status_tells_a_bound_registered_session_from_a_plain_one() {
     support::register_user(&env.app, &env.root_tenant_id, &username, PASSWORD).await;
     support::mark_email_verified(&env.pool, &env.root_tenant_id, &username).await;
 
-    // 1. ログインし、web と同じく Cookie を置いた応答で端末の印を結ぶ（未登録の端末）。
+    // 1. Log in and bind the device mark with a response that sets the cookie as web does (unregistered device).
     let auth_session = begin(&env, &client_id).await;
     let body = authenticate(&env, &auth_session, &username).await;
     let sso_cookie = body["sso_session_id"]
@@ -153,7 +153,7 @@ async fn the_status_tells_a_bound_registered_session_from_a_plain_one() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
 
-    // 2. アプリがコードを交換し、結び付きの無いリフレッシュトークンを持つ。
+    // 2. The app exchanges the code and holds an unbound refresh token.
     let code = code_from(&env, &body).await;
     let response = send(
         &env.app,
@@ -177,7 +177,7 @@ async fn the_status_tells_a_bound_registered_session_from_a_plain_one() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
 
-    // 3. どちらも無い状態。
+    // 3. State with neither.
     let plain = status(&env, &sso_cookie).await;
     assert_eq!(plain["result"], "ok", "{plain}");
     let current = &plain["sessions"][0];
@@ -210,7 +210,7 @@ async fn the_status_tells_a_bound_registered_session_from_a_plain_one() {
     );
     assert_eq!(plain["warnings"]["session_key_mismatch"]["count"], 0);
 
-    // 4. 結び付けと登録が書く列を置く（DBSC の署名と、パスキーでの登録の代わり）。
+    // 4. Write the columns binding and registration write (in place of a DBSC signature and passkey registration).
     let user_id = support::find_user_id_by_username(&env.pool, &env.root_tenant_id, &username)
         .await
         .expect("user id");
@@ -249,7 +249,7 @@ async fn the_status_tells_a_bound_registered_session_from_a_plain_one() {
     assert_eq!(belongings[0]["kind"], "device");
     assert!(belongings[0]["expires_at"].is_string());
 
-    // 5. 終わったログイン状態では読めない（他人の状況を引く口は無い）。
+    // 5. A finished login state cannot read it (there is no route to fetch someone else's status).
     let gone = status(&env, "not-a-session").await;
     assert_eq!(gone["result"], "session_expired", "{gone}");
 }

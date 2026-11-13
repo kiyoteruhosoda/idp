@@ -1,4 +1,4 @@
-//! `SignInHistoryRepository` の sqlx 実装（task #879。ADR-0073）。
+//! sqlx implementation of `SignInHistoryRepository` (task #879, ADR-0073).
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::SignInHistoryRepository;
@@ -34,7 +34,7 @@ fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
     Utc.from_utc_datetime(&naive)
 }
 
-/// 長い値で INSERT を落とさないよう、列の長さに切り詰める。
+/// Truncates to the column length so a long value doesn't fail the INSERT.
 fn clip(value: Option<&str>, max_chars: usize) -> Option<String> {
     value.map(|v| v.chars().take(max_chars).collect())
 }
@@ -42,7 +42,7 @@ fn clip(value: Option<&str>, max_chars: usize) -> Option<String> {
 #[async_trait]
 impl SignInHistoryRepository for SqlxSignInHistoryRepository {
     async fn record_success(&self, s: &SignInSuccess) -> Result<bool> {
-        // 同じ sid の 2 回目は何もしない（`id = id` は行を変えないので影響行数が 0 になる）。
+        // A second insert for the same sid does nothing (`id = id` doesn't change the row, so affected rows is 0).
         let result = sqlx::query(
             "INSERT INTO sign_in_history \
              (user_id, tenant_id, occurred_at, outcome, ip_address, user_agent, country, \
@@ -124,7 +124,7 @@ impl SignInHistoryRepository for SqlxSignInHistoryRepository {
         ip_address: Option<&str>,
         user_agent: Option<&str>,
     ) -> Result<()> {
-        // この機能より前に出したトークンには行が無い。その更新は数えない（0 行で終わる）。
+        // Tokens issued before this feature have no row. Their refreshes are not counted (ends with 0 rows).
         sqlx::query(
             "UPDATE sign_in_app_usage \
              SET refresh_use_count = refresh_use_count + 1, refresh_last_used_at = ?, \
@@ -191,7 +191,7 @@ impl SignInHistoryRepository for SqlxSignInHistoryRepository {
                     id: row.try_get("id").map_err(repo_err)?,
                     occurred_at: to_utc(row.try_get("occurred_at").map_err(repo_err)?),
                     outcome: SignInOutcome::parse(&outcome).map_err(repo_err)?,
-                    // 未知の分類（新しい版が書いた値）は「その他」として読む。
+                    // Unknown categories (values written by a newer version) are read as "other".
                     failure_kind: kind
                         .map(|k| SignInFailureKind::parse(&k).unwrap_or(SignInFailureKind::Other)),
                     ip_address: row.try_get("ip_address").map_err(repo_err)?,
@@ -233,8 +233,8 @@ impl SignInHistoryRepository for SqlxSignInHistoryRepository {
         q.push(" ORDER BY u.first_issued_at");
         let usage_rows = q.build().fetch_all(&self.pool).await.map_err(repo_err)?;
 
-        // リフレッシュトークンの今の状態は refresh_tokens から数える（取り消しの経路は多いので、
-        // 経路ごとに写すより残っている行を見るほうが漏れない）。
+        // The current state of refresh tokens is counted from refresh_tokens (there are many revocation paths, so
+        // looking at the remaining rows misses less than mirroring each path).
         let mut t: QueryBuilder<MySql> = QueryBuilder::new(
             "SELECT sid, client_id, COUNT(*) AS row_count, \
                     CAST(SUM(revoked_at IS NULL AND expires_at > ",
@@ -313,7 +313,7 @@ impl SignInHistoryRepository for SqlxSignInHistoryRepository {
     }
 }
 
-/// ` AND <column> IN (?, ?, …)` を足す。
+/// Appends ` AND <column> IN (?, ?, …)`.
 fn push_sids(q: &mut QueryBuilder<MySql>, column: &'static str, sids: &[String]) {
     q.push(" AND ").push(column).push(" IN (");
     let mut list = q.separated(", ");

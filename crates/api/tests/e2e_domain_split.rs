@@ -1,21 +1,21 @@
-//! web→api E2E テスト（ADR-0018。旧 ADR-0012 §7 の Cookie 越境検証を置き換える）。
+//! web→api E2E tests (ADR-0018; replaces the cross-domain cookie check of the former ADR-0012 §7).
 //!
-//! api と web をローカルポートに bind した実サーバとして同時起動し、Cookie jar 有効の HTTP
-//! クライアント（reqwest `cookie_store` + `resolve()` でテスト用ホスト名を `127.0.0.1` へ上書き）で
-//! ブラウザ相当の遷移を辿る。Cookie jar が `Domain` 属性・ホスト一致を解釈するため、
-//! 「api がブラウザ Cookie を一切読み書きせず、host-only Cookie だけでフローが成立する」ことを
-//! 実挙動で検証できる。
+//! Starts api and web together as real servers bound to local ports, and follows browser-like navigation with
+//! an HTTP client with a cookie jar (reqwest `cookie_store` + `resolve()` overriding test host names to
+//! `127.0.0.1`). Since the cookie jar interprets the `Domain` attribute and host matching,
+//! "api never reads or writes browser cookies and the flow works with host-only cookies alone" can be
+//! checked against real behaviour.
 //!
-//! ケース（ADR-0018 の受け入れ条件）:
-//! 1. 別ドメイン構成（api は web の子サブドメイン。決定 1 の入れ子ホスト名）: `/authorize`
-//!    （api ドメイン）→ 302（単回ハンドル付き）→ `/login`（web ドメイン。ハンドルを host-only
-//!    Cookie へ移す）→ POST → SSO 確立 → 再 `/authorize` はログイン画面を経ずに code 発行。
-//!    **api はブラウザ Cookie を一切発行せず**、web の Cookie に `Domain` 属性が付かない。
-//! 2. RP-initiated Logout（web の `GET /{tenant_id}/logout`）で SSO Cookie が消え、
-//!    以後の `/authorize` は再ログインになる。ポータルログアウト（POST）も同様。
-//! 3. 旧構成の掃除: `COOKIE_DOMAIN` 設定時、ブラウザに残った `Domain` 付き Cookie が
-//!    削除併送で掃除され、新しい host-only セッションを覆い隠さない（決定 4 の移行経路）。
-//! 4. 回帰: 単一オリジン構成（`COOKIE_DOMAIN` 未設定）で host-only・削除併送なしの従来挙動。
+//! Cases (acceptance criteria of ADR-0018):
+//! 1. Separate-domain setup (api is a subdomain of web; nested host names of decision 1): `/authorize`
+//!    (api domain) → 302 (with a one-time handle) → `/login` (web domain; moves the handle into a host-only
+//!    cookie) → POST → SSO established → a second `/authorize` issues a code without the login screen.
+//!    **api issues no browser cookies at all**, and web's cookies have no `Domain` attribute.
+//! 2. RP-initiated Logout (web's `GET /{tenant_id}/logout`) removes the SSO cookie, and
+//!    later `/authorize` requires signing in again. Same for portal logout (POST).
+//! 3. Cleaning up the old setup: with `COOKIE_DOMAIN` set, `Domain` cookies left in the browser are
+//!    cleaned up by sending deletions alongside, and do not shadow the new host-only session (migration path of decision 4).
+//! 4. Regression: single-origin setup (`COOKIE_DOMAIN` unset) keeps the old behaviour, host-only with no deletions sent.
 
 mod support;
 
@@ -27,21 +27,21 @@ use std::future::IntoFuture;
 use std::sync::Arc;
 use support::{authorize_uri_openid_only, REDIRECT_URI};
 
-/// 環境変数（プロセス共有）を触りながら api/web の Config を組み立てる区間を直列化するロック。
+/// Lock serializing the sections that assemble api/web Config while touching env vars (shared by the process).
 static ENV_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// 起動済みの api + web スタック。
+/// A started api + web stack.
 struct Stack {
-    /// api の公開オリジン（= ISSUER。例 `http://api.idp.example.test:PORT`）。
+    /// api's public origin (= ISSUER, e.g. `http://api.idp.example.test:PORT`).
     api_base: String,
-    /// web の公開オリジン（= PUBLIC_WEB_BASE_URL）。
+    /// web's public origin (= PUBLIC_WEB_BASE_URL).
     web_base: String,
     pool: sqlx::MySqlPool,
     root_tenant_id: String,
     csrf_secret: [u8; 32],
 }
 
-/// api と web を実サーバとして起動する。`TEST_DATABASE_URL` 未設定でスキップ許可時は `None`。
+/// Starts api and web as real servers. `None` when `TEST_DATABASE_URL` is unset and skipping is allowed.
 async fn start_stack(api_host: &str, web_host: &str, cookie_domain: Option<&str>) -> Option<Stack> {
     let api_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -58,8 +58,8 @@ async fn start_stack(api_host: &str, web_host: &str, cookie_domain: Option<&str>
         web_listener.local_addr().unwrap().port()
     );
 
-    // Config は環境変数から組み立てる。env はプロセス共有のため、構築が終わるまでロックする
-    // （このテストバイナリ内の他ケースとの競合を防ぐ。他のテストバイナリは別プロセス）。
+    // Config is built from env vars. env is shared by the process, so hold the lock until construction finishes
+    // (prevents races with other cases in this test binary; other test binaries are separate processes).
     let (env, web_config) = {
         let _guard = ENV_MUTEX.lock().await;
         std::env::set_var("ISSUER", &api_base);
@@ -68,7 +68,7 @@ async fn start_stack(api_host: &str, web_host: &str, cookie_domain: Option<&str>
             Some(d) => std::env::set_var("COOKIE_DOMAIN", d),
             None => std::env::remove_var("COOKIE_DOMAIN"),
         }
-        // web→api のサーバ間内部到達先（公開ドメインを経由しない。ADR-0012 §2）。
+        // Server-to-server internal target from web to api (does not go through the public domain; ADR-0012 §2).
         std::env::set_var(
             "API_BASE_URL",
             format!(
@@ -99,8 +99,8 @@ async fn start_stack(api_host: &str, web_host: &str, cookie_domain: Option<&str>
     })
 }
 
-/// Cookie jar 有効・リダイレクト手動追跡のブラウザ相当クライアント。テスト用ホスト名は
-/// `resolve()` で `127.0.0.1` へ上書きする（ポートは URL 側の指定が使われる）。
+/// A browser-like client with a cookie jar and manual redirect following. Test host names are
+/// overridden to `127.0.0.1` with `resolve()` (the port comes from the URL).
 fn browser(hosts: &[&str]) -> (reqwest::Client, Arc<reqwest::cookie::Jar>) {
     let jar = Arc::new(reqwest::cookie::Jar::default());
     let mut builder = reqwest::Client::builder()
@@ -112,7 +112,7 @@ fn browser(hosts: &[&str]) -> (reqwest::Client, Arc<reqwest::cookie::Jar>) {
     (builder.build().expect("build reqwest client"), jar)
 }
 
-/// 検証済みメール・既知パスワードの利用者を root テナントへ直接作成し、username を返す。
+/// Creates a user with a verified email and known password directly in the root tenant and returns the username.
 async fn create_login_user(stack: &Stack, password: &str) -> String {
     use assay_api::domain::password::PasswordHasher as _;
     let username = format!("e2e{}", support::unique());
@@ -132,7 +132,7 @@ async fn create_login_user(stack: &Stack, password: &str) -> String {
     .execute(&stack.pool)
     .await
     .expect("insert user");
-    // ユーザー名は登録簿の主識別子行として持つ（AP15b）。ここが無いとログインできない。
+    // The username is held as the registry's primary identifier row (AP15b). Without it, sign-in fails.
     sqlx::query(
         "INSERT INTO user_login_identifiers \
          (id, tenant_id, user_id, identifier_type, display_value, normalized_value, is_active, \
@@ -160,7 +160,7 @@ async fn create_login_user(stack: &Stack, password: &str) -> String {
     username
 }
 
-/// レスポンスの `Set-Cookie` から `name` で始まるものを全件返す。
+/// Returns every `Set-Cookie` of the response starting with `name`.
 fn set_cookies_for(response: &reqwest::Response, name: &str) -> Vec<String> {
     response
         .headers()
@@ -182,7 +182,7 @@ fn location(response: &reqwest::Response) -> String {
         .to_string()
 }
 
-/// api がブラウザ Cookie を一切発行していないこと（ADR-0018 決定 2 の中核）。
+/// api issued no browser cookies at all (the core of ADR-0018 decision 2).
 fn assert_no_set_cookie(response: &reqwest::Response, context: &str) {
     let cookies: Vec<_> = response
         .headers()
@@ -196,22 +196,22 @@ fn assert_no_set_cookie(response: &reqwest::Response, context: &str) {
     );
 }
 
-/// `/authorize` → web ハンドオフ → ログイン → 再 `/authorize` のブラウザ遷移を辿り、
-/// 途中のレスポンスを検証に返す。
+/// Follows the browser navigation `/authorize` → web handoff → login → second `/authorize`,
+/// returning the responses along the way for checking.
 struct LoginFlowResult {
-    /// 初回 `/authorize`（api ドメイン。ハンドオフ 302）のレスポンス。
+    /// Response of the first `/authorize` (api domain; handoff 302).
     authorize: reqwest::Response,
-    /// ハンドオフ URL（`/login?auth_session=...`）への GET（web がハンドルを Cookie へ移す）のレスポンス。
+    /// Response of the GET to the handoff URL (`/login?auth_session=...`) (web moves the handle into a cookie).
     handoff: reqwest::Response,
-    /// `POST /login` 成功のレスポンス。
+    /// Response of a successful `POST /login`.
     login: reqwest::Response,
-    /// SSO 確立後の再 `/authorize` を web ハンドオフまで辿った最終レスポンス
-    /// （SSO 復元に成功していれば RP callback への 302）。
+    /// Final response of the second `/authorize` after SSO is established, followed up to the web handoff
+    /// (a 302 to the RP callback if SSO restore succeeded).
     second_authorize: reqwest::Response,
 }
 
-/// `/authorize`（api）を開始し、web のハンドオフ受領（`?auth_session=` → 303）まで辿る。
-/// 戻り値は `(authorize 応答, ハンドオフ応答)`。
+/// Starts `/authorize` (api) and follows until web receives the handoff (`?auth_session=` → 303).
+/// Returns `(authorize response, handoff response)`.
 async fn follow_handoff(
     client: &reqwest::Client,
     stack: &Stack,
@@ -252,8 +252,8 @@ async fn run_login_flow(
 ) -> LoginFlowResult {
     let tenant = &stack.root_tenant_id;
 
-    // 1. /authorize（api ドメイン）→ 単回ハンドル付きで web へ 302 → web がハンドルを host-only
-    //    Cookie へ移して 303 で自 URL（クエリなし）へ付け替える。
+    // 1. /authorize (api domain) → 302 to web with a one-time handle → web moves the handle into a host-only
+    //    cookie and 303s to its own URL (without the query).
     let (authorize, handoff) = follow_handoff(client, stack, client_id).await;
     assert_eq!(
         handoff.status(),
@@ -270,8 +270,8 @@ async fn run_login_flow(
         })
         .expect("auth_session_id cookie value");
 
-    // 2. ログイン画面（web ドメイン）: host-only の auth_session_id Cookie が届いていれば
-    //    OIDC ログインフォーム（auth_session 由来の CSRF トークン入り）が描画される。
+    // 2. Login screen (web domain): if the host-only auth_session_id cookie arrived,
+    //    the OIDC login form (with a CSRF token derived from auth_session) is rendered.
     let expected_csrf = login_csrf_token(&auth_session_id, &stack.csrf_secret);
     let page = client.get(&login_url).send().await.expect("GET /login");
     assert_eq!(page.status(), StatusCode::OK);
@@ -281,7 +281,7 @@ async fn run_login_flow(
         "login page must render the OIDC form from the host-only auth_session_id cookie"
     );
 
-    // 3. POST /login（web ドメイン）: 成功で SSO Cookie を発行し、code 付き callback へ 302。
+    // 3. POST /login (web domain): on success issues the SSO cookie and 302s to the callback with a code.
     let login = client
         .post(format!("{}/{tenant}/login", stack.web_base))
         .form(&[
@@ -299,8 +299,8 @@ async fn run_login_flow(
         "login redirects to RP callback, got {callback}"
     );
 
-    // 4. 再度の /authorize（api ドメイン）→ web ハンドオフ: web が host-only の SSO Cookie を
-    //    読んで resume するため、ログイン画面を経ずに RP callback へ 302 される（SSO 復元の本丸）。
+    // 4. /authorize again (api domain) → web handoff: web reads the host-only SSO cookie and resumes,
+    //    so it 302s to the RP callback without the login screen (the heart of SSO restore).
     let (second_authorize_hop, second_handoff) = follow_handoff(client, stack, client_id).await;
     drop(second_authorize_hop);
     LoginFlowResult {
@@ -311,8 +311,8 @@ async fn run_login_flow(
     }
 }
 
-/// ログアウト後の `/authorize` が「未ログイン」としてログインフォームへ戻ることを確かめる。
-/// SSO Cookie が消えていなければ即時 code 発行になるため、ここで検出できる。
+/// Checks that `/authorize` after logout goes back to the login form as "not signed in".
+/// If the SSO cookie were not gone, a code would be issued immediately, so this detects it.
 async fn assert_login_required_again(client: &reqwest::Client, stack: &Stack, client_id: &str) {
     let (_, handoff) = follow_handoff(client, stack, client_id).await;
     assert_eq!(
@@ -326,7 +326,7 @@ async fn assert_login_required_again(client: &reqwest::Client, stack: &Stack, cl
     );
 }
 
-/// Cookie jar が `url` へ送る Cookie に `name` が残っていないこと。
+/// `name` is not among the cookies the cookie jar sends to `url`.
 fn assert_jar_dropped(jar: &reqwest::cookie::Jar, url: &str, name: &str) {
     let url: reqwest::Url = url.parse().unwrap();
     let remaining = jar
@@ -339,7 +339,7 @@ fn assert_jar_dropped(jar: &reqwest::cookie::Jar, url: &str, name: &str) {
     );
 }
 
-/// SSO 復元に成功した再 `/authorize` は、web ハンドオフの時点で RP callback へ 302 される。
+/// A second `/authorize` with successful SSO restore 302s to the RP callback at the web handoff.
 fn assert_immediate_code(second_authorize: &reqwest::Response) {
     assert_eq!(second_authorize.status(), StatusCode::FOUND);
     let callback = location(second_authorize);
@@ -349,8 +349,8 @@ fn assert_immediate_code(second_authorize: &reqwest::Response) {
     );
 }
 
-/// ケース 1: 別ドメイン構成（入れ子ホスト名。ADR-0018 決定 1）で、Cookie を越境させずに
-/// フローが成立する。`COOKIE_DOMAIN` は設定しない（決定 4 の既定）。
+/// Case 1: in a separate-domain setup (nested host names; ADR-0018 decision 1), the flow works without
+/// cookies crossing domains. `COOKIE_DOMAIN` is not set (the default of decision 4).
 #[tokio::test(flavor = "multi_thread")]
 async fn cross_domain_login_works_without_sharing_cookies() {
     let Some(stack) = start_stack("api.idp.example.test", "idp.example.test", None).await else {
@@ -364,10 +364,10 @@ async fn cross_domain_login_works_without_sharing_cookies() {
 
     let result = run_login_flow(&client, &stack, &client_id, &username, password).await;
 
-    // api は /authorize でブラウザ Cookie を発行しない（run_login_flow 内でも検証済み）。
+    // api issues no browser cookies at /authorize (also checked inside run_login_flow).
     assert_no_set_cookie(&result.authorize, "/authorize");
 
-    // web の Cookie は host-only（Domain 属性なし・削除併送なし）。
+    // web's cookies are host-only (no Domain attribute, no deletions sent).
     let auth_cookies = set_cookies_for(&result.handoff, "auth_session_id");
     assert_eq!(auth_cookies.len(), 1, "{auth_cookies:?}");
     assert!(!auth_cookies[0].contains("Domain="), "{auth_cookies:?}");
@@ -375,14 +375,14 @@ async fn cross_domain_login_works_without_sharing_cookies() {
     assert_eq!(sso_cookies.len(), 1, "{sso_cookies:?}");
     assert!(!sso_cookies[0].contains("Domain="), "{sso_cookies:?}");
 
-    // host-only のため api オリジンへは SSO Cookie が送信されない（送信されなくてもフローは成立する）。
+    // Host-only, so the SSO cookie is not sent to the api origin (the flow works without it).
     assert_jar_dropped(&jar, &format!("{}/", stack.api_base), "sso_session_id");
 
     assert_immediate_code(&result.second_authorize);
 }
 
-/// ケース 2a: RP-initiated Logout（web の `GET /{tenant_id}/logout`。ADR-0018 決定 2 で
-/// end_session_endpoint は web が受ける）で SSO Cookie が消え、以後は再ログインになる。
+/// Case 2a: RP-initiated Logout (web's `GET /{tenant_id}/logout`; per ADR-0018 decision 2
+/// end_session_endpoint is served by web) removes the SSO cookie, and afterwards sign-in is required again.
 #[tokio::test(flavor = "multi_thread")]
 async fn rp_initiated_logout_on_the_web_clears_the_sso_cookie() {
     let Some(stack) = start_stack("api.idp.example.test", "idp.example.test", None).await else {
@@ -397,7 +397,7 @@ async fn rp_initiated_logout_on_the_web_clears_the_sso_cookie() {
     let result = run_login_flow(&client, &stack, &client_id, &username, password).await;
     assert_immediate_code(&result.second_authorize);
 
-    // `id_token_hint` の無い要求なので、まず確認画面が出る（task #588）。これだけでは終えない。
+    // The request has no `id_token_hint`, so a confirmation screen appears first (task #588). That alone does not finish it.
     let confirmation = client
         .get(format!(
             "{}/{}/logout",
@@ -428,7 +428,7 @@ async fn rp_initiated_logout_on_the_web_clears_the_sso_cookie() {
         .send()
         .await
         .expect("POST /logout/confirm");
-    // front-channel 通知・post_logout_redirect_uri のないクライアントなので完了ページ（200）。
+    // The client has no front-channel notification or post_logout_redirect_uri, so the completion page (200).
     assert_eq!(logout.status(), StatusCode::OK);
     let deletions = set_cookies_for(&logout, "sso_session_id");
     assert!(
@@ -440,8 +440,8 @@ async fn rp_initiated_logout_on_the_web_clears_the_sso_cookie() {
     assert_login_required_again(&client, &stack, &client_id).await;
 }
 
-/// ケース 2b: web のポータル・ログアウト（`POST /{tenant_id}/logout`。アカウント設定のフォーム）でも
-/// SSO Cookie が消える。フォームの CSRF トークンが要り、無ければログアウトしない（task #143）。
+/// Case 2b: web's portal logout (`POST /{tenant_id}/logout`; the account settings form) also
+/// removes the SSO cookie. The form's CSRF token is required; without it there is no logout (task #143).
 #[tokio::test(flavor = "multi_thread")]
 async fn portal_logout_clears_the_sso_cookie() {
     let Some(stack) = start_stack("api.idp.example.test", "idp.example.test", None).await else {
@@ -457,7 +457,7 @@ async fn portal_logout_clears_the_sso_cookie() {
     assert_immediate_code(&result.second_authorize);
     let logout_url = format!("{}/{}/logout", stack.web_base, stack.root_tenant_id);
 
-    // トークンの無い POST（外部のページから送られたもの）ではログアウトしない。
+    // A POST without a token (sent from an external page) does not log out.
     let rejected = client
         .post(&logout_url)
         .form(&[("csrf_token", "")])
@@ -479,7 +479,7 @@ async fn portal_logout_clears_the_sso_cookie() {
         "a rejected logout must keep the session: {still_sent}"
     );
 
-    // 設定画面のログアウトのフォームに埋まったトークンで送る（利用者が押したときと同じ）。
+    // Send with the token embedded in the settings screen's logout form (same as when the user presses it).
     let settings = client
         .get(format!(
             "{}/{}/settings",
@@ -512,13 +512,13 @@ async fn portal_logout_clears_the_sso_cookie() {
     assert_login_required_again(&client, &stack, &client_id).await;
 }
 
-/// ケース 3: 旧 ADR-0012 構成（兄弟ホスト + `COOKIE_DOMAIN`=apex）からの移行。ブラウザに残った
-/// `Domain` 付き Cookie が、`COOKIE_DOMAIN` 設定時の削除併送で掃除され、新しい host-only
-/// セッションを覆い隠さない（ADR-0018 決定 4 の移行経路。掃除完了後は未設定へ戻す）。
+/// Case 3: migration from the former ADR-0012 setup (sibling hosts + `COOKIE_DOMAIN`=apex). `Domain` cookies left in
+/// the browser are cleaned up by the deletions sent alongside when `COOKIE_DOMAIN` is set, and do not shadow
+/// the new host-only session (migration path of ADR-0018 decision 4; reverted to unset once cleanup is done).
 #[tokio::test(flavor = "multi_thread")]
 async fn legacy_domain_cookie_is_cleaned_up_on_login() {
-    // COOKIE_DOMAIN は掃除対象の**旧** Domain（旧兄弟構成の apex = example.test）。web ホストと
-    // 同一値は起動時検証で拒否される（削除 Cookie が host-only セッションを消してしまうため）。
+    // COOKIE_DOMAIN is the **old** Domain to clean up (the apex of the old sibling setup = example.test). A value
+    // equal to the web host is rejected by startup validation (the deletion cookie would remove the host-only session).
     let Some(stack) = start_stack(
         "api.idp.example.test",
         "idp.example.test",
@@ -534,7 +534,7 @@ async fn legacy_domain_cookie_is_cleaned_up_on_login() {
     let username = create_login_user(&stack, password).await;
     let (client, jar) = browser(&["api.idp.example.test", "idp.example.test"]);
 
-    // 旧構成（ADR-0012）の Domain 付き SSO Cookie がブラウザに残っている状態を再現する。
+    // Reproduce the state where the old setup's (ADR-0012) Domain SSO cookie remains in the browser.
     let web_url: reqwest::Url = format!("{}/", stack.web_base).parse().unwrap();
     jar.add_cookie_str(
         "sso_session_id=stale-domain-session; Domain=example.test; Path=/",
@@ -543,7 +543,7 @@ async fn legacy_domain_cookie_is_cleaned_up_on_login() {
 
     let result = run_login_flow(&client, &stack, &client_id, &username, password).await;
 
-    // ログイン成功時、host-only の新 Cookie に加えて Domain 付きの削除 Cookie が併送される。
+    // On successful login, a Domain deletion cookie is sent alongside the new host-only cookie.
     let sso_cookies = set_cookies_for(&result.login, "sso_session_id");
     assert_eq!(sso_cookies.len(), 2, "{sso_cookies:?}");
     assert!(
@@ -554,7 +554,7 @@ async fn legacy_domain_cookie_is_cleaned_up_on_login() {
         sso_cookies[1].contains("Domain=example.test") && sso_cookies[1].contains("Max-Age=0"),
         "the legacy domain cookie must be deleted: {sso_cookies:?}"
     );
-    // jar 上で stale が掃除され、host-only の新セッションのみが残る（二重送信の解消）。
+    // The stale one is cleaned up in the jar and only the new host-only session remains (no double sending).
     let remaining = jar
         .cookies(&web_url)
         .map(|v| v.to_str().unwrap_or_default().to_string())
@@ -564,12 +564,12 @@ async fn legacy_domain_cookie_is_cleaned_up_on_login() {
         "stale domain cookie must be removed, jar still sends: {remaining}"
     );
 
-    // 新しいセッションで即時 code 発行が成立する（stale に覆い隠されない）。
+    // A code is issued immediately with the new session (not shadowed by the stale one).
     assert_immediate_code(&result.second_authorize);
 
-    // サイレント SSO 復元（明示的なログインを経ない経路）でも SSO Cookie が host-only で再発行され、
-    // 旧 Domain 削除が併送される。ログインし直さない既存セッションもここで移行され、旧親ドメイン
-    // 配下へ bearer credential が送信され続けない。
+    // Silent SSO restore (a path without explicit login) also reissues the SSO cookie as host-only and sends
+    // the old Domain deletion alongside. Existing sessions that do not sign in again are migrated here too, so the
+    // bearer credential stops being sent under the old parent domain.
     let resumed = set_cookies_for(&result.second_authorize, "sso_session_id");
     assert_eq!(resumed.len(), 2, "{resumed:?}");
     assert!(
@@ -582,11 +582,11 @@ async fn legacy_domain_cookie_is_cleaned_up_on_login() {
     );
 }
 
-/// ケース 4（回帰）: 単一オリジン構成（`COOKIE_DOMAIN` 未設定）で従来挙動（host-only・
-/// Domain 属性なし・削除併送なし）が変わらない。
+/// Case 4 (regression): in a single-origin setup (`COOKIE_DOMAIN` unset) the old behaviour (host-only,
+/// no Domain attribute, no deletions sent) is unchanged.
 #[tokio::test(flavor = "multi_thread")]
 async fn single_origin_without_cookie_domain_keeps_host_only_behavior() {
-    // 単一オリジン構成をポート違いの同一ホスト名で再現する（Cookie はポートを区別しない）。
+    // Reproduce single-origin with the same host name on different ports (cookies do not distinguish ports).
     let Some(stack) = start_stack("app.example.test", "app.example.test", None).await else {
         return;
     };
@@ -598,7 +598,7 @@ async fn single_origin_without_cookie_domain_keeps_host_only_behavior() {
 
     let result = run_login_flow(&client, &stack, &client_id, &username, password).await;
 
-    // Domain 属性なし・1 本のみ（削除併送なし）= host-only の既定挙動。
+    // No Domain attribute, only one (no deletions sent) = the default host-only behaviour.
     let auth_cookies = set_cookies_for(&result.handoff, "auth_session_id");
     assert_eq!(auth_cookies.len(), 1, "{auth_cookies:?}");
     assert!(!auth_cookies[0].contains("Domain="), "{auth_cookies:?}");

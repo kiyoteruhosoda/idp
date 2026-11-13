@@ -1,4 +1,4 @@
-//! sqlx（MariaDB）によるドメインリポジトリトレイトの実装。
+//! Implementations of the domain repository traits using sqlx (MariaDB).
 
 pub mod account_note;
 pub mod account_query;

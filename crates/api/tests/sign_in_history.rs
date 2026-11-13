@@ -1,11 +1,11 @@
-//! 本人が見るログイン履歴（task #879。ADR-0073）。
+//! Sign-in history the user sees about themselves (task #879, ADR-0073).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test sign_in_history
 //!
-//! 単体テストでは繋がりを証明できない。履歴は 3 か所（web の応答・監査ログの書き込み・`/token`）で
-//! 写され、`sid` で突き合わせて 1 行にまとまる。ログイン → 失敗 → コードの交換 → 更新 → 使い回し
-//! までを実 DB で通し、画面へ渡る形（`/internal/account/sign-in-history`）で確かめる。
+//! Unit tests cannot prove the wiring. History is copied in 3 places (web's response, the audit log
+//! write, `/token`) and matched by `sid` into one row. This runs login -> failure -> code exchange ->
+//! refresh -> reuse against a real DB and checks the shape handed to the screen (`/internal/account/sign-in-history`).
 
 mod support;
 
@@ -33,7 +33,7 @@ fn unique_username() -> String {
     format!("sh{}", &uuid::Uuid::new_v4().simple().to_string()[..10])
 }
 
-/// `/authorize` から始めて、ログインの欄を開いたところ（`auth_session_id`）まで進める。
+/// Starts at `/authorize` and proceeds to the opened login form (`auth_session_id`).
 async fn begin(env: &TestEnv, client_id: &str, scope: &str) -> String {
     let response = send(
         &env.app,
@@ -76,7 +76,7 @@ async fn authenticate(env: &TestEnv, auth_session: &str, username: &str, passwor
     body_json(response).await
 }
 
-/// web がログイン状態の Cookie を置いた応答で呼ぶ口（端末の判定と同じ）。
+/// The route web calls with the response that sets the login cookie (same as device detection).
 async fn observe(env: &TestEnv, sso_cookie: &str, country: Option<&str>) {
     let response = send(
         &env.app,
@@ -94,7 +94,7 @@ async fn observe(env: &TestEnv, sso_cookie: &str, country: Option<&str>) {
     assert_eq!(response.status(), StatusCode::OK, "device observation");
 }
 
-/// 同意を挟まれたら承諾し、戻り先の code を返す。
+/// Accepts consent if interposed and returns the code from the redirect target.
 async fn code_from(env: &TestEnv, body: &Value) -> String {
     let callback = match body["result"].as_str() {
         Some("consent_required") => {
@@ -177,7 +177,7 @@ async fn history(env: &TestEnv, sso_cookie: &str) -> Value {
     body_json(response).await
 }
 
-/// **ログイン・失敗・アプリでの更新・使い回しが、本人の履歴に分けて並ぶ。他人には見えない。**
+/// **Logins, failures, refreshes in apps and reuse are listed separately in the user's history. Others cannot see them.**
 #[tokio::test]
 async fn sign_ins_failures_and_refreshes_appear_in_the_owners_history_only() {
     let Some(env) = support::setup("sign-in history").await else {
@@ -193,7 +193,7 @@ async fn sign_ins_failures_and_refreshes_appear_in_the_owners_history_only() {
     support::register_user(&env.app, &env.root_tenant_id, &username, PASSWORD).await;
     support::mark_email_verified(&env.pool, &env.root_tenant_id, &username).await;
 
-    // 1. パスワード違い（失敗の行になる）。
+    // 1. Wrong password (becomes a failure row).
     let auth_session = begin(&env, &client_id, "openid offline_access").await;
     let failed = authenticate(&env, &auth_session, &username, "wrong-password-123").await;
     assert!(
@@ -201,7 +201,7 @@ async fn sign_ins_failures_and_refreshes_appear_in_the_owners_history_only() {
         "wrong password must not sign in: {failed}"
     );
 
-    // 2. 正しいパスワードでログインし、web と同じく Cookie を置いた応答で写す（国は JP）。
+    // 2. Log in with the correct password and copy with a response that sets the cookie as web does (country JP).
     let auth_session = begin(&env, &client_id, "openid offline_access").await;
     let body = authenticate(&env, &auth_session, &username, PASSWORD).await;
     let sso_cookie = body["sso_session_id"]
@@ -209,10 +209,10 @@ async fn sign_ins_failures_and_refreshes_appear_in_the_owners_history_only() {
         .expect("sso session")
         .to_string();
     observe(&env, &sso_cookie, Some("JP")).await;
-    // 同じログインの 2 回目の頼みは行を増やさない。
+    // A second request for the same login does not add a row.
     observe(&env, &sso_cookie, Some("KP")).await;
 
-    // 3. アプリがコードを交換し、リフレッシュトークンで 2 回更新する。
+    // 3. The app exchanges the code and refreshes twice with the refresh token.
     let code = code_from(&env, &body).await;
     let (status, tokens) = token(
         &env,
@@ -236,7 +236,7 @@ async fn sign_ins_failures_and_refreshes_appear_in_the_owners_history_only() {
     let entries = page["entries"].as_array().unwrap();
     assert_eq!(entries.len(), 2, "1 success + 1 failure: {page}");
 
-    // 新しい順: 先頭が成功、次が失敗。
+    // Newest first: success first, then failure.
     let ok = &entries[0];
     assert_eq!(ok["outcome"], "succeeded");
     assert_eq!(ok["current"], true);
@@ -257,7 +257,7 @@ async fn sign_ins_failures_and_refreshes_appear_in_the_owners_history_only() {
     assert_eq!(ng["ip_address"], "203.0.113.10");
     assert!(ng["apps"].as_array().unwrap().is_empty());
 
-    // 4. 使い終えたトークンをもう一度出す → 使い回しの検知と、取り消し。
+    // 4. Present a used token again -> reuse detection and revocation.
     let (status, _) = refresh(&env, &client_id, &secret, &first).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let page = history(&env, &sso_cookie).await;
@@ -265,7 +265,7 @@ async fn sign_ins_failures_and_refreshes_appear_in_the_owners_history_only() {
     assert!(usage["reuse_detected_at"].is_string(), "{usage}");
     assert_eq!(usage["state"], "revoked", "{usage}");
 
-    // 5. 別の利用者のログイン状態では、この利用者の行は 1 つも出ない。
+    // 5. Another user's login state shows none of this user's rows.
     let other = unique_username();
     support::register_user(&env.app, &env.root_tenant_id, &other, PASSWORD).await;
     support::mark_email_verified(&env.pool, &env.root_tenant_id, &other).await;
@@ -294,7 +294,7 @@ async fn sign_ins_failures_and_refreshes_appear_in_the_owners_history_only() {
     );
 }
 
-/// ログイン状態が無い（切れた）なら、履歴は返さない。
+/// With no (expired) login state, no history is returned.
 #[tokio::test]
 async fn an_unknown_session_gets_no_history() {
     let Some(env) = support::setup("sign-in history without a session").await else {
@@ -304,7 +304,7 @@ async fn an_unknown_session_gets_no_history() {
     assert_eq!(page["result"], "session_expired", "{page}");
 }
 
-/// 断ったログインを `/internal/authenticate` へ送る。`country` は web が添える見出し（task #895）。
+/// Sends a refused login to `/internal/authenticate`. `country` is the header web adds (task #895).
 async fn fail_with_country(
     env: &TestEnv,
     client_id: &str,
@@ -335,7 +335,7 @@ async fn fail_with_country(
     send(&env.app, request).await.status()
 }
 
-/// **断ったログインの行にも、web が添えた国が付く。サービストークンの無い要求の国は入らない。**（task #895）
+/// **Refused login rows also carry the country web added. A request without a service token gets no country.** (task #895)
 #[tokio::test]
 async fn failed_sign_ins_carry_the_country_the_web_vouched_for() {
     let Some(env) = support::setup("sign-in history failure country").await else {
@@ -347,17 +347,17 @@ async fn failed_sign_ins_carry_the_country_the_web_vouched_for() {
     support::register_user(&env.app, &env.root_tenant_id, &username, PASSWORD).await;
     support::mark_email_verified(&env.pool, &env.root_tenant_id, &username).await;
 
-    // 1. web が国を添えた（JP）。
+    // 1. web added a country (JP).
     assert_eq!(
         fail_with_country(&env, &client_id, &username, Some("JP"), Some(SERVICE_TOKEN)).await,
         StatusCode::OK
     );
-    // 2. 国が無い（家の中の入口が消した・信じない設定）。
+    // 2. No country (the home entrance removed it / configured not to trust it).
     assert_eq!(
         fail_with_country(&env, &client_id, &username, None, Some(SERVICE_TOKEN)).await,
         StatusCode::OK
     );
-    // 3. サービストークン無しで国を付けて直接送る → 断られ、行は増えない。
+    // 3. Send directly with a country but no service token -> refused, no row added.
     assert_eq!(
         fail_with_country(&env, &client_id, &username, Some("KP"), None).await,
         StatusCode::UNAUTHORIZED

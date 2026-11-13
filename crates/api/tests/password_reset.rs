@@ -1,10 +1,10 @@
-//! セルフサービス・パスワードリセットの E2E 統合テスト（MT18）。
+//! E2E integration tests for self-service password reset (MT18).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test password_reset
 //!
-//! インプロセスの最小 SMTP サーバを立て、システム設定（system_settings）を実際の配送先へ向けた
-//! うえで「要求 → メール受信 → トークンでリセット → 単回消費・全セッション失効」を通しで検証する。
+//! Starts a minimal in-process SMTP server, points system settings (system_settings) at it as the real delivery target,
+//! and checks end to end "request → mail received → reset with the token → single use, all sessions revoked".
 
 mod support;
 
@@ -14,7 +14,7 @@ use support::{body_json, create_sso_session, post_internal, send, SERVICE_TOKEN}
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
-/// 最小の SMTP 対話を話すインプロセスサーバ。受信した DATA 本文を返す。
+/// An in-process server speaking minimal SMTP. Returns the received DATA body.
 async fn run_minimal_smtp_server(listener: TcpListener) -> String {
     let (socket, _) = listener.accept().await.expect("accept");
     let (read_half, mut write_half) = socket.into_split();
@@ -58,21 +58,21 @@ async fn run_minimal_smtp_server(listener: TcpListener) -> String {
     data
 }
 
-/// SMTP の宛先は**システム設定（テナント別ではない）で 1 つしかない**。設定を書き換えるテストが
-/// 並行に走ると、片方が向けた配送先へもう片方のメールが飛び、後始末（`smtp.host` を空へ戻す）が
-/// 相手の受信前に走れば、待っている側は永久に受け取れない。設定の書き換えから受信・後始末までを
-/// 直列化する。
+/// There is **only one SMTP destination, in system settings (not per tenant)**. If tests rewriting the settings
+/// ran in parallel, one's mail would go to the target the other set, and if cleanup (resetting `smtp.host` to empty)
+/// ran before the other received it, the waiting side would never receive it. Serializes from rewriting the
+/// settings through receiving and cleanup.
 ///
-/// ⚠ **この Mutex はこのバイナリの中しか直列化しない。** テストバイナリは別プロセスとして並行に
-/// 走るため、同じ設定を触る他のバイナリ（`admin_smtp_settings`）とは
-/// [`support::SmtpSettingsLock`]（DB の助言ロック）で揃える。2 つ要るのは、プロセス内では
-/// こちらのほうが軽く、プロセスを跨ぐにはあちらしか効かないためである。
+/// ⚠ **This Mutex serializes only within this binary.** Test binaries run in parallel as separate processes,
+/// so other binaries touching the same settings (`admin_smtp_settings`) are coordinated via
+/// [`support::SmtpSettingsLock`] (a DB advisory lock). Both are needed because within a process
+/// this one is lighter, and across processes only that one works.
 static SMTP_SETTINGS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// SMTP で受け取った生データから、リンクを読める本文テキストを取り出す。
+/// Extracts body text with readable links from the raw data received over SMTP.
 ///
-/// 本文は base64（または quoted-printable）で運ばれ、途中で折り返される。URL を素の文字列として
-/// 検査したいテストは、この復号後のテキストを見る必要がある。
+/// The body is carried in base64 (or quoted-printable) and wrapped along the way. Tests that want to inspect the URL
+/// as a plain string need to look at this decoded text.
 fn mail_text(raw: &str) -> String {
     mail_text_candidates(raw)
         .into_iter()
@@ -95,9 +95,9 @@ fn mail_text_candidates(raw: &str) -> Vec<String> {
     candidates
 }
 
-/// メール本文からリセットトークンを取り出す。本文は日本語を含むため lettre が
-/// base64 の Content-Transfer-Encoding を選ぶ（ヘッダ後の空行以降を base64 として復号する）。
-/// 念のため quoted-printable（soft break・`=3D`）にも対応する。
+/// Extracts the reset token from the mail body. The body contains Japanese, so lettre chooses
+/// base64 Content-Transfer-Encoding (everything after the blank line following the headers is decoded as base64).
+/// Quoted-printable (soft breaks, `=3D`) is handled too, just in case.
 fn token_from_mail_body(raw: &str) -> String {
     let candidates = mail_text_candidates(raw);
     for text in candidates {
@@ -129,13 +129,13 @@ async fn full_reset_flow_via_email_link() {
     let Some(env) = support::setup("password reset").await else {
         return;
     };
-    // **登録より前に**取る。自己登録はメール検証通知を送るので、他方のテストが配送先を
-    // 自分のインプロセス SMTP サーバへ向けている隙にここを通ると、その通知が相手の
-    // （1 接続で終わる）サーバに食われ、相手は再設定メールを受け取れない。
+    // Take it **before registering**. Self-registration sends an email verification notice, so passing here while
+    // the other test has pointed the delivery target at its own in-process SMTP server would let that notice be eaten
+    // by the other's server (which ends after one connection), and the other would never receive its reset mail.
     let _smtp_guard = SMTP_SETTINGS.lock().await;
     let smtp_lock = support::SmtpSettingsLock::acquire(&env.pool).await;
 
-    // 対象ユーザーを自己登録で作成し、SSO セッションを 1 本持たせておく（失効の検証用）。
+    // Create the target user by self-registration and give it one SSO session (to check revocation).
     let email = format!("reset-{}@example.com", uuid::Uuid::new_v4().simple());
     let res = send(
         &env.app,
@@ -157,8 +157,8 @@ async fn full_reset_flow_via_email_link() {
         .unwrap();
     let _sso_cookie = create_sso_session(&env.pool, &user_id).await;
 
-    // インプロセス SMTP サーバへ配送先を向ける。登録時のメール検証通知を拾わないよう、
-    // 対象ユーザー作成後に設定する（テスト終了時に設定を空へ戻す）。
+    // Point the delivery target at the in-process SMTP server. Set it after creating the target user so the
+    // verification notice at registration is not picked up (settings are reset to empty at the end of the test).
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind smtp");
     let smtp_port = listener.local_addr().unwrap().port();
     let smtp_server = tokio::spawn(run_minimal_smtp_server(listener));
@@ -167,7 +167,7 @@ async fn full_reset_flow_via_email_link() {
     upsert_setting(&env.pool, "smtp.from_address", "noreply@example.test").await;
     upsert_setting(&env.pool, "smtp.use_tls", "false").await;
 
-    // 1. リセット要求 → accepted・メールが実際に配送される。
+    // 1. Reset request → accepted, and the mail is actually delivered.
     let res = send(
         &env.app,
         post_internal(
@@ -183,7 +183,7 @@ async fn full_reset_flow_via_email_link() {
     let token = token_from_mail_body(&mail_body);
     assert!(!token.is_empty());
 
-    // 不存在アカウントでも同じ accepted（列挙防止）。
+    // A nonexistent account also gets the same accepted (prevents enumeration).
     let res = send(
         &env.app,
         post_internal(
@@ -195,7 +195,7 @@ async fn full_reset_flow_via_email_link() {
     .await;
     assert_eq!(body_json(res).await["result"], "accepted");
 
-    // 2. トークンで新パスワードを設定 → ok。
+    // 2. Set a new password with the token → ok.
     let res = send(
         &env.app,
         post_internal(
@@ -211,7 +211,7 @@ async fn full_reset_flow_via_email_link() {
     .await;
     assert_eq!(body_json(res).await["result"], "ok");
 
-    // トークンは used_at 付きで単回消費済み。
+    // The token was consumed once, with used_at set.
     let used: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM password_reset_tokens WHERE user_id = ? AND used_at IS NOT NULL",
     )
@@ -221,7 +221,7 @@ async fn full_reset_flow_via_email_link() {
     .unwrap();
     assert_eq!(used, 1, "token consumed");
 
-    // 既存 SSO セッションは全失効している。
+    // All existing SSO sessions are revoked.
     let sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sso_sessions WHERE user_id = ?")
         .bind(&user_id)
         .fetch_one(&env.pool)
@@ -229,7 +229,7 @@ async fn full_reset_flow_via_email_link() {
         .unwrap();
     assert_eq!(sessions, 0, "all SSO sessions revoked after reset");
 
-    // 3. 同じトークンの再利用は拒否される。
+    // 3. Reusing the same token is rejected.
     let res = send(
         &env.app,
         post_internal(
@@ -245,31 +245,31 @@ async fn full_reset_flow_via_email_link() {
     .await;
     assert_eq!(body_json(res).await["result"], "invalid_or_expired");
 
-    // 後片付け: SMTP 設定を空へ戻す（他テストへ配送先を残さない）。
+    // Cleanup: reset the SMTP settings to empty (leave no delivery target for other tests).
     upsert_setting(&env.pool, "smtp.host", "").await;
     upsert_setting(&env.pool, "smtp.from_address", "").await;
     smtp_lock.release().await;
 }
 
-/// 参加先テナントにゲストとして参加している利用者が、その画面から再設定を要求できる（MT26）。
+/// A user who joined a tenant as a guest can request a reset from that tenant's screen (MT26).
 ///
-/// 要点は 2 つ。
+/// Two key points.
 ///
-/// 1. 要求テナント（参加先）で `users.email` が引けなくても、**参加中のゲストとして**解決される。
-///    これが無いと、参加先の画面から入れるのに再設定だけができない行き止まりになる。
-/// 2. メールのリンクは**所属元テナント**を指す。再設定の実行は「トークンの利用者の所属元 ==
-///    要求テナント」を要求するため、参加先を指すリンクでは必ず弾かれる。
+/// 1. Even if `users.email` cannot be found in the requested (joined) tenant, it is resolved **as a joined guest**.
+///    Without this, one could sign in from the joined tenant's screen but hit a dead end for reset only.
+/// 2. The mail link points to **the home tenant**. Executing a reset requires "the token user's home tenant ==
+///    the requested tenant", so a link pointing to the joined tenant is always rejected.
 #[tokio::test]
 async fn a_guest_can_request_a_reset_from_the_host_tenant() {
     let Some(env) = support::setup("password reset guest").await else {
         return;
     };
-    // 登録より前に取る（理由は [`full_reset_flow_via_email_link`] と同じ）。
+    // Take it before registering (same reason as [`full_reset_flow_via_email_link`]).
     let _smtp_guard = SMTP_SETTINGS.lock().await;
     let smtp_lock = support::SmtpSettingsLock::acquire(&env.pool).await;
 
-    // 所属元は root。参加先テナントとゲストメンバーシップは直接作る（検証したいのは招待フローでは
-    // なく再設定の橋渡しのため）。
+    // The home tenant is root. The joined tenant and guest membership are created directly (what we want to test is
+    // the reset bridging, not the invitation flow).
     let email = format!("guest-reset-{}@example.com", uuid::Uuid::new_v4().simple());
     let res = send(
         &env.app,
@@ -310,11 +310,11 @@ async fn a_guest_can_request_a_reset_from_the_host_tenant() {
     .await
     .expect("create guest membership");
 
-    // 同じアドレスを持つ**無効な**ゲストを、別の（ACTIVE な）所属元テナントに 1 人置く。
-    // `users.email` の一意性はテナント内でしか無いので、この状況は実際に起こり得る。
-    // 曖昧さの判定が「送り先になり得る人」ではなく単なる行数で行われていると、この 1 人が居る
-    // だけで**唯一の有効なゲストに再設定メールが届かなくなる**（応答は Accepted のままなので、
-    // 誰も気付けない）。
+    // Put one **inactive** guest with the same address in another (ACTIVE) home tenant.
+    // `users.email` is unique only within a tenant, so this can really happen.
+    // If ambiguity were decided by a plain row count rather than "people who could be recipients", this one person's
+    // presence would mean **the only active guest never gets the reset mail** (the response stays Accepted,
+    // so nobody would notice).
     let other_home = uuid::Uuid::now_v7().to_string();
     sqlx::query(
         "INSERT INTO tenants (id, parent_tenant_id, name, status) VALUES (?, ?, ?, 'ACTIVE')",
@@ -355,7 +355,7 @@ async fn a_guest_can_request_a_reset_from_the_host_tenant() {
     upsert_setting(&env.pool, "smtp.from_address", "noreply@example.test").await;
     upsert_setting(&env.pool, "smtp.use_tls", "false").await;
 
-    // ── 参加先テナントの画面から要求する。
+    // ── Request from the joined tenant's screen.
     let res = send(
         &env.app,
         post_internal(
@@ -368,27 +368,27 @@ async fn a_guest_can_request_a_reset_from_the_host_tenant() {
     assert_eq!(res.status(), StatusCode::OK);
     assert_eq!(body_json(res).await["result"], "accepted");
 
-    // **待ちに上限を置く。** ゲストが解決されなければメールは飛ばず、SMTP サーバは接続を待ち続ける。
-    // 上限が無いと、機能が壊れたときテストは失敗せず**ハングする**（原因に辿り着くのが遅れる）。
+    // **Put a cap on the wait.** If the guest is not resolved no mail is sent and the SMTP server keeps waiting.
+    // Without a cap, a broken feature would make the test **hang** instead of fail (slowing down finding the cause).
     let mail_body = tokio::time::timeout(std::time::Duration::from_secs(20), smtp_server)
         .await
-        .expect("ゲストが解決されず、メールが配送されなかった（MT26 の回帰）")
+        .expect("the guest was not resolved and no mail was delivered (MT26 regression)")
         .expect("smtp server task");
     let token = token_from_mail_body(&mail_body);
     assert!(!token.is_empty());
 
-    // ── リンクは所属元テナントを指す（本文は base64 で運ばれるので復号してから見る）。
+    // ── The link points to the home tenant (the body is carried in base64, so decode before looking).
     let text = mail_text(&mail_body);
     assert!(
         text.contains(&format!("/{}/password-reset?token=", env.root_tenant_id)),
-        "リンクは所属元テナントを指すこと: {text}"
+        "the link points to the home tenant: {text}"
     );
     assert!(
         !text.contains(&format!("/{host_tenant}/password-reset?token=")),
-        "参加先テナントを指すリンクは、再設定の実行で必ず弾かれる"
+        "a link pointing to the joined tenant is always rejected when executing the reset"
     );
 
-    // ── 所属元テナントでの再設定は通る。
+    // ── Reset in the home tenant passes.
     let res = send(
         &env.app,
         post_internal(
@@ -409,10 +409,10 @@ async fn a_guest_can_request_a_reset_from_the_host_tenant() {
     smtp_lock.release().await;
 }
 
-/// テナントを解決できない要求は、**機械的に区別できるコード**で 400 になる（MT28）。
+/// Requests whose tenant cannot be resolved are 400 with **a machine-distinguishable code** (MT28).
 ///
-/// web はこのコードだけを 404 の画面へ倒し、他の非 2xx は「web の実装/構成エラー」として 502 に
-/// 倒す。区別が無かった頃は、URL のテナント ID を打ち間違えただけで送信が素の 502 になっていた。
+/// web maps only this code to the 404 screen, and other non-2xx to 502 as "web implementation / configuration error".
+/// Before this distinction existed, merely mistyping the tenant ID in the URL turned submission into a bare 502.
 #[tokio::test]
 async fn an_unknown_tenant_is_rejected_with_a_distinguishable_code() {
     let Some(env) = support::setup("password reset unknown tenant").await else {

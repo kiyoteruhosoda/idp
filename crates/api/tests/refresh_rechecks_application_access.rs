@@ -1,11 +1,11 @@
-//! リフレッシュのたびに、利用者がアプリをまだ使ってよいかを見直す（task #582。ADR-0054）。
+//! On every refresh, re-check whether the user may still use the app (task #582; ADR-0054).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' \
 //!     cargo test --test refresh_rechecks_application_access
 //!
-//! 以前はアプリの利用の判定が **code を出すときだけ**だったので、利用者をアプリから外しても・
-//! アプリを止めても、持っているリフレッシュトークンで寿命（既定 30 日）まで新しいトークンが出ていた。
+//! App access used to be decided **only when issuing a code**, so even after removing a user from the app or
+//! suspending the app, the refresh token they held kept producing new tokens until its lifetime (30 days by default).
 
 mod support;
 
@@ -18,8 +18,8 @@ use serde_json::Value;
 use sqlx::MySqlPool;
 use support::{body_json, create_plain_user, send, TestEnv};
 
-/// root の下にテナントを 1 つ作り、割り当ての判定を `enforce` にする。
-/// ⚠ 全体の行と root テナントには触らない（並走する他のテストの前提）。
+/// Creates one tenant under root and sets the assignment decision to `enforce`.
+/// ⚠ Does not touch the global row or the root tenant (other tests running in parallel rely on them).
 async fn enforcing_tenant(pool: &MySqlPool, root_tenant_id: &str) -> String {
     let tenant = uuid::Uuid::now_v7().to_string();
     sqlx::query(
@@ -43,7 +43,7 @@ async fn enforcing_tenant(pool: &MySqlPool, root_tenant_id: &str) -> String {
     tenant
 }
 
-/// 「個別に割り当てた人だけ」のアプリを作り、client を OIDC の名乗りとして結ぶ。アプリの id を返す。
+/// Creates an app for "only individually assigned people" and binds the client as its OIDC identity. Returns the app id.
 async fn individual_application(pool: &MySqlPool, tenant: &str, client_id: &str) -> String {
     let client_row_id: String =
         sqlx::query_scalar("SELECT id FROM clients WHERE tenant_id = ? AND client_id = ?")
@@ -88,7 +88,7 @@ async fn assign(pool: &MySqlPool, application_id: &str, user_id: &str) {
     .expect("assign user");
 }
 
-/// 有効なリフレッシュトークンを 1 本入れて、平文を返す。
+/// Inserts one valid refresh token and returns the plaintext.
 async fn insert_refresh_token(
     pool: &MySqlPool,
     tenant: &str,
@@ -158,7 +158,7 @@ async fn a_user_removed_from_the_application_can_no_longer_refresh() {
     let user_id = create_plain_user(&env.pool, &tenant).await;
     assign(&env.pool, &application_id, &user_id).await;
 
-    // 割り当てがあるうちは今までどおり更新できる。
+    // While assigned, refreshing works as before.
     let token = insert_refresh_token(&env.pool, &tenant, &user_id, &client_id).await;
     let (status, body) = refresh(&env, &tenant, &client_id, &secret, &token).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -167,7 +167,7 @@ async fn a_user_removed_from_the_application_can_no_longer_refresh() {
         .expect("rotated refresh token")
         .to_string();
 
-    // アプリから外す。
+    // Remove from the app.
     sqlx::query("DELETE FROM application_assignments WHERE application_id = ? AND user_id = ?")
         .bind(&application_id)
         .bind(&user_id)
@@ -177,7 +177,7 @@ async fn a_user_removed_from_the_application_can_no_longer_refresh() {
     let (status, body) = refresh(&env, &tenant, &client_id, &secret, &rotated).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"], "invalid_grant", "{body}");
-    // その許可で出したトークンは家族ごと止まる。
+    // Tokens issued under that permission stop, whole family included.
     assert_eq!(active_tokens(&env.pool, &user_id).await, 0);
 }
 

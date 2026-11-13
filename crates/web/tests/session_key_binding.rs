@@ -1,9 +1,9 @@
-//! SSO セッションの端末の鍵への結び付け（Chrome の DBSC。task #887・ADR-0074）の web 側。
+//! web side of binding SSO sessions to the device key (Chrome DBSC; task #887, ADR-0074).
 //!
-//! - 入口: 結び付いたログイン状態で、合う短い Cookie が無ければ長い Cookie を外す（api へ渡さない）
-//! - 入口: 合う短い Cookie があれば api に聞かずに通す
-//! - `/dbsc/register`・`/dbsc/refresh` の応答の形
-//! - 各アプリから始まった要求でも更新できるよう、登録・更新の応答に `allowed_refresh_initiators`（task #934）
+//! - Entry: for a bound sign-in state without a matching short Cookie, strip the long Cookie (not passed to the api)
+//! - Entry: with a matching short Cookie, pass without asking the api
+//! - Shape of the `/dbsc/register` and `/dbsc/refresh` responses
+//! - `allowed_refresh_initiators` in the register/refresh responses so requests started from each app can refresh too (task #934)
 
 mod support;
 
@@ -33,7 +33,7 @@ async fn calls_to(env: &WebEnv, target: &str) -> usize {
         .count()
 }
 
-/// api に渡った要求のうち、この SSO セッションの値を本文に含むもの。
+/// Requests passed to the api whose body contains this SSO session's value.
 async fn calls_carrying_the_session(env: &WebEnv) -> usize {
     env.api
         .received_requests()
@@ -184,7 +184,7 @@ async fn registration_answers_the_session_config_and_sets_the_short_cookie() {
         set_cookie(&response, SSO_SESSION_COOKIE).as_deref(),
         Some(SSO)
     );
-    // 結び付けの口はログインではない（結び付けを求め直さない）。
+    // The binding endpoint is not a login (does not ask for binding again).
     assert!(response
         .headers()
         .get(contract::REGISTRATION_HEADER)
@@ -195,7 +195,7 @@ async fn registration_answers_the_session_config_and_sets_the_short_cookie() {
     assert_eq!(body["scope"]["include_site"], false);
     assert_eq!(body["credentials"][0]["type"], "cookie");
     assert_eq!(body["credentials"][0]["name"], contract::BOUND_COOKIE);
-    // 設定が無ければ assay 自身からだけ（空の並び）。
+    // Without configuration, only assay itself (empty list).
     assert_eq!(body["allowed_refresh_initiators"], json!([]));
 }
 
@@ -236,12 +236,12 @@ async fn registration_allows_refreshes_started_by_the_configured_hosts() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let body: serde_json::Value = serde_json::from_str(&body_text(response).await).unwrap();
-    // 草案 §9.6: 範囲（scope）の中ではなく、いちばん外側に置く。
+    // Draft §9.6: placed at the outermost level, not inside the scope.
     assert_eq!(body["allowed_refresh_initiators"], json!([INITIATORS]));
     assert!(body["scope"].get("allowed_refresh_initiators").is_none());
 }
 
-/// 設定を足す前に結び付いたログイン状態にも届くよう、更新の応答でも同じ設定を返す（草案 §8.8・§8.9）。
+/// Return the same setting in the refresh response too, so it reaches sign-in states bound before the setting was added (draft §8.8, §8.9).
 #[tokio::test]
 async fn a_signed_refresh_answers_the_same_session_config() {
     let env = setup_with_env(&[("DBSC_ALLOWED_REFRESH_INITIATORS", INITIATORS)]).await;
@@ -268,7 +268,7 @@ async fn a_signed_refresh_answers_the_same_session_config() {
         now()
     ));
     let body: serde_json::Value = serde_json::from_str(&body_text(response).await).unwrap();
-    // 草案 §8.9: 更新では今の識別子と同じでないと結び付けが終わる。
+    // Draft §8.9: on refresh, binding ends unless the identifier is the same as now.
     assert_eq!(body["session_identifier"], IDENTIFIER);
     assert_eq!(body["refresh_url"], contract::REFRESH_PATH);
     assert_eq!(body["scope"]["include_site"], false);

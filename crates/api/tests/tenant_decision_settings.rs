@@ -1,17 +1,17 @@
-//! 判定そのものを決める 2 キーがテナントごとに効くことの統合テスト（ADR-0058 §4・§10）。
+//! Integration test that the 2 keys deciding the verdict itself apply per tenant (ADR-0058 §4, §10).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test tenant_decision_settings
 //!
-//! 検証すること（どれも **2 テナントに違う値を入れて**確かめる。1 テナントだけだと、全体の値を
-//! 読んでいても通ってしまう）:
-//! - `AUTH_POLICY_DEFAULT_EFFECT`: 一致するポリシーが無いとき、`deny` のテナントはログインを断り、
-//!   `allow` のテナントは通す。管理 API の一覧はそれぞれのテナントの値を返す
-//! - `APPLICATION_ASSIGNMENT_ENFORCEMENT`: 割り当ての無い人を、`enforce` のテナントは断り、
-//!   `record_only` のテナントは通して記録だけ残す。管理 API のアプリ一覧はそれぞれの値を返す
+//! What is verified (each checked by **putting different values in 2 tenants**; with only 1 tenant it
+//! would pass even when reading the global value):
+//! - `AUTH_POLICY_DEFAULT_EFFECT`: when no policy matches, the `deny` tenant refuses the login and
+//!   the `allow` tenant lets it through. The admin API list returns each tenant's value
+//! - `APPLICATION_ASSIGNMENT_ENFORCEMENT`: a person without an assignment is refused by the `enforce`
+//!   tenant and let through with only a record by the `record_only` tenant. The admin API app list returns each value
 //!
-//! ⚠ 値は**このテスト用に作ったテナント**の `tenant_settings` にだけ入れる。全体の行
-//! （`system_settings`）と root テナントには触らない ——並走する他のテストの前提を変えないため。
+//! ⚠ Values go only into the `tenant_settings` of **tenants created for this test**. The global row
+//! (`system_settings`) and the root tenant are not touched, so the premises of other parallel tests stay unchanged.
 
 mod support;
 
@@ -27,7 +27,7 @@ use support::{
 
 const PASSWORD: &str = "CorrectHorse9!";
 
-/// root の下にテナントを 1 つ作り、`settings` をそのテナントの行として入れる。
+/// Creates a tenant under root and inserts `settings` as that tenant's rows.
 async fn tenant_with_settings(env: &TestEnv, settings: &[(&str, &str)]) -> String {
     let tenant = uuid::Uuid::now_v7().to_string();
     sqlx::query(
@@ -55,7 +55,7 @@ async fn tenant_with_settings(env: &TestEnv, settings: &[(&str, &str)]) -> Strin
     tenant
 }
 
-/// 自己登録でユーザーを作り、メール検証まで済ませる（ログインできる状態にする）。
+/// Creates a user via self-registration and completes email verification (so they can log in).
 async fn register_verified_user(env: &TestEnv, tenant: &str) -> String {
     let username = format!("decision-{}", support::unique());
     let payload = json!({
@@ -78,7 +78,7 @@ async fn register_verified_user(env: &TestEnv, tenant: &str) -> String {
     username
 }
 
-/// `/authorize` から始めてパスワードで認証し、内部認証の応答を返す。
+/// Starts at `/authorize`, authenticates with a password and returns the internal auth response.
 async fn log_in(env: &TestEnv, tenant: &str, client_id: &str, username: &str) -> Value {
     let auth_session = begin_login(
         &env.app,
@@ -109,7 +109,7 @@ async fn log_in(env: &TestEnv, tenant: &str, client_id: &str, username: &str) ->
     body_json(response).await
 }
 
-/// そのテナントの管理者の管理トークン。
+/// Admin token of that tenant's administrator.
 async fn tenant_admin_token(env: &TestEnv, tenant: &str) -> String {
     let admin = create_plain_user(&env.pool, tenant).await;
     sqlx::query(
@@ -130,7 +130,7 @@ async fn get_json(env: &TestEnv, token: &str, uri: &str) -> Value {
     body_json(response).await
 }
 
-/// 割り当ての判定の監査行（`application.access_denied`）の `result`。
+/// `result` of the assignment decision audit row (`application.access_denied`).
 async fn access_denied_results(pool: &MySqlPool, tenant: &str) -> Vec<String> {
     sqlx::query(
         "SELECT result FROM audit_log WHERE tenant_id = ? AND event_type = 'application.access_denied' \
@@ -153,7 +153,7 @@ async fn each_tenant_decides_what_happens_when_no_policy_matches() {
     let strict = tenant_with_settings(&env, &[("AUTH_POLICY_DEFAULT_EFFECT", "deny")]).await;
     let lenient = tenant_with_settings(&env, &[("AUTH_POLICY_DEFAULT_EFFECT", "allow")]).await;
 
-    // どちらのテナントにもポリシーは 1 件も無い ——結果を分けるのは既定動作だけである。
+    // Neither tenant has any policy; only the default effect separates the outcomes.
     for (tenant, expected) in [(&strict, "policy_denied"), (&lenient, "success")] {
         let client_id = support::insert_public_client(&env.pool, tenant, &["openid"]).await;
         let username = register_verified_user(&env, tenant).await;
@@ -161,7 +161,7 @@ async fn each_tenant_decides_what_happens_when_no_policy_matches() {
         assert_eq!(body["result"], expected, "tenant {tenant}: {body}");
     }
 
-    // 管理コンソールが描く値も、そのテナントの値である（web は値を持たない）。
+    // The values the admin console renders are also that tenant's (web holds no values).
     for (tenant, expected) in [(&strict, "deny"), (&lenient, "allow")] {
         let token = tenant_admin_token(&env, tenant).await;
         let listed = get_json(
@@ -190,7 +190,7 @@ async fn each_tenant_decides_whether_to_enforce_application_assignments() {
     )
     .await;
 
-    // 「個別」のアプリで、利用者は名簿に載っていない。
+    // An app with "individual" assignment, and the user is not on its roster.
     for (tenant, expected, audited) in [
         (&enforcing, "application_not_permitted", "failure"),
         (&recording, "success", "success"),
@@ -221,8 +221,8 @@ async fn each_tenant_decides_whether_to_enforce_application_assignments() {
     }
 }
 
-/// `prompt=none` で許可の無いアプリを求められたら、画面を出さずに `access_denied` で RP へ返す
-/// （task #648）。`prompt` が無ければ今まで通り assay の画面で断る。
+/// When an app without permission is requested with `prompt=none`, return to the RP with `access_denied`
+/// without showing a screen (task #648). Without `prompt`, assay's screen refuses as before.
 #[tokio::test]
 async fn prompt_none_returns_access_denied_for_an_unassigned_application() {
     let Some(env) = support::setup("prompt=none unassigned application").await else {

@@ -1,15 +1,15 @@
-//! `client_secret_post` のクライアント認証の統合テスト（G3。RFC 6749 §2.3.1）。
+//! Integration tests for `client_secret_post` client authentication (G3; RFC 6749 §2.3.1).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test client_secret_post
 //!
-//! 検証の要:
-//! - 登録した方式でだけ認証が通ること（Basic で登録したクライアントが body で通ってはならない。
-//!   逆も同じ）。方式を素通しにすると、`token_endpoint_auth_method` が「設定できるが効かない値」に
-//!   なってしまう。
-//! - 1 リクエストで両方を提示したら `invalid_request` で拒否すること（§2.3.1）。
-//! - `/token` だけでなく `/introspect`・`/revoke` も同じ方式で通ること
-//!   （RFC 7009 §2.1・RFC 7662 §2.1）。
+//! Key points checked:
+//! - Authentication passes only with the registered method (a client registered for Basic must not pass via the body,
+//!   and vice versa). Letting any method through would make `token_endpoint_auth_method` "a value that can be set
+//!   but has no effect".
+//! - Presenting both in one request is rejected with `invalid_request` (§2.3.1).
+//! - Not only `/token` but also `/introspect` and `/revoke` pass with the same method
+//!   (RFC 7009 §2.1, RFC 7662 §2.1).
 
 mod support;
 
@@ -33,7 +33,7 @@ fn encode(value: &str) -> String {
     percent_encoding::utf8_percent_encode(value, percent_encoding::NON_ALPHANUMERIC).to_string()
 }
 
-/// form-urlencoded の `POST` を送る（`basic` を渡したときだけ Authorization ヘッダを付ける）。
+/// Sends a form-urlencoded `POST` (attaches the Authorization header only when `basic` is passed).
 async fn post_form(
     app: &axum::Router,
     uri: String,
@@ -50,8 +50,8 @@ async fn post_form(
     send(app, builder.body(Body::from(body)).unwrap()).await
 }
 
-/// `client_credentials` grant で `/token` を叩く（クライアント認証の検証だけが目的なので、
-/// 利用者を用意しなくて済むこの grant を使う）。
+/// Calls `/token` with the `client_credentials` grant (the goal is only to verify client authentication,
+/// and this grant needs no user).
 async fn token_with_body_credentials(
     env: &support::TestEnv,
     client_id: &str,
@@ -92,7 +92,7 @@ async fn a_client_secret_post_client_authenticates_with_body_credentials() {
         .is_some_and(|t| !t.is_empty()));
 }
 
-/// 誤った secret は当然通らない（body 経路でも照合が効いていることの確認）。
+/// A wrong secret naturally fails (confirms verification works on the body path too).
 #[tokio::test]
 async fn a_wrong_body_secret_is_rejected() {
     let Some(env) = support::setup("client_secret_post").await else {
@@ -111,7 +111,7 @@ async fn a_wrong_body_secret_is_rejected() {
     assert_eq!(body_json(response).await["error"], "invalid_client");
 }
 
-/// 登録が `client_secret_post` のクライアントは Basic ヘッダでは通らない。
+/// A client registered with `client_secret_post` does not pass with a Basic header.
 #[tokio::test]
 async fn a_client_secret_post_client_cannot_use_the_basic_header() {
     let Some(env) = support::setup("client_secret_post").await else {
@@ -136,7 +136,7 @@ async fn a_client_secret_post_client_cannot_use_the_basic_header() {
     assert_eq!(body_json(response).await["error"], "invalid_client");
 }
 
-/// 逆向き: 登録が `client_secret_basic` のクライアントは body の secret では通らない。
+/// The reverse: a client registered with `client_secret_basic` does not pass with a secret in the body.
 #[tokio::test]
 async fn a_client_secret_basic_client_cannot_use_body_credentials() {
     let Some(env) = support::setup("client_secret_post").await else {
@@ -155,7 +155,7 @@ async fn a_client_secret_basic_client_cannot_use_body_credentials() {
     assert_eq!(body_json(response).await["error"], "invalid_client");
 }
 
-/// RFC 6749 §2.3.1: 1 リクエストで複数の認証方式を使ってはならない。
+/// RFC 6749 §2.3.1: a request must not use more than one authentication method.
 #[tokio::test]
 async fn presenting_both_methods_is_an_invalid_request() {
     let Some(env) = support::setup("client_secret_post").await else {
@@ -184,7 +184,7 @@ async fn presenting_both_methods_is_an_invalid_request() {
     assert_eq!(body_json(response).await["error"], "invalid_request");
 }
 
-/// `/introspect`・`/revoke` も `/token` と同じ方式で認証できる。
+/// `/introspect` and `/revoke` can authenticate with the same method as `/token`.
 #[tokio::test]
 async fn introspection_and_revocation_accept_body_credentials() {
     let Some(env) = support::setup("client_secret_post").await else {
@@ -229,7 +229,7 @@ async fn introspection_and_revocation_accept_body_credentials() {
     .await;
     assert_eq!(revoked.status(), StatusCode::OK);
 
-    // 失効後は inactive（`/revoke` が認証を通って実際に効いたことの確認）。
+    // After revocation it is inactive (confirms `/revoke` passed authentication and actually took effect).
     let after = post_form(
         &env.app,
         format!("/{}/introspect", env.root_tenant_id),
@@ -240,7 +240,7 @@ async fn introspection_and_revocation_accept_body_credentials() {
     assert_eq!(body_json(after).await["active"], false);
 }
 
-/// 認証情報なしの `/introspect` は 401（public client も使えない。RFC 7662 §2.1）。
+/// `/introspect` without credentials is 401 (public clients cannot use it either; RFC 7662 §2.1).
 #[tokio::test]
 async fn introspection_without_credentials_is_unauthorized() {
     let Some(env) = support::setup("client_secret_post").await else {

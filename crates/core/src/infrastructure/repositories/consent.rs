@@ -1,4 +1,4 @@
-//! `ClientConsentRepository` の sqlx 実装（F3: Consent）。
+//! sqlx implementation of `ClientConsentRepository` (F3: Consent).
 
 use crate::domain::consent::ClientConsent;
 use crate::domain::error::{DomainError, Result};

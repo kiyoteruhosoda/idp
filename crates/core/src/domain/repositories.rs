@@ -1,22 +1,24 @@
-//! リポジトリトレイト（DIP 境界）。
+//! Repository traits (DIP boundary).
 //!
-//! Application 層はこれらのトレイトにのみ依存し、Infrastructure 層（sqlx）が実装する。
-//! トレイトオブジェクト（`Arc<dyn ...>`）として注入できるよう `#[async_trait]` を用いる。
-//! メソッドは各フェーズで実装する際に必要に応じて拡張する。
+//! The Application layer depends only on these traits, and the Infrastructure layer (sqlx)
+//! implements them. `#[async_trait]` is used so they can be injected as trait objects
+//! (`Arc<dyn ...>`). Methods are extended as needed when each phase is implemented.
 //!
-//! # テナント分離（ADR-0009 §8）
+//! # Tenant isolation (ADR-0009 §8)
 //!
-//! MariaDB に RLS はなく、アプリ層が唯一の分離防御線となる。テナントスコープのテーブルを
-//! 参照・検索するメソッドは `tenant_id: TenantId` を受け取り、実装は必ず WHERE 句へ含める。
-//! 次のものは意図的に tenant_id を取らない:
+//! MariaDB has no RLS, so the app layer is the only isolation defense. Methods that read or search
+//! tenant-scoped tables take `tenant_id: TenantId`, and implementations always include it in the
+//! WHERE clause. The following intentionally take no tenant_id:
 //!
-//! - **グローバル一意キーによる本人解決**（`users.id` / `users.sub`）: ゲスト参加（§3）では
-//!   フローのテナント ≠ 所属元テナントのため、テナント境界はメンバーシップ判定・所属元照合で
-//!   強制する（ユースケース側の責務）。
-//! - **SSO セッション**: ホスト単位で共有する設計（§8）。境界はメンバーシップ検証で強制する。
-//! - **ユーザー単位のセキュリティ操作**（全セッション失効・全 code/refresh token 失効）:
-//!   本人のユーザー状態への操作であり、テナントを跨いで全失効させる方が安全側。
-//! - **テナント列を持たないテーブル**（署名鍵・jti 失効リスト・TOTP・WebAuthn・チャレンジ）。
+//! - **Resolving a user by a globally unique key** (`users.id` / `users.sub`): with guest
+//!   participation (§3) the flow's tenant ≠ the home tenant, so the tenant boundary is enforced by
+//!   membership checks and the home check (the use case's responsibility).
+//! - **SSO sessions**: designed to be shared per host (§8). The boundary is enforced by membership
+//!   verification.
+//! - **Per-user security operations** (revoking all sessions, all codes / refresh tokens):
+//!   these act on the user's own state, and revoking everything across tenants is the safe side.
+//! - **Tables without a tenant column** (signing keys, jti revocation list, TOTP, WebAuthn,
+//!   challenges).
 #![allow(dead_code)]
 
 use crate::domain::account::{AccountFilter, AccountPage, AccountRef, ServiceAccount};
@@ -76,20 +78,21 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-/// テナント（ADR-0009 §1）の永続化。テナントは互いに独立した管理境界であり、`parent_tenant_id`
-/// は系譜であって権限境界ではない。
+/// Persistence of tenants (ADR-0009 §1). Tenants are mutually independent administrative
+/// boundaries; `parent_tenant_id` is lineage, not an authorization boundary.
 #[async_trait]
 pub trait TenantRepository: Send + Sync {
     async fn create(&self, tenant: &Tenant) -> Result<()>;
     async fn find_by_id(&self, id: TenantId) -> Result<Option<Tenant>>;
-    /// `parent_tenant_id IS NULL` の唯一の行（root）を返す。
+    /// Returns the single row with `parent_tenant_id IS NULL` (root).
     async fn find_root(&self) -> Result<Option<Tenant>>;
-    /// 指定テナントの直下の子テナントを一覧する（ADR-0009 §6）。件数の上限が無いため、
-    /// 画面へ返す経路では [`Self::list_children_page`] を使う（本メソッドは削除可否の判定など
-    /// 全件が要る内部用途に限る）。
+    /// Lists the direct child tenants of the given tenant (ADR-0009 §6). There is no upper bound on
+    /// the count, so paths returning to screens use [`Self::list_children_page`] (this method is
+    /// limited to internal uses needing every row, such as deciding whether deletion is possible).
     async fn list_children(&self, parent_id: TenantId) -> Result<Vec<Tenant>>;
-    /// 直下の子テナントを 1 ページ分と総件数で返す（`/{tenant_id}/admin/tenants`。G7）。
-    /// 既定実装は全件取得からの切り出しで、DB 側で `LIMIT`/`OFFSET` を書ける sqlx 実装が上書きする。
+    /// Returns one page of direct child tenants plus the total (`/{tenant_id}/admin/tenants`; G7).
+    /// The default implementation slices from fetching all; the sqlx implementation, which can
+    /// write `LIMIT`/`OFFSET` in the DB, overrides it.
     async fn list_children_page(
         &self,
         parent_id: TenantId,
@@ -97,10 +100,12 @@ pub trait TenantRepository: Send + Sync {
     ) -> Result<Page<Tenant>> {
         Ok(Page::from_all(self.list_children(parent_id).await?, page))
     }
-    /// 表示名・状態を更新する（`parent_tenant_id` の付け替えは禁止。呼び出し側が保証する）。
+    /// Updates the display name and status (re-parenting `parent_tenant_id` is forbidden; the
+    /// caller guarantees it).
     async fn update(&self, tenant: &Tenant) -> Result<()>;
-    /// テナントを削除する。「配下に子テナントが無く、当該テナント自身にユーザー/クライアントが
-    /// 存在しない」ことは呼び出し側が事前検証する（DB も `ON DELETE RESTRICT` で保護する）。
+    /// Deletes a tenant. That "there are no child tenants below, and the tenant itself has no
+    /// users/clients" is pre-validated by the caller (the DB also protects it with
+    /// `ON DELETE RESTRICT`).
     async fn delete(&self, id: TenantId) -> Result<()>;
 }
 
@@ -110,58 +115,64 @@ fn unsupported(method: &str) -> crate::domain::error::DomainError {
     ))
 }
 
-/// テナントへ排他的に割り当てたドメイン（ADR-0029）。
+/// Domains exclusively assigned to a tenant (ADR-0029).
 ///
-/// ログイン欄に `local@domain` の形で入力されたとき、ドメインから**所属元テナントを 1 つに決める**
-/// ために引く（home realm discovery。`crate::application::login_user_resolution`）。所属元が
-/// 決まれば 1 テナントの登録簿だけを引けばよく、参加中のゲストの横断走査を通らずに済む。
+/// When the login field gets input in the form `local@domain`, it is looked up to **determine the
+/// single home tenant** from the domain (home realm discovery;
+/// `crate::application::login_user_resolution`). Once the home tenant is known, only one tenant's
+/// registry needs to be searched, avoiding the cross scan of participating guests.
 #[async_trait]
 pub trait TenantDomainRepository: Send + Sync {
-    /// ドメインからそれを所有するテナントを引く（**認証のホットパス**）。
+    /// Looks up the tenant owning a domain (**authentication hot path**).
     ///
-    /// `domain` は正規化済み（[`crate::domain::tenant_domain::normalize_domain`]）で渡す。
-    /// 一意キー `tenant_domains_domain_uk` の等値検索 1 本で、結果は高々 1 件である
-    /// （2 件当たり得るなら所属元が決まらず、この表を作った意味が無くなる）。
+    /// Pass `domain` normalized ([`crate::domain::tenant_domain::normalize_domain`]). A single
+    /// equality lookup on the unique key `tenant_domains_domain_uk`, so the result is at most one
+    /// row (if two could match, the home tenant could not be determined and this table would be
+    /// pointless).
     ///
-    /// **テナント解決の TTL キャッシュには載せない。** 割り当ての取り消しが最大 TTL 分効かない
-    /// 状態を作らないためで、テナントの `ACTIVE` 判定（ADR-0009 §8）と同じ扱いである。
+    /// **Not put in the tenant resolution TTL cache**, so that revoking an assignment never stays
+    /// ineffective for up to the TTL; the same treatment as the tenant `ACTIVE` check (ADR-0009
+    /// §8).
     ///
-    /// 既定実装は `Ok(None)`（ドメインを持たないテスト用フェイクは、従来の解決だけを通る）。
+    /// The default implementation is `Ok(None)` (test fakes without domains go through only the old
+    /// resolution).
     async fn find_tenant_by_domain(&self, _domain: &str) -> Result<Option<TenantId>> {
         Ok(None)
     }
-    /// テナントに割り当てられているドメインを一覧する（管理 API）。
+    /// Lists the domains assigned to a tenant (admin API).
     ///
-    /// 以下 3 つの既定実装は**失敗を返す**（`Ok(vec![])` や `Ok(())` にしない）。ログイン経路だけを
-    /// 差し替えたいテスト用フェイクが管理操作まで黙って引き受けると、割り当てられていないのに
-    /// 成功したように見えてしまう。
+    /// The default implementations of the following three **return a failure** (not `Ok(vec![])` or
+    /// `Ok(())`). If a test fake meant to replace only the login path silently accepted admin
+    /// operations too, it would look as if an assignment succeeded when it did not.
     async fn list_for_tenant(&self, _tenant_id: TenantId) -> Result<Vec<TenantDomain>> {
         Err(unsupported("list_for_tenant"))
     }
-    /// ドメインを割り当てる。すでに**どこかのテナントが**押さえていれば `Conflict`
-    /// （一意キーはテナントを含まない。ADR-0029 §1）。
+    /// Assigns a domain. If **any tenant** already holds it, `Conflict`
+    /// (the unique key does not include the tenant; ADR-0029 §1).
     async fn create(&self, _domain: &TenantDomain) -> Result<()> {
         Err(unsupported("create"))
     }
-    /// 割り当てを解除する。`tenant_id` と一致する行だけを消し、消えたかを返す
-    /// （他テナントのドメインを id 指定で消せないようにする）。
+    /// Removes an assignment. Deletes only the row matching `tenant_id` and returns whether one was
+    /// deleted (so another tenant's domain cannot be deleted by id).
     async fn delete(&self, _tenant_id: TenantId, _id: Uuid) -> Result<bool> {
         Err(unsupported("delete"))
     }
 }
 
-/// テナント開通（ADR-0009 §5）のトランザクション境界（unit of work）。
+/// Transaction boundary (unit of work) for tenant provisioning (ADR-0009 §5).
 ///
-/// テナント作成は「テナント行・初期管理者ユーザー・HOME メンバーシップ・`idp.tenant.admin` 付与」の
-/// 4 行が揃って初めて意味を持つ（どれか欠けると管理者のいないテナント＝孤立テナントが残る）。
-/// 本ポートはこの集約を**単一トランザクションで**永続化し、途中失敗時は全体をロールバックする（REF2）。
-/// ドメインオブジェクトの構築・検証は Application 層の責務で、実装は永続化のみを担う。
+/// Creating a tenant is meaningful only once all four rows exist: "tenant row, initial admin user,
+/// HOME membership, grant of `idp.tenant.admin`" (if any is missing, a tenant without admins = an
+/// orphan tenant remains). This port persists that aggregate **in a single transaction** and rolls
+/// everything back on partial failure (REF2). Building and validating domain objects is the
+/// Application layer's job; the implementation only persists.
 #[async_trait]
 pub trait TenantProvisioningRepository: Send + Sync {
-    /// テナント・作成者のブートストラップ管理者メンバーシップ・権限付与を原子的に永続化する
-    /// （ADR-0009 §4）。作成者ユーザー自体は既存（親テナント所属）のため新規作成しない。
-    /// 一意制約違反（root 重複・メンバーシップ重複）は `Conflict`、`admin_permission_code` が
-    /// `permissions` マスタに無い場合は `InvalidValue` を返す。
+    /// Atomically persists the tenant, the creator's bootstrap admin membership, and the permission
+    /// grant (ADR-0009 §4). The creator user already exists (belonging to the parent tenant), so it
+    /// is not created. Unique constraint violations (duplicate root, duplicate membership) return
+    /// `Conflict`; if `admin_permission_code` is not in the `permissions` master, returns
+    /// `InvalidValue`.
     async fn provision(
         &self,
         tenant: &Tenant,
@@ -171,74 +182,82 @@ pub trait TenantProvisioningRepository: Send + Sync {
     ) -> Result<()>;
 }
 
-/// テナントメンバーシップ（招待・ゲスト参加。ADR-0009 §3）の永続化。
+/// Persistence of tenant memberships (invitations, guest participation; ADR-0009 §3).
 #[async_trait]
 pub trait TenantMembershipRepository: Send + Sync {
-    /// メンバーシップを作成する（HOME はユーザー作成時、GUEST は招待作成時）。
+    /// Creates a membership (HOME at user creation, GUEST at invitation creation).
     async fn create(&self, membership: &TenantMembership) -> Result<()>;
     async fn find(&self, tenant_id: TenantId, user_id: Uuid) -> Result<Option<TenantMembership>>;
-    /// ユーザーが指定テナントで `ACTIVE` なメンバーシップ（HOME または GUEST）を持ち、かつ
-    /// **その利用者の所属元テナントが `ACTIVE`** か（OIDC フローのメンバーシップ判定。ADR-0009 §8）。
+    /// Whether the user has an `ACTIVE` membership (HOME or GUEST) in the given tenant, and
+    /// **that user's home tenant is `ACTIVE`** (membership check for OIDC flows; ADR-0009 §8).
     ///
-    /// **所属元テナントの状態を含める。** 所属元の無効化は「その組織の利用者を止める」操作であり、
-    /// 参加先テナント経由の裏口を残す意味ではない。所属元テナントを `DISABLED` にすると、そのテナント
-    /// 自身の URL は解決できなくなる（`TenantResolutionService`）が、ゲスト参加先の URL は生きている
-    /// ため、ここで見ないと「所属元は止めたのに参加先からは入れる」利用者ができる。
+    /// **The home tenant's state is included.** Disabling the home tenant is the operation "stop
+    /// that organization's users", and is not meant to leave a back door via joined tenants.
+    /// Setting the home tenant to `DISABLED` makes the tenant's own URL unresolvable
+    /// (`TenantResolutionService`), but URLs of the tenants it joined as a guest stay alive, so
+    /// without checking here there would be users who "were stopped at home but can still get in
+    /// via a joined tenant".
     ///
-    /// これは ADR-0009 §1 の「テナントの状態は各テナント独立（親の `DISABLED` は子へ伝播しない）」と
-    /// 矛盾しない。§1 は**テナント階層（親→子）**の話で、こちらは**利用者の所属元→その利用者**の話
-    /// であり、軸が違う。
+    /// This does not contradict ADR-0009 §1's "tenant states are independent per tenant (a parent's
+    /// `DISABLED` does not propagate to children)". §1 is about **the tenant hierarchy (parent →
+    /// child)**; this is about **a user's home → that user**, a different axis.
     ///
-    /// ゲストをログイン欄の入力から引く経路（`UserRepository::find_active_guest_by_login_identifier`）は
-    /// 解決クエリの中で同じ条件を課す（メンバーシップの確認と利用者の解決が 1 本のクエリのため）。
+    /// The path looking up guests from login field input
+    /// (`UserRepository::find_active_guest_by_login_identifier`) imposes the same condition inside
+    /// the resolution query (membership check and user resolution are one query).
     async fn is_active_member(&self, tenant_id: TenantId, user_id: Uuid) -> Result<bool>;
-    /// ユーザーが `ACTIVE` なメンバーシップ（HOME / GUEST）を持つ全テナントを返す
-    /// （テナント切り替え UI 用。ADR-0009 §3）。`tenant_memberships_user_idx` を用いる。
-    /// 既定実装は空（テスト用フェイクは呼ばれない。本番の sqlx 実装のみが上書きする）。
+    /// Returns every tenant where the user has an `ACTIVE` membership (HOME / GUEST) (for the
+    /// tenant switcher UI; ADR-0009 §3). Uses `tenant_memberships_user_idx`. The default
+    /// implementation is empty (test fakes are not called; only the production sqlx implementation
+    /// overrides it).
     async fn list_active_for_user(&self, _user_id: Uuid) -> Result<Vec<TenantMembership>> {
         Ok(Vec::new())
     }
-    /// 招待トークンのハッシュで `INVITED` 中の行を検索する（承諾エンドポイント用）。
+    /// Finds an `INVITED` row by the invitation token hash (for the accept endpoint).
     async fn find_by_invitation_token_hash(
         &self,
         token_hash: &str,
     ) -> Result<Option<TenantMembership>>;
-    /// 招待を承諾し、`ACTIVE` へ遷移させる（トークン関連カラムは呼び出し側でクリアする）。
+    /// Accepts an invitation and transitions to `ACTIVE` (the caller clears the token-related
+    /// columns).
     async fn activate(&self, tenant_id: TenantId, user_id: Uuid) -> Result<()>;
-    /// メンバーシップの状態を更新する（`ACTIVE` ⇄ `SUSPENDED` の一時停止・再開。MT24）。
-    /// 遷移の可否判定は Application 層（[`crate::domain::tenant_membership::TenantMembership`] の
-    /// `can_be_suspended` / `can_be_resumed`）が担い、本メソッドは書き込みのみを行う。
+    /// Updates the membership status (suspend / resume `ACTIVE` ⇄ `SUSPENDED`; MT24). Whether the
+    /// transition is allowed is decided by the Application layer (`can_be_suspended` /
+    /// `can_be_resumed` of [`crate::domain::tenant_membership::TenantMembership`]); this method
+    /// only writes.
     async fn update_status(
         &self,
         tenant_id: TenantId,
         user_id: Uuid,
         status: MembershipStatus,
     ) -> Result<()>;
-    /// ゲストメンバーシップを解除する（HOME の解除は呼び出し側が禁止する）。
+    /// Removes a guest membership (removing HOME is forbidden by the caller).
     async fn delete(&self, tenant_id: TenantId, user_id: Uuid) -> Result<()>;
 }
 
-/// メンバー一覧（読み取りモデル）の照会（MT22）。書き込み（[`TenantMembershipRepository`]）とは
-/// 関心を分ける（`AuditLogSink` と `AuditLogQuery` と同じ分け方）。
+/// Queries of the member list (read model) (MT22). Kept separate from writes
+/// ([`TenantMembershipRepository`]) (the same split as `AuditLogSink` and `AuditLogQuery`).
 ///
-/// 絞り込みが利用者側の列（メール・氏名）に掛かる一方でページはメンバーシップ単位のため、
-/// 実装はメンバーシップと利用者を**結合した 1 クエリ**で解決する（全件を読み込んでから
-/// アプリ側で絞る方式は、テナントの規模に比例して破綻するため採らない）。
+/// Filters apply to user-side columns (email, name) while pages are per membership, so the
+/// implementation resolves with **one query joining** membership and user (loading everything and
+/// filtering in the app breaks down in proportion to tenant size, so that is not used).
 #[async_trait]
 pub trait TenantMemberQuery: Send + Sync {
-    /// 条件に一致するメンバーをメールアドレスの昇順（同値は `user_id` 昇順）に 1 ページ分返す。
-    /// 並び順は安定でなければならない（ページ間で行が重複・欠落しないため）。
+    /// Returns one page of members matching the conditions in ascending email order (ties by
+    /// ascending `user_id`). The order must be stable (so rows are neither duplicated nor missing
+    /// across pages).
     async fn search(&self, filter: &TenantMemberFilter) -> Result<TenantMemberPage>;
 }
 
-/// アカウントの管理者メモの書き込み（ADR-0063 / ADR-0065）。読むのは一覧・詳細の結合
-/// （[`TenantMemberQuery`]・[`AccountQuery`]）で済ませる（一覧に 1 行ずつ引き直させない）。
+/// Writes admin notes on accounts (ADR-0063 / ADR-0065). Reading is done by joins in the list /
+/// detail ([`TenantMemberQuery`], [`AccountQuery`]) (no re-fetching per row in the list).
 ///
-/// 人のメモはメンバーシップに付くので、⚠ **メンバーでない利用者には書けない**（外部キーが拒む）。
-/// 呼び出し側は書く前に相手が要求テナントのアカウントであることを確かめ、404 で返すこと。
+/// A person's note attaches to the membership, so ⚠ **it cannot be written for non-member users**
+/// (the foreign key refuses). Callers must confirm before writing that the target is an account of
+/// the requested tenant, returning 404 otherwise.
 #[async_trait]
 pub trait AccountNoteRepository: Send + Sync {
-    /// メモを書く（あれば置き換える）。
+    /// Writes a note (replacing any existing one).
     async fn save(
         &self,
         tenant_id: TenantId,
@@ -247,21 +266,23 @@ pub trait AccountNoteRepository: Send + Sync {
         updated_by: Option<Uuid>,
         now: DateTime<Utc>,
     ) -> Result<()>;
-    /// メモを消す（無くてもエラーにしない）。
+    /// Deletes a note (no error if there is none).
     async fn clear(&self, tenant_id: TenantId, account: AccountRef) -> Result<()>;
 }
 
-/// アカウント一覧（人とサービスアカウント。読み取りモデル）の照会（ADR-0065）。
+/// Queries of the account list (people and service accounts; read model) (ADR-0065).
 ///
-/// 種別をまたいだページングは DB 側でしかできない（片方ずつ引いて混ぜると、総件数もページの
-/// 境目も合わない）。実装は 2 種類を `UNION ALL` した 1 クエリで解決する。
+/// Paging across kinds can only be done in the DB (fetching each separately and mixing breaks both
+/// the total and page boundaries). The implementation resolves both kinds with one `UNION ALL`
+/// query.
 #[async_trait]
 pub trait AccountQuery: Send + Sync {
-    /// 条件に一致するアカウントを見出しの昇順（同値は種別・ID の順）に 1 ページ分返す。
-    /// 並び順は安定でなければならない（ページ間で行が重複・欠落しないため）。
+    /// Returns one page of accounts matching the conditions in ascending heading order (ties by
+    /// kind, then ID). The order must be stable (so rows are neither duplicated nor missing across
+    /// pages).
     async fn search(&self, filter: &AccountFilter) -> Result<AccountPage>;
-    /// サービスアカウント 1 件を `client_id` で引く（1 件の画面）。サービスアカウントでない client・
-    /// 削除済み・他テナントは `None`。
+    /// Looks up one service account by `client_id` (single-item screen). Clients that are not
+    /// service accounts, deleted ones, and other tenants' give `None`.
     async fn find_service_account(
         &self,
         tenant_id: TenantId,
@@ -271,27 +292,27 @@ pub trait AccountQuery: Send + Sync {
 
 #[async_trait]
 pub trait UserRepository: Send + Sync {
-    /// ユーザーを作成する（`user.tenant_id` = 所属元テナント）。HOME メンバーシップの同時作成は
-    /// ユースケース側の責務（ADR-0009 §3）。
+    /// Creates a user (`user.tenant_id` = home tenant). Creating the HOME membership at the same
+    /// time is the use case's responsibility (ADR-0009 §3).
     async fn create(&self, user: &User) -> Result<()>;
-    /// グローバル一意の内部 ID で解決する（テナント境界は呼び出し側が所属元照合・メンバーシップ
-    /// 判定で強制する。モジュールコメント参照）。
+    /// Resolves by the globally unique internal ID (the tenant boundary is enforced by the caller
+    /// via the home check and membership checks; see the module comment).
     async fn find_by_id(&self, id: Uuid) -> Result<Option<User>>;
-    /// 外部公開識別子 `sub` で検索する（`/userinfo` で使用。グローバル一意）。
+    /// Finds by the externally visible identifier `sub` (used by `/userinfo`; globally unique).
     async fn find_by_sub(&self, sub: Uuid) -> Result<Option<User>>;
-    /// 所属元が `tenant_id` のユーザーを email で検索する（一意キーは `(tenant_id, email)`）。
+    /// Finds a user whose home is `tenant_id` by email (the unique key is `(tenant_id, email)`).
     async fn find_by_email(&self, tenant_id: TenantId, email: &str) -> Result<Option<User>>;
-    /// 所属元が `tenant_id` のユーザーを preferred_username で検索する。
+    /// Finds a user whose home is `tenant_id` by preferred_username.
     async fn find_by_username(&self, tenant_id: TenantId, username: &str) -> Result<Option<User>>;
-    /// **ログイン欄に入力された値**からユーザーを解決する（AP8）。
+    /// Resolves a user from **a value entered in the login field** (AP8).
     ///
-    /// 登録簿（`user_login_identifiers`）の有効な行を種別ごとの正規化キーで引き、無ければ
-    /// `users.preferred_username` へ落とす。ログイン識別子の複数化は「入力の読み方が増える」
-    /// 変更であって「ユーザーの引き方が増える」変更ではないため、ログイン各経路には**この 1 本**
-    /// だけを見せ、どこを引いたかは実装に閉じる。
+    /// Looks up active rows of the registry (`user_login_identifiers`) by per-type normalized keys,
+    /// falling back to `users.preferred_username` if none. Multiple login identifiers are a change
+    /// that "adds ways to read the input", not one that "adds ways to look up users", so each login
+    /// path sees **only this one**, and where it looked is kept inside the implementation.
     ///
-    /// 既定実装は `find_by_username` に委譲する（登録簿を持たないテスト用フェイクは、
-    /// 従来どおり `preferred_username` だけで解決される）。
+    /// The default implementation delegates to `find_by_username` (test fakes without a registry
+    /// resolve only by `preferred_username`, as before).
     async fn find_by_login_identifier(
         &self,
         tenant_id: TenantId,
@@ -299,20 +320,20 @@ pub trait UserRepository: Send + Sync {
     ) -> Result<LoginIdentifierMatch> {
         Ok(self.find_by_username(tenant_id, input.trim()).await?.into())
     }
-    /// **参加先テナントのログイン画面**に入力された値から、そのテナントの ACTIVE な GUEST を
-    /// 解決する（ADR-0009 §8）。
+    /// Resolves an ACTIVE GUEST of the tenant from a value entered on **the joined tenant's login
+    /// screen** (ADR-0009 §8).
     ///
-    /// ゲストの識別子は所属元テナントの登録簿にあるため、要求テナントで登録簿を引く
-    /// [`Self::find_by_login_identifier`] には掛からない。こちらは「`tenant_id` に ACTIVE な GUEST
-    /// メンバーシップを持つ利用者の、**所属元テナントの**有効な識別子」を引く。
+    /// Guest identifiers live in the home tenant's registry, so [`Self::find_by_login_identifier`],
+    /// which searches the requested tenant's registry, does not find them. This looks up "valid
+    /// identifiers **in the home tenant** of users with an ACTIVE GUEST membership in `tenant_id`".
     ///
-    /// 呼ぶのはログイン経路だけで、しかも**所属元での解決が空振りしたときに限る**
-    /// （[`crate::application::login_user_resolution::resolve_login_user`]）。所属元を先に決めるのは、
-    /// 同じ値の識別子を持つゲストが参加してきただけで、そのテナントの HOME 利用者が「曖昧」に
-    /// なって締め出されるのを防ぐため。
+    /// Called only from login paths, and **only when resolution in the home tenant found nothing**
+    /// ([`crate::application::login_user_resolution::resolve_login_user`]). The home tenant is
+    /// decided first so that merely having a guest with an identifier of the same value join does
+    /// not make the tenant's HOME user "ambiguous" and lock them out.
     ///
-    /// 既定実装は `NotFound`（メンバーシップを持たないテスト用フェイクは、従来どおり所属元だけで
-    /// 解決される）。
+    /// The default implementation is `NotFound` (test fakes without memberships resolve only in the
+    /// home tenant, as before).
     async fn find_active_guest_by_login_identifier(
         &self,
         _tenant_id: TenantId,
@@ -320,20 +341,23 @@ pub trait UserRepository: Send + Sync {
     ) -> Result<LoginIdentifierMatch> {
         Ok(LoginIdentifierMatch::not_found())
     }
-    /// **参加先テナントのパスワード再設定**（`/{tenant_id}/forgot-password`）から、そのテナントの
-    /// ACTIVE な GUEST を `users.email` で引く（MT26）。
+    /// From **the joined tenant's password reset** (`/{tenant_id}/forgot-password`), looks up an
+    /// ACTIVE GUEST of that tenant by `users.email` (MT26).
     ///
-    /// 再設定はログインと違い**登録簿（`user_login_identifiers`）ではなく `users.email` で引く**。
-    /// メールの届け先そのものだからで、メールでのログインを有効にしていないテナントでも成り立つ
-    /// 必要がある（ADR-0025 §5）。そのため
-    /// [`Self::find_active_guest_by_login_identifier`] は使えず、この引き方が別に要る。
+    /// Unlike login, reset **looks up by `users.email`, not by the registry
+    /// (`user_login_identifiers`)**. It is the mail destination itself, and must work even in
+    /// tenants that have not enabled email login (ADR-0025 §5). So
+    /// [`Self::find_active_guest_by_login_identifier`] cannot be used, and this lookup is needed
+    /// separately.
     ///
-    /// 条件はゲスト解決と同じ「要求テナントの ACTIVE な GUEST × 所属元テナントが ACTIVE」。
-    /// **複数人に当たったら誰も返さない** —— `users.email` の一意性はテナント内でしか無く、所属元の
-    /// 違うゲストが同じアドレスを持ち得る。どちらへ送るか決められない以上、送らない
-    /// （応答は常に `Accepted` なので、利用者から見た振る舞いは「メールが来ない」で変わらない）。
+    /// The condition is the same as guest resolution: "ACTIVE GUEST of the requested tenant × home
+    /// tenant ACTIVE". **If several people match, no one is returned** — `users.email` is unique
+    /// only within a tenant, and guests from different home tenants can share an address. Since it
+    /// cannot be decided whom to send to, nothing is sent (the response is always `Accepted`, so
+    /// from the user's view the behavior is the same: "no mail arrives").
     ///
-    /// 既定実装は `Ok(None)`（メンバーシップを持たないテスト用フェイクは所属元だけで解決する）。
+    /// The default implementation is `Ok(None)` (test fakes without memberships resolve only in the
+    /// home tenant).
     async fn find_active_guest_by_email(
         &self,
         _tenant_id: TenantId,
@@ -341,41 +365,49 @@ pub trait UserRepository: Send + Sync {
     ) -> Result<Option<User>> {
         Ok(None)
     }
-    /// **ゲスト招待の相手**を `users.email` で引く（ADR-0061）。テナントを跨いで探す。
+    /// Looks up **the invitee of a guest invitation** by `users.email` (ADR-0061). Searches across
+    /// tenants.
     ///
-    /// 招待する相手は所属元が他テナントの利用者なので、参加先テナントの管理者から見える範囲
-    /// （自テナントの名簿）には居ない。**招く側が知っているのは相手のメールアドレス**である。
+    /// The invitee is a user whose home is another tenant, so they are not within what the joined
+    /// tenant's admin can see (their own tenant's roster). **What the inviter knows is the
+    /// invitee's email address.**
     ///
-    /// ⚠ **`users.email` の一意性はテナントの中にしか無い**（`(tenant_id, email)`）。同じアドレスの
-    /// 利用者が 2 つのテナントに居るとき、どちらを招くかは決められないので**誰も返さない**
-    /// （パスワード再設定の [`Self::find_active_guest_by_email`] と同じ判断。曖昧なまま片方を
-    /// 選ぶと、索引の都合で招待先が決まることになる）。呼び出し側は内部 ID での指定へ案内する。
+    /// ⚠ **`users.email` is unique only within a tenant** (`(tenant_id, email)`). When users with
+    /// the same address exist in two tenants, whom to invite cannot be decided, so **no one is
+    /// returned** (the same judgment as password reset's [`Self::find_active_guest_by_email`];
+    /// picking one while ambiguous would let index details decide the invitee). Callers guide
+    /// toward specifying by internal ID.
     ///
-    /// 数えるのは **ACTIVE な利用者 × 所属元テナントが ACTIVE** だけ。招いても入れない相手は
-    /// 候補ではなく、数えると「同じアドレスの止まった利用者が 1 人居るだけで、唯一の招ける相手を
-    /// 招けなくなる」（MT26 でも同じ理由で状態を SQL 側に課している）。
+    /// Only **ACTIVE users × home tenant ACTIVE** are counted. Someone who cannot get in even if
+    /// invited is not a candidate, and counting them would mean "a single stopped user with the
+    /// same address makes the only invitable person uninvitable" (MT26 imposes the state in SQL for
+    /// the same reason).
     ///
-    /// 既定実装は `Ok(None)`（この引き方を持たないテスト用フェイクでは、招待は内部 ID だけで通る）。
+    /// The default implementation is `Ok(None)` (with test fakes lacking this lookup, invitations
+    /// pass only by internal ID).
     async fn find_active_user_by_email_across_tenants(&self, _email: &str) -> Result<Option<User>> {
         Ok(None)
     }
-    /// **所属元テナントが分かっているとき**に、そのテナントの登録簿だけを引く（ADR-0029）。
+    /// **When the home tenant is known**, looks up only that tenant's registry (ADR-0029).
     ///
-    /// 呼ぶのはログイン経路で、入力が `local@domain` の形をしていてそのドメインが
-    /// [`TenantDomainRepository::find_tenant_by_domain`] で 1 つのテナントに解決できたときに限る
-    /// （home realm discovery）。`home_tenant_id` はそうして決まった所属元テナントである。
+    /// Called from login paths only when the input has the form `local@domain` and that domain
+    /// resolved to a single tenant via [`TenantDomainRepository::find_tenant_by_domain`]
+    /// (home realm discovery). `home_tenant_id` is the home tenant determined that way.
     ///
-    /// 解決の条件は [`Self::find_active_guest_by_login_identifier`] と同じ「要求テナントで ACTIVE な
-    /// メンバー ×  所属元テナントが ACTIVE」だが、**メンバーシップ種別で絞らない**（所属元が
-    /// 決まっている以上、HOME でも GUEST でも同じ扱いでよい）。要求テナント自身がドメインを持つ
-    /// 場合もこの経路を通り、その利用者は HOME メンバーとして解決される。
+    /// The resolution condition is the same as [`Self::find_active_guest_by_login_identifier`],
+    /// "ACTIVE member in the requested tenant × home tenant ACTIVE", but **it does not filter by
+    /// membership kind** (with the home tenant decided, HOME and GUEST can be treated alike). When
+    /// the requested tenant itself owns the domain it also goes through this path, and that user is
+    /// resolved as a HOME member.
     ///
-    /// **この経路では曖昧さが原理的に起きない。** 引くのは 1 テナントの登録簿だけで、その中では
-    /// 1 正規化値が 1 人のものだからである（migration 0041）。ゲストの横断走査
-    /// （[`Self::find_active_guest_by_login_identifier`]）が「同名のゲストが 2 人参加すると双方が
-    /// 締め出される」原因なので、そこを通らずに済むこと自体が本メソッドの目的である。
+    /// **Ambiguity cannot arise in principle on this path.** Only one tenant's registry is
+    /// searched, and within it one normalized value belongs to one person (migration 0041). The
+    /// cross scan of guests ([`Self::find_active_guest_by_login_identifier`]) is the cause of "two
+    /// guests with the same name joining locks both out", so avoiding it is itself the purpose of
+    /// this method.
     ///
-    /// 既定実装は `NotFound`（ドメインを持たないテスト用フェイクは、従来の解決だけを通る）。
+    /// The default implementation is `NotFound` (test fakes without domains go through only the old
+    /// resolution).
     async fn find_member_by_login_identifier(
         &self,
         _tenant_id: TenantId,
@@ -384,90 +416,100 @@ pub trait UserRepository: Send + Sync {
     ) -> Result<LoginIdentifierMatch> {
         Ok(LoginIdentifierMatch::not_found())
     }
-    /// ログイン失敗回数・ロック期限を更新する（ロックポリシー、設計仕様 §4.3）。
+    /// Updates the login failure count and lock expiry (lock policy, design spec §4.3).
     ///
-    /// **失敗の記録には使わない**（[`Self::record_login_failure`] を使う）。読んだ値を +1 して
-    /// 書き戻すと並行試行で取りこぼす。こちらは「成功時のリセット」「管理者による解除」のように
-    /// 絶対値を書く用途に限る。
+    /// **Not used to record failures** (use [`Self::record_login_failure`]). Reading the value,
+    /// adding 1, and writing it back would miss concurrent attempts. This is limited to writing
+    /// absolute values, such as "reset on success" or "unlock by an admin".
     async fn update_login_state(
         &self,
         id: Uuid,
         failed_login_count: i32,
         locked_until: Option<DateTime<Utc>>,
     ) -> Result<()>;
-    /// ログイン失敗を 1 件記録し、記録後の状態を返す（SEC13）。
+    /// Records one login failure and returns the state after recording (SEC13).
     ///
-    /// 加算とロック判定を**1 文**で行う。「読む → +1 して書き戻す」だと、並行して届いた N 件の
-    /// 試行が同じ値を読み、N 回失敗しても失敗回数が 1 しか進まずロック閾値に届かないことがある。
-    /// ロックは多層防御の一枚（IP 単位のレート制限とは別の層）なので、取りこぼさない。
+    /// Increments and decides the lock **in one statement**. With "read → +1 → write back", N
+    /// attempts arriving concurrently read the same value, and N failures could advance the count
+    /// by only 1, never reaching the lock threshold. The lock is one layer of defense in depth
+    /// (separate from per-IP rate limiting), so nothing is missed.
     ///
-    /// ロック判定を呼び出し側に残さないのは、閾値の比較対象になる失敗回数が
-    /// **この UPDATE の中でしか正しく分からない**ためである。
+    /// The lock decision is not left to the caller because the failure count compared against the
+    /// threshold **is only correctly known inside this UPDATE**.
     async fn record_login_failure(
         &self,
         id: Uuid,
         lockout: LockoutPolicy,
         now: DateTime<Utc>,
     ) -> Result<LoginFailureRecord>;
-    /// パスワードハッシュを更新し、`must_change_password` を解除する（パスワード変更、ADR-0009 §5）。
+    /// Updates the password hash and clears `must_change_password` (password change, ADR-0009 §5).
     ///
-    /// **現行ハッシュが `expected_current_hash` のままである場合にだけ**書き換え、書き換えたら
-    /// `true` を返す。`false` は「読んでから書くまでの間に別の要求がパスワードを変えた」を意味する。
+    /// Rewrites **only if the current hash is still `expected_current_hash`**, returning `true` if
+    /// it rewrote. `false` means "another request changed the password between the read and the
+    /// write".
     ///
-    /// 条件付きにするのは、履歴（AP7）が**実際に置き換えた**ハッシュでなければ意味を持たないため。
-    /// 無条件の UPDATE だと、同時に届いた 2 つの変更要求が同じ現行ハッシュを読み、後勝ちで
-    /// 上書きしたうえで**両方が同じ古いハッシュを履歴へ積む** —— 先に書かれたパスワードは現行にも
-    /// 履歴にも残らず、直後に再利用できてしまう。
+    /// It is conditional because history (AP7) is meaningful only with hashes that were **actually
+    /// replaced**. With an unconditional UPDATE, two change requests arriving at once read the same
+    /// current hash, the later one overwrites, and **both push the same old hash into history** —
+    /// the password written first remains neither current nor in history, and could be reused right
+    /// away.
     async fn update_password(
         &self,
         id: Uuid,
         expected_current_hash: &str,
         password_hash: &str,
     ) -> Result<bool>;
-    /// パスワードハッシュを更新し、`must_change_password` を**設定**する（管理者による再発行。
-    /// 次回ログインで本人に変更させる。ADR-0009 §5）。条件と戻り値は
-    /// [`Self::update_password`] と同じ。
+    /// Updates the password hash and **sets** `must_change_password` (reissue by an admin; the user
+    /// is made to change it at next login; ADR-0009 §5). Condition and return value are the same as
+    /// [`Self::update_password`].
     async fn reset_password_forced(
         &self,
         id: Uuid,
         expected_current_hash: &str,
         password_hash: &str,
     ) -> Result<bool>;
-    /// 利用者の状態（ACTIVE / DISABLED / LOCKED）を更新する（管理者による有効化・無効化）。
+    /// Updates the user's status (ACTIVE / DISABLED / LOCKED) (enabling / disabling by an admin).
     async fn update_status(&self, id: Uuid, status: UserStatus) -> Result<()>;
-    /// 仮登録を外す（本人が設定リンクで資格情報を決めた。ADR-0064）。冪等。
+    /// Clears provisional registration (the user set credentials via the setup link; ADR-0064).
+    /// Idempotent.
     ///
-    /// 既定実装は未対応エラー（`update_theme` と同じ方針。本番の sqlx 実装と、仮登録を試す
-    /// テスト用フェイクだけが上書きする）。⚠ 呼び出し側は**仮登録の人にだけ**呼ぶ。
+    /// The default implementation is an unsupported error (same policy as `update_theme`; only the
+    /// production sqlx implementation and test fakes exercising provisional registration override
+    /// it). ⚠ Callers call it **only for provisional users**.
     async fn finish_setup(&self, _id: Uuid) -> Result<()> {
         Err(crate::domain::error::DomainError::Repository(
             "finish_setup is not supported by this repository".to_string(),
         ))
     }
-    /// 利用者を削除する（管理者による削除。関連行は DB の FK CASCADE / SET NULL で後始末される）。
+    /// Deletes a user (deletion by an admin; related rows are cleaned up by DB FK CASCADE / SET
+    /// NULL).
     async fn delete(&self, id: Uuid) -> Result<()>;
-    /// メール検証済みフラグを立てる（自己登録アカウントの確認リンク消費時。SEC6b）。
+    /// Sets the email-verified flag (when a self-registered account's confirmation link is
+    /// consumed; SEC6b).
     async fn mark_email_verified(&self, id: Uuid) -> Result<()>;
-    /// 表示言語設定を更新する（MT20。`None` で設定解除）。
+    /// Updates the display language setting (MT20; `None` clears it).
     async fn update_language(&self, id: Uuid, language: Option<&str>) -> Result<()>;
-    /// 配色設定を更新する（`light` / `dark` / `system`。`None` で設定解除）。
-    /// 既定実装は未対応エラー（本番の sqlx 実装のみが上書きする。テスト用フェイクは呼ばれない）。
+    /// Updates the color scheme setting (`light` / `dark` / `system`; `None` clears it). The
+    /// default implementation is an unsupported error (only the production sqlx implementation
+    /// overrides it; test fakes are not called).
     async fn update_theme(&self, _id: Uuid, _theme: Option<&str>) -> Result<()> {
         Err(crate::domain::error::DomainError::Repository(
             "update_theme is not supported by this repository".to_string(),
         ))
     }
-    /// 表示名（`users.name`）を更新する（セルフサービス。`None` で表示名を解除＝`NULL`）。
-    /// 既定実装は未対応エラー（本番の sqlx 実装のみが上書きする。テスト用フェイクは呼ばれない）。
+    /// Updates the display name (`users.name`) (self-service; `None` clears the display name =
+    /// `NULL`). The default implementation is an unsupported error (only the production sqlx
+    /// implementation overrides it; test fakes are not called).
     async fn update_name(&self, _id: Uuid, _name: Option<&str>) -> Result<()> {
         Err(crate::domain::error::DomainError::Repository(
             "update_name is not supported by this repository".to_string(),
         ))
     }
-    /// プロフィール（メール・ログイン識別子・表示名）をまとめて更新する（管理者による編集。MT25）。
-    /// `preferred_username` / `name` の `None` は「解除（`NULL`）」を意味する。テナント内の
-    /// `(tenant_id, email)` / `(tenant_id, preferred_username)` 一意制約違反は `Conflict` を返す。
-    /// 既定実装は未対応エラー（`update_name` と同じ方針。本番の sqlx 実装のみが上書きする）。
+    /// Updates the profile (email, login identifier, display name) together (edit by an admin;
+    /// MT25). `None` for `preferred_username` / `name` means "clear (`NULL`)". Violations of the
+    /// in-tenant unique constraints `(tenant_id, email)` / `(tenant_id, preferred_username)` return
+    /// `Conflict`. The default implementation is an unsupported error (same policy as
+    /// `update_name`; only the production sqlx implementation overrides it).
     async fn update_profile(
         &self,
         _id: Uuid,
@@ -479,16 +521,18 @@ pub trait UserRepository: Send + Sync {
             "update_profile is not supported by this repository".to_string(),
         ))
     }
-    /// 登録簿にある別名のメール行を**主メール行へ昇格**させる（ADR-0052）。
+    /// **Promotes** an alias email row in the registry **to the primary email row** (ADR-0052).
     ///
-    /// 昇格は入れ替えであり、`users.email` の差し替え・いまの主メール行の降格・選んだ行の昇格の
-    /// 3 つを**同じトランザクション**で行う。途中で落ちると主メール行が 0 本（宛先を失う）か
-    /// 2 本（`primary_email_of_user` の UNIQUE が防ぐので書き込みが落ちる）になる。
+    /// Promotion is a swap: replacing `users.email`, demoting the current primary email row, and
+    /// promoting the chosen row are done **in the same transaction**. Failing midway would leave
+    /// zero primary email rows (losing the destination) or two (the UNIQUE on
+    /// `primary_email_of_user` prevents that, so the write fails).
     ///
-    /// 対象が見つからない・その利用者のものでない・メール種別でない・主たるログイン識別子である
-    /// ときは `false`（何も書かずに戻る）。
+    /// When the target is not found, does not belong to the user, is not an email type, or is the
+    /// primary login identifier, returns `false` (returns without writing anything).
     ///
-    /// 既定実装は未対応エラー（`update_profile` と同じ方針。本番の sqlx 実装のみが上書きする）。
+    /// The default implementation is an unsupported error (same policy as `update_profile`; only
+    /// the production sqlx implementation overrides it).
     async fn promote_primary_email(&self, _user_id: Uuid, _identifier_id: Uuid) -> Result<bool> {
         Err(crate::domain::error::DomainError::Repository(
             "promote_primary_email is not supported by this repository".to_string(),
@@ -496,57 +540,62 @@ pub trait UserRepository: Send + Sync {
     }
 }
 
-/// ログイン識別子の登録簿（AP8。`user_login_identifiers`）の永続化。
+/// Persistence of the login identifier registry (AP8; `user_login_identifiers`).
 ///
-/// 解決（ログイン時の引き当て）は [`UserRepository::find_by_login_identifier`] にあり、ここには
-/// **管理操作**（一覧・追加・有効/無効・削除・プロフィール同期）だけを置く。読みのホットパスと
-/// 管理の書き込みで関心が違うためで、`AuditLogSink` と `AuditLogQuery` と同じ分け方をしている。
+/// Resolution (lookup at login) lives in [`UserRepository::find_by_login_identifier`]; only **admin
+/// operations** (list, add, enable/disable, delete, profile sync) are here. The read hot path and
+/// admin writes have different concerns; the same split as `AuditLogSink` and `AuditLogQuery`.
 ///
-/// 既定実装は「登録簿が空」として振る舞う（登録簿を持たないテスト用フェイクのため。AP9 の
-/// [`UserAuthenticatorRepository`] と同じ方針）。
+/// Default implementations behave as "the registry is empty" (for test fakes without a registry;
+/// same policy as AP9's [`UserAuthenticatorRepository`]).
 #[async_trait]
 pub trait UserLoginIdentifierRepository: Send + Sync {
-    /// 識別子を登録する。テナント内で `normalized_value` が重複したら `Conflict`
-    /// （**種別に依存しない**。1 正規化値は 1 人のもの。migration 0041）。
+    /// Registers an identifier. A duplicate `normalized_value` within the tenant gives `Conflict`
+    /// (**independent of type**; one normalized value belongs to one person; migration 0041).
     async fn create(&self, _identifier: &UserLoginIdentifier) -> Result<()> {
         Err(crate::domain::error::DomainError::Repository(
             "create is not supported by this repository".to_string(),
         ))
     }
-    /// 利用者の識別子を種別・登録順に一覧する（無効な行も含む。管理画面用）。
+    /// Lists a user's identifiers by type and registration order (including inactive rows; for the
+    /// admin screen).
     async fn list_for_user(&self, _user_id: Uuid) -> Result<Vec<UserLoginIdentifier>> {
         Ok(Vec::new())
     }
-    /// 内部 ID で引く（テナント境界の確認は呼び出し側が行う）。
+    /// Looks up by internal ID (the caller checks the tenant boundary).
     async fn find_by_id(&self, _id: Uuid) -> Result<Option<UserLoginIdentifier>> {
         Ok(None)
     }
-    /// 有効/無効を切り替える。対象（`(id, user_id)`）が無ければ `false`。
+    /// Toggles enabled/disabled. `false` if the target (`(id, user_id)`) does not exist.
     async fn set_active(&self, _id: Uuid, _user_id: Uuid, _is_active: bool) -> Result<bool> {
         Ok(false)
     }
-    /// 識別子を削除する。対象（`(id, user_id)`）が無ければ `false`。
+    /// Deletes an identifier. `false` if the target (`(id, user_id)`) does not exist.
     async fn delete(&self, _id: Uuid, _user_id: Uuid) -> Result<bool> {
         Ok(false)
     }
 }
 
-/// 検証を通った client assertion の `jti` を記録し、有効期間内の再利用を拒む（ADR-0030 決定 5）。
+/// Records the `jti` of verified client assertions and refuses reuse within the validity period
+/// (ADR-0030 decision 5).
 ///
-/// 期限切れ行の掃除は本トレイトではなく共通の GC（`ExpiringRecordStore`）が行う。
+/// Cleanup of expired rows is done by the shared GC (`ExpiringRecordStore`), not this trait.
 ///
-/// `jti` の一意性はクライアントの中でしか要求できない（RFC 7519 §4.1.7 も発行者ごとの一意性しか
-/// 定めない）ため、鍵は `(tenant_id, client_id, jti)` の 3 つ組になる。
+/// Uniqueness of `jti` can only be required within a client (RFC 7519 §4.1.7 also defines only
+/// per-issuer uniqueness), so the key is the triple `(tenant_id, client_id, jti)`.
 #[async_trait]
 pub trait ClientAssertionReplayRepository: Send + Sync {
-    /// `jti` が未使用なら記録して `true`、既に記録済みなら `false`（＝再生）を返す。
+    /// If `jti` is unused, records it and returns `true`; if already recorded, returns `false` (=
+    /// replay).
     ///
-    /// 「確認してから書く」の 2 段階にすると、同じ assertion の同時到着が両方とも未使用と判定
-    /// され得る。実装は一意制約への挿入 1 回で判定すること。
+    /// With two steps, "check then write", simultaneous arrivals of the same assertion could both
+    /// be judged unused. Implementations must decide with a single insert against a unique
+    /// constraint.
     ///
-    /// `retain_until` は記録を残す時刻。assertion の `exp` そのものではなく、**受理が止まる時刻**
-    /// （`exp` ＋ 時計ずれの許容幅）を渡す。`exp` までしか残さないと、掃除で行が消えた後も受理は
-    /// 続く隙間ができ、そこで同じ assertion を再利用できてしまう。
+    /// `retain_until` is when the record may be dropped. Pass not the assertion's `exp` itself but
+    /// **the time acceptance stops** (`exp` + clock skew allowance). Keeping it only until `exp`
+    /// would leave a gap where acceptance continues after cleanup removed the row, allowing the
+    /// same assertion to be reused there.
     async fn record_if_unused(
         &self,
         tenant_id: TenantId,
@@ -556,41 +605,45 @@ pub trait ClientAssertionReplayRepository: Send + Sync {
     ) -> Result<bool>;
 }
 
-/// 受けた DPoP の証明を鍵ごとに 1 回だけにする記録（ADR-0075 決定 4）。
+/// Record making each received DPoP proof usable only once per key (ADR-0075 decision 4).
 ///
-/// 期限切れ行の掃除は本トレイトではなく共通の GC（`ExpiringRecordStore`）が行う。
+/// Cleanup of expired rows is done by the shared GC (`ExpiringRecordStore`), not this trait.
 #[async_trait]
 pub trait DpopProofReplayRepository: Send + Sync {
-    /// `proof_hash`（`sha256(jkt ":" jti)` の 16 進）が未使用なら記録して `true`、既に記録済みなら
-    /// `false`（＝使い回し）を返す。実装は一意制約への挿入 1 回で判定すること（同時に 2 本来ても片方だけ）。
+    /// If `proof_hash` (hex of `sha256(jkt ":" jti)`) is unused, records it and returns `true`; if
+    /// already recorded, returns `false` (= reuse). Implementations must decide with a single
+    /// insert against a unique constraint (if two arrive at once, only one wins).
     ///
-    /// `retain_until` は**受ける幅が閉じる時刻**（`iat` の許す過去の幅を過ぎる時刻）。
+    /// `retain_until` is **the time the acceptance window closes** (when it passes the past window
+    /// allowed for `iat`).
     async fn record_if_unused(&self, proof_hash: &str, retain_until: DateTime<Utc>)
         -> Result<bool>;
 }
 
 #[async_trait]
 pub trait ClientRepository: Send + Sync {
-    /// `client_id` はテナント内一意のため `(tenant_id, client_id)` で検索する（ADR-0009 §2）。
+    /// `client_id` is unique within a tenant, so it is looked up by `(tenant_id, client_id)`
+    /// (ADR-0009 §2).
     async fn find_by_client_id(
         &self,
         tenant_id: TenantId,
         client_id: &str,
     ) -> Result<Option<Client>>;
-    /// クライアント（RP）を新規登録する（管理 API、設計仕様 §9.3）。`client.tenant_id` の
-    /// テナントへ登録し、テナント内の `client_id` 重複は `Conflict`。
+    /// Registers a new client (RP) (admin API, design spec §9.3). Registers it in the tenant of
+    /// `client.tenant_id`; a duplicate `client_id` within the tenant gives `Conflict`.
     async fn create(&self, client: &Client) -> Result<()>;
-    /// 指定テナントの登録済みクライアントを新しい順に**全件**一覧する。
-    /// CORS 許可オリジンの収集・バックチャネルログアウトの配信先解決など、
-    /// 全件が要る内部用途のためのメソッド。画面へ返す経路では [`Self::list_page`] を使う。
+    /// Lists **all** registered clients of the given tenant, newest first. A method for internal
+    /// uses needing everything, such as collecting CORS allowed origins and resolving back-channel
+    /// logout destinations. Paths returning to screens use [`Self::list_page`].
     async fn list(&self, tenant_id: TenantId) -> Result<Vec<Client>>;
-    /// 登録済みクライアントを 1 ページ分と総件数で返す（`/{tenant_id}/admin/clients`。G7）。
-    /// 既定実装は全件取得からの切り出しで、DB 側で `LIMIT`/`OFFSET` を書ける sqlx 実装が上書きする。
-    /// 1 ページ分と総件数を返す。`grant_type` を渡すと、その grant を登録済みのクライアントだけに
-    /// 絞る（ADR-0038。管理コンソールの「連携先」と「サービスアカウント」の一覧がこれで分かれる）。
+    /// Returns one page of registered clients plus the total (`/{tenant_id}/admin/clients`; G7).
+    /// The default implementation slices from fetching all; the sqlx implementation, which can
+    /// write `LIMIT`/`OFFSET` in the DB, overrides it. Returns one page plus the total. Passing
+    /// `grant_type` narrows to clients registered with that grant (ADR-0038; this is how the admin
+    /// console's "integrations" and "service accounts" lists are split).
     ///
-    /// **絞り込みはページングと同じ層で行う必要がある。** 呼び出し側が 1 ページを受け取ってから
-    /// 間引くと、`total` もページャも実際の件数と合わなくなる。
+    /// **Filtering must happen in the same layer as paging.** If the caller thinned a page after
+    /// receiving it, neither `total` nor the pager would match the actual count.
     async fn list_page(
         &self,
         tenant_id: TenantId,
@@ -607,144 +660,162 @@ pub trait ClientRepository: Send + Sync {
         };
         Ok(Page::from_all(filtered, page))
     }
-    /// 可変項目（app_name / redirect_uris / scopes / status / secret_hash 等）を更新する。
-    /// `(id, tenant_id)` で対象を特定する（他テナントの行は更新できない）。対象が無い場合は `NotFound`。
+    /// Updates mutable fields (app_name / redirect_uris / scopes / status / secret_hash etc.). The
+    /// target is identified by `(id, tenant_id)` (other tenants' rows cannot be updated).
+    /// `NotFound` if there is no target.
     async fn update(&self, client: &Client) -> Result<()>;
 }
 
-/// SAML SP（クライアント）登録の永続化。テナント境界は `tenant_id` で強制する。
+/// Persistence of SAML SP (client) registrations. The tenant boundary is enforced by `tenant_id`.
 #[async_trait]
 pub trait SamlServiceProviderRepository: Send + Sync {
     async fn create(&self, provider: &SamlServiceProvider) -> Result<()>;
     async fn list_for_tenant(&self, tenant_id: TenantId) -> Result<Vec<SamlServiceProvider>>;
-    /// テナント境界内で id 解決する（他テナントの id を持ち込んでも解決させない）。
+    /// Resolves by id within the tenant boundary (bringing another tenant's id does not resolve).
     async fn find_by_id(
         &self,
         tenant_id: TenantId,
         id: Uuid,
     ) -> Result<Option<SamlServiceProvider>>;
-    /// テナント境界内で entity_id 解決する（SSO エンドポイントの AuthnRequest `Issuer` 照合。
-    /// `(tenant_id, entity_id)` は一意）。
+    /// Resolves by entity_id within the tenant boundary (matching the AuthnRequest `Issuer` at the
+    /// SSO endpoint; `(tenant_id, entity_id)` is unique).
     async fn find_by_entity_id(
         &self,
         tenant_id: TenantId,
         entity_id: &str,
     ) -> Result<Option<SamlServiceProvider>>;
-    /// 既存 SP を更新する（同一テナント・id のレコードのみ。entity_id 重複は `Conflict`）。
-    /// 更新できた場合 `true`、対象が無ければ（find 後に別管理者が削除した競合等）`false`。
+    /// Updates an existing SP (only the record with the same tenant and id; a duplicate entity_id
+    /// gives `Conflict`). `true` if updated; `false` if there is no target (e.g. a race where
+    /// another admin deleted it after find).
     async fn update(&self, provider: &SamlServiceProvider) -> Result<bool>;
-    /// テナント境界内で SP を削除する。削除できた場合 `true`、対象が無ければ `false`。
+    /// Deletes an SP within the tenant boundary. `true` if deleted, `false` if there is no target.
     async fn delete(&self, tenant_id: TenantId, id: Uuid) -> Result<bool>;
 }
 
-/// SAML SP-initiated SSO の進行状態（`saml_sso_requests`）の永続化。
-/// ハンドルの単回消費は [`AuthSessionRepository`] と同じ原子的 UPDATE 方式で強制する。
-/// SAML SP-initiated SSO の進行状態の永続化。
+/// Persistence of SAML SP-initiated SSO progress state (`saml_sso_requests`). Single-use
+/// consumption of the handle is enforced by the same atomic UPDATE approach as
+/// [`AuthSessionRepository`]. Persistence of SAML SP-initiated SSO progress state.
 ///
-/// [`AuthSessionRepository`] と同じく **`saml_request_id` の平文を受け取らない**。引数の
-/// `id_hash` は [`crate::domain::saml_sso_request::id_hash`] で導出した SHA-256 である（SEC6）。
+/// Like [`AuthSessionRepository`], it **never receives the plaintext `saml_request_id`**. The
+/// `id_hash` argument is the SHA-256 derived by [`crate::domain::saml_sso_request::id_hash`]
+/// (SEC6).
 #[async_trait]
 pub trait SamlSsoRequestRepository: Send + Sync {
     async fn create(&self, request: &SamlSsoRequest) -> Result<()>;
-    /// フローを開始したテナントの行のみ返す（他テナントの id を持ち込んでも解決させない）。
+    /// Returns only rows of the tenant that started the flow (bringing another tenant's id does not
+    /// resolve).
     async fn find_by_id_hash(
         &self,
         tenant_id: TenantId,
         id_hash: &str,
     ) -> Result<Option<SamlSsoRequest>>;
-    /// web ハンドオフ用ハンドル（SHA-256）で行を引く。テナント限定は `find_by_id_hash` と同じ。
+    /// Looks up a row by the web handoff handle (SHA-256). Tenant restriction is the same as
+    /// `find_by_id_hash`.
     async fn find_by_handle(
         &self,
         tenant_id: TenantId,
         handle_hash: &str,
     ) -> Result<Option<SamlSsoRequest>>;
-    /// ハンドルを単回使用として消費し（`handle_hash` を NULL 化）、**同時に id を `new_id_hash`
-    /// へ再生成する**。すでに消費済み（並行交換に負けた・再利用）なら `false` を返す。
-    /// 再生成が要る理由は [`AuthSessionRepository::consume_handle`] と同じ。
+    /// Consumes the handle as single-use (setting `handle_hash` to NULL) and **at the same time
+    /// regenerates the id to `new_id_hash`**. If already consumed (lost a concurrent exchange, or
+    /// reuse), returns `false`. The reason regeneration is needed is the same as
+    /// [`AuthSessionRepository::consume_handle`].
     async fn consume_handle(
         &self,
         id_hash: &str,
         handle_hash: &str,
         new_id_hash: &str,
     ) -> Result<bool>;
-    /// 進行状態を削除する。応答発行前の**原子的なクレーム**を兼ねるため、削除できた場合のみ
-    /// `true` を返す（並行 resume に負けた・消費済みなら `false` = 発行不可）。
+    /// Deletes the progress state. It doubles as an **atomic claim** before issuing the response,
+    /// so it returns `true` only if it deleted (if it lost a concurrent resume or was already
+    /// consumed, `false` = must not issue).
     async fn delete(&self, id_hash: &str) -> Result<bool>;
-    /// 期限切れの行を削除し、削除件数を返す（G2 の一括 GC から呼ぶ）。
+    /// Deletes expired rows and returns the count (called from G2's bulk GC).
     async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64>;
 }
 
-/// AuthSession 集約（`/authorize` 〜 code 発行の一時状態）の永続化。
+/// Persistence of the AuthSession aggregate (temporary state from `/authorize` to code issuance).
 ///
-/// **本トレイトは `auth_session_id` の平文を一切受け取らない。** 受け取るのは
-/// [`AuthSessionIdHash`] だけで、平文は Application 層より上（web の Cookie・ハンドオフ）にしか
-/// 存在しない（SEC6）。平文を渡す口を作らないことで、「うっかり生値を保存する」経路を型の上で
-/// 塞いでいる。
+/// **This trait never receives the plaintext `auth_session_id`.** It receives only
+/// [`AuthSessionIdHash`]; the plaintext exists only above the Application layer (web's cookie,
+/// handoff) (SEC6). Having no entry point for plaintext blocks, at the type level, any path that
+/// "accidentally stores the raw value".
 ///
-/// 状態の変更は集約が返した変更（[`HandoffExchange`] など）を受け取り、**1 文で**書く。どの変更も
-/// id の付け替え（SEC7）を含むので、別文に分けると「状態は進んだのに旧い id がまだ引ける瞬間」が
-/// できる。
+/// State changes take the change returned by the aggregate ([`HandoffExchange`] etc.) and are
+/// written **in one statement**. Every change includes re-keying the id (SEC7), so splitting it
+/// into separate statements would create "a moment where the state has advanced but the old id can
+/// still be looked up".
 #[async_trait]
 pub trait AuthSessionRepository: Send + Sync {
     async fn create(&self, session: &AuthSession) -> Result<()>;
-    /// フローを開始したテナントの auth session のみ返す（他テナントの session id を
-    /// 持ち込んでも解決させない）。
+    /// Returns only auth sessions of the tenant that started the flow (bringing another tenant's
+    /// session id does not resolve).
     async fn find(
         &self,
         tenant_id: TenantId,
         id: &AuthSessionIdHash,
     ) -> Result<Option<AuthSession>>;
-    /// web ハンドオフ用ハンドルで auth session を引く（ADR-0018 決定 2）。[`Self::find`] と同じく
-    /// フローのテナントに限定する。期限・交換済みの判定は集約（[`AuthSession::exchange_handoff`]）が行う。
+    /// Looks up an auth session by the web handoff handle (ADR-0018 decision 2). Like
+    /// [`Self::find`], limited to the flow's tenant. Expiry / already-exchanged checks are done by
+    /// the aggregate ([`AuthSession::exchange_handoff`]).
     async fn find_by_handoff(
         &self,
         tenant_id: TenantId,
         handle: &HandoffHandleHash,
     ) -> Result<Option<AuthSession>>;
-    /// ハンドルを単回使用として消費し、同じ文で id を付け替える。すでに消費済み（並行交換に
-    /// 負けた・再利用）なら `false` を返す（勝った側だけが新しい id を得る）。
+    /// Consumes the handle as single-use and re-keys the id in the same statement. If already
+    /// consumed (lost a concurrent exchange, or reuse), returns `false` (only the winner gets the
+    /// new id).
     async fn save_handoff_exchange(&self, exchange: &HandoffExchange) -> Result<bool>;
-    /// パスワード検証（第二段待ち）を記録し、同じ文で id を付け替える。
+    /// Records password verification (awaiting the second step) and re-keys the id in the same
+    /// statement.
     ///
-    /// ⚠ 前に記録されていた認証（`auth_time`・`sid`・認証方式）は**消す**
-    /// （[`AuthSession::record_password_verification`]）。
+    /// ⚠ Previously recorded authentication (`auth_time`, `sid`, methods) is **erased**
+    /// ([`AuthSession::record_password_verification`]).
     async fn save_password_verification(&self, verification: &PasswordVerification) -> Result<()>;
-    /// 認証の完了を記録し、同じ文で id を付け替える（`/login` 成功時など。SEC7）。
+    /// Records completion of authentication and re-keys the id in the same statement (e.g. on
+    /// `/login` success; SEC7).
     ///
-    /// `sid` と認証方式は同意画面を挟む経路（`ConsentService::approve`）が code 発行時に読む
-    /// （G5・ADR-0043）。認証と code 発行が別リクエストに分かれ、その時点では SSO Cookie も
-    /// 「何で認証したか」も手元に無いため、ここで auth_session へ預ける。
+    /// `sid` and the methods are read at code issuance by the path that goes through the consent
+    /// screen (`ConsentService::approve`) (G5, ADR-0043). Authentication and code issuance are
+    /// separate requests, and at that point neither the SSO cookie nor "what was used to
+    /// authenticate" is at hand, so they are stashed in the auth_session here.
     async fn save_authentication(&self, completion: &AuthenticationCompletion) -> Result<()>;
     async fn delete(&self, id: &AuthSessionIdHash) -> Result<()>;
-    /// 期限切れの行を削除し、削除件数を返す（G2 の一括 GC から呼ぶ）。
+    /// Deletes expired rows and returns the count (called from G2's bulk GC).
     async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64>;
 }
 
-/// 認証ポリシー（ユーザー認証・認証ポリシー仕様書 §7）の永続化。テナント境界は `tenant_id` で強制する。
+/// Persistence of authentication policies (user authentication / auth policy spec §7). The tenant
+/// boundary is enforced by `tenant_id`.
 ///
-/// 評価（[`crate::domain::authentication_policy::evaluate_policies`]）はドメインの純粋関数が担い、
-/// 本トレイトは行の読み書きのみを担う。ログインのホットパスは `list_enabled_for_tenant` を使う。
+/// Evaluation ([`crate::domain::authentication_policy::evaluate_policies`]) is done by a pure
+/// domain function; this trait only reads and writes rows. The login hot path uses
+/// `list_enabled_for_tenant`.
 #[async_trait]
 pub trait AuthenticationPolicyRepository: Send + Sync {
-    /// ポリシーを作成する。`(tenant_id, policy_code)` 重複は `Conflict`。
+    /// Creates a policy. A duplicate `(tenant_id, policy_code)` gives `Conflict`.
     async fn create(&self, policy: &AuthenticationPolicy) -> Result<()>;
-    /// テナントの全ポリシー（無効を含む）を priority 昇順（同値は policy_code 昇順）で返す（管理画面用）。
+    /// Returns all policies of the tenant (including disabled) in ascending priority (ties by
+    /// ascending policy_code) (for the admin screen).
     async fn list_for_tenant(&self, tenant_id: TenantId) -> Result<Vec<AuthenticationPolicy>>;
-    /// テナントの**有効な**ポリシーのみを priority 昇順で返す（ログイン時の評価用）。
+    /// Returns only **enabled** policies of the tenant in ascending priority (for evaluation at
+    /// login).
     async fn list_enabled_for_tenant(
         &self,
         tenant_id: TenantId,
     ) -> Result<Vec<AuthenticationPolicy>>;
-    /// テナント境界内で id 解決する（他テナントの id を持ち込んでも解決させない）。
+    /// Resolves by id within the tenant boundary (bringing another tenant's id does not resolve).
     async fn find_by_id(
         &self,
         tenant_id: TenantId,
         id: Uuid,
     ) -> Result<Option<AuthenticationPolicy>>;
-    /// 既存ポリシーを更新する（同一テナント・id の行のみ。policy_code 重複は `Conflict`）。
-    /// 更新できた場合 `true`、対象が無ければ `false`。
+    /// Updates an existing policy (only the row with the same tenant and id; a duplicate
+    /// policy_code gives `Conflict`). `true` if updated, `false` if there is no target.
     async fn update(&self, policy: &AuthenticationPolicy) -> Result<bool>;
-    /// テナント境界内でポリシーを削除する。削除できた場合 `true`、対象が無ければ `false`。
+    /// Deletes a policy within the tenant boundary. `true` if deleted, `false` if there is no
+    /// target.
     async fn delete(&self, tenant_id: TenantId, id: Uuid) -> Result<bool>;
 }
 
@@ -752,16 +823,18 @@ pub trait AuthenticationPolicyRepository: Send + Sync {
 pub trait SsoSessionRepository: Send + Sync {
     async fn create(&self, session: &SsoSession) -> Result<()>;
     async fn find_by_hash(&self, session_hash: &str) -> Result<Option<SsoSession>>;
-    /// 指定ユーザーの全 SSO セッションを新しい順に返す（セルフサービスのセッション一覧。G10）。
-    /// 期限切れ行の除外は呼び出し側（Application 層）が `is_valid_at` で行う。
-    /// 既定実装は空（テスト用フェイクは呼ばれない。本番の sqlx 実装のみが上書きする）。
+    /// Returns all SSO sessions of the given user, newest first (self-service session list; G10).
+    /// Excluding expired rows is done by the caller (Application layer) with `is_valid_at`. The
+    /// default implementation is empty (test fakes are not called; only the production sqlx
+    /// implementation overrides it).
     async fn list_for_user(&self, _user_id: Uuid) -> Result<Vec<SsoSession>> {
         Ok(Vec::new())
     }
-    /// SSO 復元時に idle 期限を延長する（absolute は変更しない、設計仕様 §3.4）。
+    /// Extends the idle expiry on SSO restore (absolute is not changed; design spec §3.4).
     async fn extend_idle(&self, session_hash: &str, idle_expires_at: DateTime<Utc>) -> Result<()>;
-    /// 期限を置き直す（端末の鍵への結び付けで長さが変わったとき。task #887・ADR-0074）。
-    /// 既定実装は未対応エラー（本番の sqlx 実装のみが上書きする）。
+    /// Resets the expiries (when binding to a device key changed the length; task #887, ADR-0074).
+    /// The default implementation is an unsupported error (only the production sqlx implementation
+    /// overrides it).
     async fn set_lifetime(
         &self,
         _session_hash: &str,
@@ -772,10 +845,12 @@ pub trait SsoSessionRepository: Send + Sync {
             "set_lifetime is not supported by this repository".to_string(),
         ))
     }
-    /// 第二要素の検証完了を記録する（AP4・AP5。Step-up 認証で既存セッションを昇格させる経路）。
-    /// `methods` は昇格後の全認証方式で、強度は実装が [`AuthenticationStrength::from_methods`]
-    /// で導出する（導出規則の単一の出所をドメインに置くため、呼び出し側は強度を渡さない）。
-    /// 既定実装は未対応エラー（本番の sqlx 実装のみが上書きする）。
+    /// Records completion of second-factor verification (AP4, AP5; the path where step-up elevates
+    /// an existing session). `methods` is the full set of methods after elevation, and the
+    /// implementation derives the strength with [`AuthenticationStrength::from_methods`] (callers
+    /// do not pass strength, keeping the single source of the derivation rule in the domain). The
+    /// default implementation is an unsupported error (only the production sqlx implementation
+    /// overrides it).
     async fn record_second_factor(
         &self,
         _session_hash: &str,
@@ -786,10 +861,11 @@ pub trait SsoSessionRepository: Send + Sync {
             "record_second_factor is not supported by this repository".to_string(),
         ))
     }
-    /// Step-up 認証（AP5）の完了を記録する。`methods` はこの step-up で検証した方式で、
-    /// 第二要素を含む場合のみ `mfa_completed_at` と強度も更新する（単一要素の再確認で多要素
-    /// セッションを格下げしない・MFA の鮮度を回復させない、が実装の責務）。
-    /// 既定実装は未対応エラー（本番の sqlx 実装のみが上書きする）。
+    /// Records completion of step-up authentication (AP5). `methods` are the methods verified in
+    /// this step-up; `mfa_completed_at` and the strength are updated only if they include a second
+    /// factor (the implementation must not downgrade a multi-factor session or restore MFA
+    /// freshness with single-factor re-verification). The default implementation is an unsupported
+    /// error (only the production sqlx implementation overrides it).
     async fn record_step_up(
         &self,
         _session_hash: &str,
@@ -800,25 +876,30 @@ pub trait SsoSessionRepository: Send + Sync {
             "record_step_up is not supported by this repository".to_string(),
         ))
     }
-    /// このセッションでパスキーの本人確認を最後に通した時刻（task #872。端末の登録の条件）。
+    /// Time a passkey re-verification last passed in this session (task #872; a condition for
+    /// device registration).
     ///
-    /// パスキーで入ったログイン自体は `auth_time` と `authentication_methods` で分かるので、ここが
-    /// 返すのは**後から**パスキーで確かめた時刻（step-up）。既定実装は `None`（記録を持たない）。
+    /// A login made with a passkey itself is known from `auth_time` and `authentication_methods`,
+    /// so what this returns is the time verified with a passkey **afterwards** (step-up). The
+    /// default implementation is `None` (keeps no record).
     async fn passkey_verified_at(&self, _session_hash: &str) -> Result<Option<DateTime<Utc>>> {
         Ok(None)
     }
     async fn delete(&self, session_hash: &str) -> Result<()>;
-    /// 指定ユーザーの全 SSO セッションを削除する（ユーザー単位の全セッション無効化、F5）。
+    /// Deletes all SSO sessions of the given user (invalidating all sessions per user; F5).
     async fn delete_all_for_user(&self, user_id: Uuid) -> Result<()>;
 
-    /// **1 つを残して**指定ユーザーの SSO セッションを削除し、削除件数を返す（ADR-0045）。
+    /// Deletes the given user's SSO sessions **except one**, returning the count deleted
+    /// (ADR-0045).
     ///
-    /// 自分でパスワードを変えたときに使う。[`delete_all_for_user`](Self::delete_all_for_user)
-    /// だと**変えた本人がその場で締め出される**。リセットのリンク経由（`password_reset`）が
-    /// 全部消してよいのは、あれが「パスワードを忘れた人」の経路で、そもそも手元にセッションが
-    /// 無いからである。同じ扱いにはできない。
+    /// Used when the user changes their own password.
+    /// [`delete_all_for_user`](Self::delete_all_for_user) would **lock out the very user who
+    /// changed it on the spot**. The reset-link path (`password_reset`) may delete everything
+    /// because it is the path for "people who forgot the password", who have no session at hand to
+    /// begin with. The two cannot be treated alike.
     ///
-    /// 既定実装は未対応エラー（本番の sqlx 実装のみが上書きする）。
+    /// The default implementation is an unsupported error (only the production sqlx implementation
+    /// overrides it).
     async fn delete_all_for_user_except(
         &self,
         _user_id: Uuid,
@@ -826,25 +907,26 @@ pub trait SsoSessionRepository: Send + Sync {
     ) -> Result<u64> {
         Err(unsupported("delete_all_for_user_except"))
     }
-    /// 期限切れ（idle または absolute 超過）のセッションをまとめて削除し、削除件数を返す（GC）。
-    /// 既定実装は何もしない（テスト用フェイクは呼ばれない）。
+    /// Deletes expired sessions (idle or absolute exceeded) in bulk and returns the count (GC).
+    /// The default implementation does nothing (test fakes are not called).
     async fn delete_expired(&self, _now: DateTime<Utc>) -> Result<u64> {
         Ok(0)
     }
 }
 
-/// 利用者の端末（task #872。ADR-0071）と、SSO セッションがどの端末で作られたか。
+/// Users' devices (task #872; ADR-0071) and which device an SSO session was created on.
 #[async_trait]
 pub trait UserDeviceRepository: Send + Sync {
-    /// 利用者のその端末の登録（無ければ `None`）。
+    /// The user's registration of that device (`None` if absent).
     async fn find(&self, user_id: Uuid, device: &DeviceRef) -> Result<Option<UserDevice>>;
-    /// 利用者の登録済みの端末を、最後に使った順（新しい順）に返す。
+    /// Returns the user's registered devices in order of last use (newest first).
     async fn list_for_user(&self, user_id: Uuid) -> Result<Vec<UserDevice>>;
-    /// 登録する。同じ利用者・同じ印が既にあれば `Conflict`。
+    /// Registers one. If the same user already has the same mark, `Conflict`.
     async fn insert(&self, device: &UserDevice) -> Result<()>;
-    /// 利用者の端末を 1 つ消し、消した行を返す（他人の端末の id なら `None`）。
+    /// Deletes one of the user's devices and returns the deleted row (`None` if the id is someone
+    /// else's device).
     async fn delete(&self, user_id: Uuid, device_id: Uuid) -> Result<Option<UserDevice>>;
-    /// この端末でログインしたことを記録する（最後に使った時刻・国・接続元）。
+    /// Records a sign-in on this device (last used time, country, source).
     async fn touch(
         &self,
         device_id: Uuid,
@@ -852,10 +934,11 @@ pub trait UserDeviceRepository: Send + Sync {
         country: Option<&CountryCode>,
         ip: Option<&str>,
     ) -> Result<()>;
-    /// `cutoff` より前から使われていない端末を消し、消した行を返す（期限切れ）。
+    /// Deletes devices unused since before `cutoff` and returns the deleted rows (expiry).
     async fn delete_unused_before(&self, cutoff: DateTime<Utc>) -> Result<Vec<UserDevice>>;
 
-    /// SSO セッションへ端末を結び付ける。**まだ結び付いていないときだけ**書き、書いたら `true`。
+    /// Binds a device to an SSO session. Writes **only when not yet bound**, returning `true` if it
+    /// wrote.
     async fn link_session(
         &self,
         session_hash: &str,
@@ -863,34 +946,39 @@ pub trait UserDeviceRepository: Send + Sync {
         country: Option<&CountryCode>,
         observed_at: DateTime<Utc>,
     ) -> Result<bool>;
-    /// SSO セッションに結び付いた端末（無ければ `None`）。
+    /// The device bound to the SSO session (`None` if none).
     async fn session_device(&self, session_hash: &str) -> Result<Option<DeviceRef>>;
-    /// 利用者がこの端末で前にもログインしたことがあるか（今のセッションを除く、残っているセッションで見る）。
+    /// Whether the user has signed in on this device before (excluding the current session, judged
+    /// by remaining sessions).
     async fn seen_before(
         &self,
         user_id: Uuid,
         device: &DeviceRef,
         except_session_hash: &str,
     ) -> Result<bool>;
-    /// 利用者のこの端末で作られた SSO セッションの `session_hash`（取り消しの巻き添えで切る）。
+    /// `session_hash` of SSO sessions created on this device of the user (cut as collateral of
+    /// revocation).
     async fn sessions_for_device(&self, user_id: Uuid, device: &DeviceRef) -> Result<Vec<String>>;
-    /// このテナントに属する有効な人のうち、登録した端末も認証アプリの鍵も持たない人のログイン名
-    /// （task #916。登録した端末に限る設定を有効にすると入れなくなる人）。名前の順・多くて 50 人。
+    /// Login names of active people in this tenant who have neither a registered device nor an
+    /// authenticator app key (task #916; people who could not get in once the
+    /// registered-devices-only setting is enabled). Sorted by name, at most 50.
     async fn home_members_without_trusted_device(&self, tenant_id: TenantId)
         -> Result<Vec<String>>;
 }
 
-/// 本人が見るログイン履歴（task #879。ADR-0073）。
+/// Sign-in history the user sees (task #879; ADR-0073).
 ///
-/// 書き込みはどれも「履歴のための写し」で、失敗してもログイン・トークンの発行は止めない
-/// （呼び出し側がログに残して続ける）。
+/// Every write is "a copy for the history", and failures never stop sign-in or token issuance
+/// (callers log and continue).
 #[async_trait]
 pub trait SignInHistoryRepository: Send + Sync {
-    /// 成功したログインを書く。同じ `sid` が既にあれば何もせず `false`（二重の頼み）。
+    /// Writes a successful sign-in. If the same `sid` already exists, does nothing and returns
+    /// `false` (a duplicate request).
     async fn record_success(&self, sign_in: &SignInSuccess) -> Result<bool>;
-    /// 断ったログインを書く。
+    /// Writes a refused sign-in.
     async fn record_failure(&self, failure: &SignInFailure) -> Result<()>;
-    /// ログイン（`sid`）でアプリへトークンを出したことを書く（2 回目以降は最後の時刻を進める）。
+    /// Writes that a token was issued to an app for a sign-in (`sid`) (from the second time on,
+    /// advances the last time).
     async fn record_app_issue(
         &self,
         user_id: Uuid,
@@ -900,7 +988,8 @@ pub trait SignInHistoryRepository: Send + Sync {
         issued_at: DateTime<Utc>,
         refresh_issued: bool,
     ) -> Result<()>;
-    /// リフレッシュトークンで更新したことを書く。接続元・名乗りは**更新を送ってきた相手**のもの。
+    /// Writes that a refresh token was used to refresh. Source and self-identification are those of
+    /// **whoever sent the refresh**.
     async fn record_refresh_use(
         &self,
         sid: &str,
@@ -909,21 +998,22 @@ pub trait SignInHistoryRepository: Send + Sync {
         ip_address: Option<&str>,
         user_agent: Option<&str>,
     ) -> Result<()>;
-    /// 使い終えたリフレッシュトークンがもう一度来たことを書く。
+    /// Writes that a used-up refresh token came again.
     async fn record_refresh_reuse(
         &self,
         sid: &str,
         client_id: &str,
         detected_at: DateTime<Utc>,
     ) -> Result<()>;
-    /// 利用者の履歴を新しい順に返す（`before` を渡すとその id より古いものだけ）。
+    /// Returns the user's history, newest first (passing `before` returns only entries older than
+    /// that id).
     async fn list_for_user(
         &self,
         user_id: Uuid,
         before: Option<i64>,
         limit: u32,
     ) -> Result<Vec<SignInRecord>>;
-    /// ログイン（`sids`）ごとのアプリでの使われ方。リフレッシュの状態は `now` で決める。
+    /// How each sign-in (`sids`) was used by apps. The refresh state is decided at `now`.
     async fn app_usage(
         &self,
         user_id: Uuid,
@@ -932,53 +1022,59 @@ pub trait SignInHistoryRepository: Send + Sync {
     ) -> Result<Vec<SignInAppUse>>;
 }
 
-/// 利用者が登録した SSH の公開鍵（task #885。ADR-0072）。鍵は登録した組織ごとに持つ。
+/// SSH public keys registered by users (task #885; ADR-0072). Keys are held per organization where
+/// registered.
 #[async_trait]
 pub trait UserSshKeyRepository: Send + Sync {
-    /// 利用者がその組織に登録した鍵を、登録の新しい順に返す。
+    /// Returns the keys the user registered in that organization, newest registration first.
     async fn list_for_user(&self, tenant_id: TenantId, user_id: Uuid) -> Result<Vec<UserSshKey>>;
-    /// 登録する。同じ組織に同じ指紋の鍵が既にあれば `Conflict`（別の利用者の鍵でも）。
+    /// Registers one. If the same organization already has a key with the same fingerprint,
+    /// `Conflict` (even another user's key).
     async fn insert(&self, key: &UserSshKey) -> Result<()>;
-    /// 利用者の鍵を 1 つ消し、消した行を返す（他人の鍵・別の組織の鍵の id なら `None`）。
+    /// Deletes one of the user's keys and returns the deleted row (`None` if the id is someone
+    /// else's key or another organization's).
     async fn delete(
         &self,
         tenant_id: TenantId,
         user_id: Uuid,
         key_id: Uuid,
     ) -> Result<Option<UserSshKey>>;
-    /// 配る機械へ渡す一覧。**有効な利用者**で、**その組織の有効なメンバー**の鍵だけ
-    /// （止めた利用者・組織から外れた利用者の鍵は出さない）。利用者名・登録の順に並べる。
+    /// The list handed to distributing machines. Only keys of **active users** who are **active
+    /// members of that organization** (keys of stopped users or users removed from the organization
+    /// are not output). Sorted by user name, then registration.
     async fn list_distributable(&self, tenant_id: TenantId) -> Result<Vec<DistributedSshKey>>;
 }
 
-/// SSO セッションと端末の鍵の結び付け（DBSC。task #887。ADR-0074）。置き場は `sso_session_contexts`。
+/// Binding between SSO sessions and device keys (DBSC; task #887; ADR-0074). Stored in
+/// `sso_session_contexts`.
 #[async_trait]
 pub trait SessionKeyBindingRepository: Send + Sync {
-    /// 結び付き（無ければ `None`）。
+    /// The binding (`None` if none).
     async fn find(&self, session_hash: &str) -> Result<Option<SessionKeyBinding>>;
-    /// 結び付ける。**まだ結び付いていないときだけ**書き、書いたら `true`。
+    /// Binds. Writes **only when not yet bound**, returning `true` if it wrote.
     async fn bind(&self, session_hash: &str, binding: &SessionKeyBinding) -> Result<bool>;
-    /// 鍵で署名して更新したことを記録する。
+    /// Records a refresh signed with the key.
     async fn record_refresh(&self, session_hash: &str, at: DateTime<Utc>) -> Result<()>;
 }
 
-/// 本人が見る「状況」の読み取り（task #896。ADR-0078）。読むだけで書かない。
+/// Reads for the "status" the user sees (task #896; ADR-0078). Read-only; writes nothing.
 #[async_trait]
 pub trait SecurityStatusQuery: Send + Sync {
-    /// 利用者のログイン状態ごとの文脈（文脈の行が無いログイン状態は返らない）。
+    /// Context per sign-in state of the user (sign-in states without a context row are not
+    /// returned).
     async fn session_contexts(
         &self,
         user_id: Uuid,
     ) -> Result<Vec<crate::domain::security_status::SessionContextStatus>>;
-    /// アプリごとのトークンの種別。同意したアプリ・有効なリフレッシュトークンのあるアプリ・
-    /// `recent_since` 以後にトークンを出したアプリを、名前の順に返す。
+    /// Token kinds per app. Returns apps with consent, apps with valid refresh tokens, and
+    /// apps issued tokens since `recent_since`, sorted by name.
     async fn app_tokens(
         &self,
         user_id: Uuid,
         now: DateTime<Utc>,
         recent_since: DateTime<Utc>,
     ) -> Result<Vec<crate::domain::security_status::AppTokenStatus>>;
-    /// `since` 以後の注意。
+    /// Warnings since `since`.
     async fn warnings(
         &self,
         user_id: Uuid,
@@ -989,48 +1085,49 @@ pub trait SecurityStatusQuery: Send + Sync {
 #[async_trait]
 pub trait AuthorizationCodeRepository: Send + Sync {
     async fn create(&self, code: &AuthorizationCode) -> Result<()>;
-    /// 原子的に one-time 消費する。発行テナントが一致し、未使用かつ期限内なら `used_at` を
-    /// 設定して当該 code を返す。すでに使用済み・期限切れ・不存在・他テナント発行なら `None`
-    /// （呼び出し側で再利用検知として扱う）。
+    /// Atomically consumes it one-time. If the issuing tenant matches and it is unused and
+    /// unexpired, sets `used_at` and returns that code. If already used, expired, nonexistent, or
+    /// issued by another tenant, `None` (the caller treats it as reuse detection).
     async fn consume(
         &self,
         tenant_id: TenantId,
         hash: &AuthorizationCodeHash,
         used_at: DateTime<Utc>,
     ) -> Result<Option<AuthorizationCode>>;
-    /// **すでに消費済み**の code を hash で引く（SEC8）。`consume` が `None` を返したときに
-    /// 「本当の再利用」と「不存在・期限切れ」を切り分けるために使う。未消費・不存在・期限切れで
-    /// 削除済み・他テナント発行はいずれも `None`。
+    /// Looks up an **already consumed** code by hash (SEC8). Used when `consume` returns `None` to
+    /// distinguish "real reuse" from "nonexistent / expired". Unconsumed, nonexistent, deleted
+    /// after expiry, and issued by another tenant all give `None`.
     async fn find_used(
         &self,
         tenant_id: TenantId,
         hash: &AuthorizationCodeHash,
     ) -> Result<Option<AuthorizationCode>>;
-    /// ログアウト時にユーザーの未消費・期限内の全 code を即時失効させる（`used_at` を設定）。
+    /// On logout, immediately revokes all unconsumed, unexpired codes of the user (sets `used_at`).
     async fn revoke_all_active_for_user(&self, user_id: Uuid, now: DateTime<Utc>) -> Result<()>;
 }
 
-/// パスワードリセットトークン（MT18）の永続化。DB には SHA-256 hash のみ保存する。
-/// ユーザー単位のセキュリティ操作のため tenant_id は取らない（モジュールコメント参照。
-/// テナント境界はユースケース側が `users.tenant_id` 照合で強制する）。
+/// Persistence of password reset tokens (MT18). The DB stores only the SHA-256 hash.
+/// A per-user security operation, so no tenant_id is taken (see the module comment;
+/// the use case enforces the tenant boundary by matching `users.tenant_id`).
 #[async_trait]
 pub trait PasswordResetTokenRepository: Send + Sync {
     async fn create(&self, token: &PasswordResetToken) -> Result<()>;
-    /// 原子的に one-time 消費する。未使用かつ期限内なら `used_at` を設定して当該行を返す。
-    /// 使用済み・期限切れ・不存在は `None`。
+    /// Atomically consumes it one-time. If unused and unexpired, sets `used_at` and returns the
+    /// row. Used, expired, or nonexistent gives `None`.
     async fn consume(
         &self,
         token_hash: &str,
         used_at: DateTime<Utc>,
     ) -> Result<Option<PasswordResetToken>>;
-    /// **消費せずに**引く（未使用かつ期限内のものだけ。ADR-0062）。
+    /// Looks up **without consuming** (only unused and unexpired ones; ADR-0062).
     ///
-    /// リンクを開いた画面が「誰のどの用途のリンクか」を知るために使う。⚠ **開いただけで
-    /// 消費してはいけない** —— チャットに貼ったリンクは、相手より先にプレビューの bot が
-    /// 取りに来る。消費を POST（実際に資格情報を決める操作）まで遅らせておけば、先に
-    /// 取りに来られてもリンクは生きたままである。
+    /// Used by the screen opening the link to know "whose link, for what purpose". ⚠ **Merely
+    /// opening it must not consume it** — a link pasted in a chat is fetched by a preview bot
+    /// before the recipient. Deferring consumption to the POST (the operation that actually sets
+    /// credentials) keeps the link alive even if it was fetched first.
     ///
-    /// 既定実装は `Ok(None)`（この引き方を持たないフェイクでは、リンクの中身を出さない）。
+    /// The default implementation is `Ok(None)` (fakes without this lookup do not reveal the link's
+    /// contents).
     async fn find_active(
         &self,
         _token_hash: &str,
@@ -1038,21 +1135,23 @@ pub trait PasswordResetTokenRepository: Send + Sync {
     ) -> Result<Option<PasswordResetToken>> {
         Ok(None)
     }
-    /// 当該ユーザーの未使用トークンをすべて失効させる（`used_at` を設定。再発行時の置き換えに使う）。
+    /// Revokes all unused tokens of the user (sets `used_at`; used for replacement on reissue).
     async fn invalidate_all_for_user(&self, user_id: Uuid, now: DateTime<Utc>) -> Result<()>;
 }
 
-/// 退役したパスワードハッシュの履歴（AP7 の再利用禁止）。
+/// History of retired password hashes (AP7's reuse prohibition).
 ///
-/// 現行パスワードは `users.password_hash` にあるため、ここには**置き換えられたハッシュ**だけを
-/// 積む（写しを持つと更新漏れで履歴と現行がずれる）。ユーザー単位のセキュリティ操作のため
-/// tenant_id は取らない（テナント境界はユースケース側が `users.tenant_id` 照合で強制する）。
+/// The current password is in `users.password_hash`, so only **replaced hashes** are pushed here
+/// (holding a copy would let history and current drift on a missed update). A per-user security
+/// operation, so no tenant_id is taken (the use case enforces the tenant boundary by matching
+/// `users.tenant_id`).
 #[async_trait]
 pub trait PasswordHistoryRepository: Send + Sync {
-    /// 退役したハッシュを 1 件積み、`retain` 件だけを残して古い行を削除する。
+    /// Pushes one retired hash and deletes old rows, keeping only `retain`.
     ///
-    /// 積むことと剪定することを分けないのは、片方だけが実行されると履歴が単調増加するか、
-    /// 逆に判定に要る件数を割るためである（呼び出し側に順序を守らせない）。
+    /// Pushing and pruning are not separated because if only one ran, history would grow
+    /// monotonically or, conversely, fall below the count needed for decisions (callers are not
+    /// trusted to keep the order).
     async fn push(
         &self,
         user_id: Uuid,
@@ -1060,47 +1159,48 @@ pub trait PasswordHistoryRepository: Send + Sync {
         retired_at: DateTime<Utc>,
         retain: u32,
     ) -> Result<()>;
-    /// 新しい順に最大 `limit` 件の退役ハッシュを返す。
+    /// Returns up to `limit` retired hashes, newest first.
     async fn recent(&self, user_id: Uuid, limit: u32) -> Result<Vec<String>>;
 }
 
-/// メール検証トークン（SEC6b）の永続化。DB には SHA-256 hash のみ保存する。
-/// `PasswordResetTokenRepository` と同じ one-time パターン（tenant_id は取らない。テナント境界は
-/// ユースケース側が `users.tenant_id` 照合で強制する）。
+/// Persistence of email verification tokens (SEC6b). The DB stores only the SHA-256 hash. The same
+/// one-time pattern as `PasswordResetTokenRepository` (no tenant_id; the use case enforces the
+/// tenant boundary by matching `users.tenant_id`).
 #[async_trait]
 pub trait EmailVerificationTokenRepository: Send + Sync {
     async fn create(&self, token: &EmailVerificationToken) -> Result<()>;
-    /// 原子的に one-time 消費する。未使用かつ期限内なら `used_at` を設定して当該行を返す。
-    /// 使用済み・期限切れ・不存在は `None`。
+    /// Atomically consumes it one-time. If unused and unexpired, sets `used_at` and returns the
+    /// row. Used, expired, or nonexistent gives `None`.
     async fn consume(
         &self,
         token_hash: &str,
         used_at: DateTime<Utc>,
     ) -> Result<Option<EmailVerificationToken>>;
-    /// 当該ユーザーの未使用トークンをすべて失効させる（再送時の置き換えに使う）。
+    /// Revokes all unused tokens of the user (used for replacement on resend).
     async fn invalidate_all_for_user(&self, user_id: Uuid, now: DateTime<Utc>) -> Result<()>;
 }
 
 #[async_trait]
 pub trait SigningKeyRepository: Send + Sync {
     async fn insert(&self, key: &SigningKey) -> Result<()>;
-    /// **いま署名できる鍵が 1 本も無い場合に限り** `key` を挿入する（ブートストラップ専用の
-    /// 排他挿入）。判定条件は `find_active` と同じ（ACTIVE かつ有効期間内）—— 公開しただけの
-    /// 後継鍵や期限切れのまま ACTIVE で残った鍵は「鍵がある」とは数えない。
-    /// 挿入したら `true`、既に署名できる鍵が存在して何もしなかったら `false` を返す。
-    /// 「存在確認 → 挿入」を排他区間で行い、複数インスタンスの同時起動でも鍵が
-    /// 重複生成されないことを実装が保証する（SEC5）。
+    /// Inserts `key` **only if there is no key that can sign right now** (an exclusive insert for
+    /// bootstrap only). The condition is the same as `find_active` (ACTIVE and within validity) —
+    /// successor keys that are merely published, or keys left ACTIVE after expiring, do not count
+    /// as "a key exists". Returns `true` if inserted, `false` if a key that can sign already
+    /// existed and nothing was done. "Check existence → insert" runs in an exclusive section, and
+    /// the implementation guarantees keys are not generated twice even when several instances start
+    /// at once (SEC5).
     async fn insert_if_no_active(&self, key: &SigningKey) -> Result<bool>;
-    /// 新規署名に使う ACTIVE 鍵を返す。
+    /// Returns the ACTIVE key used for new signatures.
     async fn find_active(&self) -> Result<Option<SigningKey>>;
-    /// JWKS 公開対象（ACTIVE + RETIRED で not_after が未来のもの）を返す。
+    /// Returns the keys published in JWKS (ACTIVE + RETIRED with not_after in the future).
     async fn list_published(&self) -> Result<Vec<SigningKey>>;
     async fn find_by_kid(&self, kid: &str) -> Result<Option<SigningKey>>;
-    /// 全鍵を作成日時の降順で返す（管理画面用）。
+    /// Returns all keys in descending creation order (for the admin screen).
     async fn list_all(&self) -> Result<Vec<SigningKey>>;
-    /// ステータスを更新する（ACTIVE → RETIRED 等）。対象が無い場合は `NotFound`。
+    /// Updates the status (ACTIVE → RETIRED etc.). `NotFound` if there is no target.
     async fn update_status(&self, kid: &str, status: SigningKeyStatus) -> Result<()>;
-    /// 鍵を削除する。ACTIVE 鍵の削除は呼び出し側で禁止すること。
+    /// Deletes a key. Callers must forbid deleting ACTIVE keys.
     async fn delete(&self, kid: &str) -> Result<()>;
 }
 
@@ -1108,70 +1208,76 @@ pub trait SigningKeyRepository: Send + Sync {
 pub trait AuditLogSink: Send + Sync {
     async fn record(&self, event: &AuditEvent) -> Result<()>;
 
-    /// 保持期間を過ぎた監査イベントを削除し、削除件数を返す（G8）。削除は書き込み側の関心のため
-    /// 読み取り（[`AuditLogQuery`]）ではなく本トレイトに置く。
+    /// Deletes audit events past the retention period and returns the count (G8). Deletion is a
+    /// write-side concern, so it lives in this trait rather than the read side ([`AuditLogQuery`]).
     ///
-    /// 既定実装は何もしない（テスト用フェイクは保持期間を持たない）。本番の sqlx 実装が上書きする。
+    /// The default implementation does nothing (test fakes have no retention period). The
+    /// production sqlx implementation overrides it.
     async fn purge_older_than(&self, _older_than: DateTime<Utc>) -> Result<u64> {
         Ok(0)
     }
 }
 
-/// `audit_log` の読み取り（状況確認画面 A3）。書き込み（`AuditLogSink`）とは関心を分ける。
+/// Reads of `audit_log` (status screen A3). Kept separate from writes (`AuditLogSink`).
 #[async_trait]
 pub trait AuditLogQuery: Send + Sync {
-    /// 条件に一致する監査ログを新しい順（`occurred_at` 降順、同時刻は `id` 降順）に返す。
-    /// テナント越しの閲覧を防ぐため、参照系の呼び出しは `filter.tenant_id` を必ず設定する。
+    /// Returns audit logs matching the conditions, newest first (`occurred_at` descending, ties by
+    /// `id` descending). To prevent cross-tenant viewing, read calls always set `filter.tenant_id`.
     async fn search(&self, filter: &AuditLogFilter) -> Result<Vec<AuditLogEntry>>;
 
-    /// 指定テナントのクライアント別の**最終利用時刻**（成功したトークン発行・認可コード発行の
-    /// 最新 `occurred_at`）を返す。クライアント状況一覧（A3）が利用する。利用実績の無い
-    /// クライアントは含まれない。
+    /// Returns the **last used time** per client of the given tenant (the latest `occurred_at` of
+    /// successful token issuance / authorization code issuance). Used by the client status list
+    /// (A3). Clients with no usage are not included.
     async fn last_used_per_client(
         &self,
         tenant_id: TenantId,
     ) -> Result<Vec<(String, DateTime<Utc>)>>;
 }
 
-/// アプリケーションログ（`log`）の書き込み（CLAUDE.md「ログ」）。`tracing` の WARN / ERROR を
-/// 非同期にまとめて永続化する。**ここでの失敗はログに出さない**（書き込み失敗のログがまた書き込みを
-/// 誘発する無限ループを避けるため。実装側で握り潰す）。
+/// Writes of application logs (`log`) (CLAUDE.md "Logging"). Persists `tracing` WARN / ERROR
+/// asynchronously in batches. **Failures here are not logged** (to avoid an infinite loop where a
+/// log about a failed write triggers another write; the implementation swallows them).
 #[async_trait]
 pub trait ApplicationLogSink: Send + Sync {
-    /// 複数件をまとめて記録する。空スライスは何もしない。
+    /// Records several entries at once. An empty slice does nothing.
     async fn record_batch(&self, records: &[ApplicationLogRecord]) -> Result<()>;
 
-    /// `older_than` より古い行を削除し、削除件数を返す（保持期間の適用）。
+    /// Deletes rows older than `older_than` and returns the count (applying the retention period).
     async fn purge_older_than(&self, older_than: DateTime<Utc>) -> Result<u64>;
 }
 
-/// `log` の読み取り（管理コンソールのエラー・警告ログ画面）。書き込みとは関心を分ける。
+/// Reads of `log` (the admin console's error / warning log screen). Kept separate from writes.
 #[async_trait]
 pub trait ApplicationLogQuery: Send + Sync {
-    /// 条件に一致するログを新しい順（`occurred_at` 降順、同時刻は `id` 降順）に返す。
+    /// Returns logs matching the conditions, newest first (`occurred_at` descending, ties by `id`
+    /// descending).
     async fn search(&self, filter: &ApplicationLogFilter) -> Result<Vec<ApplicationLogEntry>>;
 }
 
-/// 利用者が保有する権限コード（ADR-0006）の参照・付与・剥奪（DIP 境界）。
+/// Looking up, granting, and revoking permission codes held by users (ADR-0006) (DIP boundary).
 ///
-/// OIDC scope（`ClientRepository` 側の関心）とは別軸。保護ユースケースは本トレイト越しに
-/// 「利用者が必要権限を保有するか」を判定する。付与/剥奪は管理コンソール（A2）が用いる。
+/// A separate axis from OIDC scopes (a `ClientRepository` concern). Protected use cases decide
+/// through this trait "whether the user holds the required permission". Granting / revoking is used
+/// by the admin console (A2).
 #[async_trait]
 pub trait UserPermissionRepository: Send + Sync {
-    /// 付与可能な権限コードの一覧（`permissions` マスタ）を昇順で返す。
-    /// 管理コンソール（A2）の付与フォームで選択肢を提示するために使う。
+    /// Returns the list of grantable permission codes (the `permissions` master) in ascending
+    /// order. Used to present the options in the admin console's (A2) grant form.
     async fn list_available_codes(&self) -> Result<Vec<String>>;
-    /// 利用者が `tenant_id` を scope として保有する権限コード一覧を返す（順序は不定）。
+    /// Returns the permission codes the user holds with `tenant_id` as scope (order undefined).
     async fn list_codes_for_user(&self, tenant_id: TenantId, user_id: Uuid) -> Result<Vec<String>>;
-    /// 利用者が保有する権限コードを、**すべての scope について** `(scope, code)` で返す（順序は不定）。
-    /// 口座の操作の前に「対象がどこで何を持っているか」を見るために使う（ゲストとして持つ権限を含む。task #579）。
+    /// Returns the permission codes the user holds **for every scope** as `(scope, code)` (order
+    /// undefined). Used before account operations to see "what the target holds where" (including
+    /// permissions held as a guest; task #579).
     async fn list_scoped_codes_for_user(&self, user_id: Uuid) -> Result<Vec<(TenantId, String)>>;
-    /// 利用者が指定の権限コードを `tenant_id` を scope として保有するか（完全一致判定。ADR-0009 §4）。
+    /// Whether the user holds the given permission code with `tenant_id` as scope (exact match;
+    /// ADR-0009 §4).
     async fn has_permission(&self, tenant_id: TenantId, user_id: Uuid, code: &str) -> Result<bool>;
-    /// 指定コードのうち**いずれか 1 つ**を保有するか（OR 判定）。
+    /// Whether the user holds **any one** of the given codes (OR check).
     ///
-    /// 認可ホットパスで「要求権限 or idp.system.admin」の判定を 1 往復に束ねるために使う（REF3）。
-    /// デフォルト実装は `has_permission` を順に呼ぶ。DB 実装は単一 `IN` クエリで上書きする。
+    /// Used on the authorization hot path to bundle "required permission or idp.system.admin" into
+    /// one round trip (REF3). The default implementation calls `has_permission` in turn. The DB
+    /// implementation overrides it with a single `IN` query.
     async fn has_any_permission(
         &self,
         tenant_id: TenantId,
@@ -1185,8 +1291,8 @@ pub trait UserPermissionRepository: Send + Sync {
         }
         Ok(false)
     }
-    /// `tenant_id` を scope として権限を付与する（冪等: 既存付与は何もしない）。
-    /// `code` は `permissions` マスタに存在すること。
+    /// Grants a permission with `tenant_id` as scope (idempotent: an existing grant does nothing).
+    /// `code` must exist in the `permissions` master.
     async fn grant(
         &self,
         tenant_id: TenantId,
@@ -1194,10 +1300,11 @@ pub trait UserPermissionRepository: Send + Sync {
         code: &str,
         granted_at: DateTime<Utc>,
     ) -> Result<()>;
-    /// `tenant_id` を scope とする権限を剥奪する（不存在でもエラーにしない）。
+    /// Revokes a permission scoped to `tenant_id` (no error if it does not exist).
     async fn revoke(&self, tenant_id: TenantId, user_id: Uuid, code: &str) -> Result<()>;
-    /// `tenant_id` を scope とする当該利用者の**全**権限行を一括で剥奪し、剥奪したコード一覧を返す
-    /// （不保有なら空。ゲスト追放時の後始末に使う。ADR-0009 §3）。読み取りと削除は原子的に行う。
+    /// Revokes **all** permission rows of the user scoped to `tenant_id` at once and returns the
+    /// revoked codes (empty if none; used for cleanup when expelling a guest; ADR-0009 §3). Read
+    /// and delete happen atomically.
     async fn revoke_all_for_user_in_tenant(
         &self,
         tenant_id: TenantId,
@@ -1205,63 +1312,66 @@ pub trait UserPermissionRepository: Send + Sync {
     ) -> Result<Vec<String>>;
 }
 
-/// クライアント（システム用クライアント）が保有する権限の永続化（ADR-0037）。
+/// Persistence of permissions held by clients (system clients) (ADR-0037).
 ///
-/// scope 引数を取らないのは、`clients.id` が既に所属テナントを決めているためである
-/// （`clients.tenant_id`）。「クライアントの所属テナント」と「権限の scope」が食い違う状態を
-/// そもそも表現できないようにしてある（`client_permissions` に scope 列は無い）。
+/// No scope argument is taken because `clients.id` already determines the tenant
+/// (`clients.tenant_id`). A state where "the client's tenant" and "the permission scope" disagree
+/// cannot even be represented (`client_permissions` has no scope column).
 #[async_trait]
 pub trait ClientPermissionRepository: Send + Sync {
-    /// 当該クライアントが保有する権限コード一覧を返す（順序は不定。不保有なら空）。
+    /// Returns the permission codes the client holds (order undefined; empty if none).
     async fn list_codes_for_client(&self, client_row_id: Uuid) -> Result<Vec<String>>;
-    /// 権限を付与する（冪等: 既存付与は `granted_at` を保持する）。
-    /// `code` は `permissions` マスタに存在し、かつクライアントへ付与可能であること
-    /// （`domain::permission::is_grantable_to_client`。DB 側の CHECK 制約と二重に効く）。
+    /// Grants a permission (idempotent: an existing grant keeps its `granted_at`).
+    /// `code` must exist in the `permissions` master and be grantable to clients
+    /// (`domain::permission::is_grantable_to_client`; works twice with the DB CHECK constraint).
     async fn grant(&self, client_row_id: Uuid, code: &str, granted_at: DateTime<Utc>)
         -> Result<()>;
-    /// 権限を剥奪する（不存在でもエラーにしない）。
+    /// Revokes a permission (no error if it does not exist).
     async fn revoke(&self, client_row_id: Uuid, code: &str) -> Result<()>;
 }
 
-/// アプリ（`applications`）・その名乗り（binding）・割り当ての永続化（ADR-0054 / ADR-0059）。
+/// Persistence of apps (`applications`), their identities (bindings), and assignments (ADR-0054 /
+/// ADR-0059).
 ///
-/// 3 つの表を 1 つのトレイトに収めるのは、**アプリを外して binding だけが残る**ような中途半端な
-/// 状態を作らないためである。binding も割り当ても、アプリを識別できないと意味を持たない。
+/// The three tables share one trait so that half-finished states such as **an app removed with only
+/// its bindings left** are never created. Neither bindings nor assignments mean anything without
+/// identifying the app.
 #[async_trait]
 pub trait ApplicationRepository: Send + Sync {
-    /// アプリを登録する。
+    /// Registers an app.
     async fn create(&self, application: &Application) -> Result<()>;
-    /// テナント内のアプリを代理キーで引く。他テナントの行は `None`。
+    /// Looks up an app in the tenant by surrogate key. Rows of other tenants give `None`.
     async fn find_by_id(&self, tenant_id: TenantId, id: Uuid) -> Result<Option<Application>>;
-    /// **OIDC の `client_id` からアプリを引く**（判定のホットパス）。
+    /// **Looks up an app from an OIDC `client_id`** (decision hot path).
     ///
-    /// 認可フローが持っているのは `clients.client_id`（テナント内一意の文字列）だけなので、
-    /// 代理キーへの読み替えまで含めてここで閉じる。binding が無い client は `None`
-    /// ——移行前・移行漏れと「割り当てが無い」を呼び出し側で区別できるようにする。
+    /// The authorization flow only has `clients.client_id` (a string unique within the tenant), so
+    /// the translation to the surrogate key is closed here too. Clients without a binding give
+    /// `None` — so callers can distinguish pre-migration / missed migration from "no assignment".
     async fn find_by_oidc_client_id(
         &self,
         tenant_id: TenantId,
         client_id: &str,
     ) -> Result<Option<Application>>;
-    /// SAML の `entity_id` からアプリを引く（OIDC 側と対になる解決経路）。
+    /// Looks up an app from a SAML `entity_id` (the resolution path paired with the OIDC side).
     async fn find_by_saml_entity_id(
         &self,
         tenant_id: TenantId,
         entity_id: &str,
     ) -> Result<Option<Application>>;
-    /// 名乗り（binding の相手）からアプリを引く（ADR-0059）。1 つの相手は 1 つのアプリにだけ
-    /// 属するので、答えは高々 1 件。
+    /// Looks up an app from an identity (the binding's counterpart) (ADR-0059). One counterpart
+    /// belongs to only one app, so the answer is at most one.
     ///
-    /// 名簿の self の口（呼んできたサービスアカウントのアプリ）・管理トークンの発行
-    /// （サービスアカウントの名乗りを持つ client か）・「既に別のアプリの名乗り」の案内が引く。
+    /// Used by the roster's self endpoint (the app of the calling service account), admin token
+    /// issuance (whether the client carries a service account identity), and the "already an
+    /// identity of another app" hint.
     async fn find_by_binding_target(
         &self,
         tenant_id: TenantId,
         target: BindingTarget,
     ) -> Result<Option<Application>>;
-    /// テナント内のアプリを一覧する（`display_name` 昇順）。
+    /// Lists the apps in the tenant (ascending `display_name`).
     async fn list(&self, tenant_id: TenantId) -> Result<Vec<Application>>;
-    /// 表示名・状態・割り当てモードを更新する。対象が無ければ `false`。
+    /// Updates the display name, status, and assignment mode. `false` if there is no target.
     async fn update(
         &self,
         tenant_id: TenantId,
@@ -1271,21 +1381,22 @@ pub trait ApplicationRepository: Send + Sync {
         assignment_mode: AssignmentMode,
         updated_at: DateTime<Utc>,
     ) -> Result<bool>;
-    /// アプリを削除する（binding・割り当ては CASCADE で消える）。対象が無ければ `false`。
+    /// Deletes an app (bindings and assignments go away by CASCADE). `false` if there is no target.
     async fn delete(&self, tenant_id: TenantId, id: Uuid) -> Result<bool>;
 
-    /// アプリの binding を一覧する（登録順）。
+    /// Lists an app's bindings (in registration order).
     async fn list_bindings(&self, application_id: Uuid) -> Result<Vec<ApplicationBinding>>;
-    /// binding を足す。相手が既に別のアプリへ繋がっていれば
-    /// [`DomainError::Conflict`](crate::domain::error::DomainError::Conflict)。
+    /// Adds a binding. If the counterpart is already connected to another app,
+    /// [`DomainError::Conflict`](crate::domain::error::DomainError::Conflict).
     async fn add_binding(&self, binding: &ApplicationBinding) -> Result<()>;
-    /// binding を外す（アプリ境界内。対象が無ければ `false`）。
+    /// Removes a binding (within the app boundary; `false` if there is no target).
     async fn remove_binding(&self, application_id: Uuid, binding_id: Uuid) -> Result<bool>;
-    /// binding を別のアプリへ移す（ADR-0067）。`from_application_id` の binding でなければ `false`
-    /// （読んでから移すまでの間に、別の要求が外した・移した）。
+    /// Moves a binding to another app (ADR-0067). `false` if it is not a binding of
+    /// `from_application_id` (another request removed or moved it between the read and the move).
     ///
-    /// ⚠ **外す＋足すを 2 回に分けない。** 間で落ちると相手がどのアプリにも属さない瞬間ができ、
-    /// ログイン用の相手なら、その間は判定の外（素通し）になる（ADR-0054 の帰結）。1 文で書き換える。
+    /// ⚠ **Do not split into remove + add.** Failing in between would leave a moment where the
+    /// counterpart belongs to no app, and if it is a login counterpart it is outside the decision
+    /// (passes through) meanwhile (a consequence of ADR-0054). Rewrite it in one statement.
     async fn move_binding(
         &self,
         binding_id: Uuid,
@@ -1293,78 +1404,84 @@ pub trait ApplicationRepository: Send + Sync {
         to_application_id: Uuid,
         moved_at: DateTime<Utc>,
     ) -> Result<bool>;
-    /// テナント内の全アプリの binding を一覧する（名乗りの候補に「いまどのアプリか」を添えるため。
-    /// アプリの数だけ [`Self::list_bindings`] を呼ばせない）。
+    /// Lists the bindings of all apps in the tenant (to annotate identity candidates with "which
+    /// app now"; avoids calling [`Self::list_bindings`] once per app).
     async fn list_tenant_bindings(&self, tenant_id: TenantId) -> Result<Vec<ApplicationBinding>>;
 
-    /// この**人**にこのアプリの割り当てがあるか（判定のホットパス）。
+    /// Whether this **person** has an assignment for this app (decision hot path).
     async fn is_assigned(&self, application_id: Uuid, user_id: Uuid) -> Result<bool>;
-    /// この**サービスアカウント**にこのアプリの割り当てがあるか（宛名のトークン発行。ADR-0059 の決定 6）。
+    /// Whether this **service account** has an assignment for this app (addressee token issuance;
+    /// ADR-0059 decision 6).
     async fn is_service_account_assigned(
         &self,
         application_id: Uuid,
         client_row_id: Uuid,
     ) -> Result<bool>;
-    /// アプリに割り当てられた**人**を一覧する（メールの昇順）。**利用者の情報ごと 1 回で読む**
-    /// ——1 件ずつ引き直すと、名簿の長さだけ往復が増える。
+    /// Lists the **people** assigned to an app (ascending email). **Reads the user info in one go**
+    /// — re-fetching one by one would add round trips proportional to the roster length.
     async fn list_assigned_users(&self, application_id: Uuid) -> Result<Vec<AssignedUser>>;
-    /// この**アカウント**（人・サービスアカウント）に付いている割り当てを、テナント内のアプリに
-    /// 限って一覧する（ADR-0063 / ADR-0065）。
+    /// Lists the assignments of this **account** (person or service account), limited to apps in
+    /// the tenant (ADR-0063 / ADR-0065).
     ///
-    /// アプリ側から名簿を引く [`Self::list_assigned_users`] の裏返し。アカウントの画面が
-    /// 「どのアプリを使えるか」を出すのに、アプリの数だけ [`Self::is_assigned`] を呼ばせない。
+    /// The flip side of [`Self::list_assigned_users`], which reads the roster from the app side. So
+    /// the account screen can show "which apps it may use" without calling [`Self::is_assigned`]
+    /// once per app.
     async fn list_account_assignments(
         &self,
         tenant_id: TenantId,
         account: AccountRef,
     ) -> Result<Vec<AccountAssignment>>;
-    /// アプリに割り当てられた**サービスアカウント**を一覧する（`client_id` の昇順）。
+    /// Lists the **service accounts** assigned to an app (ascending `client_id`).
     async fn list_assigned_service_accounts(
         &self,
         application_id: Uuid,
     ) -> Result<Vec<AssignedServiceAccount>>;
-    /// **人**の割り当ての件数を返す（一覧画面が人数だけを欲しいとき。全件を読まない）。
+    /// Returns the number of **people** assignments (when the list screen wants only the head
+    /// count; does not read everything).
     ///
-    /// ⚠ サービスアカウントを数えない。この件数は「個別なのに誰も入れない」の判定に使う。
+    /// ⚠ Service accounts are not counted. This count is used to decide "individual, yet no one can
+    /// get in".
     async fn count_assignments(&self, application_id: Uuid) -> Result<i64>;
-    /// 割り当てを足す（冪等: 既存の割り当ては `id`・`assigned_at` を保持する）。
+    /// Adds an assignment (idempotent: an existing assignment keeps its `id` and `assigned_at`).
     async fn assign(&self, assignment: &ApplicationAssignment) -> Result<()>;
-    /// 割り当てを外す（未割り当てでもエラーにしない）。
+    /// Removes an assignment (no error if not assigned).
     async fn unassign(&self, application_id: Uuid, principal: AccountRef) -> Result<()>;
 }
 
-/// `sub` と、その人について読んだ事実（ADR-0057）。
+/// A `sub` and the facts read about that person (ADR-0057).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SubjectFacts {
     pub sub: Uuid,
     pub facts: ApplicationUserFacts,
 }
 
-/// 名簿の照会（読み取りモデル。ADR-0057）。書き込み（[`ApplicationRepository`]）とは関心を分ける
-/// （[`AuditLogSink`] と [`AuditLogQuery`] と同じ分け方）。
+/// Roster queries (read model; ADR-0057). Kept separate from writes ([`ApplicationRepository`])
+/// (the same split as [`AuditLogSink`] and [`AuditLogQuery`]).
 ///
-/// ⚠ **ここは可否を判断しない。** 返すのは事実だけで、「使ってよいか」は
-/// [`Application::roster_state`](crate::domain::application::Application::roster_state) が決める。
-/// SQL 側にも規則を書くと規則が 2 か所になり、判定（code の発行地点）と名簿が食い違う。
+/// ⚠ **No decisions are made here.** Only facts are returned; "may they use it" is decided by
+/// [`Application::roster_state`](crate::domain::application::Application::roster_state). Writing
+/// rules on the SQL side too would put rules in two places, and the decision (where codes are
+/// issued) and the roster would disagree.
 ///
-/// 並びは `sub` の昇順に固定する（全テナントで一意なので、ページ間で重複・欠落が起きない）。
+/// The order is fixed to ascending `sub` (unique across all tenants, so no duplicates or gaps
+/// across pages).
 #[async_trait]
 pub trait ApplicationUserQuery: Send + Sync {
-    /// 「全員」のアプリの候補 ＝ テナントのメンバー。
+    /// Candidates for an "everyone" app = members of the tenant.
     async fn list_tenant_members(
         &self,
         tenant_id: TenantId,
         page: PageRequest,
     ) -> Result<Page<SubjectFacts>>;
-    /// 「個別」のアプリの候補 ＝ 割り当てのある利用者。
+    /// Candidates for an "individual" app = users with an assignment.
     async fn list_assigned(
         &self,
         tenant_id: TenantId,
         application_id: Uuid,
         page: PageRequest,
     ) -> Result<Page<SubjectFacts>>;
-    /// 指定された `sub` の事実。⚠ **要求テナントに居ない `sub` は行を返さない**
-    /// ——呼び出し側が「消えた」（`unknown`）として扱う。
+    /// Facts for the given `sub`s. ⚠ **`sub`s not in the requested tenant return no row**
+    /// — callers treat them as "gone" (`unknown`).
     async fn facts_for_subs(
         &self,
         tenant_id: TenantId,
@@ -1373,23 +1490,24 @@ pub trait ApplicationUserQuery: Send + Sync {
     ) -> Result<Vec<SubjectFacts>>;
 }
 
-/// 保護リソース（`aud` に入る宛名）の永続化（ADR-0042）。
+/// Persistence of protected resources (addressees that go into `aud`) (ADR-0042).
 #[async_trait]
 pub trait ProtectedResourceRepository: Send + Sync {
-    /// 宛名を登録する。同一テナントに同じ `resource_uri` があれば
-    /// [`DomainError::Conflict`](crate::domain::error::DomainError::Conflict)。
+    /// Registers an addressee. If the same tenant already has the same `resource_uri`,
+    /// [`DomainError::Conflict`](crate::domain::error::DomainError::Conflict).
     async fn create(&self, resource: &ProtectedResource) -> Result<()>;
-    /// テナント内の宛名を代理キーで引く。他テナントの行は `None`。
+    /// Looks up an addressee in the tenant by surrogate key. Rows of other tenants give `None`.
     async fn find_by_id(&self, tenant_id: TenantId, id: Uuid) -> Result<Option<ProtectedResource>>;
-    /// テナント内の宛名を URI で引く（**完全一致**）。トークン発行が使う唯一の解決経路。
+    /// Looks up an addressee in the tenant by URI (**exact match**). The only resolution path token
+    /// issuance uses.
     async fn find_by_uri(
         &self,
         tenant_id: TenantId,
         uri: &str,
     ) -> Result<Option<ProtectedResource>>;
-    /// テナント内の宛名を一覧する（`resource_uri` 昇順）。
+    /// Lists the addressees in the tenant (ascending `resource_uri`).
     async fn list(&self, tenant_id: TenantId) -> Result<Vec<ProtectedResource>>;
-    /// 状態を変える。対象が無ければ `false`。
+    /// Changes the status. `false` if there is no target.
     async fn set_status(
         &self,
         tenant_id: TenantId,
@@ -1397,77 +1515,84 @@ pub trait ProtectedResourceRepository: Send + Sync {
         status: ResourceStatus,
         updated_at: DateTime<Utc>,
     ) -> Result<bool>;
-    /// 宛名を削除する（許可行も CASCADE で消える）。対象が無ければ `false`。
+    /// Deletes an addressee (permission rows go away by CASCADE too). `false` if there is no
+    /// target.
     async fn delete(&self, tenant_id: TenantId, id: Uuid) -> Result<bool>;
 }
 
-/// Refresh Token の永続化（設計仕様 §9.1）。DB には SHA-256 hash を保存する。
+/// Persistence of refresh tokens (design spec §9.1). The DB stores the SHA-256 hash.
 #[async_trait]
 pub trait RefreshTokenRepository: Send + Sync {
-    /// 新規 Refresh Token を保存する（`token.tenant_id` = 発行テナント）。
+    /// Stores a new refresh token (`token.tenant_id` = issuing tenant).
     async fn create(&self, token: &RefreshToken) -> Result<()>;
-    /// 発行テナントが一致する行を hash で検索する。不存在・他テナント発行は `None`
-    /// （A テナント発行トークンの B テナントへの流用を防ぐ。ADR-0009 §6）。
+    /// Finds by hash the row whose issuing tenant matches. Nonexistent or issued by another tenant
+    /// gives `None` (prevents tokens issued by tenant A from being used at tenant B; ADR-0009 §6).
     async fn find_by_hash(
         &self,
         tenant_id: TenantId,
         token_hash: &str,
     ) -> Result<Option<RefreshToken>>;
-    /// 指定 hash のトークンを失効させる（`revoked_at` を設定）。失効させた行数を返す。
-    /// 不存在・既失効でもエラーにしない（冪等。その場合は `0`）。
+    /// Revokes the token with the given hash (sets `revoked_at`). Returns the number of rows
+    /// revoked. No error if nonexistent or already revoked (idempotent; `0` in that case).
     ///
-    /// 行数を返すのは `/revoke` が「refresh_token として失効させられたか」を判断するため
-    /// （RFC 7009 §2.1。失効できなかったなら access_token として試し直す必要がある）。
+    /// It returns the row count so `/revoke` can tell "whether it was revoked as a refresh_token"
+    /// (RFC 7009 §2.1; if it could not be revoked, it must be retried as an access_token).
     async fn revoke(&self, token_hash: &str, revoked_at: DateTime<Utc>) -> Result<u64>;
-    /// `parent_hash` でチェーンを検索し、存在する（未失効・失効問わず）場合は `true`。
-    /// reuse detection で同一 parent から二重発行が起きていないかを確認するために使う。
+    /// Searches the chain by `parent_hash` and returns `true` if one exists (revoked or not).
+    /// Used in reuse detection to check whether a double issuance from the same parent occurred.
     async fn exists_by_parent_hash(&self, parent_hash: &str) -> Result<bool>;
-    /// 同一の認可グラントから発行されたトークンファミリを一括失効させる（SEC8）。
-    /// `family_hash` は [`RefreshToken::family_hash`](crate::domain::refresh_token::RefreshToken::family_hash)
-    /// の値、または authorization code の SHA-256。失効させた行数を返す（監査に載せる）。
+    /// Revokes in bulk the token family issued from the same authorization grant (SEC8).
+    /// `family_hash` is the value of
+    /// [`RefreshToken::family_hash`](crate::domain::refresh_token::RefreshToken::family_hash) or
+    /// the SHA-256 of the authorization code. Returns the number of rows revoked (recorded in
+    /// audit).
     ///
-    /// 再利用を検知したときに提示されたトークンだけを失効させると、そこから rotation 済みの
-    /// **子孫が有効なまま残る**（攻撃者が先に交換していれば攻撃者側が生き残る）。RFC 6819 §5.2.2.3 /
-    /// OAuth 2.1 は同一グラント由来のトークンをまとめて失効させることを求めている。
+    /// Revoking only the token presented when reuse is detected would leave **descendants rotated
+    /// from it still valid** (if the attacker exchanged first, the attacker's side survives). RFC
+    /// 6819 §5.2.2.3 / OAuth 2.1 require revoking tokens from the same grant together.
     async fn revoke_family(
         &self,
         tenant_id: TenantId,
         family_hash: &str,
         revoked_at: DateTime<Utc>,
     ) -> Result<u64>;
-    /// 指定ユーザーの**いま使える** Refresh Token（未失効かつ `expires_at > revoked_at`）をすべて
-    /// 失効させる（ユーザー単位の全セッション無効化、F5）。失効させた行数を返す（監査と画面に載せる。
-    /// ADR-0047 の再発行は「対象が 0 件だった」を「効いていない」と誤解させないため、件数を利用者・
-    /// 管理者へそのまま見せる）。
+    /// Revokes all **currently usable** refresh tokens of the given user (unrevoked and
+    /// `expires_at > revoked_at`) (invalidating all sessions per user; F5). Returns the number of
+    /// rows revoked (shown in audit and on screen; for ADR-0047's reissue, the count is shown to
+    /// users and admins as is so that "there were 0 targets" is not mistaken for "it did not
+    /// work").
     ///
-    /// **期限切れの行には触れない。** もう更新に使えないので落としても何も変わらず、数えると
-    /// [`count_active_for_user`](Self::count_active_for_user) が見せた本数とずれる（画面で 0 本
-    /// なのに「無効にしました」と出る）。範囲は `count_active_for_user` と同じ条件で指す。
+    /// **Expired rows are not touched.** They can no longer refresh, so dropping them changes
+    /// nothing, and counting them would diverge from the number shown by
+    /// [`count_active_for_user`](Self::count_active_for_user) (the screen would say "disabled" with
+    /// 0 shown). The range uses the same condition as `count_active_for_user`.
     ///
-    /// **テナントで絞らない。** refresh token は利用者の資格情報で、1 人が複数テナントの
-    /// アプリを認可し得る（`revoke_all_for_session` と同じ理由）。テナント単位で落としたい
-    /// 場合は [`revoke_all_for_user_in_tenant`](Self::revoke_all_for_user_in_tenant) を使う。
+    /// **Not filtered by tenant.** A refresh token is the user's credential, and one person may
+    /// authorize apps in several tenants (same reason as `revoke_all_for_session`). To drop per
+    /// tenant, use [`revoke_all_for_user_in_tenant`](Self::revoke_all_for_user_in_tenant).
     async fn revoke_all_for_user(&self, user_id: Uuid, revoked_at: DateTime<Utc>) -> Result<u64>;
 
-    /// 指定ユーザーの**いま使える** Refresh Token の本数を返す（未失効かつ `expires_at > now`）。
-    /// 管理コンソールが再発行（ADR-0047）の前に「対象があるか」を見せるために使う。
+    /// Returns the number of **currently usable** refresh tokens of the given user (unrevoked and
+    /// `expires_at > now`). Used by the admin console to show "whether there is anything to act on"
+    /// before a reissue (ADR-0047).
     ///
-    /// **テナントで絞らない。** 数える範囲は [`revoke_all_for_user`](Self::revoke_all_for_user)
-    /// が落とす範囲に揃える（見せた本数と押した結果が、別の範囲を指さないように）。期限切れを
-    /// 数えないのは、それがもう更新に使えず「生きている鍵」ではないため。
+    /// **Not filtered by tenant.** The counted range matches what
+    /// [`revoke_all_for_user`](Self::revoke_all_for_user) drops (so the shown count and the result
+    /// of pressing the button refer to the same range). Expired ones are not counted because they
+    /// can no longer refresh and are not "live keys".
     async fn count_active_for_user(&self, user_id: Uuid, now: DateTime<Utc>) -> Result<u64>;
 
-    /// **1 つの SSO セッション**から生まれた Refresh Token を失効させる（ADR-0044）。
-    /// 失効させた行数を返す（監査に載せる）。
+    /// Revokes the refresh tokens born from **one SSO session** (ADR-0044).
+    /// Returns the number of rows revoked (recorded in audit).
     ///
-    /// `sid` は [`sid_of`](crate::domain::sso_session::sid_of) が `session_hash` から
-    /// 導出する値で、発行時に持ち回り rotation でも引き継がれる。つまり「その端末の
-    /// そのログイン」から出たトークンだけを指す。
+    /// `sid` is the value [`sid_of`](crate::domain::sso_session::sid_of) derives from
+    /// `session_hash`; it is carried at issuance and inherited through rotation. So it points only
+    /// at tokens from "that login on that device".
     ///
-    /// **テナントで絞らない。** `SsoSession` はテナントを持たない（利用者単位）ので、
-    /// 1 つのセッションが複数テナントのクライアントを認可し得る。テナントを条件へ足すと
-    /// **取りこぼす**——そして取りこぼしたトークンは、切ったはずのセッションを指したまま
-    /// 更新が通り続ける。`user_id` との組で絞れば十分に安全である。
+    /// **Not filtered by tenant.** `SsoSession` has no tenant (it is per user), so one session may
+    /// authorize clients in several tenants. Adding the tenant as a condition would **miss some** —
+    /// and missed tokens would keep refreshing while still pointing at the session that was
+    /// supposedly cut. Filtering together with `user_id` is safe enough.
     async fn revoke_all_for_session(
         &self,
         user_id: Uuid,
@@ -1475,11 +1600,11 @@ pub trait RefreshTokenRepository: Send + Sync {
         revoked_at: DateTime<Utc>,
     ) -> Result<u64>;
 
-    /// 指定テナントで発行済みの refresh token をまとめて失効させる（ゲストの一時停止。MT24）。
+    /// Revokes in bulk the refresh tokens issued in the given tenant (suspending a guest; MT24).
     ///
-    /// ユーザー単位の全失効（[`revoke_all_for_user`](Self::revoke_all_for_user)）と違い、**他テナントでの
-    /// 利用は妨げない**。ゲストの停止は 1 つのテナントに対する措置であり、その利用者が所属元テナントで
-    /// 使っているトークンまで巻き込んではいけない。
+    /// Unlike revoking everything per user ([`revoke_all_for_user`](Self::revoke_all_for_user)), it
+    /// **does not hinder use in other tenants**. Suspending a guest is a measure for one tenant and
+    /// must not drag in the tokens that user uses in their home tenant.
     async fn revoke_all_for_user_in_tenant(
         &self,
         tenant_id: TenantId,
@@ -1487,11 +1612,12 @@ pub trait RefreshTokenRepository: Send + Sync {
         revoked_at: DateTime<Utc>,
     ) -> Result<()>;
 
-    /// 指定テナントの**1 クライアント**へ発行済みの refresh token を失効させる（連携解除。G10）。
+    /// Revokes the refresh tokens issued to **one client** in the given tenant (unlinking; G10).
     ///
-    /// 利用者が 1 つのアプリの連携を解除したときに、同じテナントの他のアプリまで巻き込まないための
-    /// 単位。テナント単位の全失効（[`revoke_all_for_user_in_tenant`](Self::revoke_all_for_user_in_tenant)）
-    /// は管理者によるゲスト停止のための措置で、目的が違う。
+    /// The unit for when a user unlinks one app, so other apps in the same tenant are not dragged
+    /// in. Revoking everything per tenant
+    /// ([`revoke_all_for_user_in_tenant`](Self::revoke_all_for_user_in_tenant)) is a measure for
+    /// admins suspending guests, a different purpose.
     async fn revoke_all_for_user_and_client(
         &self,
         tenant_id: TenantId,
@@ -1501,40 +1627,45 @@ pub trait RefreshTokenRepository: Send + Sync {
     ) -> Result<()>;
 }
 
-/// ユーザーがクライアントに付与した同意済み scope の永続化（F3: Consent）。
+/// Persistence of scopes a user consented to for a client (F3: Consent).
 #[async_trait]
 pub trait ClientConsentRepository: Send + Sync {
-    /// `(user_id, tenant_id, client_id)` の同意レコードを返す。存在しなければ `None`。
+    /// Returns the consent record for `(user_id, tenant_id, client_id)`. `None` if it does not
+    /// exist.
     async fn find(
         &self,
         tenant_id: TenantId,
         user_id: Uuid,
         client_id: &str,
     ) -> Result<Option<ClientConsent>>;
-    /// 同意レコードを UPSERT する（scope が変わった場合は上書き）。
+    /// UPSERTs a consent record (overwrites if the scope changed).
     async fn upsert(&self, consent: &ClientConsent) -> Result<()>;
-    /// 同意を取り消す（存在しなければ冪等に何もしない）。
+    /// Revokes consent (idempotently does nothing if it does not exist).
     async fn revoke(&self, tenant_id: TenantId, user_id: Uuid, client_id: &str) -> Result<()>;
-    /// 指定テナントにおけるユーザーの全同意レコードを返す（同意取り消し画面・管理用）。
+    /// Returns all consent records of the user in the given tenant (for the consent revocation
+    /// screen and admin).
     async fn list_for_user(&self, tenant_id: TenantId, user_id: Uuid)
         -> Result<Vec<ClientConsent>>;
 }
 
-/// Back-channel logout 送信要求の永続キュー（G5）。
+/// Persistent queue of back-channel logout send requests (G5).
 ///
-/// ログアウト処理（同期）は [`enqueue`](Self::enqueue) で要求を積むだけにし、送信はワーカーが
-/// [`claim_due`](Self::claim_due) で取り出して行う。「HTTP 送信の成否がログアウト応答を遅らせない」
-/// ことと「プロセスが落ちても未送信が消えない」ことを同時に満たすための分離。
+/// Logout handling (synchronous) only enqueues requests with [`enqueue`](Self::enqueue); a worker
+/// takes them out with [`claim_due`](Self::claim_due) and sends them. A split that satisfies both
+/// "HTTP send success or failure never delays the logout response" and "unsent requests are not
+/// lost even if the process dies".
 #[async_trait]
 pub trait BackchannelLogoutDeliveryRepository: Send + Sync {
-    /// 送信要求をまとめて積む（空スライスは何もしない）。
+    /// Enqueues send requests in bulk (an empty slice does nothing).
     async fn enqueue(&self, deliveries: &[BackchannelLogoutDelivery]) -> Result<()>;
 
-    /// 送信すべき要求を取り出して**試行回数を進め、次回時刻を押し出す**（原子的なクレーム）。
+    /// Takes out requests due to be sent, **advancing the attempt count and pushing back the next
+    /// time** (an atomic claim).
     ///
-    /// 対象は「未送信」「`next_attempt_at <= now`」「`attempts < max_attempts`」の行。取り出しと
-    /// 更新を分けると、同じ行を二重に送ってしまう（RP から見て重複配送になる）ため実装は原子的に行う。
-    /// 返す行は更新後の状態（`attempts` は加算済み）。
+    /// Targets are rows that are "unsent", "`next_attempt_at <= now`", and
+    /// "`attempts < max_attempts`". Splitting take-out and update would send the same row twice
+    /// (duplicate delivery from the RP's view), so the implementation does it atomically. Returned
+    /// rows reflect the updated state (`attempts` already incremented).
     async fn claim_due(
         &self,
         now: DateTime<Utc>,
@@ -1542,11 +1673,11 @@ pub trait BackchannelLogoutDeliveryRepository: Send + Sync {
         limit: u32,
     ) -> Result<Vec<BackchannelLogoutDelivery>>;
 
-    /// 送信成功を記録する（`delivered_at` を設定）。
+    /// Records a successful send (sets `delivered_at`).
     async fn mark_delivered(&self, id: Uuid, delivered_at: DateTime<Utc>) -> Result<()>;
 
-    /// 送信失敗を記録する（次回試行時刻と直近の失敗理由）。試行回数は
-    /// [`claim_due`](Self::claim_due) で加算済みのため、ここでは進めない。
+    /// Records a failed send (next attempt time and the latest failure reason). The attempt count
+    /// was already incremented in [`claim_due`](Self::claim_due), so it is not advanced here.
     async fn mark_failed(
         &self,
         id: Uuid,
@@ -1554,42 +1685,43 @@ pub trait BackchannelLogoutDeliveryRepository: Send + Sync {
         error: &str,
     ) -> Result<()>;
 
-    /// 決着済み（送信成功、または試行上限に達した）の古い行を削除し、削除件数を返す。
+    /// Deletes old settled rows (sent successfully, or reached the attempt limit) and returns the
+    /// count.
     async fn purge_settled(&self, older_than: DateTime<Utc>, max_attempts: i32) -> Result<u64>;
 }
 
-/// Access Token の jti 失効リスト（F5: Token 管理）。
-/// JWT は自己完結型のため、jti を本テーブルで管理することで即時失効を実現する。
+/// jti revocation list of access tokens (F5: token management).
+/// JWTs are self-contained, so managing jti in this table achieves immediate revocation.
 #[async_trait]
 pub trait RevokedAccessTokenRepository: Send + Sync {
-    /// jti を失効リストに追加する（冪等）。
+    /// Adds a jti to the revocation list (idempotent).
     async fn revoke(&self, token: &RevokedAccessToken) -> Result<()>;
-    /// 指定 jti が失効リストに存在するか。
+    /// Whether the given jti is in the revocation list.
     async fn is_revoked(&self, jti: &str) -> Result<bool>;
 }
 
-/// ユーザーの TOTP シークレット（MFA 自己登録）。
+/// Users' TOTP secrets (MFA self-enrollment).
 ///
-/// `confirmed_at IS NULL` = 仮登録中（QR 確認未完了）。
-/// `confirmed_at IS NOT NULL` = 有効化済み（ログイン時に TOTP 検証が必要）。
+/// `confirmed_at IS NULL` = provisionally registered (QR confirmation not done).
+/// `confirmed_at IS NOT NULL` = enabled (TOTP verification required at login).
 #[async_trait]
 pub trait TotpSecretRepository: Send + Sync {
-    /// TOTP シークレットを保存する。既存の場合は上書き（UPSERT）する。
+    /// Stores a TOTP secret. Overwrites if one exists (UPSERT).
     async fn upsert(&self, secret: &TotpSecret) -> Result<()>;
-    /// ユーザーの TOTP シークレットを返す（仮登録中・有効化済みを問わない）。
+    /// Returns the user's TOTP secret (whether provisional or enabled).
     async fn find_by_user_id(&self, user_id: Uuid) -> Result<Option<TotpSecret>>;
-    /// 確認コードを検証後、`confirmed_at` を設定して有効化する。
+    /// After verifying the confirmation code, sets `confirmed_at` to enable it.
     async fn confirm(&self, user_id: Uuid, confirmed_at: DateTime<Utc>) -> Result<()>;
-    /// ユーザーの TOTP シークレットを削除する（冪等: 不存在でもエラーにしない）。
+    /// Deletes the user's TOTP secret (idempotent: no error if it does not exist).
     async fn delete(&self, user_id: Uuid) -> Result<()>;
 
-    /// 受理した TOTP の time-step を記録する。**記録済みのステップより新しいときだけ**書き込み、
-    /// 書き込めたら `true`、既に同じか新しいステップが記録済みなら `false` を返す（リプレイ検出。
-    /// RFC 6238 §5.2）。判定と書き込みは 1 文で原子的に行い、同じコードで競合する 2 つのリクエストの
-    /// うち一方だけを通す。
+    /// Records the accepted TOTP time-step. Writes **only when newer than the recorded step**,
+    /// returning `true` if written, or `false` if the same or a newer step is already recorded
+    /// (replay detection; RFC 6238 §5.2). The check and write happen atomically in one statement,
+    /// letting only one of two requests racing with the same code through.
     ///
-    /// 既定実装は常に `true`（記録せず素通し）。TOTP のリプレイ防止が要るのは実 DB 実装だけで、
-    /// テスト用のフェイクはこのガードを持つ必要が無い。
+    /// The default implementation always returns `true` (records nothing, passes through). Only the
+    /// real DB implementation needs TOTP replay prevention; test fakes need not have this guard.
     async fn record_totp_step_if_newer(
         &self,
         _user_id: Uuid,
@@ -1600,107 +1732,115 @@ pub trait TotpSecretRepository: Send + Sync {
     }
 }
 
-/// 外部 IdP 設定（AP10。仕様 §13）の永続化。テナント境界は `tenant_id` で強制する。
+/// Persistence of external IdP settings (AP10; spec §13). The tenant boundary is enforced by
+/// `tenant_id`.
 #[async_trait]
 pub trait ExternalIdentityProviderRepository: Send + Sync {
     async fn create(&self, provider: &ExternalIdentityProvider) -> Result<()>;
-    /// テナントの全プロバイダを `provider_code` 昇順で返す（管理画面用）。
+    /// Returns all providers of the tenant in ascending `provider_code` (for the admin screen).
     async fn list_for_tenant(&self, tenant_id: TenantId) -> Result<Vec<ExternalIdentityProvider>>;
-    /// テナントの**有効な**プロバイダのみ返す（ログイン画面のボタン用）。
+    /// Returns only **enabled** providers of the tenant (for the login screen buttons).
     async fn list_enabled_for_tenant(
         &self,
         tenant_id: TenantId,
     ) -> Result<Vec<ExternalIdentityProvider>>;
-    /// テナント境界内で `provider_code` 解決する（他テナントのコードを持ち込んでも解決させない）。
+    /// Resolves `provider_code` within the tenant boundary (bringing another tenant's code does not
+    /// resolve).
     async fn find_by_code(
         &self,
         tenant_id: TenantId,
         provider_code: &str,
     ) -> Result<Option<ExternalIdentityProvider>>;
-    /// テナント境界内で id 解決する。
+    /// Resolves by id within the tenant boundary.
     async fn find_by_id(
         &self,
         tenant_id: TenantId,
         id: Uuid,
     ) -> Result<Option<ExternalIdentityProvider>>;
-    /// 既存プロバイダを更新する。更新できた場合 `true`、対象が無ければ `false`。
+    /// Updates an existing provider. `true` if updated, `false` if there is no target.
     async fn update(&self, provider: &ExternalIdentityProvider) -> Result<bool>;
-    /// テナント境界内で削除する。削除できた場合 `true`。
+    /// Deletes within the tenant boundary. `true` if deleted.
     async fn delete(&self, tenant_id: TenantId, id: Uuid) -> Result<bool>;
 }
 
-/// 外部 IdP 上の同一性と assay 利用者の対応（AP10。仕様 §13.2）の永続化。
+/// Persistence of the mapping between identities at external IdPs and assay users (AP10; spec
+/// §13.2).
 ///
-/// 検索キーは `(provider_id, external_subject)` で、これが唯一の連携根拠。`tenant_id` を取らない
-/// のは、プロバイダ自体がテナントに属する（＝プロバイダ経由で境界が決まる）ため。
+/// The lookup key is `(provider_id, external_subject)`, the only basis for linking. No `tenant_id`
+/// is taken because the provider itself belongs to a tenant (= the boundary is decided via the
+/// provider).
 #[async_trait]
 pub trait ExternalIdentityRepository: Send + Sync {
-    /// 連携を作成する。同じ外部アカウントの二重連携は `Conflict`。
+    /// Creates a link. Linking the same external account twice gives `Conflict`.
     async fn create(&self, identity: &ExternalIdentity) -> Result<()>;
-    /// 検証済みの `iss` + `sub` から連携を引く。
+    /// Looks up a link from verified `iss` + `sub`.
     ///
-    /// `provider_id` だけでなく `external_issuer` も条件に含める。管理者はプロバイダの `issuer` を
-    /// 後から変更できるため、`provider_id` + `sub` だけで引くと、**別の issuer にある同じ `sub` の
-    /// アカウントが、以前連携した利用者に化ける**。連携時の issuer と一致しなければ引けない
-    /// （＝未連携として扱う）のが正しい。
+    /// The condition includes `external_issuer`, not just `provider_id`. Admins can change a
+    /// provider's `issuer` later, so looking up by `provider_id` + `sub` alone would let **an
+    /// account with the same `sub` at a different issuer pass as the previously linked user**. It
+    /// is correct that it cannot be found unless it matches the issuer at link time (= treated as
+    /// unlinked).
     async fn find_by_subject(
         &self,
         provider_id: Uuid,
         external_issuer: &str,
         external_subject: &str,
     ) -> Result<Option<ExternalIdentity>>;
-    /// 利用者の全連携を返す（セルフサービスの表示・解除用）。
+    /// Returns all links of the user (for self-service display and unlinking).
     async fn list_for_user(&self, user_id: Uuid) -> Result<Vec<ExternalIdentity>>;
-    /// 利用時刻を記録する。
+    /// Records the time of use.
     async fn touch_last_used(&self, id: Uuid, at: DateTime<Utc>) -> Result<()>;
-    /// 連携を解除する（所有者チェック込み）。削除できた場合 `true`。
+    /// Removes a link (including the owner check). `true` if deleted.
     async fn delete(&self, id: Uuid, user_id: Uuid) -> Result<bool>;
 }
 
-/// 外部 IdP へのリダイレクトからコールバックまでの進行状態（AP10）の永続化。
+/// Persistence of the progress state from the redirect to an external IdP until the callback
+/// (AP10).
 ///
-/// `state` は単回使用。消費は「削除できたら勝ち」の原子的なクレームで行う（`saml_sso_requests`
-/// と同じ方式。読んでから消すと、同じ `state` の同時提示で両方通る）。
+/// `state` is single-use. Consumption is an atomic claim, "whoever deletes it wins" (the same
+/// approach as `saml_sso_requests`; reading then deleting would let two simultaneous presentations
+/// of the same `state` both pass).
 #[async_trait]
 pub trait ExternalLoginRequestRepository: Send + Sync {
     async fn create(&self, request: &ExternalLoginRequest) -> Result<()>;
-    /// `state` のハッシュで引く（テナント境界込み）。
+    /// Looks up by the hash of `state` (with the tenant boundary).
     async fn find_by_state(
         &self,
         tenant_id: TenantId,
         state_hash: &str,
     ) -> Result<Option<ExternalLoginRequest>>;
-    /// 進行状態を削除する。**削除できた場合のみ `true`**（単回使用のクレームを兼ねる）。
+    /// Deletes the progress state. **`true` only if it deleted** (doubles as the single-use claim).
     async fn consume(&self, id: Uuid) -> Result<bool>;
-    /// 期限切れの進行状態をまとめて削除し、件数を返す（GC）。
+    /// Deletes expired progress states in bulk and returns the count (GC).
     async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64>;
 }
 
-/// 認証器の統合登録簿（AP9。仕様 §5）。
+/// Unified registry of authenticators (AP9; spec §5).
 ///
-/// 種別（TOTP・WebAuthn・リカバリーコード・email OTP）によらず「この利用者が使える認証器」を
-/// 1 箇所で答えるためのポート。種別固有の秘密は従来のテーブルが持ち続ける（expand フェーズ）。
-/// テナント列を持たない表のため `tenant_id` は取らない（モジュールコメント参照。境界は
-/// ユースケース側が `users.tenant_id` 照合で強制する）。
+/// A port that answers in one place "which authenticators this user can use", regardless of type
+/// (TOTP, WebAuthn, recovery code, email OTP). Type-specific secrets stay in the existing tables
+/// (expand phase). The table has no tenant column, so no `tenant_id` is taken (see the module
+/// comment; the use case enforces the boundary by matching `users.tenant_id`).
 ///
-/// 参照系・消費系のメソッドは既定実装（「見つからない」）を持つ。テスト用フェイクの記述量を
-/// 抑えるためであり、**既定はいずれも fail-closed 側へ倒れる**（見つからない ＝ その認証器では
-/// 認証が通らない）。書き込みの `create` だけは既定を持たない（黙って成功すると登録が消える）。
-/// 本番の sqlx 実装は全メソッドを上書きする。
+/// Read and consume methods have default implementations ("not found"). This keeps test fakes
+/// short, and **every default falls on the fail-closed side** (not found = authentication with that
+/// authenticator does not pass). Only the write `create` has no default (a silent success would
+/// lose the registration). The production sqlx implementation overrides every method.
 #[async_trait]
 pub trait UserAuthenticatorRepository: Send + Sync {
-    /// 認証器を登録する（`pending` または `active`）。
+    /// Registers an authenticator (`pending` or `active`).
     async fn create(&self, authenticator: &UserAuthenticator) -> Result<()>;
-    /// 内部 ID で引く。
+    /// Looks up by internal ID.
     async fn find_by_id(&self, _id: Uuid) -> Result<Option<UserAuthenticator>> {
         Ok(None)
     }
-    /// 利用者の全認証器を新しい順に返す（失効済みを含む。管理・表示用）。
+    /// Returns all authenticators of the user, newest first (including revoked; for admin and
+    /// display).
     async fn list_for_user(&self, _user_id: Uuid) -> Result<Vec<UserAuthenticator>> {
         Ok(Vec::new())
     }
-    /// 利用者の**使える**認証器（`active` かつ期限内）を種別で絞って返す（ログインのホットパス）。
-    /// `authenticator_type` が `None` なら全種別。
+    /// Returns the user's **usable** authenticators (`active` and unexpired), filtered by type
+    /// (login hot path). If `authenticator_type` is `None`, all types.
     async fn list_usable_for_user(
         &self,
         _user_id: Uuid,
@@ -1709,9 +1849,9 @@ pub trait UserAuthenticatorRepository: Send + Sync {
     ) -> Result<Vec<UserAuthenticator>> {
         Ok(Vec::new())
     }
-    /// 状態を更新する（遷移の可否は Application 層が
-    /// [`AuthenticatorStatus::can_transition_to`] で判定してから呼ぶ）。
-    /// 対象が無ければ `false`。
+    /// Updates the status (the Application layer checks whether the transition is allowed with
+    /// [`AuthenticatorStatus::can_transition_to`] before calling).
+    /// `false` if there is no target.
     async fn update_status(
         &self,
         _id: Uuid,
@@ -1721,19 +1861,20 @@ pub trait UserAuthenticatorRepository: Send + Sync {
     ) -> Result<bool> {
         Ok(false)
     }
-    /// 表示名を更新する。対象が無ければ `false`。
+    /// Updates the display name. `false` if there is no target.
     async fn update_label(&self, _id: Uuid, _user_id: Uuid, _label: &str) -> Result<bool> {
         Ok(false)
     }
-    /// 利用時刻を記録する（認証成功時）。
+    /// Records the time of use (on successful authentication).
     async fn touch_last_used(&self, _id: Uuid, _at: DateTime<Utc>) -> Result<()> {
         Ok(())
     }
-    /// 使い捨て認証器（リカバリーコード・OTP）を**原子的に消費**する。
+    /// **Atomically consumes** a single-use authenticator (recovery code, OTP).
     ///
-    /// `active` かつ期限内の行だけを `revoked` にして返す。すでに使われていた・期限切れ・
-    /// 不存在なら `None`。「引いてから状態を見て更新する」方式だと、同じコードを同時に 2 回
-    /// 出された場合に両方通ってしまう（authorization code と同じ理由で原子的に行う）。
+    /// Sets only `active`, unexpired rows to `revoked` and returns them. If already used, expired,
+    /// or nonexistent, `None`. With "look up, check the state, then update", the same code
+    /// presented twice at once would pass both times (done atomically for the same reason as
+    /// authorization codes).
     async fn consume_single_use(
         &self,
         _user_id: Uuid,
@@ -1743,8 +1884,8 @@ pub trait UserAuthenticatorRepository: Send + Sync {
     ) -> Result<Option<UserAuthenticator>> {
         Ok(None)
     }
-    /// 指定種別の未失効の行をまとめて失効させ、件数を返す（リカバリーコードの再発行時に
-    /// 古い束を無効化する）。
+    /// Revokes in bulk the unrevoked rows of the given type and returns the count (invalidates the
+    /// old batch when recovery codes are reissued).
     async fn revoke_all_of_type(
         &self,
         _user_id: Uuid,
@@ -1753,11 +1894,12 @@ pub trait UserAuthenticatorRepository: Send + Sync {
     ) -> Result<u64> {
         Ok(0)
     }
-    /// 期限付きの行（＝発行済みのワンタイムコード）だけを失効させ、件数を返す（AP13）。
+    /// Revokes only rows with an expiry (= issued one-time codes) and returns the count (AP13).
     ///
-    /// [`Self::revoke_all_of_type`] と分けるのは、同じ種別の中に**寿命の無い登録**（SMS OTP の
-    /// 登録済み電話番号）と**寿命のあるコード**が混ざるため。新しいコードを出す前に古いコードを
-    /// 失効させたいだけなのに `revoke_all_of_type` を使うと、登録そのものが消えてしまう。
+    /// It is separate from [`Self::revoke_all_of_type`] because the same type mixes **registrations
+    /// without a lifetime** (SMS OTP registered phone numbers) and **codes with a lifetime**. Using
+    /// `revoke_all_of_type` merely to revoke old codes before issuing a new one would delete the
+    /// registration itself.
     async fn revoke_issued_codes_of_type(
         &self,
         _user_id: Uuid,
@@ -1766,11 +1908,13 @@ pub trait UserAuthenticatorRepository: Send + Sync {
     ) -> Result<u64> {
         Ok(0)
     }
-    /// `pending` の行を、提示された秘密（の SHA-256）と突き合わせて**確認済み**にする（AP13）。
+    /// Marks a `pending` row **confirmed** by matching it against the presented secret (its
+    /// SHA-256) (AP13).
     ///
-    /// 成功したら `status = active` にし、確認用コードと期限を消す。期限を消すのは、期限付きの
-    /// 行が GC（[`ExpiringRecordStore`]）の削除対象だからで、残すと確認済みの登録が消える。
-    /// 更新と読み直しを 1 文にするのは、同じコードの同時提示で二重に確認されないため。
+    /// On success sets `status = active` and clears the confirmation code and expiry. The expiry is
+    /// cleared because rows with an expiry are deletion targets of GC ([`ExpiringRecordStore`]);
+    /// keeping it would delete the confirmed registration. Update and re-read are one statement so
+    /// the same code presented at once is not confirmed twice.
     async fn confirm_pending(
         &self,
         _user_id: Uuid,
@@ -1780,136 +1924,150 @@ pub trait UserAuthenticatorRepository: Send + Sync {
     ) -> Result<Option<UserAuthenticator>> {
         Ok(None)
     }
-    /// 期限切れの使い捨て行を削除し、件数を返す（GC）。
+    /// Deletes expired single-use rows and returns the count (GC).
     async fn delete_expired(&self, _now: DateTime<Utc>) -> Result<u64> {
         Ok(0)
     }
 }
 
-/// ユーザーの WebAuthn（FIDO2 Passkey）クレデンシャル。
+/// Users' WebAuthn (FIDO2 passkey) credentials.
 ///
-/// 1 ユーザーが複数デバイスを登録できる（ユーザー × デバイスの 1:N 関係）。
-/// 認証時は `credential_id` でクレデンシャルを特定し、`passkey_json` を `webauthn-rs` に渡す。
+/// One user can register several devices (user × device, 1:N). At authentication the credential is
+/// identified by `credential_id`, and `passkey_json` is passed to `webauthn-rs`.
 #[async_trait]
 pub trait WebAuthnCredentialRepository: Send + Sync {
-    /// クレデンシャルを新規登録する。`credential_id` 重複は `Conflict`。
+    /// Registers a new credential. A duplicate `credential_id` gives `Conflict`.
     async fn create(&self, cred: &WebAuthnCredential) -> Result<()>;
-    /// 内部 UUID で検索する。
+    /// Finds by internal UUID.
     async fn find_by_id(&self, id: Uuid) -> Result<Option<WebAuthnCredential>>;
-    /// WebAuthn credential ID（base64url）で検索する（認証レスポンスからの逆引き用）。
+    /// Finds by WebAuthn credential ID (base64url) (for reverse lookup from authentication
+    /// responses).
     async fn find_by_credential_id(
         &self,
         credential_id: &str,
     ) -> Result<Option<WebAuthnCredential>>;
-    /// ユーザーの全クレデンシャルを作成日時昇順で返す。
+    /// Returns all credentials of the user in ascending creation order.
     async fn list_by_user_id(&self, user_id: Uuid) -> Result<Vec<WebAuthnCredential>>;
-    /// sign_count と last_used_at を更新し、passkey_json（webauthn-rs による更新後の全体）も保存する。
+    /// Updates sign_count and last_used_at, and also stores passkey_json (the whole, as updated by
+    /// webauthn-rs).
     async fn update_passkey(
         &self,
         id: Uuid,
         passkey_json: &str,
         last_used_at: DateTime<Utc>,
     ) -> Result<()>;
-    /// クレデンシャルを削除する。所有者チェック（`user_id` 照合）も行う。不存在は冪等に無視する。
+    /// Deletes a credential, also checking the owner (`user_id` match). Nonexistence is
+    /// idempotently ignored.
     async fn delete(&self, id: Uuid, user_id: Uuid) -> Result<()>;
-    /// ユーザーの全クレデンシャルを削除し、削除件数を返す（管理者による MFA 解除。MT21）。
-    /// 端末紛失時の復旧手段のため、1 件ずつではなくまとめて消す（消し残しは復旧の失敗になる）。
+    /// Deletes all credentials of the user and returns the count (MFA removal by an admin; MT21). A
+    /// recovery measure for lost devices, so they are deleted together, not one by one (leftovers
+    /// would mean failed recovery).
     async fn delete_all_for_user(&self, user_id: Uuid) -> Result<u64>;
 }
 
-/// システム設定（root/idp.system.admin が管理する assay 全体設定。ADR-0009 §5、MT14）の永続化。
+/// Persistence of system settings (assay-wide settings managed by root/idp.system.admin; ADR-0009
+/// §5, MT14).
 ///
-/// テナント列を持たず assay 全体に一律適用する（root のみ管理可能。判定は Presentation の
-/// `RequirePerms<IdpSystemAdmin>` が担う）。秘匿値の暗号化・復号は Application 層の責務で、本トレイトは
-/// 保存形式（暗号文を含む）の文字列を素通しする。
+/// No tenant column; applied uniformly to all of assay (only root can manage it; the check is done
+/// by the Presentation layer's `RequirePerms<IdpSystemAdmin>`). Encrypting / decrypting secrets is
+/// the Application layer's job; this trait passes stored-form strings (including ciphertext)
+/// through.
 #[async_trait]
 pub trait SystemSettingsRepository: Send + Sync {
-    /// 全システム設定を返す（値は保存形式のまま。`is_secret` のものは暗号文）。
+    /// Returns all system settings (values in stored form; `is_secret` ones are ciphertext).
     async fn load_all(&self) -> Result<Vec<SystemSetting>>;
-    /// 設定を UPSERT する（キー単位。`is_secret` も保存する）。
+    /// UPSERTs a setting (per key; `is_secret` is stored too).
     async fn upsert(&self, setting: &SystemSetting) -> Result<()>;
 }
 
-/// テナント設定（ADR-0058）の永続化。
+/// Persistence of tenant settings (ADR-0058).
 ///
-/// ⚠ **テナントに行が無いことが「全体に従う」である。** 既定値の写しを作らない ——本トレイトに
-/// 「全テナントへ既定を配る」口を足さないこと。秘匿値の暗号化・復号は Application 層の責務で、
-/// 保存形式（暗号文を含む）の文字列を素通しする（`SystemSettingsRepository` と同じ）。
+/// ⚠ **A tenant having no row means "follow the global value".** No copies of defaults are made —
+/// do not add to this trait an entry point that "distributes defaults to every tenant". Encrypting
+/// / decrypting secrets is the Application layer's job; stored-form strings (including ciphertext)
+/// are passed through (same as `SystemSettingsRepository`).
 #[async_trait]
 pub trait TenantSettingsRepository: Send + Sync {
-    /// そのテナントの上書きをすべて返す（値は保存形式のまま）。行が無ければ空。
+    /// Returns all overrides of the tenant (values in stored form). Empty if there are no rows.
     async fn load_for_tenant(&self, tenant_id: TenantId) -> Result<Vec<TenantSetting>>;
-    /// 上書きを UPSERT する（`(tenant_id, key)` 単位。`is_secret` も保存する）。
+    /// UPSERTs an override (per `(tenant_id, key)`; `is_secret` is stored too).
     async fn upsert(&self, setting: &TenantSetting) -> Result<()>;
-    /// 上書きを消す（＝全体に従う状態へ戻す）。不存在は冪等に無視する。
+    /// Deletes an override (= back to following the global value). Nonexistence is idempotently
+    /// ignored.
     async fn delete(&self, tenant_id: TenantId, key: &str) -> Result<()>;
-    /// ⚠ **テナントをまたいで読む唯一の口。** 全体の設定画面（`idp.system.admin`）が「既定から
-    /// 外れているテナント」と「従っているテナントの件数」を出すためだけに使う（ADR-0058 §6）。
-    /// 秘匿値と空の行は含めない。
+    /// ⚠ **The only entry point that reads across tenants.** Used only by the global settings
+    /// screen (`idp.system.admin`) to show "tenants deviating from default" and "the number of
+    /// tenants following" (ADR-0058 §6). Secrets and empty rows are not included.
     async fn list_overrides_across_tenants(&self) -> Result<TenantOverridesAcrossTenants>;
 }
 
-/// Passkey チャレンジ一時テーブル（WebAuthn の begin → complete 中間状態）。
+/// Temporary passkey challenge table (WebAuthn begin → complete intermediate state).
 ///
-/// `expires_at` を過ぎたレコードはアプリケーション層が削除する。
+/// The application layer deletes records past `expires_at`.
 #[async_trait]
 pub trait PasskeyChallengeRepository: Send + Sync {
-    /// チャレンジを保存する。
+    /// Stores a challenge.
     async fn create(&self, challenge: &PasskeyChallenge) -> Result<()>;
-    /// ID でチャレンジを取得する。不存在は `None`。
+    /// Gets a challenge by ID. Nonexistent gives `None`.
     async fn find_by_id(&self, id: Uuid) -> Result<Option<PasskeyChallenge>>;
-    /// チャレンジを消費（削除）する（complete ステップで使用後に呼ぶ）。**消せたら `true`**。
-    /// 同じチャレンジで同時に 2 本来たときは片方だけが `true` になる（task #586。単回使用の要）。
+    /// Consumes (deletes) a challenge (called after use in the complete step). **`true` if it
+    /// deleted.** When two arrive at once with the same challenge, only one gets `true` (task #586;
+    /// the crux of single use).
     async fn delete(&self, id: Uuid) -> Result<bool>;
-    /// 期限切れのチャレンジをまとめて削除し、件数を返す（G2 の一括 GC から呼ぶ）。
+    /// Deletes expired challenges in bulk and returns the count (called from G2's bulk GC).
     async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64>;
 }
 
-/// 期限切れ行を自分で掃除できるテーブルのポート（G2）。
+/// Port for tables that can clean up their own expired rows (G2).
 ///
-/// 進行状態・使い捨てトークンの表は「期限が来たら意味を失う」が、削除する主体はどのユースケースにも
-/// 属さない。表ごとに個別のバックグラウンドループを生やすと、追加のたびに掃除漏れ（＝無限に増える表）が
-/// 生まれるため、**掃除できることを 1 つのポートで表明**し、起動時に 1 本のタスクへ束ねる。
+/// Tables of progress states and single-use tokens "lose meaning once expired", but deleting them
+/// belongs to no use case. Growing a separate background loop per table would create missed
+/// cleanups (= tables that grow forever) every time one is added, so **being cleanable is declared
+/// through one port** and bundled into one task at startup.
 ///
-/// `revoked_access_tokens` のように照合のホットパスに載る表は、肥大がそのままレイテンシになる。
+/// For tables on the matching hot path, such as `revoked_access_tokens`, bloat turns directly into
+/// latency.
 #[async_trait]
 pub trait ExpiringRecordStore: Send + Sync {
-    /// 掃除対象の識別子（ログに出すテーブル名）。
+    /// Identifier of the cleanup target (the table name printed in logs).
     fn table_name(&self) -> &'static str;
-    /// `now` 時点で期限切れの行を削除し、削除件数を返す。
+    /// Deletes rows expired as of `now` and returns the count.
     async fn purge_expired(&self, now: DateTime<Utc>) -> Result<u64>;
 }
 
-/// 利用者の認証アプリの鍵（task #892。ADR-0077）と、その鍵で承認したログイン状態。
+/// Users' authenticator app keys (task #892; ADR-0077) and the sign-in states approved with those
+/// keys.
 #[async_trait]
 pub trait ApproverKeyRepository: Send + Sync {
-    /// 登録する。同じ `key_id` が既にあれば `Conflict`。
+    /// Registers one. If the same `key_id` already exists, `Conflict`.
     async fn insert(&self, key: &crate::domain::app_approver::ApproverKey) -> Result<()>;
-    /// アプリが名乗る `key_id` で引く。
+    /// Looks up by the `key_id` the app presents.
     async fn find_by_key_id(
         &self,
         key_id: &str,
     ) -> Result<Option<crate::domain::app_approver::ApproverKey>>;
-    /// 利用者の鍵を登録の新しい順に返す。
+    /// Returns the user's keys, newest registration first.
     async fn list_for_user(
         &self,
         user_id: Uuid,
     ) -> Result<Vec<crate::domain::app_approver::ApproverKey>>;
-    /// 利用者の鍵を 1 つ消し、消した行を返す（他人の鍵なら `None`）。
+    /// Deletes one of the user's keys and returns the deleted row (`None` if it is someone else's
+    /// key).
     async fn delete(
         &self,
         user_id: Uuid,
         id: Uuid,
     ) -> Result<Option<crate::domain::app_approver::ApproverKey>>;
-    /// 承認に使ったことを記録する。
+    /// Records that it was used for approval.
     async fn touch(&self, id: Uuid, used_at: DateTime<Utc>) -> Result<()>;
-    /// ログイン状態をこの鍵で承認したと記録する（文脈の行が無ければ作る）。
+    /// Records that a sign-in state was approved with this key (creates the context row if absent).
     async fn link_session(&self, session_hash: &str, id: Uuid) -> Result<()>;
-    /// この鍵で承認したログイン状態（の SHA-256）。
+    /// Sign-in states approved with this key (their SHA-256).
     async fn approved_sessions(&self, id: Uuid) -> Result<Vec<String>>;
 }
 
-/// 鍵の登録の受付（10 分）。段階の移り変わりは「前の段階のときだけ書く」で 1 回にする。
+/// Intake of key registration (10 minutes). Each stage transition happens once via "write only when
+/// in the previous stage".
 #[async_trait]
 pub trait ApproverEnrollmentRepository: Send + Sync {
     async fn insert(
@@ -1921,17 +2079,19 @@ pub trait ApproverEnrollmentRepository: Send + Sync {
         tenant_id: Uuid,
         id: &str,
     ) -> Result<Option<crate::domain::app_approver::ApproverEnrollment>>;
-    /// 段階を書き換える。いまの段階が `expected`（`stage` の名前）のときだけ書き、書いたら `true`。
+    /// Rewrites the stage. Writes only when the current stage is `expected` (the name of `stage`),
+    /// returning `true` if written.
     async fn advance(
         &self,
         enrollment: &crate::domain::app_approver::ApproverEnrollment,
         expected: &str,
     ) -> Result<bool>;
-    /// 受付を消す（有効にした・やめた）。消したら `true`。
+    /// Deletes the intake (enabled or cancelled). `true` if deleted.
     async fn delete(&self, id: &str) -> Result<bool>;
 }
 
-/// 「アプリで続ける」の依頼（5 分）。状態の移り変わりは「前の状態のときだけ書く」で 1 回にする。
+/// A "continue with the app" request (5 minutes). Each state transition happens once via "write
+/// only when in the previous state".
 #[async_trait]
 pub trait ApprovalRequestRepository: Send + Sync {
     async fn insert(&self, request: &crate::domain::app_approver::ApprovalRequest) -> Result<()>;
@@ -1940,7 +2100,7 @@ pub trait ApprovalRequestRepository: Send + Sync {
         tenant_id: Uuid,
         id: &str,
     ) -> Result<Option<crate::domain::app_approver::ApprovalRequest>>;
-    /// 承認を書く（`pending` のときだけ）。書いたら `true`。
+    /// Writes the approval (only when `pending`). `true` if written.
     async fn approve(
         &self,
         id: &str,
@@ -1949,7 +2109,7 @@ pub trait ApprovalRequestRepository: Send + Sync {
         code_hash: &str,
         code_expires_at: DateTime<Utc>,
     ) -> Result<bool>;
-    /// 状態を `from` から `to` へ移す（`from` のときだけ）。書いたら `true`。
+    /// Moves the state from `from` to `to` (only when `from`). `true` if written.
     async fn transition(
         &self,
         id: &str,

@@ -1,14 +1,14 @@
-{#- アカウント設定の 3 画面（基本・認証アプリとパスキー・端末とアプリ）に共通の見出しとタブ。
+{#- Shared heading and tabs of the three account settings screens (basics, authenticator app and passkeys, devices and apps).
 
-    もとは設定画面の末尾のボタンから残りの 2 画面へ行き、「アカウント設定へ戻る」で戻る作りで、
-    どの画面があるのかは設定画面を下まで読まないと分からなかった。3 画面を同じ段のタブにして、
-    どの画面からでも 1 回で行き来できるようにする。サインアウトも 3 画面のどこからでもできる。
+    Originally the other two screens were reached via buttons at the end of the settings screen and returned via "Back to account settings",
+    so which screens existed was only clear after reading the settings screen to the bottom. Making the three screens tabs on one row
+    lets you move between them in one step from any screen. Sign-out is also available from any of the three.
 
-    include する側が `account_tab`（`general` / `authenticators` / `security`）と `from_admin` を
-    `let` で渡す。`messages` / `tenant` / `csrf` は各画面のテンプレート構造体が持っている。
+    The includer passes `account_tab` (`general` / `authenticators` / `security`) and `from_admin` via
+    `let`. `messages` / `tenant` / `csrf` are held by each screen's template struct.
 
-    ⚠ `href` の中に `{% if %}` を書かない。リンク先がルートに在るかを見るテスト
-    （`template_link_targets_are_routes_this_service_serves`）が値を読めなくなる。 -#}
+    ⚠ Do not write `{% if %}` inside `href`. The test checking that link targets are routes
+    (`template_link_targets_are_routes_this_service_serves`) could no longer read the value. -#}
 {% if from_admin %}
 <div class="mb-3">
   <a href="{{ tenant }}/admin"><i class="fa-solid fa-arrow-left me-2" aria-hidden="true"></i>{{ messages.get("user-settings-back-admin") }}</a>

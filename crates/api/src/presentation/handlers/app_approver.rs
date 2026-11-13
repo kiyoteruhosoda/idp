@@ -1,10 +1,10 @@
-//! 認証アプリが呼ぶ口（`/{tenant_id}/app-approver/*`）と App Link の受け皿（task #892。ADR-0077）。
+//! Endpoints called by the authenticator app (`/{tenant_id}/app-approver/*`) and the App Link landing (task #892, ADR-0077).
 //!
-//! アプリはトークンを持たず、操作のたびに Keystore の鍵で署名する（文の形は
-//! `domain::app_approver::signed_message`）。判定は Application 層（`AppApprovalService`）にあり、
-//! ここは DTO の詰め替えと HTTP の状態への写しだけを行う。
+//! The app holds no token and signs each operation with its Keystore key (the message shape is
+//! `domain::app_approver::signed_message`). Decisions are in the application layer (`AppApprovalService`);
+//! this only repacks DTOs and maps to HTTP statuses.
 //!
-//! 失敗の本文は `{"error": "<コード>", "reason": "<詳細>"}`（コードは言語不変。アプリが分岐に使う）。
+//! Failure bodies are `{"error": "<code>", "reason": "<detail>"}` (codes are language-invariant; the app branches on them).
 
 use crate::application::app_approval::AppApproverError;
 use crate::application::audit::RequestContext;
@@ -19,7 +19,7 @@ use chrono::SecondsFormat;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-/// 失敗の本文。
+/// Failure body.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct AppApproverErrorResponse {
     pub error: &'static str,
@@ -61,17 +61,17 @@ fn rfc3339(t: chrono::DateTime<chrono::Utc>) -> String {
     t.to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
-// ─── 登録 ─────────────────────────────────────────────────────────────
+// ─── Enrollment ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct EnrollmentStartedResponse {
     pub enrollment_id: String,
-    /// Key Attestation に入れる値（base64url・32 バイト）。
+    /// Value to put in the Key Attestation (base64url, 32 bytes).
     pub challenge: String,
     pub expires_at: String,
 }
 
-/// 鍵の登録の受付を始める（`POST /{tenant_id}/app-approver/enrollments`）。
+/// Starts accepting a key enrollment (`POST /{tenant_id}/app-approver/enrollments`).
 #[utoipa::path(
     post,
     path = "/{tenant_id}/app-approver/enrollments",
@@ -109,19 +109,19 @@ pub async fn start_enrollment(
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SubmitKeyRequest {
-    /// Keystore の証明書の鎖（標準の base64 の DER。鍵の証明書が先頭、根が最後）。
+    /// Keystore certificate chain (standard base64 DER; the key's certificate first, the root last).
     pub certificate_chain: Vec<String>,
-    /// 機種名（表示だけ）。
+    /// Device model name (display only).
     pub device_name: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SubmitKeyResponse {
-    /// アプリが Auth Tab で開く、利用者の確認の画面。
+    /// The user confirmation screen the app opens in an Auth Tab.
     pub confirm_url: String,
 }
 
-/// 鍵の証明を送る（`PUT /{tenant_id}/app-approver/enrollments/{id}/key`）。
+/// Sends the key attestation (`PUT /{tenant_id}/app-approver/enrollments/{id}/key`).
 #[utoipa::path(
     put,
     path = "/{tenant_id}/app-approver/enrollments/{id}/key",
@@ -169,9 +169,9 @@ pub async fn submit_key(
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ActivateRequest {
-    /// 利用者の確認の後に Auth Tab の戻り先に載ったコード。
+    /// The code placed on the Auth Tab return URL after the user's confirmation.
     pub code: String,
-    /// `activate` の文への署名（base64url の DER）。
+    /// Signature over the `activate` message (base64url DER).
     pub signature: String,
 }
 
@@ -183,7 +183,7 @@ pub struct ActivateResponse {
     pub display_name: Option<String>,
 }
 
-/// 鍵を有効にする（`POST /{tenant_id}/app-approver/enrollments/{id}/activate`）。
+/// Activates the key (`POST /{tenant_id}/app-approver/enrollments/{id}/activate`).
 #[utoipa::path(
     post,
     path = "/{tenant_id}/app-approver/enrollments/{id}/activate",
@@ -219,12 +219,12 @@ pub async fn activate(
     }
 }
 
-// ─── 承認 ─────────────────────────────────────────────────────────────
+// ─── Approval ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ApprovalRequestResponse {
     pub request_id: String,
-    /// 署名に入れる値。
+    /// Value to put in the signature.
     pub challenge: String,
     /// `pending` / `approved` / `denied` / `completed` / `refused`
     pub state: &'static str,
@@ -232,11 +232,11 @@ pub struct ApprovalRequestResponse {
     pub expires_at: String,
     pub ip_address: Option<String>,
     pub country: Option<String>,
-    /// 認可の途中から来たなら、その RP の表示名（無ければ client_id）。
+    /// If it came from the middle of an authorization, that RP's display name (client_id if none).
     pub client_name: Option<String>,
 }
 
-/// 依頼の中身（`GET /{tenant_id}/app-approver/requests/{id}`）。
+/// Contents of the request (`GET /{tenant_id}/app-approver/requests/{id}`).
 #[utoipa::path(
     get,
     path = "/{tenant_id}/app-approver/requests/{id}",
@@ -271,17 +271,17 @@ pub async fn view_request(
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct DecisionRequest {
     pub key_id: String,
-    /// `approve` / `deny` の文への署名（base64url の DER）。
+    /// Signature over the `approve` / `deny` message (base64url DER).
     pub signature: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ApproveResponse {
-    /// アプリが同じスマホのブラウザで開く URL（コードは 30 秒・1 回だけ）。
+    /// URL the app opens in the browser on the same phone (the code is valid 30 seconds, once only).
     pub continue_url: String,
 }
 
-/// 承認する（`POST /{tenant_id}/app-approver/requests/{id}/approve`）。
+/// Approves (`POST /{tenant_id}/app-approver/requests/{id}/approve`).
 #[utoipa::path(
     post,
     path = "/{tenant_id}/app-approver/requests/{id}/approve",
@@ -322,7 +322,7 @@ pub async fn approve(
     }
 }
 
-/// 断る（`POST /{tenant_id}/app-approver/requests/{id}/deny`）。
+/// Denies (`POST /{tenant_id}/app-approver/requests/{id}/deny`).
 #[utoipa::path(
     post,
     path = "/{tenant_id}/app-approver/requests/{id}/deny",
@@ -352,15 +352,15 @@ pub async fn deny(
     }
 }
 
-// ─── 鍵 ──────────────────────────────────────────────────────────────
+// ─── Keys ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct KeyStateResponse {
-    /// いつも `active`（取り消された・知らない鍵は 404）。
+    /// Always `active` (revoked or unknown keys get 404).
     pub state: &'static str,
 }
 
-/// 鍵がまだ有効か（`GET /{tenant_id}/app-approver/keys/{key_id}`）。
+/// Whether the key is still active (`GET /{tenant_id}/app-approver/keys/{key_id}`).
 #[utoipa::path(
     get,
     path = "/{tenant_id}/app-approver/keys/{key_id}",
@@ -383,13 +383,13 @@ pub async fn key_state(
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct RevokeRequest {
-    /// 署名した時刻（`YYYY-MM-DDTHH:MM:SSZ`。5 分以内）。
+    /// Time of signing (`YYYY-MM-DDTHH:MM:SSZ`; within 5 minutes).
     pub signed_at: String,
-    /// `revoke` の文への署名（base64url の DER）。
+    /// Signature over the `revoke` message (base64url DER).
     pub signature: String,
 }
 
-/// アプリから鍵を取り消す（`POST /{tenant_id}/app-approver/keys/{key_id}/revoke`）。
+/// Revokes a key from the app (`POST /{tenant_id}/app-approver/keys/{key_id}/revoke`).
 #[utoipa::path(
     post,
     path = "/{tenant_id}/app-approver/keys/{key_id}/revoke",
@@ -428,9 +428,9 @@ pub async fn revoke(
 
 // ─── App Link ─────────────────────────────────────────────────────────
 
-/// `/.well-known/assetlinks.json`: 認証アプリにこのホストの App Link（`/app/approve`・`/app/enrolled`）を許す。
+/// `/.well-known/assetlinks.json`: allows the authenticator app this host's App Links (`/app/approve`, `/app/enrolled`).
 ///
-/// 認証アプリの口が閉じていれば 404。指紋は `APP_APPROVER_SIGNING_CERT_SHA256`。
+/// 404 if the authenticator app endpoints are closed. The fingerprint is `APP_APPROVER_SIGNING_CERT_SHA256`.
 pub async fn asset_links(State(state): State<AppState>) -> Response {
     let Some(package) = state.config.app_approver_package_name() else {
         return StatusCode::NOT_FOUND.into_response();
@@ -440,7 +440,7 @@ pub async fn asset_links(State(state): State<AppState>) -> Response {
         .app_approver_signing_cert_sha256()
         .split(',')
         .map(|f| {
-            // `AB:CD:…` の形にそろえる（Android の Digital Asset Links が求める書き方）。
+            // Normalize to the `AB:CD:…` form (the notation Android's Digital Asset Links requires).
             let hex: String = f
                 .chars()
                 .filter(|c| c.is_ascii_hexdigit())
@@ -475,9 +475,9 @@ pub async fn asset_links(State(state): State<AppState>) -> Response {
         .into_response()
 }
 
-/// App Link（`/app/approve`・`/app/enrolled`）がブラウザで開かれたときの案内。
+/// Guidance shown when an App Link (`/app/approve`, `/app/enrolled`) is opened in the browser.
 ///
-/// 認証アプリが入っていて App Link が通っていれば、ここへは来ない。
+/// If the authenticator app is installed and the App Link works, this is never reached.
 pub async fn app_link_fallback() -> Response {
     (
         [(header::CACHE_CONTROL, "no-store")],

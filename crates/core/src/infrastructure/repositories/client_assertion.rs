@@ -1,8 +1,8 @@
-//! `ClientAssertionReplayRepository` の sqlx 実装（ADR-0030 決定 5）。
+//! sqlx implementation of `ClientAssertionReplayRepository` (ADR-0030 decision 5).
 //!
-//! 「使われていなければ記録する」を**主キーへの挿入 1 回**で判定する。SELECT してから INSERT する
-//! 2 段階にすると、同じ assertion が同時に 2 本届いたときに両方とも未使用と判定され得る
-//! （再生防止としては、まさにその同時到着を止めたい）。
+//! "Record it if unused" is decided by **a single insert into the primary key**. Doing it in 2 steps,
+//! SELECT then INSERT, could judge both as unused when the same assertion arrives twice concurrently
+//! (and that concurrent arrival is exactly what replay prevention wants to stop).
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::ClientAssertionReplayRepository;
@@ -45,16 +45,16 @@ impl ClientAssertionReplayRepository for SqlxClientAssertionReplayRepository {
         .bind(tenant_id.to_string())
         .bind(client_id)
         .bind(jti)
-        // 列名は掃除の共通処理（`ExpiringRecordStore`）に合わせた `expires_at` だが、入れるのは
-        // assertion の `exp` ではなく「受理が止まる時刻」である（トレイトの doc 参照）。
+        // The column is named `expires_at` to match the shared cleanup (`ExpiringRecordStore`), but what goes in is
+        // "the time acceptance stops", not the assertion's `exp` (see the trait doc).
         .bind(retain_until.naive_utc())
         .execute(&self.pool)
         .await;
 
         match result {
-            // 挿入できた ＝ この `jti` は未使用だった。
+            // Inserted = this `jti` was unused.
             Ok(_) => Ok(true),
-            // 主キー違反 ＝ この `jti` は既に使われている（＝再生）。
+            // Primary key violation = this `jti` was already used (= replay).
             Err(sqlx::Error::Database(db)) if db.is_unique_violation() => Ok(false),
             Err(e) => Err(repo_err(e)),
         }

@@ -1,45 +1,45 @@
-//! 表示設定（言語・配色）の決定（MT20。`CLAUDE.md`「国際化」の責務分離）。
+//! Deciding display settings (language, color scheme) (MT20. The separation of duties in `CLAUDE.md` "Internationalization").
 //!
-//! 言語と配色は**同じ決定順・同じ入力**（`?...=` > ユーザー設定 > Cookie）で決まり、ユーザー設定は
-//! どちらも `/internal/account/profile` の 1 応答に入っている。別々の middleware にすると、
-//! ログイン中の画面表示ごとに api を 2 回叩くことになるため、1 本にまとめている。
+//! Language and color scheme are decided by **the same order and the same inputs** (`?...=` > user setting > cookie), and
+//! both user settings are in the single `/internal/account/profile` response. Separate middlewares would call the api
+//! twice per screen render while signed in, so they are combined into one.
 //!
-//! **表示言語を決めるのは web** で、api は `Accept-Language` しか見ない。決定順は先勝ちで
-//! `?lang=` > ユーザー設定（DB の `users.language`）> Cookie(`lang`) > 認可要求の `ui_locales`
-//! （G12）> ブラウザの `Accept-Language` > 既定 `ja`。不正・非対応値は無視して次順位へ落ちる。
+//! **web decides the display language**; the api only looks at `Accept-Language`. The decision order is first-wins:
+//! `?lang=` > user setting (DB `users.language`) > Cookie(`lang`) > the authorization request's `ui_locales`
+//! (G12) > the browser's `Accept-Language` > default `ja`. Invalid or unsupported values are ignored and fall to the next.
 //!
-//! `ui_locales` が Cookie より下・ブラウザ言語より上なのは、これが **RP の希望**であって利用者
-//! 自身の選択ではないため。一度でも言語を選んだ利用者（`lang` Cookie がある）の画面を RP の
-//! 都合で切り替えないが、何も選んでいない利用者にはブラウザ既定より RP の指定を優先する。
+//! `ui_locales` is below the cookie and above the browser language because it is **the RP's wish**, not the user's
+//! own choice. A user who has chosen a language even once (has a `lang` cookie) does not get their screen switched for
+//! the RP's convenience, but for users who chose nothing, the RP's preference beats the browser default.
 //!
-//! 実装は middleware 1 本に集約する。ハンドラごとに 4 つの入力を集め直すと、画面が増えるたびに
-//! 優先順位が食い違う（実際に MT20 前は画面によって `?lang=` を見る／見ないが分かれていた）。
+//! The implementation is consolidated into one middleware. Collecting the 4 inputs again per handler would make
+//! priorities diverge as screens are added (before MT20, screens actually differed in whether they looked at `?lang=`).
 //!
-//! 配色の決定順は `?theme=` > ユーザー設定（`users.theme`）> Cookie(`theme`) > OS の設定。
-//! 言語と違って**下流のハンドラは配色を読まない** —— 適用するのはブラウザ側の `assets/theme.js` で、
-//! サーバの仕事は `theme` Cookie を利用者の選択に合わせて保つことだけである（[`crate::theme`]）。
+//! The color scheme order is `?theme=` > user setting (`users.theme`) > Cookie(`theme`) > OS setting.
+//! Unlike language, **downstream handlers do not read the color scheme** — it is applied by `assets/theme.js` in the browser,
+//! and the server's only job is to keep the `theme` cookie in line with the user's choice ([`crate::theme`]).
 //!
-//! 決定結果は**リクエストの `lang` Cookie ヘッダを書き換えて**下流へ渡す。ハンドラは従来どおり
-//! `handlers::locale`（Cookie > `Accept-Language` > 既定）を呼ぶだけで決定順に従える。
-//! 応答では、明示的な選択（有効な `?lang=` / `?theme=`）があったときだけ Cookie を保存する。
+//! The decision is passed downstream **by rewriting the request's `lang` cookie header**. Handlers just call
+//! `handlers::locale` (cookie > `Accept-Language` > default) as before and thereby follow the decision order.
+//! In the response, the cookie is saved only when there was an explicit choice (a valid `?lang=` / `?theme=`).
 //!
-//! ⚠ **ここはユーザー設定（DB）へ書かない**（task #79）。`?lang=` / `?theme=` は GET で、
-//! どの画面の URL にも付けられる —— 外部のリンクや RP のログイン導線（SSO Cookie は
-//! `SameSite=Lax` なのでトップレベル遷移に載る）で、利用者の保存済み設定を書き換えられて
-//! しまう。GET の `?lang=` / `?theme=` は**一時切替**（その画面の表示と Cookie）だけで、保存は
-//! 設定画面・管理コンソールのヘッダから送る `POST /{tenant_id}/settings/display`（CSRF トークン
-//! 付き。[`crate::handlers::user_settings::save_display_preferences`]）に限る。ログイン中は
-//! ユーザー設定が Cookie より強いので、一時切替は次の画面で保存済みの値へ戻る（決定順どおり）。
+//! ⚠ **This does not write to user settings (DB)** (task #79). `?lang=` / `?theme=` are GETs and
+//! can be attached to any screen's URL — external links or an RP's login entry (the SSO cookie is
+//! `SameSite=Lax`, so it rides along on top-level navigations) could rewrite the user's saved settings.
+//! GET `?lang=` / `?theme=` are only **temporary switches** (that screen's display and the cookie); saving is
+//! limited to `POST /{tenant_id}/settings/display` sent from the settings screen or the admin console header (with a CSRF
+//! token; [`crate::handlers::user_settings::save_display_preferences`]). While signed in the user setting
+//! beats the cookie, so a temporary switch reverts to the saved value on the next screen (per the decision order).
 //!
-//! ユーザー設定の取得には api への 1 リクエスト（`/internal/account/profile`）が必要で、
-//! **ログイン中の HTML 画面表示ごとに 1 回**発生する。`?lang=` で既に決まっている場合と SSO Cookie が
-//! 無い場合は呼ばない。ローカルホップであり、管理コンソールは 1 画面あたり既に複数回 api を呼ぶため
-//! 相対的な増分は小さい。Cookie を正とするキャッシュは、別端末で言語を変えたときに追随できなくなるため採らない。
+//! Fetching the user settings needs one request to the api (`/internal/account/profile`),
+//! **once per HTML screen render while signed in**. It is not called when `?lang=` already decided it or when there is
+//! no SSO cookie. It is a local hop, and the admin console already calls the api several times per screen, so the
+//! relative increase is small. Caching with the cookie as the source of truth is not used, as it could not follow language changes on other devices.
 //!
-//! 引いたプロフィール応答は [`FetchedAccountProfile`] としてリクエスト拡張へ載せ、下流へ渡す
-//! （task #80）。設定画面は表示名・ログイン識別子にも同じ応答を使うので、api を引き直さない。
-//! 載せるのは**応答そのもの**で、表示設定の決定に使う [`StoredPreferences`] は middleware 内部の
-//! 派生に留める（決定に要らない表示名などを決定用の型へ入れない）。
+//! The fetched profile response is attached to the request extensions as [`FetchedAccountProfile`] and passed downstream
+//! (task #80). The settings screen uses the same response for the display name and login identifier, so the api is not called again.
+//! What is attached is **the response itself**; the [`StoredPreferences`] used for deciding display settings stays an
+//! internal derivation of the middleware (display names etc. not needed for the decision are kept out of the decision type).
 
 use crate::cookies;
 use crate::i18n::Locale;
@@ -52,8 +52,8 @@ use axum::http::header::{HeaderValue, COOKIE};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
-/// URL クエリから 1 つのパラメータを取り出す（`?a=1&lang=en` の `lang` → `Some("en")`）。
-/// 値のデコードは行わない（言語タグ・配色ともパーセントエンコードされる文字を含まない）。
+/// Extracts one parameter from the URL query (`lang` in `?a=1&lang=en` → `Some("en")`).
+/// Values are not decoded (neither language tags nor color schemes contain percent-encoded characters).
 fn query_value<'a>(query: Option<&'a str>, name: &str) -> Option<&'a str> {
     let prefix = format!("{name}=");
     query?
@@ -61,10 +61,10 @@ fn query_value<'a>(query: Option<&'a str>, name: &str) -> Option<&'a str> {
         .find_map(|pair| pair.strip_prefix(prefix.as_str()))
 }
 
-/// 表示言語を決めてリクエストへ反映する middleware。
+/// Middleware that decides the display language and applies it to the request.
 ///
-/// 決定した言語を下流のハンドラへ伝えるため、リクエストの `Cookie` ヘッダの `lang` を決定値へ
-/// 差し替える（`handlers::locale` が読む入力を 1 つに正規化する）。他の Cookie（SSO 等）は保つ。
+/// To convey the decided language to downstream handlers, the `lang` in the request's `Cookie` header is replaced with the
+/// decided value (normalizing the input `handlers::locale` reads into one). Other cookies (SSO etc.) are kept.
 pub async fn resolve_display_preferences(
     State(state): State<WebState>,
     mut request: Request,
@@ -77,9 +77,9 @@ pub async fn resolve_display_preferences(
         cookies::get(request.headers(), cookies::THEME_COOKIE).and_then(|t| Theme::from_tag(&t));
     let sso = cookies::get(request.headers(), cookies::SSO_SESSION_COOKIE);
 
-    // ユーザー設定は言語・配色をまとめて 1 回だけ引く。両方とも `?...=` で決まっているときと、
-    // SSO Cookie が無いときは api を呼ばない。
-    // 引いた応答は下流（設定画面）へ渡す。引かなかったときは拡張を載せない。
+    // User settings for language and color scheme are fetched together just once. The api is not called when both
+    // are decided by `?...=` or when there is no SSO cookie.
+    // The fetched response is passed downstream (settings screen). If not fetched, no extension is attached.
     let stored = match &sso {
         Some(sso) if explicit_locale.is_none() || explicit_theme.is_none() => {
             let profile = fetch_account_profile(&state, sso).await;
@@ -92,8 +92,8 @@ pub async fn resolve_display_preferences(
         _ => StoredPreferences::default(),
     };
 
-    // 決定順 1: 有効な `?lang=`。2: ユーザー設定。3: Cookie（下流の `handlers::locale` が
-    // そのまま読む）。4: 認可要求の `ui_locales`。いずれも無ければ `Accept-Language`。
+    // Decision order 1: a valid `?lang=`. 2: user setting. 3: cookie (read as is by the downstream
+    // `handlers::locale`). 4: the authorization request's `ui_locales`. If none, `Accept-Language`.
     let decided = explicit_locale
         .or(stored.language)
         .or_else(|| requested_locale(&request));
@@ -105,10 +105,10 @@ pub async fn resolve_display_preferences(
 
     let response = next.run(request).await;
 
-    // `lang` Cookie を書くのは明示的な選択（`?lang=`）だけ（ブラウザ言語・ユーザー設定・
-    // `ui_locales` の反映で書き換えない。ユーザー設定で書き換えると、別端末で設定を変えたときに
-    // 古い Cookie が上書き返しされ続ける。`ui_locales` は RP の希望で利用者の選択ではない）。
-    // ユーザー設定（DB）へは書かない（モジュールの doc を参照）。
+    // The `lang` cookie is written only for an explicit choice (`?lang=`) (not rewritten to reflect the browser language,
+    // user setting or `ui_locales`. Rewriting it from the user setting would keep an old cookie overwriting back when the
+    // setting is changed on another device. `ui_locales` is the RP's wish, not the user's choice).
+    // Nothing is written to user settings (DB) (see the module doc).
     if explicit_locale.is_none() && theme_to_store.is_none() {
         return response;
     }
@@ -130,15 +130,15 @@ pub async fn resolve_display_preferences(
     (set_cookies.into_headers(), response).into_response()
 }
 
-/// リクエストの `lang` Cookie が示す有効なロケール（未設定・非対応値は `None`）。
+/// Valid locale indicated by the request's `lang` cookie (`None` if unset or unsupported).
 fn cookie_locale(request: &Request) -> Option<Locale> {
     cookies::get(request.headers(), cookies::LANG_COOKIE).and_then(|tag| Locale::from_tag(&tag))
 }
 
-/// 決定順 4: 進行中の認可要求が `ui_locales` で要求した表示ロケール（G12）。
-/// OIDC フロー外・非対応値は `None`。文脈の取得は [`crate::login_context`] の middleware が済ませてある。
+/// Decision order 4: the display locale requested by an in-progress authorization request via `ui_locales` (G12).
+/// `None` outside an OIDC flow or for unsupported values. The context was already fetched by the [`crate::login_context`] middleware.
 ///
-/// 利用者が選んだ言語（有効な `lang` Cookie）が残っているときは決めない（決定順 3 が勝つ）。
+/// Does not decide while a language chosen by the user (a valid `lang` cookie) remains (decision order 3 wins).
 fn requested_locale(request: &Request) -> Option<Locale> {
     if cookie_locale(request).is_some() {
         return None;
@@ -151,17 +151,17 @@ fn requested_locale(request: &Request) -> Option<Locale> {
         .and_then(Locale::from_ui_locales)
 }
 
-/// middleware が引いたログイン中ユーザーのプロフィール応答（task #80）。リクエスト拡張で下流へ渡す。
+/// The signed-in user's profile response fetched by the middleware (task #80). Passed downstream as a request extension.
 ///
-/// 拡張が**載っていない**のは middleware が引かなかったとき（SSO Cookie が無い、または
-/// `?lang=` と `?theme=` の両方で表示設定が決まった）で、要るハンドラは自分で
-/// [`fetch_account_profile`] を呼ぶ。中身の `None` は取得に失敗したとき（ログ済み）で、
-/// 引き直さない（同じリクエストの中で結果は変わらない）。
+/// The extension is **absent** when the middleware did not fetch it (no SSO cookie, or the display settings
+/// were decided by both `?lang=` and `?theme=`), and handlers that need it call
+/// [`fetch_account_profile`] themselves. An inner `None` means the fetch failed (already logged), and it is
+/// not re-fetched (the result would not change within the same request).
 #[derive(Debug, Clone)]
 pub struct FetchedAccountProfile(pub Option<InternalAccountProfileResponse>);
 
-/// ログイン中ユーザーのプロフィールを api から 1 回引く。取得失敗は `None`（警告ログを残す）。
-/// 呼び出し側は画面を落とさない（表示の都合であり、空欄や Cookie / ブラウザ既定へ落ちれば足りる）。
+/// Fetches the signed-in user's profile from the api once. A fetch failure gives `None` (with a warning log).
+/// Callers do not break the screen (it is only for display; falling back to blanks or cookie / browser defaults suffices).
 pub async fn fetch_account_profile(
     state: &WebState,
     sso: &str,
@@ -178,7 +178,7 @@ pub async fn fetch_account_profile(
     }
 }
 
-/// ログイン中ユーザーの保存済み表示設定（未設定・非対応値・取得失敗は `None`）。
+/// The signed-in user's saved display settings (`None` if unset, unsupported or the fetch failed).
 #[derive(Debug, Default, Clone, Copy)]
 struct StoredPreferences {
     language: Option<Locale>,
@@ -186,8 +186,8 @@ struct StoredPreferences {
 }
 
 impl StoredPreferences {
-    /// プロフィール応答から表示設定の決定に使う値だけを取り出す。取得失敗・セッション切れは
-    /// 未設定として扱う（Cookie / ブラウザ既定へ落ちる）。
+    /// Extracts only the values used for deciding display settings from the profile response. Fetch failure or session expiry
+    /// are treated as unset (falling back to cookie / browser defaults).
     fn from_profile(profile: Option<&InternalAccountProfileResponse>) -> Self {
         match profile {
             Some(InternalAccountProfileResponse::Ok {
@@ -201,14 +201,14 @@ impl StoredPreferences {
     }
 }
 
-/// `theme` Cookie を書き直すべき値（書き直さないなら `None`）。
+/// The value the `theme` cookie should be rewritten to (`None` if not rewritten).
 ///
-/// 配色は下流のハンドラが読まないので、middleware が決めるのは「Cookie を何に揃えるか」だけである。
+/// Downstream handlers do not read the color scheme, so the middleware only decides "what to align the cookie to".
 ///
-/// - 明示的な選択（`?theme=`）は常に書く。
-/// - ユーザー設定は **Cookie と食い違うときだけ**書く（別の端末で変えた設定に追いつくため）。
-///   毎回書くと、同じ値の `Set-Cookie` を全画面に付けることになる。
-/// - どちらも無ければ書かない（未ログイン利用者の端末に残った選択をサーバが消さない）。
+/// - An explicit choice (`?theme=`) is always written.
+/// - The user setting is written **only when it differs from the cookie** (to catch up with a setting changed on another device).
+///   Writing every time would attach a same-value `Set-Cookie` to every screen.
+/// - If neither exists, nothing is written (the server does not erase a choice left on a signed-out user's device).
 fn theme_cookie_to_write(
     explicit: Option<Theme>,
     stored: Option<Theme>,
@@ -217,10 +217,10 @@ fn theme_cookie_to_write(
     explicit.or_else(|| stored.filter(|stored| Some(*stored) != in_cookie))
 }
 
-/// リクエストの `Cookie` ヘッダを、`lang` だけ `locale` へ差し替えた 1 本に組み替える。
+/// Rebuilds the request's `Cookie` header into one with only `lang` replaced by `locale`.
 ///
-/// `lang` を消して付け直すのは、複数の `Cookie` ヘッダ／同名 Cookie の重複があっても
-/// 下流が読む値を一意にするため（`cookies::get` は先に見つかった値を返す）。
+/// `lang` is removed and re-added so the value downstream reads is unique even with multiple `Cookie` headers or
+/// duplicate same-name cookies (`cookies::get` returns the first value found).
 fn overwrite_lang_cookie(request: &mut Request, locale: Locale) {
     let mut pairs: Vec<String> = request
         .headers()
@@ -240,7 +240,7 @@ fn overwrite_lang_cookie(request: &mut Request, locale: Locale) {
 
     let joined = pairs.join("; ");
     let Ok(value) = HeaderValue::from_str(&joined) else {
-        // 元の Cookie に非 ASCII が混ざっている等。言語の上書きを諦め、元のヘッダを保つ。
+        // The original cookie contains non-ASCII etc. Give up overriding the language and keep the original header.
         tracing::warn!("could not rebuild the cookie header while resolving the language");
         return;
     };
@@ -263,12 +263,12 @@ mod tests {
             None,
             "only a whole pair"
         );
-        // 未知・不正値は `Locale::from_tag` / `Theme::from_tag` 側で捨てられる
-        // （ここでは素の値を返す）。
+        // Unknown/invalid values are discarded by `Locale::from_tag` / `Theme::from_tag`
+        // (the raw value is returned here).
         assert_eq!(query_value(Some("lang=fr"), "lang"), Some("fr"));
         assert_eq!(query_value(Some("lang="), "lang"), Some(""));
 
-        // 名前で切り分ける（`lang` と `theme` を取り違えない）。
+        // Split by name (do not confuse `lang` and `theme`).
         assert_eq!(
             query_value(Some("lang=en&theme=dark"), "theme"),
             Some("dark")
@@ -276,15 +276,15 @@ mod tests {
         assert_eq!(query_value(Some("lang=en"), "theme"), None);
     }
 
-    /// 配色 Cookie を書き直す条件（[`theme_cookie_to_write`] の doc を参照）。
+    /// Conditions for rewriting the color scheme cookie (see the doc of [`theme_cookie_to_write`]).
     #[test]
     fn the_theme_cookie_follows_the_explicit_choice_then_the_stored_setting() {
-        // 明示的な選択は、Cookie にもユーザー設定にも何があろうと勝つ。
+        // An explicit choice wins regardless of what the cookie or user setting holds.
         assert_eq!(
             theme_cookie_to_write(Some(Theme::Dark), Some(Theme::Light), Some(Theme::Light)),
             Some(Theme::Dark)
         );
-        // 別端末で変えたユーザー設定に追いつく。
+        // Catch up with a user setting changed on another device.
         assert_eq!(
             theme_cookie_to_write(None, Some(Theme::Dark), Some(Theme::Light)),
             Some(Theme::Dark)
@@ -293,12 +293,12 @@ mod tests {
             theme_cookie_to_write(None, Some(Theme::Dark), None),
             Some(Theme::Dark)
         );
-        // 一致しているなら書き直さない（全画面に無駄な Set-Cookie を付けない）。
+        // If they match, do not rewrite (no wasted Set-Cookie on every screen).
         assert_eq!(
             theme_cookie_to_write(None, Some(Theme::Dark), Some(Theme::Dark)),
             None
         );
-        // 未ログイン（ユーザー設定なし）では、端末に残った選択をサーバが消さない。
+        // When signed out (no user setting), the server does not erase a choice left on the device.
         assert_eq!(theme_cookie_to_write(None, None, Some(Theme::Dark)), None);
         assert_eq!(theme_cookie_to_write(None, None, None), None);
     }
@@ -329,7 +329,7 @@ mod tests {
         );
     }
 
-    /// `lang` が複数ヘッダ・重複していても、下流が読む値は決定値ひとつになる。
+    /// Even if `lang` appears in multiple headers or duplicates, downstream reads a single decided value.
     #[test]
     fn overwrite_collapses_duplicate_lang_cookies() {
         let mut request = request_with_cookies(&["lang=ja", "lang=fr; sso_session_id=sess"]);
@@ -359,8 +359,8 @@ mod tests {
         request
     }
 
-    /// 決定順 4（G12）: `ui_locales` は利用者が選んだ言語より弱く、ブラウザ言語より強い。
-    /// Cookie に有効な選択が残っている間は RP の要求で切り替えない。
+    /// Decision order 4 (G12): `ui_locales` is weaker than the user's chosen language and stronger than the browser language.
+    /// While a valid choice remains in the cookie, it is not switched by the RP's request.
     #[test]
     fn ui_locales_yields_to_the_language_the_user_chose() {
         assert_eq!(
@@ -368,7 +368,7 @@ mod tests {
             None,
             "the user's own choice wins"
         );
-        // 保存されている値が非対応（＝選択として無効）なら RP の要求を採る。
+        // If the stored value is unsupported (= invalid as a choice), the RP's request is taken.
         assert_eq!(
             requested_locale(&request_with_ui_locales(&["lang=fr"], "en")),
             Some(Locale::En)
@@ -377,11 +377,11 @@ mod tests {
             requested_locale(&request_with_ui_locales(&[], "fr en-GB")),
             Some(Locale::En)
         );
-        // 対応言語を含まない要求は決めない（下流が `Accept-Language` を使う）。
+        // A request containing no supported language decides nothing (downstream uses `Accept-Language`).
         assert_eq!(requested_locale(&request_with_ui_locales(&[], "fr")), None);
     }
 
-    /// OIDC フロー外（文脈が載っていない）リクエストでは何も決まらない。
+    /// Requests outside an OIDC flow (no context attached) decide nothing.
     #[test]
     fn ui_locales_is_absent_outside_the_authorization_flow() {
         assert_eq!(requested_locale(&request_with_cookies(&[])), None);

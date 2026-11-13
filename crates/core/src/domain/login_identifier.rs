@@ -1,27 +1,31 @@
-//! ログイン識別子の登録簿（AP8。ユーザー認証・認証ポリシー仕様書 §4）。
+//! Registry of login identifiers (AP8; user authentication / auth policy spec §4).
 //!
-//! ログイン欄に入力できる値を `users.preferred_username` の 1 本から複数へ広げる。1 行が
-//! 「この利用者は、この種別のこの値でもログインできる」を表す。
+//! Widens the values that can be entered in the login field from the single
+//! `users.preferred_username` to several. One row means "this user can also log in with this value
+//! of this type".
 //!
-//! # 表示値と正規化値
+//! # Display value and normalized value
 //!
-//! 照合に使うのは [`UserLoginIdentifier::normalized_value`] だけで、画面に出すのは利用者が
-//! 登録したままの [`UserLoginIdentifier::display_value`]。電話番号の `090-1234-5678` と
-//! `+81 90 1234 5678` は同じ番号を指すが、利用者が自分の登録内容だと分かるのは前者である。
-//! 正規化した値を表示にも使うと「登録した覚えのない値が並ぶ」ことになり、同一性を確認できない。
+//! Only [`UserLoginIdentifier::normalized_value`] is used for matching; what is shown on screen is
+//! [`UserLoginIdentifier::display_value`], as the user registered it. The phone numbers
+//! `090-1234-5678` and `+81 90 1234 5678` point to the same number, but the user recognizes the
+//! former as what they registered. Using the normalized value for display would "list values the
+//! user does not remember registering", and identity could not be confirmed.
 //!
-//! # 無効化
+//! # Deactivation
 //!
-//! [`UserLoginIdentifier::is_active`] が `false` の行はログイン欄で一致しない。行を残すのは、
-//! 「この値は使えない」と「この値は誰のものでもない」を区別するため。削除してしまうと同じ値を
-//! 別人が登録でき、無効化した識別子の宛先が黙って変わる。
+//! Rows with [`UserLoginIdentifier::is_active`] `false` do not match in the login field. Rows are
+//! kept to distinguish "this value cannot be used" from "this value belongs to no one". Deleting
+//! would let someone else register the same value, silently changing where a deactivated identifier
+//! points.
 //!
-//! # `users.preferred_username` との関係（expand フェーズ）
+//! # Relation to `users.preferred_username` (expand phase)
 //!
-//! 主たるログイン識別子は当面 `users.preferred_username` のままで、本登録簿にはその写しを
-//! `username` 種別として持つ（migration 0029 の backfill）。解決は「登録簿の有効な行 →
-//! 無ければ `users.preferred_username`」の順（[`crate::domain::repositories::UserRepository::find_by_login_identifier`]）。
-//! 写しが古くならないよう、プロフィール更新の経路が同期する（ADR-0025）。
+//! The primary login identifier remains `users.preferred_username` for now, and this registry holds
+//! a copy of it as the `username` type (backfill in migration 0029). Resolution goes "active
+//! registry row → otherwise `users.preferred_username`"
+//! ([`crate::domain::repositories::UserRepository::find_by_login_identifier`]). The profile update
+//! paths keep the copy in sync so it does not go stale (ADR-0025).
 #![allow(dead_code)]
 
 use crate::domain::message::MessageKey;
@@ -32,44 +36,50 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 string_enum!(
-    /// 識別子の種別（仕様 §4）。
+    /// Type of identifier (spec §4).
     ///
-    /// 種別は**正規化のしかた**を決めるためにある。同じ文字列でも、ユーザー名としてなら大小を
-    /// 無視し、電話番号としてなら区切り記号を無視する、という違いを型で表す。
+    /// The type exists to decide **how to normalize**. The same string ignores case as a username
+    /// and ignores separators as a phone number; the type expresses that difference.
     LoginIdentifierType {
-        /// ユーザー名。`users.preferred_username` と同じ性質の識別子。
+        /// Username. An identifier of the same nature as `users.preferred_username`.
         Username => "username",
-        /// メールアドレス。**既定では登録されない**（migration 0029 は取り込まない）。
-        /// メールでのログインを許すかはテナントの判断であり、管理者が明示的に足したときだけ有効になる。
+        /// Email address. **Not registered by default** (migration 0029 does not import it).
+        /// Whether to allow login by email is the tenant's decision; it takes effect only when an
+        /// admin adds it explicitly.
         Email => "email",
-        /// 電話番号。区切り記号・空白を落とし、先頭の `+` のみ残した数字列で照合する。
+        /// Phone number. Matched as a digit string with separators and spaces dropped, keeping only
+        /// a leading `+`.
         PhoneNumber => "phone_number",
-        /// 社員番号など組織が配る番号。大小を無視し、空白を落として照合する。
+        /// Numbers issued by the organization, such as employee numbers. Matched ignoring case,
+        /// with spaces dropped.
         EmployeeNumber => "employee_number",
     }
 );
 
-/// 正規化値の上限（`user_login_identifiers.normalized_value` の `VARCHAR(255)`）。
+/// Upper bound of the normalized value (`VARCHAR(255)` of
+/// `user_login_identifiers.normalized_value`).
 pub const NORMALIZED_VALUE_MAX_LEN: usize = 255;
-/// 表示値の上限（`user_login_identifiers.display_value` の `VARCHAR(320)`）。
+/// Upper bound of the display value (`VARCHAR(320)` of `user_login_identifiers.display_value`).
 pub const DISPLAY_VALUE_MAX_LEN: usize = 320;
 
-/// 電話番号として受け付ける桁数の範囲（E.164 の最大 15 桁に、内線等の余地を見て上限 20）。
+/// Range of digits accepted as a phone number (E.164's max of 15, with room for extensions etc.: up
+/// to 20).
 const PHONE_MIN_DIGITS: usize = 6;
 const PHONE_MAX_DIGITS: usize = 20;
 
 impl LoginIdentifierType {
-    /// 入力値を照合キーへ正規化する。
+    /// Normalizes an input value into a match key.
     ///
-    /// 書式の妥当性は見ない（[`Self::normalize_checked`] が行う）。ログイン時の解決は
-    /// 「入力が各種別だったら何になるか」を全種別ぶん作って引くため、ここは失敗しない。
+    /// Format validity is not checked ([`Self::normalize_checked`] does that). Login resolution
+    /// builds "what the input would be as each type" for all types and looks them up, so this never
+    /// fails.
     pub fn normalize(&self, raw: &str) -> String {
         let trimmed = raw.trim();
         match self {
-            // 大小を無視する。DB 側の照合順序（`utf8mb4_unicode_ci`）も大小無視だが、
-            // 表示と保存の一貫性のためこちらでも落としておく。
+            // Ignore case. The DB collation (`utf8mb4_unicode_ci`) is case-insensitive too, but
+            // lowercase here as well for consistency between display and storage.
             Self::Username | Self::Email => trimmed.to_lowercase(),
-            // 区切り記号・空白を落とし、先頭の `+`（国際プレフィクス）だけ残す。
+            // Drop separators and spaces, keeping only a leading `+` (international prefix).
             Self::PhoneNumber => {
                 let digits: String = trimmed.chars().filter(char::is_ascii_digit).collect();
                 if trimmed.starts_with('+') {
@@ -78,7 +88,8 @@ impl LoginIdentifierType {
                     digits
                 }
             }
-            // 大小と空白を無視する（`A-1234` と `a 1234` は別物なので、記号は落とさない）。
+            // Ignore case and spaces (`A-1234` and `a 1234` are different, so symbols are not
+            // dropped).
             Self::EmployeeNumber => trimmed
                 .chars()
                 .filter(|c| !c.is_whitespace())
@@ -87,30 +98,32 @@ impl LoginIdentifierType {
         }
     }
 
-    /// 入力がこの種別**として読めるか**（書式の判定）。
+    /// Whether the input **can be read as** this type (format check).
     ///
-    /// 登録時の検証（[`Self::normalize_checked`]）とログイン時の候補生成
-    /// （[`lookup_candidates`]）が**同じ判定**を使うのが要点である。両者がずれると、
-    /// 「登録できるのにログイン時に候補にならない値」（＝一致しない識別子）か、
-    /// 「登録できないのに候補にはなる値」（＝別種別の行に化けて当たる値）が生まれる。
+    /// The point is that registration validation ([`Self::normalize_checked`]) and login candidate
+    /// generation ([`lookup_candidates`]) use **the same check**. If they diverge, you get either
+    /// "values that can be registered but are not candidates at login" (= identifiers that never
+    /// match) or "values that cannot be registered but become candidates" (= values that hit rows
+    /// of another type).
     ///
-    /// 後者が危ない。たとえば電話番号の正規化を任意の入力に掛けると、ユーザー名
-    /// `alice123456` から数字だけを抜いた `123456` が**他人の電話番号**に一致し得る。
-    /// 候補をこの判定で絞れば、電話番号らしくない入力は電話番号として引かれない。
+    /// The latter is dangerous. For example, applying phone normalization to any input, the
+    /// username `alice123456` stripped to digits `123456` could match **someone else's phone
+    /// number**. Narrowing candidates by this check means input that does not look like a phone
+    /// number is not looked up as one.
     pub fn accepts(&self, raw: &str) -> bool {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
             return false;
         }
         match self {
-            // ユーザー名は書式を持たない受け皿。
+            // Username is the format-free catch-all.
             Self::Username => true,
-            // `@` を挟んで両側に文字がある（`values::validate_email` と同じ基準）。
+            // Has characters on both sides of `@` (same criterion as `values::validate_email`).
             Self::Email => {
                 let parts: Vec<&str> = trimmed.split('@').collect();
                 parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty()
             }
-            // 数字と区切り記号だけで、桁数が範囲内。
+            // Only digits and separators, with a digit count in range.
             Self::PhoneNumber => {
                 let digits = trimmed.chars().filter(char::is_ascii_digit).count();
                 trimmed
@@ -118,15 +131,16 @@ impl LoginIdentifierType {
                     .all(|c| c.is_ascii_digit() || matches!(c, '+' | '-' | ' ' | '(' | ')' | '.'))
                     && (PHONE_MIN_DIGITS..=PHONE_MAX_DIGITS).contains(&digits)
             }
-            // 空白を含まない（正規化で空白を落とす以上、含む値を許すと
-            // 「登録した書き方では引けない」ことになる）。
+            // Contains no whitespace (since normalization drops whitespace, allowing it would make
+            // the value "not findable in the way it was registered").
             Self::EmployeeNumber => !trimmed.chars().any(char::is_whitespace),
         }
     }
 
-    /// 入力値を検証したうえで正規化する（登録時）。
+    /// Validates and then normalizes an input value (at registration).
     ///
-    /// エラーは利用者へ返るため訳文ではなく**翻訳キー**を返す（訳出は Presentation 層。MT19）。
+    /// Errors are returned to users, so a **translation key** is returned, not text (translation is
+    /// in the Presentation layer; MT19).
     pub fn normalize_checked(&self, raw: &str) -> Result<String, MessageKey> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
@@ -160,51 +174,54 @@ impl LoginIdentifierType {
     }
 }
 
-/// ログイン識別子を引いた結果（MT25）。
+/// Result of looking up a login identifier (MT25).
 ///
-/// **`Option<User>` にしない。** 「誰にも当たらなかった」と「複数人に当たったので誰も返さない」は
-/// 呼び出し側での扱いが違うのに、どちらも `None` に丸めると区別できなくなる。実際にこれで 2 つの
-/// 不具合が出ていた:
+/// **Not an `Option<User>`.** "Matched no one" and "matched several so returns no one" are handled
+/// differently by callers, yet folding both into `None` makes them indistinguishable. This actually
+/// caused two bugs:
 ///
-/// 1. 所属元で曖昧だった入力が「見つからない」と同じ扱いになり、ゲスト解決へ落ちていた
-///    （[`crate::application::login_user_resolution`]）。「曖昧なら通さない」という決めごとが、
-///    まさにそれが要る場面で破れていた。
-/// 2. 登録時の空き判定（[`Self::is_taken`] の呼び出し元）が、曖昧な値を「空き」と見ていた。
-///    すでに 2 人に当たる値へ 3 人目を足せてしまい、曖昧さが増えていく。
+/// 1. Input ambiguous in the home tenant was treated like "not found" and fell through to guest
+///    resolution ([`crate::application::login_user_resolution`]). The rule "do not let ambiguous
+///    input through" was broken exactly where it was needed.
+/// 2. The availability check at registration (the callers of [`Self::is_taken`]) saw ambiguous
+///    values as "free". A third person could be added to a value already matching two, increasing
+///    ambiguity.
 ///
-/// 曖昧のときに候補（利用者 id の列）を持たせないのは意図的である。持たせると呼び出し側で
-/// 「1 人目を採る」ことができてしまい、拒否する意味が無くなる。
+/// Not carrying candidates (a list of user ids) when ambiguous is intentional. Carrying them would
+/// let callers "take the first one", defeating the point of refusing.
 //
-// `Resolved` だけが大きい（`User` 1 個ぶん）が、`Box` には包まない。この値はログイン 1 回につき
-// 1 度だけ組み立てて即座に分解する短命なもので、包むと**成功するログインのたびに**確保が 1 回
-// 増える（`Option<User>` だったときと同じ大きさで、そちらは誰も問題にしていなかった）。
+// Only `Resolved` is large (one `User`), but it is not boxed. This value is built once per login
+// and immediately destructured; boxing would add one allocation **for every successful login**
+// (it is the same size as when it was `Option<User>`, which nobody had a problem with).
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum LoginIdentifierMatch {
-    /// ちょうど 1 人に当たった。
+    /// Matched exactly one person.
     Resolved(User),
-    /// 誰も返せない。理由は [`UnresolvedReason`]。
+    /// Cannot return anyone. The reason is [`UnresolvedReason`].
     Unresolved(UnresolvedReason),
 }
 
-/// 識別子から利用者を決められなかった理由（[`LoginIdentifierMatch::Unresolved`]）。
+/// Why the user could not be determined from the identifier ([`LoginIdentifierMatch::Unresolved`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnresolvedReason {
-    /// どの識別子にも当たらなかった。
+    /// Matched no identifier.
     NotFound,
-    /// 複数の利用者に当たった。テナント内の一意性は**種別非依存**（1 正規化値は 1 人のもの。
-    /// migration 0041）なので、同じ正規化値で 2 人に当たることはない。残るのは 2 つ:
-    /// 種別ごとに正規化が違うため 1 つの入力が複数の正規化値へ広がる場合（`090-123-4567` は
-    /// ユーザー名なら素のまま、電話番号なら `0901234567`）と、ゲスト解決が所属元テナントを
-    /// またぐため一意性の範囲外になる場合である（MT25。恒久策は home realm discovery で、
-    /// `docs/Progress.md` に残した）。
+    /// Matched several users. Uniqueness within a tenant is **type-independent** (one normalized
+    /// value belongs to one person; migration 0041), so the same normalized value never matches two
+    /// people. Two cases remain: one input spreading to several normalized values because
+    /// normalization differs per type (`090-123-4567` is kept as is as a username, `0901234567` as
+    /// a phone number), and guest resolution spanning home tenants and thus falling outside the
+    /// uniqueness scope (MT25; the permanent fix is home realm discovery, recorded in
+    /// `docs/Progress.md`).
     Ambiguous,
 }
 
 impl UnresolvedReason {
-    /// 監査ログに残す理由コード（言語不変の固定値）。利用者への応答は資格情報エラーで
-    /// 一律だが、運用側は「値が無い」と「値が曖昧」を区別できる必要がある —— 後者は
-    /// 利用者が正しい資格情報を出しても入れない状態であり、管理者の是正が要る。
+    /// Reason code recorded in the audit log (a language-independent fixed value). The response to
+    /// users is a uniform credentials error, but operators need to distinguish "no such value" from
+    /// "ambiguous value" — the latter is a state where the user cannot get in even with correct
+    /// credentials and needs an admin fix.
     pub fn audit_code(self) -> &'static str {
         match self {
             Self::NotFound => "unknown_user",
@@ -214,28 +231,30 @@ impl UnresolvedReason {
 }
 
 impl LoginIdentifierMatch {
-    /// 誰にも当たらなかった。
+    /// Matched no one.
     pub fn not_found() -> Self {
         Self::Unresolved(UnresolvedReason::NotFound)
     }
 
-    /// 複数人に当たった。
+    /// Matched several people.
     pub fn ambiguous() -> Self {
         Self::Unresolved(UnresolvedReason::Ambiguous)
     }
 
-    /// その値が**すでに誰かのものか**（登録・改名時の空き判定）。
+    /// Whether the value **already belongs to someone** (availability check on registration /
+    /// rename).
     ///
-    /// **曖昧も「使用中」に数える。** 曖昧とは「すでに複数人に当たる」ことで、空きの反対である。
-    /// ここを `Resolved` だけで見ると、曖昧な値に 3 人目を足せてしまう。
+    /// **Ambiguous also counts as "in use".** Ambiguous means "already matches several", the
+    /// opposite of free. Looking only at `Resolved` here would let a third person be added to an
+    /// ambiguous value.
     pub fn is_taken(&self) -> bool {
         !matches!(self, Self::Unresolved(UnresolvedReason::NotFound))
     }
 
-    /// 解決できた利用者。曖昧・不在はいずれも `None`。
+    /// The resolved user. Both ambiguous and absent give `None`.
     ///
-    /// 理由で分岐しない呼び出し側（テスト・解決結果だけが要る箇所）のための取り出し口で、
-    /// **ログイン経路では使わない** —— そこは理由ごとに監査を残す必要がある。
+    /// An accessor for callers that do not branch on the reason (tests, places that only need the
+    /// result); **not used in login paths** — those must record an audit entry per reason.
     pub fn into_user(self) -> Option<User> {
         match self {
             Self::Resolved(user) => Some(user),
@@ -253,19 +272,20 @@ impl From<Option<User>> for LoginIdentifierMatch {
     }
 }
 
-/// ログイン欄への入力を、種別ごとの照合キーの候補へ広げる。
+/// Expands login field input into candidate match keys per type.
 ///
-/// 入力そのものには種別が書かれていない（利用者は「自分の番号」を打つだけ）ため、
-/// **どの種別として読んだらどうなるか**を作って一致を探す。種別ごとに正規化が違う以上、
-/// 「1 つに正規化してから引く」ことはできない。
+/// The input itself does not state its type (users just type "my number"), so it builds **what it
+/// would be when read as each type** and looks for matches. Since normalization differs per type,
+/// "normalize once and look up" is not possible.
 ///
-/// 候補を作るのは [`LoginIdentifierType::accepts`] が通る種別だけ。登録時の検証と同じ判定を
-/// 使うことで、「登録できる値は必ずその種別の候補になる」「登録できない読み方では引かない」の
-/// 両方が成り立つ。後者を守らないと、ユーザー名から抜き出した数字が他人の電話番号に当たる
-/// （`accepts` のコメント参照）。
+/// Candidates are built only for types that pass [`LoginIdentifierType::accepts`]. Using the same
+/// check as registration validation makes both "a registrable value always becomes a candidate of
+/// its type" and "readings that cannot be registered are not looked up" hold. Without the latter,
+/// digits taken from a username could hit someone else's phone number (see the comment on
+/// `accepts`).
 ///
-/// 重複は落とす（`alice` は username と email で同じ正規化になり得るが、`IN` に同じ組を
-/// 2 度置く意味はない）。
+/// Duplicates are dropped (`alice` may normalize the same as username and email, but there is no
+/// point putting the same pair twice in `IN`).
 pub fn lookup_candidates(input: &str) -> Vec<(LoginIdentifierType, String)> {
     use LoginIdentifierType::*;
     let mut out: Vec<(LoginIdentifierType, String)> = Vec::new();
@@ -284,30 +304,33 @@ pub fn lookup_candidates(input: &str) -> Vec<(LoginIdentifierType, String)> {
     out
 }
 
-/// 登録簿の 1 行。
+/// One row of the registry.
 #[derive(Debug, Clone)]
 pub struct UserLoginIdentifier {
     pub id: Uuid,
-    /// 所属元テナント。一意性はテナント内で見る（ADR-0009 §2）。
+    /// Home tenant. Uniqueness is checked within the tenant (ADR-0009 §2).
     pub tenant_id: TenantId,
     pub user_id: Uuid,
     pub identifier_type: LoginIdentifierType,
-    /// 利用者が登録したままの値（表示用）。
+    /// The value as the user registered it (for display).
     pub display_value: String,
-    /// 照合キー（種別ごとの正規化を適用済み）。
+    /// Match key (with per-type normalization applied).
     pub normalized_value: String,
-    /// `false` ならログイン欄で一致しない。
+    /// If `false`, it does not match in the login field.
     pub is_active: bool,
-    /// 主たるログイン識別子か（AP15）。1 利用者につき 1 行まで（DB の UNIQUE で保証）。
+    /// Whether it is the primary login identifier (AP15). At most one row per user (guaranteed by a
+    /// DB UNIQUE).
     ///
-    /// 主識別子は**識別子単位では変更・削除できない**（変えるならプロフィール編集、止めるなら
-    /// アカウントの無効化）。追加の識別子とは扱いが違うため、種別ではなくこの列で区別する。
+    /// The primary identifier **cannot be changed or deleted per identifier** (change it via
+    /// profile editing, stop it via account deactivation). It is handled differently from
+    /// additional identifiers, so this column distinguishes it, not the type.
     pub is_primary: bool,
-    /// 主メールアドレスの行か（ADR-0050）。`users.email` の写しであり、`is_primary` と同じ理由で
-    /// 識別子単位では変更・削除できない。
+    /// Whether it is the primary email address row (ADR-0050). A copy of `users.email`; for the
+    /// same reason as `is_primary` it cannot be changed or deleted per identifier.
     ///
-    /// `is_primary` と別の列なのは、**同じ行が両方であることは無い**ため（同じ正規化値の行は
-    /// 1 本しか作れないので、ユーザー名とメールが同じ値の利用者には主メール行が無い。決定 6）。
+    /// It is a separate column from `is_primary` because **the same row is never both** (only one
+    /// row per normalized value can exist, so users whose username and email are the same value
+    /// have no primary email row; decision 6).
     pub is_primary_email: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -343,9 +366,10 @@ mod tests {
 
     #[test]
     fn phone_normalization_keeps_international_prefix_distinct() {
-        // 先頭の `+` を落とすと国内表記と国際表記が同じキーになる。国番号と国内プレフィクスの
-        // 対応（`+81 90…` = `090…`）は国ごとに違い、ここで推測すると別人の番号に当たり得る。
-        // 両方でログインさせたいなら、両方を識別子として登録する。
+        // Dropping the leading `+` would make domestic and international notation the same key. The
+        // mapping between country codes and domestic prefixes (`+81 90…` = `090…`) differs per
+        // country, and guessing here could hit someone else's number. To allow login with both,
+        // register both as identifiers.
         assert_ne!(
             LoginIdentifierType::PhoneNumber.normalize("+819012345678"),
             LoginIdentifierType::PhoneNumber.normalize("09012345678")
@@ -360,7 +384,7 @@ mod tests {
         assert!(LoginIdentifierType::Email
             .normalize_checked("not-an-email")
             .is_err());
-        // 数字が足りない・記号が混ざる電話番号は登録させない。
+        // Phone numbers with too few digits or mixed symbols cannot be registered.
         assert!(LoginIdentifierType::PhoneNumber
             .normalize_checked("12345")
             .is_err());
@@ -370,7 +394,8 @@ mod tests {
         assert!(LoginIdentifierType::PhoneNumber
             .normalize_checked("090-1234-5678")
             .is_ok());
-        // 空白を含む社員番号は、正規化で空白が落ちて「登録した書き方では引けない」値になる。
+        // An employee number containing spaces would become a value "not findable in the way it was
+        // registered" once normalization drops them.
         assert!(LoginIdentifierType::EmployeeNumber
             .normalize_checked("A 1234")
             .is_err());
@@ -379,8 +404,8 @@ mod tests {
             .is_ok());
     }
 
-    /// 登録できる値は、必ずその種別の候補として引き当てられなければならない。
-    /// ここがずれると「登録はできたのにログインできない識別子」が生まれる。
+    /// A registrable value must always be found as a candidate of its type.
+    /// If this drifts, "identifiers that could be registered but cannot log in" appear.
     #[test]
     fn every_registrable_value_is_looked_up_under_its_own_type() {
         let cases = [
@@ -394,15 +419,15 @@ mod tests {
             let normalized = kind.normalize_checked(raw).expect("registrable");
             assert!(
                 lookup_candidates(raw).contains(&(kind, normalized.clone())),
-                "{kind} / {raw} が候補に出ない"
+                "{kind} / {raw} is not among the candidates"
             );
         }
     }
 
-    /// 逆向き: その種別として**登録できない**読み方では引かない。
+    /// Reverse direction: readings that **cannot be registered** as that type are not looked up.
     ///
-    /// これを守らないと、ユーザー名 `alice123456` から数字を抜いた `123456` が、
-    /// 別人の電話番号に一致してしまう（`LIMIT 1` でどちらが返るかは不定）。
+    /// Without this, `123456` taken from the username `alice123456` would
+    /// match someone else's phone number (which one `LIMIT 1` returns is undefined).
     #[test]
     fn does_not_look_up_types_the_input_could_not_be_registered_as() {
         let candidates = lookup_candidates("alice123456");
@@ -414,7 +439,8 @@ mod tests {
             .any(|(k, _)| *k == LoginIdentifierType::Email));
         assert!(candidates.contains(&(LoginIdentifierType::Username, "alice123456".to_string())));
 
-        // 空白を含む入力は社員番号として引かない（`a b` から `AB` を作ると別人に当たり得る）。
+        // Input with whitespace is not looked up as an employee number (making `AB` from `a b`
+        // could hit someone else).
         assert!(!lookup_candidates("a b")
             .iter()
             .any(|(k, _)| *k == LoginIdentifierType::EmployeeNumber));
@@ -423,7 +449,8 @@ mod tests {
     #[test]
     fn lookup_candidates_are_empty_for_blank_input() {
         assert!(lookup_candidates("   ").is_empty());
-        // `+` だけの入力を電話番号候補にすると、全員の番号に当たり得るキーになる。
+        // Making `+`-only input a phone number candidate would create a key that could match
+        // everyone's number.
         assert!(!lookup_candidates("+")
             .iter()
             .any(|(k, _)| *k == LoginIdentifierType::PhoneNumber));

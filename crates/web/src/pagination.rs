@@ -1,25 +1,25 @@
-//! 一覧画面のページャ（前後リンク）の組み立て（G7）。
+//! Building the list screens' pager (prev/next links) (G7).
 //!
-//! ページングそのものは api（DB）側が行い、web は「今どこを見ているか」をクエリ文字列で
-//! 引き継いで前後リンクを描くだけである。判定規則（次ページの有無・オーバーフロー対策）は
-//! 一覧ごとに複製せず本モジュールへ集約する。
+//! Paging itself is done by the api (DB); web only carries over "where we are" in the query string
+//! and draws prev/next links. The rules (whether a next page exists, overflow protection) are not
+//! duplicated per list but collected in this module.
 
-/// ページャの前後リンク。該当が無ければ `None`。
+/// The pager's prev/next links. `None` when not applicable.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PagerLinks {
     pub prev: Option<String>,
     pub next: Option<String>,
 }
 
-/// 前後リンクを組み立てる。
+/// Builds the prev/next links.
 ///
-/// - `base`: クエリ文字列を除いた遷移先（例 `/{tenant}/admin/clients`）
-/// - `extra`: `offset` 以外に引き継ぐクエリ（絞り込み語など。値はここでエンコードする）
-/// - `offset` / `limit`: **api が実際に適用した**位置と刻み幅
-/// - `total`: 絞り込み後の総件数
+/// - `base`: destination without the query string (e.g. `/{tenant}/admin/clients`)
+/// - `extra`: queries to carry over besides `offset` (filter terms etc.; values are encoded here)
+/// - `offset` / `limit`: the position and step **actually applied by the api**
+/// - `total`: total count after filtering
 ///
-/// 次ページの有無は**総件数**で判定する。受信件数が `limit` に満たないかどうかで判定すると、
-/// 最終ページがちょうど埋まったときに空ページへのリンクが出る。
+/// Whether a next page exists is decided by the **total count**. Deciding by whether the received count is below
+/// `limit` would show a link to an empty page when the last page is exactly full.
 pub fn pager_links(
     base: &str,
     extra: &[(&str, &str)],
@@ -27,12 +27,12 @@ pub fn pager_links(
     limit: i64,
     total: i64,
 ) -> PagerLinks {
-    // limit は api が適用した値。0 以下が返ることは無いが、加算の安全側として弾く。
+    // limit is the value applied by the api. It never returns 0 or less, but reject it to be safe for the addition.
     let limit = limit.max(1);
     let offset = offset.max(0);
-    // `offset` はクエリ由来（`?offset=9223372036854775807` も来る）。素の加算は debug ビルドで
-    // オーバーフロー panic、release ビルドでは負の値へ回り込んで不正な「次へ」リンクになるため、
-    // 飽和加算にする。飽和した値は `total` 未満にならないので「次へ」は出ない（意図どおり）。
+    // `offset` comes from the query (`?offset=9223372036854775807` happens too). Plain addition would
+    // panic on overflow in debug builds and wrap to a negative value in release builds, producing a bogus
+    // "next" link, so use saturating addition. A saturated value is never below `total`, so no "next" (as intended).
     let next_offset = offset.saturating_add(limit);
     PagerLinks {
         prev: (offset > 0).then(|| href(base, extra, (offset - limit).max(0))),
@@ -51,7 +51,7 @@ fn href(base: &str, extra: &[(&str, &str)], offset: i64) -> String {
     format!("{base}?{query}")
 }
 
-/// クエリ文字列へ載せる値のパーセントエンコード（RFC 3986 の unreserved 以外を変換する）。
+/// Percent-encodes a value for the query string (converts everything except RFC 3986 unreserved).
 pub fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
@@ -65,8 +65,8 @@ pub fn urlencode(s: &str) -> String {
     out
 }
 
-/// api へ渡すページングクエリ。`offset` は常に載せ、既定で足りる `limit` は載せない
-/// （上限・既定値の決定は api 側の責務。web が二重に持たない）。
+/// Paging query passed to the api. `offset` is always included; `limit` is omitted when the default suffices
+/// (deciding limits and defaults is the api's job; web does not duplicate it).
 pub fn page_query(offset: i64) -> Vec<(&'static str, String)> {
     vec![("offset", offset.max(0).to_string())]
 }
@@ -82,7 +82,7 @@ mod tests {
         assert_eq!(links.next.as_deref(), Some("/t/admin/clients?offset=50"));
     }
 
-    /// 最終ページがちょうど `limit` 件で埋まっても「次へ」を出さない（総件数で判定するため）。
+    /// Even if the last page is exactly `limit` items, no "next" is shown (decided by total count).
     #[test]
     fn a_full_last_page_does_not_offer_a_next_link() {
         let links = pager_links("/t/admin/clients", &[], 50, 50, 100);
@@ -90,7 +90,7 @@ mod tests {
         assert_eq!(links.next, None);
     }
 
-    /// `offset` は利用者入力である。飽和加算で panic も回り込みも起こさない。
+    /// `offset` is user input. Saturating addition causes neither panic nor wrap-around.
     #[test]
     fn a_saturating_offset_never_produces_a_next_link() {
         let links = pager_links("/t/admin/clients", &[], i64::MAX, 50, 100);

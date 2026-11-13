@@ -1,11 +1,11 @@
-//! Passkey（WebAuthn）API ハンドラ（`/internal/passkey/*`）。
+//! Passkey (WebAuthn) API handlers (`/internal/passkey/*`).
 //!
-//! セルフ登録（register/begin, register/complete, delete, list）と、ログイン 3 経路の認証
-//! （login/begin と、経路ごとの login/complete・login/admin/complete・login/portal/complete）を
-//! 提供する。**開始（begin）は 3 経路で共通**で、`auth_session_id` を渡すかどうかがそのまま
-//! チャレンジの用途になる（渡す＝ OIDC 認可フロー、渡さない＝直接ログイン）。Cookie から
-//! その値を決めるのは web の仕事で、api は渡された値だけを見る。
-//! すべて `/internal/*` ルータに属し、サービス認証トークンで保護される。
+//! Provides self-registration (register/begin, register/complete, delete, list) and authentication for the 3 login paths
+//! (login/begin, plus per-path login/complete, login/admin/complete, login/portal/complete).
+//! **Begin is shared by the 3 paths**; whether `auth_session_id` is passed directly decides
+//! the challenge's purpose (passed = OIDC authorization flow, not passed = direct login). Deciding that value
+//! from the cookie is web's job; the api only looks at the value passed.
+//! All belong to the `/internal/*` router and are protected by the service auth token.
 
 use crate::application::admin_login::{AdminLoginOutcome, AdminPasskeyLoginCommand};
 use crate::application::audit::RequestContext;
@@ -30,7 +30,7 @@ use axum::response::Response;
 use axum::Json;
 use uuid::Uuid;
 
-/// Passkey 登録開始（`POST /internal/passkey/register/begin`）。
+/// Starts passkey registration (`POST /internal/passkey/register/begin`).
 pub async fn register_begin(
     State(state): State<AppState>,
     Json(req): Json<InternalPasskeyRegisterBeginRequest>,
@@ -54,7 +54,7 @@ pub async fn register_begin(
     }
 }
 
-/// Passkey 登録完了（`POST /internal/passkey/register/complete`）。
+/// Completes passkey registration (`POST /internal/passkey/register/complete`).
 pub async fn register_complete(
     State(state): State<AppState>,
     Json(req): Json<InternalPasskeyRegisterCompleteRequest>,
@@ -91,13 +91,13 @@ pub async fn register_complete(
     }
 }
 
-/// Passkey 削除（`POST /internal/passkey/delete`）。
+/// Deletes a passkey (`POST /internal/passkey/delete`).
 pub async fn passkey_delete(
     State(state): State<AppState>,
     Json(req): Json<InternalPasskeyDeleteRequest>,
 ) -> Json<InternalPasskeyDeleteResponse> {
     let credential_id = match req.credential_id.parse::<Uuid>() {
-        // 解釈できない id は「そんなパスキーは無い」であって内部エラーではない。
+        // An unparseable id means "no such passkey", not an internal error.
         Ok(id) => id,
         Err(_) => return Json(InternalPasskeyDeleteResponse::NotFound),
     };
@@ -118,7 +118,7 @@ pub async fn passkey_delete(
     }
 }
 
-/// 登録済み Passkey 一覧（`POST /internal/passkey/list`）。
+/// Lists registered passkeys (`POST /internal/passkey/list`).
 pub async fn passkey_list(
     State(state): State<AppState>,
     Json(req): Json<InternalPasskeyListRequest>,
@@ -147,7 +147,7 @@ pub async fn passkey_list(
     }
 }
 
-/// Passkey 認証開始（`POST /internal/passkey/login/begin`）。
+/// Starts passkey authentication (`POST /internal/passkey/login/begin`).
 pub async fn login_begin(
     State(state): State<AppState>,
     Json(req): Json<InternalPasskeyLoginBeginRequest>,
@@ -168,7 +168,7 @@ pub async fn login_begin(
     }
 }
 
-/// Passkey 認証完了（`POST /internal/passkey/login/complete`）。
+/// Completes passkey authentication (`POST /internal/passkey/login/complete`).
 pub async fn login_complete(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -242,11 +242,11 @@ pub async fn login_complete(
     }))
 }
 
-/// 管理コンソールの Passkey ログイン完了（`POST /internal/passkey/login/admin/complete`）。
+/// Completes the admin console passkey login (`POST /internal/passkey/login/admin/complete`).
 ///
-/// 認可フローの `login_complete` と違い、`auth_session` も authorization code も関わらない。
-/// admin 権限を確認して SSO セッションを直接発行する（`AdminLoginService` がパスワード経路と
-/// 同じ判定を通す）。
+/// Unlike the authorization flow's `login_complete`, neither `auth_session` nor an authorization code is involved.
+/// Checks admin permission and issues an SSO session directly (`AdminLoginService` applies the same decision as
+/// the password path).
 pub async fn admin_login_complete(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -298,7 +298,7 @@ pub async fn admin_login_complete(
             InternalAdminPasskeyLoginCompleteResponse::DeviceEnrollmentRequired { ticket }
         }
         AdminLoginOutcome::RateLimited => InternalAdminPasskeyLoginCompleteResponse::RateLimited,
-        // パスワード経路でしか出ない outcome（パスキー経路では到達しない）。
+        // Outcomes that only occur on the password path (unreachable on the passkey path).
         other => {
             tracing::error!(
                 outcome = admin_outcome_label(&other),
@@ -309,10 +309,10 @@ pub async fn admin_login_complete(
     }))
 }
 
-/// ポータルの Passkey ログイン完了（`POST /internal/passkey/login/portal/complete`）。
+/// Completes the portal passkey login (`POST /internal/passkey/login/portal/complete`).
 ///
-/// admin 権限を要求しない点と、メール検証ゲート（SEC6b）・表示言語の返却がある点が管理コンソール版と
-/// 異なる。TOTP のステップは踏ませない（パスキーが `require_mfa` を満たすため）。
+/// Differs from the admin console version in not requiring admin permission, and in having the email verification gate (SEC6b)
+/// and returning the display language. No TOTP step (a passkey satisfies `require_mfa`).
 pub async fn portal_login_complete(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -370,7 +370,7 @@ pub async fn portal_login_complete(
             InternalPortalPasskeyLoginCompleteResponse::DeviceEnrollmentRequired { ticket }
         }
         PortalLoginOutcome::RateLimited => InternalPortalPasskeyLoginCompleteResponse::RateLimited,
-        // パスワード経路でしか出ない outcome（パスキー経路では到達しない）。
+        // Outcomes that only occur on the password path (unreachable on the passkey path).
         other => {
             tracing::error!(
                 outcome = portal_outcome_label(&other),
@@ -381,7 +381,7 @@ pub async fn portal_login_complete(
     }))
 }
 
-/// 到達しないはずの outcome をログへ出すための名前（内部ログなので運用言語＝英語・PII なし）。
+/// Name for logging an outcome that should be unreachable (internal log, so the ops language = English, no PII).
 fn admin_outcome_label(outcome: &AdminLoginOutcome) -> &'static str {
     match outcome {
         AdminLoginOutcome::Success { .. } => "success",
@@ -400,7 +400,7 @@ fn admin_outcome_label(outcome: &AdminLoginOutcome) -> &'static str {
     }
 }
 
-/// 到達しないはずの outcome をログへ出すための名前（内部ログなので運用言語＝英語・PII なし）。
+/// Name for logging an outcome that should be unreachable (internal log, so the ops language = English, no PII).
 fn portal_outcome_label(outcome: &PortalLoginOutcome) -> &'static str {
     match outcome {
         PortalLoginOutcome::Success { .. } => "success",

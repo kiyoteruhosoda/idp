@@ -1,45 +1,45 @@
-//! 管理コンソール（web）が api の JSON 管理 API（`/admin/*`）を呼ぶときに共有する DTO 契約。
+//! DTO contracts shared when the admin console (web) calls api's JSON admin API (`/admin/*`).
 //!
-//! これらは api の `RequirePerms<…>` で保護される管理 API の入出力で、web は SSO セッションを
-//! 交換した管理トークン（`Authorization: Bearer`）で呼ぶ（ADR-0007 §4 / ADR-0037）。この crate は
-//! `utoipa` を持たないため、OpenAPI に載せる口は api 側に同じ形の DTO を `utoipa` 付きで置き、
-//! 形の一致は api のテスト（`…_contract_matches_the_api_dto` 等）が落とす。
+//! These are inputs and outputs of the admin API protected by api's `RequirePerms<…>`, and web calls them with an
+//! admin token (`Authorization: Bearer`) exchanged from the SSO session (ADR-0007 §4 / ADR-0037). This crate
+//! has no `utoipa`, so routes exposed in OpenAPI have a same-shaped DTO with `utoipa` on the api side, and
+//! shape mismatches are caught by api tests (`…_contract_matches_the_api_dto` etc.).
 
 use serde::{Deserialize, Serialize};
 
-/// `GET /admin/whoami` のレスポンス。アクセスできること自体が「有効な管理トークン ＋ `idp.tenant.admin` 保有」を意味する。
+/// Response of `GET /admin/whoami`. Being able to access it at all means "a valid admin token + holding `idp.tenant.admin`".
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WhoamiResponse {
-    /// 認可済み管理利用者の内部 ID（UUID 文字列）。
+    /// Internal ID of the authorized admin user (UUID string).
     pub user_id: String,
-    /// 表示名（未設定なら `None`）。管理コンソールのヘッダ表示に使う。
+    /// Display name (`None` if unset). Shown in the admin console header.
     #[serde(default)]
     pub name: Option<String>,
-    /// ログイン識別子（未設定なら `None`）。表示名が無いときのヘッダ表示の代替に使う。
+    /// Login identifier (`None` if unset). Used in the header in place of a missing display name.
     #[serde(default)]
     pub preferred_username: Option<String>,
-    /// 経路のテナント（`/{tenant_id}/...`）の表示名。管理コンソールの全画面ヘッダに
-    /// 「いまどのテナントを操作しているか」を出すために返す。
+    /// Display name of the route's tenant (`/{tenant_id}/...`). Returned so every admin console screen header
+    /// can show "which tenant you are operating on now".
     ///
-    /// 旧 api（このフィールドを返さない版）と web が混在するローリングデプロイでも
-    /// 復号に失敗しないよう `#[serde(default)]` とする（欠落時はヘッダの名前表示だけが省かれる）。
+    /// `#[serde(default)]` so decoding does not fail during a rolling deploy mixing web with an old api
+    /// (one that does not return this field) (when missing, only the name in the header is omitted).
     #[serde(default)]
     pub tenant_name: Option<String>,
-    /// 呼び出し元がこのテナントで**実際に行使できる**権限コード（含意を展開済み）。
+    /// Permission codes the caller can **actually exercise** in this tenant (implications expanded).
     ///
-    /// 管理コンソールが「入れない画面へのリンクを出さない」ために使う。含意の展開を api 側で
-    /// 済ませてあるので、web は単純な包含判定だけで済む（判定の出所を core に一本化する。
-    /// `handlers::admin_permissions` の絞り込みと同じ理由）。
+    /// Used by the admin console to "not show links to screens it cannot enter". Implications are expanded on the
+    /// api side, so web needs only a simple containment check (keeping a single source of the decision in core;
+    /// the same reason as the filtering in `handlers::admin_permissions`).
     ///
-    /// 旧 api（このフィールドを返さない版）と混在するローリングデプロイでも復号に失敗しないよう
-    /// `#[serde(default)]` とする。**欠落時は空**になるため、消費側は「空＝権限なし」ではなく
-    /// 「絞り込みができない」として扱い、メニューを隠しすぎないこと。
+    /// `#[serde(default)]` so decoding does not fail during a rolling deploy mixed with an old api (one not
+    /// returning this field). **When missing it is empty**, so consumers must treat it as "cannot filter",
+    /// not "empty = no permissions", and not hide too much of the menu.
     #[serde(default)]
     pub permissions: Vec<String>,
 }
 
-/// 利用者の要約（`GET /admin/users?q=` 検索・`GET /admin/users/{id}` の応答）。管理コンソールの
-/// 権限画面が対象利用者を特定・表示するために用いる。パスワードハッシュ等の機微情報は含めない。
+/// User summary (response of `GET /admin/users?q=` search and `GET /admin/users/{id}`). Used by the admin console's
+/// permission screen to identify and show the target user. No sensitive data such as password hashes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserSummaryResponse {
     pub id: String,
@@ -50,101 +50,101 @@ pub struct UserSummaryResponse {
     pub preferred_username: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
-    /// `ACTIVE` / `DISABLED` 等。
+    /// `ACTIVE` / `DISABLED` etc.
     pub status: String,
 }
 
-/// クライアント状況（`GET /admin/clients/status`）。状態・scope・最終利用時刻。
-/// 最終利用時刻は監査ログ由来（成功した token/code 発行の最新時刻）。未使用は `None`。
+/// Client status (`GET /admin/clients/status`). Status, scopes, last used time.
+/// The last used time comes from the audit log (latest successful token/code issuance). `None` if never used.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientStatusResponse {
     pub client_id: String,
     pub app_name: String,
-    /// `ACTIVE` / `DISABLED`。
+    /// `ACTIVE` / `DISABLED`.
     pub status: String,
     pub scopes: Vec<String>,
-    /// RFC3339 文字列。未使用なら `None`。
+    /// RFC3339 string. `None` if never used.
     #[serde(default)]
     pub last_used_at: Option<String>,
 }
 
-/// 付与可能な権限コード（`GET /admin/permissions`。`permissions` マスタ由来）。
+/// Grantable permission codes (`GET /admin/permissions`; from the `permissions` master).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AvailablePermissionsResponse {
     pub codes: Vec<String>,
 }
 
-/// 利用者の保有権限コード一覧（`GET/POST /admin/users/{id}/permissions`・剥奪の応答）。
+/// A user's held permission codes (`GET/POST /admin/users/{id}/permissions` and the revoke response).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserPermissionsResponse {
     pub user_id: String,
     pub permission_codes: Vec<String>,
 }
 
-/// 署名鍵の公開表現（`GET /admin/signing-keys`・`POST /admin/signing-keys` 等のレスポンス要素）。
-/// 秘密鍵は含めない。
+/// Public representation of a signing key (response element of `GET /admin/signing-keys`, `POST /admin/signing-keys` etc.).
+/// No private key.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SigningKeyResponse {
     pub kid: String,
-    /// `RS256` または `ES256`。
+    /// `RS256` or `ES256`.
     pub algorithm: String,
-    /// `ACTIVE` または `RETIRED`。
+    /// `ACTIVE` or `RETIRED`.
     pub status: String,
-    /// RFC3339 文字列。
+    /// RFC3339 string.
     pub not_before: String,
-    /// RFC3339 文字列。
+    /// RFC3339 string.
     pub not_after: String,
-    /// RFC3339 文字列。
+    /// RFC3339 string.
     pub created_at: String,
 }
 
-/// 新規署名鍵の生成リクエスト（`POST /admin/signing-keys`）。
+/// Request to generate a new signing key (`POST /admin/signing-keys`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerateSigningKeyRequest {
-    /// `RS256` または `ES256`。
+    /// `RS256` or `ES256`.
     pub algorithm: String,
 }
 
-/// SAML メタデータ取り込みリクエスト（メタデータ XML を貼り付けて登録候補値を得る）。
-/// SP（クライアント）側・外部 IdP 側のどちらの取り込みにも使う（入力の形は同じ `EntityDescriptor`）。
+/// SAML metadata import request (paste metadata XML to get candidate registration values).
+/// Used for both SP (client) side and external IdP side imports (the input shape is the same `EntityDescriptor`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SamlMetadataImportRequest {
-    /// SAML メタデータ XML（`EntityDescriptor`）。
+    /// SAML metadata XML (`EntityDescriptor`).
     pub metadata_xml: String,
 }
 
-/// SAML SP（クライアント）登録リクエスト（`POST /admin/saml-service-providers`）。
+/// SAML SP (client) registration request (`POST /admin/saml-service-providers`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SamlServiceProviderRegisterRequest {
     pub display_name: String,
     pub entity_id: String,
     pub acs_url: String,
-    /// NameID フォーマット（空なら既定の persistent）。
+    /// NameID format (empty means the default persistent).
     #[serde(default)]
     pub name_id_format: String,
-    /// 署名/暗号証明書（任意）。
+    /// Signing/encryption certificate (optional).
     #[serde(default)]
     pub x509_certificate: Option<String>,
     pub enabled: bool,
 }
 
-/// SAML SP（クライアント）更新リクエスト（`PUT /admin/saml-service-providers/{id}`）。
-/// 登録と同じ項目を受け取り、指定 SP の内容を置き換える（テナントは変更しない）。
+/// SAML SP (client) update request (`PUT /admin/saml-service-providers/{id}`).
+/// Takes the same fields as registration and replaces the given SP's content (the tenant is not changed).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SamlServiceProviderUpdateRequest {
     pub display_name: String,
     pub entity_id: String,
     pub acs_url: String,
-    /// NameID フォーマット（空なら既定の persistent）。
+    /// NameID format (empty means the default persistent).
     #[serde(default)]
     pub name_id_format: String,
-    /// 署名/暗号証明書（任意）。
+    /// Signing/encryption certificate (optional).
     #[serde(default)]
     pub x509_certificate: Option<String>,
     pub enabled: bool,
 }
 
-/// SAML SP（クライアント）の管理 API 表現。
+/// Admin API representation of a SAML SP (client).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SamlServiceProviderResponse {
     pub id: String,
@@ -153,7 +153,7 @@ pub struct SamlServiceProviderResponse {
     pub entity_id: String,
     pub acs_url: String,
     pub name_id_format: String,
-    /// 署名/暗号証明書（任意。設定されていなければ `None`）。編集フォームの初期値に使う。
+    /// Signing/encryption certificate (optional; `None` if not set). Used as the edit form's initial value.
     #[serde(default)]
     pub x509_certificate: Option<String>,
     pub enabled: bool,
@@ -161,7 +161,7 @@ pub struct SamlServiceProviderResponse {
     pub updated_at: String,
 }
 
-/// SAML SP メタデータ取り込みの応答（登録フォームの初期値）。
+/// Response of SAML SP metadata import (initial values of the registration form).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SamlSpMetadataImportResponse {
     #[serde(default)]
@@ -174,94 +174,94 @@ pub struct SamlSpMetadataImportResponse {
     pub x509_certificate: String,
 }
 
-/// 外部 SAML IdP メタデータ取り込みの応答（外部 IdP 登録フォームの初期値。AP12）。
+/// Response of external SAML IdP metadata import (initial values of the external IdP registration form; AP12).
 ///
-/// `entity_id` は登録時の `issuer`（アサーションの `<Issuer>` と完全一致で照合する値）になる。
+/// `entity_id` becomes the `issuer` at registration (the value matched exactly against the assertion's `<Issuer>`).
 ///
-/// api 側は同じ形の DTO（`SamlIdpMetadataImportRequest` / `SamlIdpMetadataImportResponse`）を
-/// `utoipa` 付きで持つ（task #124）。食い違いは api のテスト（`saml_metadata_import_contract_matches_the_api_dto`）が落とす。
+/// The api side has same-shaped DTOs (`SamlIdpMetadataImportRequest` / `SamlIdpMetadataImportResponse`)
+/// with `utoipa` (task #124). Mismatches are caught by an api test (`saml_metadata_import_contract_matches_the_api_dto`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SamlIdpMetadataImportResponse {
     #[serde(default)]
     pub display_name: String,
     pub entity_id: String,
     pub sso_url: String,
-    /// 署名検証に使う証明書。**複数返る**（証明書更新期間は新旧 2 枚が同時に有効）。
+    /// Certificates for signature verification. **Several may be returned** (during certificate rollover, old and new are both valid).
     #[serde(default)]
     pub certificates: Vec<String>,
     #[serde(default)]
     pub name_id_format: String,
 }
 
-/// 外部 OIDC IdP の discovery 取り込みの要求（`POST /admin/external-idps/import-discovery`。task #77）。
+/// Request to import an external OIDC IdP's discovery (`POST /admin/external-idps/import-discovery`; task #77).
 ///
-/// api 側は同じ形の DTO（`OidcDiscoveryImportRequest` / `OidcDiscoveryImportResponse`）を
-/// `utoipa` 付きで持つ。食い違いは api のテスト（`discovery_import_contract_matches_the_api_dto`）が落とす。
+/// The api side has same-shaped DTOs (`OidcDiscoveryImportRequest` / `OidcDiscoveryImportResponse`)
+/// with `utoipa`. Mismatches are caught by an api test (`discovery_import_contract_matches_the_api_dto`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OidcDiscoveryImportRequest {
     pub issuer: String,
 }
 
-/// 外部 OIDC IdP の discovery 取り込みの応答（外部 IdP 登録フォームの初期値。登録はしていない）。
+/// Response of importing an external OIDC IdP's discovery (initial values of the external IdP registration form; not registered).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OidcDiscoveryImportResponse {
-    /// 文書の `issuer`（入力と完全一致したもの）。
+    /// The document's `issuer` (the one that matched the input exactly).
     pub issuer: String,
     pub authorization_endpoint: String,
     pub token_endpoint: String,
     pub jwks_uri: String,
 }
 
-// ── 認証ポリシー（AP1。管理コンソールが `/admin/authentication-policies` を呼ぶための契約）──
+// ── Authentication policies (AP1; contract for the admin console calling `/admin/authentication-policies`) ──
 //
-// api 側は同じ形の DTO を `presentation::dto` に持つ（そちらは `utoipa` を付けて OpenAPI に載せる
-// ため）。**2 つが食い違うと管理画面から保存できなくなる**ので、api のテスト
-// （`authentication_policy_contract_matches_the_api_dto`）が JSON を往復させて形の一致を固定する。
+// The api side has same-shaped DTOs in `presentation::dto` (those carry `utoipa` to appear in OpenAPI).
+// **If the two diverge, saving from the admin screen breaks**, so an api test
+// (`authentication_policy_contract_matches_the_api_dto`) round-trips JSON to pin the shapes together.
 
-/// 認証ポリシーの管理 API 表現（`GET /admin/authentication-policies` の要素）。
+/// Admin API representation of an authentication policy (element of `GET /admin/authentication-policies`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthenticationPolicyResponse {
     pub id: String,
     pub policy_code: String,
     pub policy_name: String,
-    /// 評価順（昇順 = 小さいほど優先）。
+    /// Evaluation order (ascending = smaller has priority).
     pub priority: i32,
     pub enabled: bool,
-    /// `allow` / `deny` / `require_mfa` / `require_specific_method`。
+    /// `allow` / `deny` / `require_mfa` / `require_specific_method`.
     pub effect: String,
-    /// `require_specific_method` の要求内容（他の効果では `None`）。
+    /// Requirement of `require_specific_method` (`None` for other effects).
     #[serde(default)]
     pub effect_params: Option<RequiredMethodsPayload>,
-    /// 対象アプリの内部 ID（空 = 全アプリ。ADR-0054 の決定 5）。
+    /// Internal IDs of target apps (empty = all apps; decision 5 of ADR-0054).
     #[serde(default)]
     pub application_ids: Vec<String>,
-    /// 対象ユーザーの内部 ID（空 = 全ユーザー）。
+    /// Internal IDs of target users (empty = all users).
     #[serde(default)]
     pub user_ids: Vec<String>,
-    /// 対象ネットワークゾーン（CIDR 表記。空 = 全ネットワーク）。
+    /// Target network zones (CIDR notation; empty = all networks).
     #[serde(default)]
     pub ip_cidrs: Vec<String>,
-    /// 適用時間帯（空 = 常時）。
+    /// Applicable time windows (empty = always).
     #[serde(default)]
     pub time_windows: Vec<TimeWindowPayload>,
-    /// 認可要求の `acr_values` 条件（空 = 要求内容を問わない）。
+    /// `acr_values` condition of the authorization request (empty = regardless of the request).
     #[serde(default)]
     pub requested_acr: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
 }
 
-/// 認証ポリシー一覧（priority 昇順）。
+/// Authentication policy list (ascending priority).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthenticationPoliciesResponse {
     pub policies: Vec<AuthenticationPolicyResponse>,
-    /// どのポリシーにも一致しないときの既定動作（`allow` / `deny`）。**このテナントの値**
-    /// （ADR-0058 §4）。ポリシーの意味はこの値と組み合わせて初めて決まるので、一覧と同じ応答に載せる
-    /// ——web はこれを描くだけで、自分では値を持たない（ADR-0058 §10）。
+    /// Default effect when no policy matches (`allow` / `deny`). **This tenant's value**
+    /// (ADR-0058 §4). Policies mean something only combined with this value, so it is in the same response as the list:
+    /// web only renders it and holds no value itself (ADR-0058 §10).
     pub default_effect: String,
 }
 
-/// 認証ポリシーの作成・更新（全項目置換）リクエスト。
+/// Request to create or update (full replacement) an authentication policy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthenticationPolicyUpsertRequest {
     pub policy_code: String,
@@ -271,7 +271,7 @@ pub struct AuthenticationPolicyUpsertRequest {
     pub effect: String,
     #[serde(default)]
     pub effect_params: Option<RequiredMethodsPayload>,
-    /// 対象アプリの内部 ID（空 = 全アプリ。ADR-0054 の決定 5）。
+    /// Internal IDs of target apps (empty = all apps; decision 5 of ADR-0054).
     #[serde(default)]
     pub application_ids: Vec<String>,
     #[serde(default)]
@@ -284,12 +284,12 @@ pub struct AuthenticationPolicyUpsertRequest {
     pub requested_acr: Vec<String>,
 }
 
-/// `require_specific_method` で指定できる認証方式のコード（表示順）。
+/// Authentication method codes selectable for `require_specific_method` (display order).
 ///
-/// 実体は api 側の `AuthenticationMethod`（保存値の文字列）で、ここはその**語彙の写し**である。
-/// web は DB にも core にも触れないため、選択肢を描くにはこの一覧が要る。食い違うと管理画面で
-/// 選んだ方式が api に弾かれるので、api のテスト（`authentication_method_codes_match_the_contract`）
-/// が enum との一致を固定する。
+/// The real thing is api's `AuthenticationMethod` (stored string values); this is **a copy of that vocabulary**.
+/// web touches neither the DB nor core, so it needs this list to render the options. If they diverge, a method chosen
+/// on the admin screen is rejected by api, so an api test (`authentication_method_codes_match_the_contract`)
+/// pins it to the enum.
 pub const AUTHENTICATION_METHOD_CODES: &[&str] = &[
     "password",
     "totp",
@@ -300,74 +300,74 @@ pub const AUTHENTICATION_METHOD_CODES: &[&str] = &[
     "external_idp",
 ];
 
-/// ログイン識別子の種別コード（表示順。AP8 / AP16）。
+/// Login identifier type codes (display order; AP8 / AP16).
 ///
-/// 実体は api 側の `LoginIdentifierType`（保存値の文字列）で、ここはその**語彙の写し**である。
-/// web は DB にも core にも触れないため、管理画面の種別プルダウンを描くにはこの一覧が要る。
-/// 食い違うと画面で選んだ種別が api に弾かれるので、api のテスト
-/// （`login_identifier_type_codes_match_the_contract`）が enum との一致を固定する。
+/// The real thing is api's `LoginIdentifierType` (stored string values); this is **a copy of that vocabulary**.
+/// web touches neither the DB nor core, so it needs this list to render the type dropdown on the admin screen.
+/// If they diverge, a type chosen on screen is rejected by api, so an api test
+/// (`login_identifier_type_codes_match_the_contract`) pins it to the enum.
 pub const LOGIN_IDENTIFIER_TYPE_CODES: &[&str] =
     &["username", "email", "phone_number", "employee_number"];
 
-/// `require_specific_method` の要求内容。
+/// Requirement of `require_specific_method`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequiredMethodsPayload {
-    /// 許可する認証方式。**いずれか 1 つ**を使っていれば満たす。
+    /// Allowed authentication methods. Satisfied by using **any one** of them.
     #[serde(default)]
     pub methods: Vec<String>,
-    /// WebAuthn の User Verification（生体・PIN）を必須とするか。
+    /// Whether WebAuthn User Verification (biometric, PIN) is required.
     #[serde(default)]
     pub user_verification: bool,
 }
 
-/// 適用時間帯。タイムゾーンは固定 UTC オフセット（分）で表す。
+/// Applicable time window. The time zone is a fixed UTC offset (minutes).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimeWindowPayload {
-    /// 対象曜日（0 = 日曜 … 6 = 土曜。空 = 全曜日）。
+    /// Target weekdays (0 = Sunday … 6 = Saturday; empty = every day).
     #[serde(default)]
     pub days: Vec<u8>,
-    /// 開始時刻（0 時からの分。0〜1439）。
+    /// Start time (minutes from 0:00; 0..1439).
     pub start_minute: u16,
-    /// 終了時刻（同上。開始より小さい場合は日をまたぐ帯）。
+    /// End time (same; if smaller than the start, the window crosses midnight).
     pub end_minute: u16,
-    /// UTC オフセット（分。例: JST = 540）。
+    /// UTC offset (minutes; e.g. JST = 540).
     #[serde(default)]
     pub utc_offset_minutes: i16,
 }
 
-/// 管理トークン交換の要求（`POST /internal/admin/token`。ADR-0037）。
+/// Admin token exchange request (`POST /internal/admin/token`; ADR-0037).
 ///
-/// 管理コンソール（web）は SSO セッション Cookie の値をここへ渡し、api の管理 API を呼ぶための
-/// アクセストークンを受け取る。**Cookie そのものを api の管理 API へ転送する経路は無い。**
+/// The admin console (web) passes the SSO session cookie value here and receives an access token for calling
+/// api's admin API. **There is no route forwarding the cookie itself to api's admin API.**
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManagementTokenRequest {
-    /// 操作対象テナント（`/internal/*` はパスにテナントを持たないため DTO で渡す）。
+    /// Target tenant (`/internal/*` has no tenant in the path, so it is passed in the DTO).
     pub tenant_id: String,
-    /// SSO セッション Cookie の平文値。
+    /// Plain value of the SSO session cookie.
     pub sso_session_id: String,
 }
 
-/// 管理トークン交換の応答。
+/// Admin token exchange response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManagementTokenResponse {
     pub access_token: String,
     pub token_type: String,
     pub expires_in: u64,
-    /// 発行時点で主体が保有していた権限コード。コンソールが画面・操作の出し分けに使う。
+    /// Permission codes the principal held at issuance. The console uses them to tailor screens and operations.
     pub permission_codes: Vec<String>,
     pub name: Option<String>,
     pub preferred_username: Option<String>,
 }
 
-/// クライアントの保有権限コード一覧（`GET/POST/DELETE /admin/clients/{client_id}/permissions`）。
+/// A client's held permission codes (`GET/POST/DELETE /admin/clients/{client_id}/permissions`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientPermissionsResponse {
     pub client_id: String,
     pub permission_codes: Vec<String>,
 }
 
-/// アカウント（人・サービスアカウント）の管理者メモの上限（文字数。ADR-0063 / ADR-0065）。
+/// Maximum length (characters) of the admin note on an account (person or service account; ADR-0063 / ADR-0065).
 ///
-/// api の検証（`domain::account_note`）と web の入力欄（`maxlength`）が同じ値を読む。片方だけ
-/// 変えると、画面では書けるのに保存で断られる。
+/// api's validation (`domain::account_note`) and web's input field (`maxlength`) read the same value. Changing only
+/// one side means it can be typed on screen but is refused on save.
 pub const ACCOUNT_NOTE_MAX_LEN: usize = 2000;

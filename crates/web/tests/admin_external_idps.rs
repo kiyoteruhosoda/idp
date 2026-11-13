@@ -1,12 +1,12 @@
-//! 外部 IdP 設定画面のルータ経由の統合テスト（AP16。土台は G11。SAML 対応は AP12）。
+//! Router-level integration tests of the external IdP settings screen (AP16; built on G11; SAML support is AP12).
 //!
-//! この画面の要は**クライアントシークレットの扱い**である。api はシークレットを返さないため
-//! 編集フォームに現在値を出せず、空欄の意味を決めなければならない。ここでは api をスタブして、
-//! 実際に送られる HTTP ボディで「空欄＝変更しない」が守られていることを確かめる。
-//! ここが崩れると、表示名を直しただけで外部 IdP との連携が壊れる。
+//! The key point of this screen is **handling the client secret**. The api does not return secrets, so
+//! the edit form cannot show the current value and the meaning of a blank must be decided. Here we stub the api and
+//! check with the actual HTTP body that "blank = unchanged" holds.
+//! If this breaks, merely fixing the display name breaks the link with the external IdP.
 //!
-//! もう一つの要は**プロトコルの出し分け**である。OIDC と SAML は必要な項目がまったく違い、
-//! 混ざった設定は api が受け付けても誤りがログイン時まで表に出ない。
+//! The other key point is **splitting by protocol**. OIDC and SAML need completely different fields, and
+//! even if the api accepted a mixed configuration, the error would stay hidden until sign-in.
 
 mod support;
 
@@ -65,7 +65,7 @@ fn sample_provider() -> Value {
     })
 }
 
-/// SAML のプロバイダ。api は**使わない側のプロトコルの項目を `null`** で返す（ADR-0027）。
+/// A SAML provider. The api returns **fields of the unused protocol as `null`** (ADR-0027).
 fn sample_saml_provider() -> Value {
     json!({
         "id": SAML_PROVIDER_ID,
@@ -92,13 +92,13 @@ fn sample_saml_provider() -> Value {
     })
 }
 
-/// multipart/form-data の POST（メタデータ取り込みフォームと同じ形）。
+/// multipart/form-data POST (same shape as the metadata import form).
 fn post_multipart(uri: &str, cookies: &str, fields: &[(&str, &str)]) -> Request<Body> {
     const BOUNDARY: &str = "----idp-test-boundary";
     let mut body = String::new();
     for (name, value) in fields {
         body.push_str(&format!("--{BOUNDARY}\r\n"));
-        // ファイル欄はファイル名付きで送る（貼り付け欄との優先順を確かめるため）。
+        // The file field is sent with a file name (to check precedence against the paste field).
         if *name == "metadata_file" {
             body.push_str(&format!(
                 "Content-Disposition: form-data; name=\"{name}\"; filename=\"metadata.xml\"\r\n\r\n"
@@ -140,7 +140,7 @@ async fn stub_patch(env: &WebEnv) {
         .await;
 }
 
-/// 登録で api へ届いた本文（取り込みエンドポイントは除く）。
+/// Body that reached the api on registration (excluding the import endpoint).
 async fn posted_body(env: &WebEnv) -> Option<Value> {
     env.api
         .received_requests()
@@ -154,7 +154,7 @@ async fn posted_body(env: &WebEnv) -> Option<Value> {
         .map(|r| serde_json::from_slice(&r.body).expect("json body"))
 }
 
-/// 更新で api へ届いた本文。
+/// Body that reached the api on update.
 async fn patched_body(env: &WebEnv) -> Option<Value> {
     env.api
         .received_requests()
@@ -168,8 +168,8 @@ async fn patched_body(env: &WebEnv) -> Option<Value> {
         .map(|r| serde_json::from_slice(&r.body).expect("json body"))
 }
 
-/// 登録済みの外部 IdP が一覧に出て、**外部 IdP へ登録すべきリダイレクト URI** も見える。
-/// これが出ていないと、設定作業のたびに URL を組み立て方から調べ直すことになる。
+/// Registered external IdPs appear in the list, along with **the redirect URI to register with the external IdP**.
+/// Without it, every configuration task would mean re-researching how to build the URL.
 #[tokio::test]
 async fn the_list_shows_the_redirect_uri_to_register_with_the_provider() {
     let env = setup().await;
@@ -190,8 +190,8 @@ async fn the_list_shows_the_redirect_uri_to_register_with_the_provider() {
     );
 }
 
-/// **空欄のシークレットは送らない。** api の部分更新は未指定の項目に触れないため、これで
-/// 「変更しない」になる。載せてしまうと、表示名を直しただけで連携が壊れる。
+/// **A blank secret is not sent.** The api's partial update does not touch unspecified fields, so this
+/// means "unchanged". Including it would break the link merely by fixing the display name.
 #[tokio::test]
 async fn an_empty_secret_field_leaves_the_stored_secret_alone() {
     let env = setup().await;
@@ -233,12 +233,12 @@ async fn an_empty_secret_field_leaves_the_stored_secret_alone() {
     );
     assert_eq!(body["display_name"], json!("Corp IdP (renamed)"));
     assert_eq!(body["scopes"], json!(["openid", "email"]));
-    // チェックの外れたチェックボックスは送られてこないが、`false` として明示的に送る。
-    // 未指定にすると api が「変更しない」と解釈し、チェックを外しても無効化できない。
+    // Unchecked checkboxes are not submitted, but are explicitly sent as `false`.
+    // Leaving it unspecified makes the api read it as "unchanged", so unchecking could not disable it.
     assert_eq!(body["allow_auto_link"], json!(false));
 }
 
-/// 入力されたシークレットは載せる（置き換え）。
+/// An entered secret is included (replacement).
 #[tokio::test]
 async fn a_filled_secret_field_replaces_the_stored_secret() {
     let env = setup().await;
@@ -276,7 +276,7 @@ async fn a_filled_secret_field_replaces_the_stored_secret() {
     assert_eq!(body["client_secret"], json!("new-secret"));
 }
 
-/// CSRF トークンが合わなければ api を呼ばない。
+/// On CSRF token mismatch the api is not called.
 #[tokio::test]
 async fn a_bad_csrf_token_never_reaches_the_api() {
     let env = setup().await;
@@ -309,11 +309,11 @@ async fn a_bad_csrf_token_never_reaches_the_api() {
     );
 }
 
-// ── SAML 対応（AP12）─────────────────────────────────────────────────────────
+// ── SAML support (AP12) ─────────────────────────────────────────────────────────
 
-/// 一覧に SAML のプロバイダが混ざっても画面が開く。api は使わない側のプロトコルの項目を
-/// `null` で返すため、これを取りこぼすと **SAML を 1 件登録した時点で画面ごと開かなくなる**。
-/// ACS URL と SP entityID も出す（外部 IdP 側へ登録する値で、組み立て規則を推測させない）。
+/// The screen opens even when SAML providers are mixed into the list. The api returns unused protocol fields as
+/// `null`, so failing to handle that means **the whole screen stops opening as soon as one SAML is registered**.
+/// ACS URL and SP entityID are shown too (values to register with the external IdP; do not make admins guess the build rule).
 #[tokio::test]
 async fn the_list_renders_saml_providers_with_the_values_to_register_upstream() {
     let env = setup().await;
@@ -336,15 +336,15 @@ async fn the_list_renders_saml_providers_with_the_values_to_register_upstream() 
         html.contains("https://web.example.com/t/saml/sp"),
         "the SP entityID to register with the provider is missing: {html}"
     );
-    // OIDC のリダイレクト URI も並んで出る（プロトコルごとに列を分けない）。
+    // OIDC redirect URIs are listed alongside (columns are not split per protocol).
     assert!(
         html.contains("https://web.example.com/external/corp/callback"),
         "{html}"
     );
 }
 
-/// SAML を選んだ登録では**SAML の欄だけ**が api へ届く。OIDC の欄も一緒に送ると、api が
-/// 片方だけ埋まった半端な設定を作れてしまい、誤りがログイン時まで表に出ない。
+/// A registration choosing SAML sends **only the SAML fields** to the api. Sending the OIDC fields too would let the api
+/// create a half-filled configuration, and the error would stay hidden until sign-in.
 #[tokio::test]
 async fn registering_a_saml_provider_sends_only_the_saml_fields() {
     let env = setup().await;
@@ -366,7 +366,7 @@ async fn registering_a_saml_provider_sends_only_the_saml_fields() {
                 ("display_name", "Corp SAML"),
                 ("protocol", "saml"),
                 ("issuer", "urn:idp:corp"),
-                // 画面に残っていた OIDC の欄も送られてくるが、api へは渡さない。
+                // OIDC fields left on screen are also submitted, but not passed to the api.
                 (
                     "authorization_endpoint",
                     "https://idp.example.com/authorize",
@@ -374,7 +374,7 @@ async fn registering_a_saml_provider_sends_only_the_saml_fields() {
                 ("client_id", "abc"),
                 ("scope_email", "1"),
                 ("saml_sso_url", "https://idp.example.com/sso"),
-                // ブラウザは textarea の改行を CRLF にして送る。ここも同じ形で送る。
+                // Browsers send textarea newlines as CRLF. Send the same here.
                 (
                     "saml_certificates",
                     "MIIB\r\nCURRENT==\r\n\r\nMIIB\r\nNEXT==",
@@ -394,7 +394,7 @@ async fn registering_a_saml_provider_sends_only_the_saml_fields() {
     let body = posted_body(&env).await.expect("the create reached the api");
     assert_eq!(body["protocol"], json!("saml"));
     assert_eq!(body["saml_sso_url"], json!("https://idp.example.com/sso"));
-    // 証明書は空行区切りで複数枚。行区切りにすると折り返された 1 枚が複数枚に割れる。
+    // Multiple certificates separated by blank lines. Splitting by line would break one wrapped certificate into several.
     assert_eq!(
         body["saml_certificates"],
         json!(["MIIBCURRENT==", "MIIBNEXT=="])
@@ -406,9 +406,9 @@ async fn registering_a_saml_provider_sends_only_the_saml_fields() {
     assert!(body.get("scopes").is_none(), "{body}");
 }
 
-/// 更新は **`protocol` を必ず送る**。api はプロトコル固有の設定を「`protocol` が指定されたときだけ」
-/// まとめて差し替えるため、省くとエンドポイントの変更が黙って無視される（保存したつもりで
-/// 何も変わらない）。
+/// Updates **always send `protocol`**. The api replaces protocol-specific settings together "only when `protocol`
+/// is specified", so omitting it silently ignores endpoint changes (you think you saved, but
+/// nothing changes).
 #[tokio::test]
 async fn an_update_carries_the_protocol_so_endpoint_edits_are_not_silently_dropped() {
     let env = setup().await;
@@ -451,8 +451,8 @@ async fn an_update_carries_the_protocol_so_endpoint_edits_are_not_silently_dropp
     );
 }
 
-/// 貼り付けた IdP メタデータが登録フォームの初期値になる。**登録はしない**（管理者が値を
-/// 確認してから登録する）。証明書は base64 が数行続くため、手で写すと誤りに気づけない。
+/// Pasted IdP metadata becomes the registration form's initial values. **It does not register** (the admin checks
+/// the values before registering). Certificates run several lines of base64, so copying by hand hides mistakes.
 #[tokio::test]
 async fn imported_metadata_prefills_the_form_without_registering_anything() {
     let env = setup().await;
@@ -482,23 +482,23 @@ async fn imported_metadata_prefills_the_form_without_registering_anything() {
         ),
     )
     .await;
-    // 取り込みは登録ではないので PRG を挟まず、その場でフォームを描き直す。
+    // Import is not registration, so no PRG; the form is redrawn in place.
     assert_eq!(response.status(), StatusCode::OK);
     let html = body_text(response).await;
     assert!(html.contains("urn:idp:corp"), "{html}");
     assert!(html.contains("https://idp.example.com/sso"), "{html}");
     assert!(html.contains("MIIBCURRENT=="), "{html}");
-    // 証明書更新期間の 2 枚目も落とさない。
+    // The second certificate during rotation is not dropped either.
     assert!(html.contains("MIIBNEXT=="), "{html}");
-    // 何も登録していない。
+    // Nothing has been registered.
     assert!(
         posted_body(&env).await.is_none(),
         "importing metadata must not register a provider"
     );
 }
 
-/// 取り込みの CSRF トークンが合わなければ api を呼ばない（メタデータ取り込みは管理者の
-/// 画面操作であり、他サイトから踏ませてよい操作ではない）。
+/// On an import CSRF token mismatch the api is not called (metadata import is an admin's screen
+/// operation and must not be triggerable from other sites).
 #[tokio::test]
 async fn a_bad_csrf_token_never_reaches_the_import_endpoint() {
     let env = setup().await;
@@ -529,8 +529,8 @@ async fn a_bad_csrf_token_never_reaches_the_import_endpoint() {
     );
 }
 
-/// **一覧に登録フォームは無い。** 登録は「プロトコルを選ぶ」から始まる —— OIDC と SAML の欄を
-/// 1 枚に並べると、埋めるべき欄と埋めなくてよい欄が同居して読み取れない。
+/// **The list has no registration form.** Registration starts with "choose a protocol" -- putting OIDC and SAML
+/// fields in one form mixes fields to fill with ones not to fill, making it unreadable.
 #[tokio::test]
 async fn the_list_offers_registration_without_showing_a_form() {
     let env = setup().await;
@@ -556,7 +556,7 @@ async fn the_list_offers_registration_without_showing_a_form() {
         !html.contains(r#"name="provider_code""#),
         "the list must not carry a registration form: {html}"
     );
-    // 編集も専用ページへ向かう（一覧に開くフォームが無いため）。
+    // Editing also goes to a dedicated page (the list has no form to open).
     assert!(
         html.contains(&format!(
             r#"href="{}/admin/external-idps/{PROVIDER_ID}/edit""#,
@@ -566,7 +566,7 @@ async fn the_list_offers_registration_without_showing_a_form() {
     );
 }
 
-/// 選択画面は 2 つのプロトコルへ分岐するだけ。
+/// The choice screen only branches to the two protocols.
 #[tokio::test]
 async fn the_entry_point_offers_exactly_the_two_protocols() {
     let env = setup().await;
@@ -594,11 +594,11 @@ async fn the_entry_point_offers_exactly_the_two_protocols() {
     }
 }
 
-/// **OIDC のフォームに SAML の欄は出ない**（逆も同じ）。プロトコルは経路が決めており、
-/// 出し分けの JS は要らない —— JS が動かない環境でも、見えている欄がそのまま送る欄になる。
+/// **The OIDC form has no SAML fields** (and vice versa). The route decides the protocol, and
+/// no JS for toggling is needed -- even without JS, the visible fields are exactly the submitted fields.
 ///
-/// 取り込みはプロトコルごとに別物を出す。SAML は IdP メタデータ XML、OIDC は issuer の discovery
-/// ドキュメント（task #77）。
+/// Import differs per protocol: IdP metadata XML for SAML, the issuer's discovery
+/// document for OIDC (task #77).
 #[tokio::test]
 async fn each_protocol_form_shows_only_its_own_fields() {
     let env = setup().await;
@@ -652,12 +652,12 @@ async fn each_protocol_form_shows_only_its_own_fields() {
         !saml.contains(r#"name="jwks_uri""#),
         "OIDC fields must not appear on the SAML form: {saml}"
     );
-    // scope は OIDC にしか無い（SAML アサーションに scope は無い）。
+    // Scopes exist only in OIDC (SAML assertions have no scopes).
     assert!(!saml.contains(r#"name="scope_email""#), "{saml}");
 }
 
-/// 綴りの違うプロトコルは 404。既定へ丸めると、URL を直打ちした人が意図と違うプロトコルの
-/// フォームを埋めることになる。
+/// A misspelled protocol is 404. Rounding to a default would make someone typing the URL fill in a form
+/// for a protocol they did not intend.
 #[tokio::test]
 async fn an_unknown_protocol_is_not_rounded_to_a_default() {
     let env = setup().await;
@@ -674,8 +674,8 @@ async fn an_unknown_protocol_is_not_rounded_to_a_default() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
-/// 編集はプロトコルが固定で、メタデータの取り込みは出さない（編集中に別の IdP のメタデータで
-/// 上書きすると、何を保存しようとしていたのか分からなくなる）。
+/// Editing has a fixed protocol and offers no metadata import (overwriting with another IdP's metadata while
+/// editing would lose track of what was about to be saved).
 #[tokio::test]
 async fn editing_pins_the_protocol_and_does_not_offer_metadata_import() {
     let env = setup().await;
@@ -696,7 +696,7 @@ async fn editing_pins_the_protocol_and_does_not_offer_metadata_import() {
         .await,
     )
     .await;
-    // プロトコルは変更できない（api も拒否する）。値は hidden で送る。
+    // The protocol cannot be changed (the api also rejects it). The value is sent as hidden.
     assert!(html.contains(r#"name="protocol" value="saml""#), "{html}");
     assert!(
         !html.contains(r#"name="jwks_uri""#),
@@ -706,12 +706,12 @@ async fn editing_pins_the_protocol_and_does_not_offer_metadata_import() {
         !html.contains(r#"name="metadata_xml""#),
         "editing must not offer to overwrite the form from another provider's metadata: {html}"
     );
-    // 保存済みの証明書は空行区切りで戻り、追記・差し替えができる。
+    // Saved certificates come back separated by blank lines and can be appended or replaced.
     assert!(html.contains("MIIBCURRENT==\n\nMIIBNEXT=="), "{html}");
 }
 
-/// 一覧に無い id（削除済み・別テナント）の編集は一覧へ戻す。空のフォームを出すと、編集の
-/// つもりで新規登録することになる。
+/// Editing an id not in the list (deleted, other tenant) returns to the list. Showing an empty form would lead
+/// to creating a new one while thinking you are editing.
 #[tokio::test]
 async fn editing_an_unknown_provider_returns_to_the_list() {
     let env = setup().await;
@@ -736,9 +736,9 @@ async fn editing_an_unknown_provider_returns_to_the_list() {
     );
 }
 
-/// **要求する scope は選択で入れる。** 保存済みの値はチェック状態に戻り、相手方が独自に定義した
-/// scope は自由入力側へ回る —— 選択肢を固定値に閉じると、`groups` のような相手固有の scope が
-/// 編集のたびに落ちる。
+/// **Requested scopes are entered by choice.** Saved values come back as checked states, and scopes the counterpart
+/// defines itself go to free input -- closing the choices to fixed values would drop counterpart-specific scopes like
+/// `groups` on every edit.
 #[tokio::test]
 async fn saved_scopes_come_back_as_checkboxes_and_provider_specific_ones_stay_editable() {
     let env = setup().await;
@@ -766,17 +766,17 @@ async fn saved_scopes_come_back_as_checkboxes_and_provider_specific_ones_stay_ed
         !html.contains(r#"name="scope_profile" checked"#),
         "a scope that was not saved must not look selected: {html}"
     );
-    // 相手固有の scope は自由入力へ。`openid` は必ず付くので、ここには出さない。
+    // Counterpart-specific scopes go to free input. `openid` is always added, so it is not shown here.
     assert!(
         html.contains(r#"id="scopes_extra" name="scopes_extra" value="groups""#),
         "{html}"
     );
 }
 
-/// 知らないプロトコルで登録が失敗したら、**一覧へ落とす**。`protocol` はフォームから来る値で、
-/// ハンドラは未知の綴りを丸めずに api へ通す（判断を 1 か所に寄せるため）。それをそのまま
-/// リダイレクト先の経路へ差し込むと、行き先の無い URL や `?` で壊れたクエリを Location に
-/// 載せることになる。
+/// If registration fails with an unknown protocol, **fall back to the list**. `protocol` comes from the form, and
+/// the handler passes unknown spellings to the api without rounding (to keep the decision in one place). Inserting it
+/// as is into the redirect route would put a URL with no destination, or a query broken by `?`, in
+/// the Location.
 #[tokio::test]
 async fn a_failed_registration_with_an_unknown_protocol_falls_back_to_the_list() {
     let env = setup().await;
@@ -813,7 +813,7 @@ async fn a_failed_registration_with_an_unknown_protocol_falls_back_to_the_list()
     );
 }
 
-/// 登録に失敗したら、同じプロトコルのフォームへ戻す（プロトコルを選び直させない）。
+/// If registration fails, return to the form of the same protocol (do not make them choose the protocol again).
 #[tokio::test]
 async fn a_failed_registration_returns_to_the_form_for_the_same_protocol() {
     let env = setup().await;
@@ -857,7 +857,7 @@ async fn a_failed_registration_returns_to_the_form_for_the_same_protocol() {
     );
 }
 
-/// api へ届いた discovery 取り込みの本文。
+/// Body of the discovery import that reached the api.
 async fn discovery_request(env: &WebEnv) -> Option<Value> {
     env.api
         .received_requests()
@@ -872,8 +872,8 @@ async fn discovery_request(env: &WebEnv) -> Option<Value> {
         .map(|r| serde_json::from_slice(&r.body).expect("json body"))
 }
 
-/// issuer から読み込んだ discovery ドキュメントの値が OIDC の登録フォームの初期値になる。
-/// **登録はしない**（管理者が値を確かめ、クライアント ID を入れてから登録する）。
+/// Values from the discovery document loaded from the issuer become the OIDC registration form's initial values.
+/// **It does not register** (the admin checks the values and enters the client ID before registering).
 #[tokio::test]
 async fn a_discovery_import_prefills_the_oidc_form_without_registering_anything() {
     let env = setup().await;
@@ -901,7 +901,7 @@ async fn a_discovery_import_prefills_the_oidc_form_without_registering_anything(
         ),
     )
     .await;
-    // 取り込みは登録ではないので PRG を挟まず、その場でフォームを描き直す。
+    // Import is not registration, so no PRG; the form is redrawn in place.
     assert_eq!(response.status(), StatusCode::OK);
     let html = body_text(response).await;
     assert!(html.contains(r#"name="protocol" value="oidc""#), "{html}");
@@ -917,7 +917,7 @@ async fn a_discovery_import_prefills_the_oidc_form_without_registering_anything(
         html.contains(r#"value="https://login.corp.example.com/realms/corp/certs""#),
         "{html}"
     );
-    // 入れた issuer（前後の空白は除く）をそのまま api へ渡した。宛先の検査は api の担当。
+    // The entered issuer (trimmed) was passed as is to the api. Destination checks are the api's job.
     assert_eq!(
         discovery_request(&env).await,
         Some(json!({ "issuer": "https://login.corp.example.com/realms/corp" }))
@@ -928,7 +928,7 @@ async fn a_discovery_import_prefills_the_oidc_form_without_registering_anything(
     );
 }
 
-/// api が断ったら（宛先の検査・issuer の不一致など）、入れた issuer を残して理由を出す。
+/// If the api refuses (destination check, issuer mismatch, etc.), keep the entered issuer and show the reason.
 #[tokio::test]
 async fn a_rejected_discovery_import_keeps_the_issuer_and_explains() {
     let env = setup().await;
@@ -967,8 +967,8 @@ async fn a_rejected_discovery_import_keeps_the_issuer_and_explains() {
     assert!(posted_body(&env).await.is_none());
 }
 
-/// CSRF トークンが合わなければ api を呼ばない（api に外へ HTTP を出させる操作を、他サイトから
-/// 踏ませない）。
+/// On CSRF token mismatch the api is not called (do not let other sites trigger an operation that makes the api
+/// send HTTP outward).
 #[tokio::test]
 async fn a_bad_csrf_token_never_reaches_the_discovery_import() {
     let env = setup().await;
@@ -993,8 +993,8 @@ async fn a_bad_csrf_token_never_reaches_the_discovery_import() {
     );
 }
 
-/// 編集中は discovery の取り込みも出さない（別の IdP の値で上書きすると、何を保存しようと
-/// していたのか分からなくなる。SAML のメタデータ取り込みと同じ）。
+/// While editing, discovery import is not offered either (overwriting with another IdP's values would lose track of
+/// what was about to be saved; same as SAML metadata import).
 #[tokio::test]
 async fn editing_does_not_offer_the_discovery_import() {
     let env = setup().await;

@@ -1,8 +1,8 @@
-//! 強制パスワード変更画面（`GET/POST /{tenant_id}/password-change`、ADR-0009 §5）。
+//! Forced password change screen (`GET/POST /{tenant_id}/password-change`, ADR-0009 §5).
 //!
-//! ログインフロー中（`LoginService` がパスワード検証済み・`must_change_password` を検出した状態）に
-//! 表示する。api の `POST /internal/change-password` に委ね、成功時は `LoginService` と同じ
-//! SSO 発行 → 同意/code 発行の結果（`redirect_to`）へ 302 する。
+//! Shown during the login flow (when `LoginService` has verified the password and detected `must_change_password`).
+//! Delegates to the api's `POST /internal/change-password`; on success it 302s to the result (`redirect_to`)
+//! of SSO issuance → consent/code issuance, same as `LoginService`.
 
 use super::{api_internal_error, internal_call_status, locale};
 use crate::client_ip::ClientIp;
@@ -22,8 +22,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 
-/// パスワード変更フォームを表示する。`auth_session_id` Cookie（パスワード検証済み状態）が必要。
-/// `?error=csrf` は CSRF 不一致の POST から PRG で戻ったときのエラーバナー表示。
+/// Shows the password change form. Requires the `auth_session_id` cookie (password-verified state).
+/// `?error=csrf` shows the error banner when coming back via PRG from a POST with a CSRF mismatch.
 pub async fn page(
     State(state): State<WebState>,
     Extension(rp_context): Extension<RpLoginContext>,
@@ -43,15 +43,15 @@ pub async fn page(
         &login_csrf_token(&auth_session_id, state.config.csrf_secret()),
         form_retry_error_key(query.error.as_deref()),
     );
-    // 同意が要らなければこのフォームの送信はそのまま RP へリダイレクトして終わる。ログイン画面と
-    // 同じく RP のオリジンだけ `form-action` に許可する（SEC3）。
+    // If no consent is needed, submitting this form ends in a redirect straight to the RP. As on the login
+    // screen, only the RP's origin is allowed in `form-action` (SEC3).
     crate::security_headers::html_with_form_action_csp(
         rp_context.redirect_uri.as_deref().unwrap_or_default(),
         body,
     )
 }
 
-/// パスワード変更を実行する。成功時は `LoginService` と同じ SSO Cookie 発行 → `redirect_to` へ 302 する。
+/// Performs the password change. On success it issues the SSO cookie like `LoginService` → 302 to `redirect_to`.
 pub async fn submit(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -63,7 +63,7 @@ pub async fn submit(
 ) -> Response {
     let ctx = forwarded_context(&headers, &correlation, &client_ip);
     let auth_session_id = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE);
-    // 再表示するフォームにも初回描画と同じ `form-action` の許可を付ける。
+    // The re-rendered form also gets the same `form-action` allowance as the first render.
     let rp_redirect_uri = rp_context.redirect_uri.as_deref().unwrap_or_default();
 
     if form.new_password != form.new_password_confirm {
@@ -146,8 +146,8 @@ pub async fn submit(
                 .into_response()
         }
         InternalChangePasswordResponse::MfaRequired { auth_session_id } => {
-            // 変更成功・ポリシーにより MFA 必須（TOTP 設定済み）: auth_session_id Cookie を維持して
-            // TOTP 入力画面へ（ログインフローの MfaRequired と同じ遷移）。
+            // Changed, and policy requires MFA (TOTP configured): keep the auth_session_id cookie and
+            // go to the TOTP input screen (same transition as MfaRequired in the login flow).
             let set_cookies = state.set_cookies().set_session(
                 cookies::AUTH_SESSION_COOKIE,
                 &auth_session_id,
@@ -159,8 +159,8 @@ pub async fn submit(
             )
                 .into_response()
         }
-        // 認証ポリシーによる拒否（パスワード変更自体は完了している）。
-        // 変更は通ったが、このアプリの利用が許可されていない（ADR-0054）。
+        // Denied by the authentication policy (the password change itself has completed).
+        // The change went through, but use of this app is not permitted (ADR-0054).
         InternalChangePasswordResponse::ApplicationNotPermitted {
             application_name,
             sso_session_id,
@@ -178,7 +178,7 @@ pub async fn submit(
             crate::application_denied::page(&messages, &tenant.prefix(), &application_name),
         )
             .into_response(),
-        // 登録した端末に限る組織で、登録していない端末だった（task #916）。札を置いて登録の画面へ。
+        // Organization limited to registered devices, and this device is not registered (task #916). Place the ticket and go to enrollment.
         InternalChangePasswordResponse::DeviceEnrollmentRequired { ticket } => {
             crate::handlers::device_enrollment::redirect(
                 &state,
@@ -192,7 +192,7 @@ pub async fn submit(
             StatusCode::FORBIDDEN,
             "login-error-policy-denied",
         ),
-        // ポリシーが MFA 必須だが認証器（TOTP）が未設定。ポータルで設定するよう案内する。
+        // Policy requires MFA but no authenticator (TOTP) is set up. Guide the user to set it up in the portal.
         InternalChangePasswordResponse::MfaEnrollmentRequired => error_page(
             &messages,
             StatusCode::FORBIDDEN,
@@ -210,8 +210,8 @@ pub async fn submit(
             )
         }
         InternalChangePasswordResponse::CsrfMismatch => {
-            // PRG: 303 で GET へ付け替え、現在の Cookie から導出した新しいトークンのフォームを自動で
-            // 再表示する（従来はエラーページを返すだけで、リロードすると POST が再送されて復帰できなかった）。
+            // PRG: switch to GET with 303 and automatically re-show the form with a new token derived from the
+            // current cookie (previously it just returned an error page, and reloading resent the POST with no recovery).
             tracing::warn!(
                 correlation_id = %ctx.correlation_id,
                 "password change failed: csrf token mismatch; redirecting to fresh form"
@@ -252,10 +252,10 @@ fn render_form(messages: &Messages, csrf: &str, error_key: Option<&str>) -> Stri
     })
 }
 
-/// エラー付きでフォームを再表示する（AuthSession はまだ有効なため再入力できる）。
+/// Re-shows the form with an error (the AuthSession is still valid, so the user can re-enter).
 ///
-/// **CSP は初回描画と同じものを付ける。** 既定のままにすると、一度弾かれて出し直された
-/// フォームからの再送信だけが RP へ戻れなくなる。
+/// **Attach the same CSP as the first render.** With the default one, only resubmission from a form that
+/// was rejected once and shown again would be unable to return to the RP.
 fn reshow_form(
     messages: &Messages,
     status: StatusCode,

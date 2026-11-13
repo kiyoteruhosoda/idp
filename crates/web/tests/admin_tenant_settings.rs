@@ -1,11 +1,11 @@
-//! テナントの設定値の画面（ADR-0058）のルータ経由の統合テスト。
+//! Router-level integration tests of the tenant settings screen (ADR-0058).
 //!
-//! 要は 2 つ:
+//! Two key points:
 //!
-//! - ⚠ **締め出し得る値は、確認を挟むまで保存されない。** api が 409 を返したら web は確認画面を
-//!   出し、確認画面から `confirmed` を付けて送り直したときだけ保存が通る（判定は api の定義が
-//!   唯一の出所で、web はキー名を知らない）
-//! - 「全体の値に戻す」は api の DELETE（行を消す）へ渡る。同じ値を PUT するのとは違う
+//! - ⚠ **Values that could lock people out are not saved until confirmed.** When the api returns 409, web shows a
+//!   confirmation screen, and saving goes through only when resent from it with `confirmed` (the api's definitions
+//!   are the single source of the decision; web does not know key names)
+//! - "Revert to global" goes to the api's DELETE (deletes the row). Different from PUTting the same value
 
 mod support;
 
@@ -54,7 +54,7 @@ fn list() -> Value {
     }]})
 }
 
-/// api へ届いた、設定値を書き換える要求（PUT / DELETE）の本文と方法。
+/// Body and method of requests (PUT / DELETE) rewriting setting values that reached the api.
 async fn writes(env: &WebEnv) -> Vec<(String, Option<Value>)> {
     env.api
         .received_requests()
@@ -78,7 +78,7 @@ async fn a_value_that_can_lock_people_out_goes_through_a_confirmation_page() {
         .respond_with(ResponseTemplate::new(200).set_body_json(list()))
         .mount(&env.api)
         .await;
-    // 確認の無い要求は 409、確認つきは 200（api の振る舞いを写す）。
+    // Requests without confirmation get 409, with confirmation 200 (mirrors the api's behaviour).
     Mock::given(method("PUT"))
         .and(path_regex(
             r"^/[^/]+/admin/settings/tenant/keys/APPLICATION_ASSIGNMENT_ENFORCEMENT$",

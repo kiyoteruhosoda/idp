@@ -1,38 +1,38 @@
-//! `X-Forwarded-For` からの接続元 IP の取り出し（api ↔ web 共有。SEC1）。
+//! Extracting the client IP from `X-Forwarded-For` (shared by api and web; SEC1).
 //!
-//! ヘッダの値は**クライアントが自由に付けられる**。リバースプロキシは通常それを消さず、
-//! 自分が見た接続元を末尾へ**追記**する（nginx の `$proxy_add_x_forwarded_for` がまさにこれ）。
-//! したがって
+//! The header value **can be set freely by the client**. A reverse proxy normally does not remove it,
+//! and **appends** the peer it saw at the end (nginx's `$proxy_add_x_forwarded_for` does exactly this).
+//! So it becomes
 //!
 //! ```text
 //! X-Forwarded-For: 198.51.100.9, 203.0.113.7
 //!                  ^^^^^^^^^^^^  ^^^^^^^^^^^^
-//!                  クライアントが  信頼するプロキシが
-//!                  名乗った値      実際に見た接続元
+//!                  claimed by    peer actually seen
+//!                  the client    by the trusted proxy
 //! ```
 //!
-//! となり、**先頭の値を採ると攻撃者の申告をそのまま信じることになる**（リクエストごとに変えれば
-//! IP 単位のレート制限を素通りでき、監査ログの IP も任意に汚せる）。本モジュールは常に
-//! **最右の値**、すなわち信頼境界の直前ホップが観測した接続元を採る。
+//! and **taking the first value means trusting the attacker's claim as is** (varying it per request
+//! bypasses per-IP rate limits and lets the audit log IP be polluted at will). This module always takes
+//! **the rightmost value**, i.e. the peer observed by the hop right before the trust boundary.
 //!
-//! # 信頼するホップは 1 段と仮定する
+//! # Assumes one trusted hop
 //!
-//! assay の配置（`docker/nginx.conf`・`docker/nginx.domain-split.conf`）はプロキシ 1 段である。
-//! 多段（CDN → プロキシ → api/web）にすると最右は「前段プロキシの IP」になり、利用者の実 IP では
-//! なくなる。**精度は落ちるが偽装はされない**方向の失敗なので、安全側として受け入れる
-//! （実 IP が要るなら CDN 側で `X-Forwarded-For` を上書きするか、段数を設定化する）。
+//! assay's deployment (`docker/nginx.conf`, `docker/nginx.domain-split.conf`) has one proxy hop.
+//! With multiple hops (CDN -> proxy -> api/web) the rightmost becomes "the front proxy's IP", not the
+//! user's real IP. That failure **loses precision but cannot be spoofed**, so it is accepted as the safe side
+//! (if the real IP is needed, overwrite `X-Forwarded-For` at the CDN or make the hop count configurable).
 //!
-//! なお同梱の nginx は `X-Forwarded-For` を `$remote_addr` で**上書き**するようにしてあり、
-//! そもそも値は 1 つしか載らない。本関数はプロキシ設定を差し替えた配置でも壊れないための
-//! 二重目の防御線である。
+//! The bundled nginx also **overwrites** `X-Forwarded-For` with `$remote_addr`, so only one value
+//! is present in the first place. This function is a second line of defense so deployments with a
+//! replaced proxy configuration do not break.
 
-/// `X-Forwarded-For` ヘッダ（複数ヘッダ可）から接続元 IP を取り出す。
+/// Extracts the client IP from the `X-Forwarded-For` header (multiple headers allowed).
 ///
-/// 信頼境界の直前ホップが追記した**最右の非空値**を返す。値が無い・空白のみなら `None`
-/// （呼び出し側は TCP 接続元へフォールバックする）。
+/// Returns **the rightmost non-empty value** appended by the hop right before the trust boundary. `None` if
+/// there is no value or only whitespace (the caller falls back to the TCP peer).
 ///
-/// 値の妥当性（IP として parse できるか）は検証しない。監査ログ・レート制限のキーとして
-/// 使うだけであり、信頼するプロキシが書いた値を字句的に選ぶことが本関数の責務である。
+/// The value's validity (whether it parses as an IP) is not checked. It is only used as an audit log and
+/// rate-limit key; this function's job is to lexically pick the value the trusted proxy wrote.
 pub fn client_ip<'a>(raw_headers: impl IntoIterator<Item = &'a str>) -> Option<String> {
     raw_headers
         .into_iter()
@@ -49,8 +49,8 @@ mod tests {
 
     #[test]
     fn takes_the_hop_appended_by_the_trusted_proxy() {
-        // nginx の `$proxy_add_x_forwarded_for` はクライアント申告を残して自分が見た接続元を
-        // 追記する。攻撃者が先頭へ何を書いても、採るのは最右（プロキシが観測した値）。
+        // nginx's `$proxy_add_x_forwarded_for` keeps the client's claim and appends the peer it saw.
+        // Whatever the attacker writes at the front, the rightmost (observed by the proxy) is taken.
         assert_eq!(
             client_ip(["198.51.100.9, 203.0.113.7"]).as_deref(),
             Some("203.0.113.7")
@@ -71,7 +71,7 @@ mod tests {
 
     #[test]
     fn spans_repeated_headers() {
-        // ヘッダが複数本に分かれても、全体の最右がプロキシの追記分になる。
+        // Even when split across multiple headers, the overall rightmost is the proxy's appended value.
         assert_eq!(
             client_ip(["198.51.100.9", "203.0.113.7"]).as_deref(),
             Some("203.0.113.7")

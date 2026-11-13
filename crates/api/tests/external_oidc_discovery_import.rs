@@ -1,18 +1,18 @@
-//! 外部 OIDC IdP の discovery 取り込み（`POST /{tenant}/admin/external-idps/import-discovery`。task #77）の
-//! 統合テスト（DB あり）。
+//! Integration tests (with DB) for external OIDC IdP discovery import
+//! (`POST /{tenant}/admin/external-idps/import-discovery`; task #77).
 //!
-//! 取得の作法（リダイレクトを追わない・大きさの上限）は `infrastructure::external_oidc` の単体テストが
-//! wiremock で固めている。ここは管理 API として、
+//! The fetch rules (no redirect following, size cap) are pinned by unit tests of `infrastructure::external_oidc`
+//! with wiremock. Here, as an admin API, we check:
 //!
-//! - 資格情報なし → 401、外部 IdP の書き込み権限なし → 403
-//! - 宛先の検査に通らない issuer では**外へ 1 回も出ない**
-//! - 文書の `issuer` が入力と違えば断る（OIDC Discovery §4.3）
-//! - **取り込みは登録ではない**（プロバイダが 1 件も増えない）
+//! - No credentials → 401, no external IdP write permission → 403
+//! - For an issuer that fails the destination check, **not a single outbound request is made**
+//! - If the document's `issuer` differs from the input, it is refused (OIDC Discovery §4.3)
+//! - **Import is not registration** (not a single provider is added)
 //!
-//! を確かめる。外への HTTP を出す部品は偽物に差し替える（wiremock は `http://127.0.0.1` で待つため、
-//! 本物の宛先の検査を通らない。検査を緩める口は作らない）。
+//! The component that makes outbound HTTP is replaced by a fake (wiremock listens on `http://127.0.0.1`, so it
+//! would fail the real destination check. No endpoint to loosen the check is created).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test external_oidc_discovery_import
 
 mod support;
@@ -29,10 +29,10 @@ use serde_json::json;
 use std::sync::{Arc, Mutex};
 use support::{admin_token, body_json, create_plain_user, post, send, unique, TestEnv};
 
-/// 相手の issuer がこの値のとき、偽物は**別の issuer** を名乗る文書を返す（§4.3 の確認用）。
+/// When the counterpart's issuer is this value, the fake returns a document claiming **a different issuer** (to check §4.3).
 const MISMATCHING_ISSUER: &str = "https://mismatch.idp.example.com";
 
-/// 要求された URL を記録し、その issuer の文書を返す偽物。
+/// A fake that records the requested URL and returns the document for that issuer.
 #[derive(Default)]
 struct FakeDiscovery {
     fetched: Mutex<Vec<String>>,
@@ -74,8 +74,8 @@ fn uri(env: &TestEnv) -> String {
     )
 }
 
-/// その issuer のプロバイダの件数。テナント全体では数えない（別のテストバイナリが同じ root テナントへ
-/// 並行して登録する）。
+/// Number of providers with that issuer. Not counted across the whole tenant (another test binary registers
+/// into the same root tenant in parallel).
 async fn providers_with_issuer(env: &TestEnv, issuer: &str) -> i64 {
     sqlx::query_scalar(
         "SELECT COUNT(*) FROM external_identity_providers WHERE tenant_id = ? AND issuer = ?",
@@ -87,7 +87,7 @@ async fn providers_with_issuer(env: &TestEnv, issuer: &str) -> i64 {
     .expect("count providers")
 }
 
-/// 資格情報が無ければ 401、外部 IdP の書き込み権限が無ければ 403。どちらも外へは出ない。
+/// No credentials gives 401, no external IdP write permission gives 403. Neither goes outbound.
 #[tokio::test]
 async fn the_import_requires_the_external_idp_write_permission() {
     let Some((env, fake)) = setup("oidc discovery import auth").await else {
@@ -117,7 +117,7 @@ async fn the_import_requires_the_external_idp_write_permission() {
     );
 }
 
-/// issuer の下の discovery ドキュメントからエンドポイントが埋まる。**登録はしない。**
+/// Endpoints are filled from the discovery document under the issuer. **It does not register.**
 #[tokio::test]
 async fn the_document_fills_the_endpoints_without_registering_anything() {
     let Some((env, fake)) = setup("oidc discovery import ok").await else {
@@ -145,7 +145,7 @@ async fn the_document_fills_the_endpoints_without_registering_anything() {
         vec![format!("{issuer}/.well-known/openid-configuration")]
     );
 
-    // 取り込みは登録ではない。
+    // Import is not registration.
     assert_eq!(
         providers_with_issuer(&env, &issuer).await,
         0,
@@ -153,8 +153,8 @@ async fn the_document_fills_the_endpoints_without_registering_anything() {
     );
 }
 
-/// 宛先の検査に通らない issuer（http・ループバック・プライベート・リンクローカル）は 400 で、
-/// **外へ 1 回も出ない**（SSRF を作らない。ADR-0023 決定 5）。
+/// Issuers failing the destination check (http, loopback, private, link-local) get 400, and
+/// **not a single outbound request is made** (no SSRF; ADR-0023 decision 5).
 #[tokio::test]
 async fn internal_or_plain_http_issuers_are_rejected_before_reaching_out() {
     let Some((env, fake)) = setup("oidc discovery import ssrf").await else {
@@ -183,7 +183,7 @@ async fn internal_or_plain_http_issuers_are_rejected_before_reaching_out() {
     );
 }
 
-/// 文書の `issuer` が入力と違えば断る（OIDC Discovery §4.3）。登録もされない。
+/// If the document's `issuer` differs from the input it is refused (OIDC Discovery §4.3). Nothing is registered either.
 #[tokio::test]
 async fn a_document_for_another_issuer_is_rejected() {
     let Some((env, _fake)) = setup("oidc discovery import mismatch").await else {

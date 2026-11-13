@@ -1,12 +1,12 @@
-//! アカウント（人とサービスアカウント）の管理エンドポイント（ADR-0065）。
+//! Management endpoints for accounts (people and service accounts) (ADR-0065).
 //!
-//! - `GET /{tenant_id}/admin/accounts` —— 人とサービスアカウントを 1 つに並べた一覧
-//! - `GET /{tenant_id}/admin/service-accounts/{client_id}` —— サービスアカウント 1 件
-//! - `PUT /{tenant_id}/admin/service-accounts/{client_id}/note` —— その管理者メモ
+//! - `GET /{tenant_id}/admin/accounts` -- a single list of people and service accounts
+//! - `GET /{tenant_id}/admin/service-accounts/{client_id}` -- one service account
+//! - `PUT /{tenant_id}/admin/service-accounts/{client_id}/note` -- its admin note
 //!
-//! 人の側の 1 件・メモは `/admin/members/{user_id}`（[`super::admin_members`]）、使えるアプリは
-//! 種別ごとの口が [`super::admin_applications`] にある。口は種別で分かれる（読む・書く権限が
-//! `idp.members:*` / `idp.clients:*` で違う）が、応答の形と規則は種別を問わず 1 つ。
+//! A single person and their note are at `/admin/members/{user_id}` ([`super::admin_members`]); usable apps have
+//! per-kind endpoints in [`super::admin_applications`]. Endpoints are split by kind (read/write permissions
+//! differ: `idp.members:*` / `idp.clients:*`), but the response shape and rules are one regardless of kind.
 
 use crate::application::account_directory::{AccountDirectoryError, AccountSearchParams};
 use crate::application::account_note::AccountNoteError;
@@ -27,11 +27,11 @@ use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 
-/// アカウントを一覧する（`GET /{tenant_id}/admin/accounts`）。
+/// Lists accounts (`GET /{tenant_id}/admin/accounts`).
 ///
-/// ⚠ **呼んだ主体が読める種別だけを並べる**（人は `idp.members:read`、サービスアカウントは
-/// `idp.clients:read`）。新しい権限コードは無いので、権限の判定は extractor ではなく
-/// Application 層が保有権限を見て行う。
+/// ⚠ **Only lists the kinds the calling principal can read** (people: `idp.members:read`, service accounts:
+/// `idp.clients:read`). There is no new permission code, so the permission decision is made not by an extractor but by
+/// the application layer looking at held permissions.
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/accounts",
@@ -58,8 +58,8 @@ pub async fn list_accounts(
         .map(str::trim)
         .filter(|k| !k.is_empty())
     {
-        // ⚠ 綴り違いを「すべて」に倒さない。絞り込みの失敗が画面上は成功に見える（ADR-0038 の
-        //   `?grant_type=` と同じ）。
+        // ⚠ Don't fall back to "all" on a misspelling. A failed filter would look like success on screen (same as
+        //   ADR-0038's `?grant_type=`).
         Some(raw) => Some(AccountKind::parse(raw).ok_or_else(|| {
             ApiError::BadRequest(ApiMessages::new(locale).get("api-account-kind-unknown"))
         })?),
@@ -119,10 +119,10 @@ pub async fn list_accounts(
     }))
 }
 
-/// サービスアカウント 1 件（`GET /{tenant_id}/admin/service-accounts/{client_id}`）。
+/// One service account (`GET /{tenant_id}/admin/service-accounts/{client_id}`).
 ///
-/// 1 件の画面のためにある。要求テナントのサービスアカウントでなければ 404（連携先・削除済み・
-/// 他テナントを区別しない）。
+/// Exists for the single-item screen. 404 unless it is a service account of the requesting tenant (federated,
+/// deleted and other-tenant are not distinguished).
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/service-accounts/{client_id}",
@@ -161,11 +161,11 @@ pub async fn get_service_account(
     }
 }
 
-/// サービスアカウントの管理者メモを書く・消す
-/// （`PUT /{tenant_id}/admin/service-accounts/{client_id}/note`。ADR-0065）。
+/// Writes / clears a service account's admin note
+/// (`PUT /{tenant_id}/admin/service-accounts/{client_id}/note`, ADR-0065).
 ///
-/// 人のメモ（`PUT /admin/members/{user_id}/note`）と同じ規則（2000 文字まで・空なら消す・監査に
-/// 中身を載せない）。
+/// Same rules as a person's note (`PUT /admin/members/{user_id}/note`): up to 2000 characters, empty clears it, the audit log
+/// does not carry its content.
 #[utoipa::path(
     put,
     path = "/{tenant_id}/admin/service-accounts/{client_id}/note",

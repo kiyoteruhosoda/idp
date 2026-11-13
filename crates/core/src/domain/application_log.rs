@@ -1,17 +1,17 @@
-//! アプリケーションログ（`log` テーブル。CLAUDE.md「ログ」）。
+//! Application log (`log` table. CLAUDE.md "Logs").
 //!
-//! 監査ログ（[`crate::domain::audit`]）が「誰が何をしたか」の業務イベントを残すのに対し、こちらは
-//! 「システムが何を失敗したか」の運用情報を残す。記録するのは **WARN / ERROR のみ**で、INFO 以下は
-//! stdout の構造化ログに任せる（DB を肥大させないため）。
+//! Whereas the audit log ([`crate::domain::audit`]) records business events of "who did what", this records
+//! operational information of "what the system failed at". Only **WARN / ERROR** are recorded; INFO and below are
+//! left to structured stdout logs (to avoid bloating the DB).
 //!
-//! 文言は多言語化せず**運用言語（英語）で統一する**（CLAUDE.md「国際化」の対象外）。PII は含めない。
+//! Messages are not localized and are **unified in the operating language (English)** (outside the scope of CLAUDE.md "i18n"). No PII.
 #![allow(dead_code)]
 
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-/// 記録対象のログレベル。DB では `VARCHAR` + `CHECK` に保存し、許可値は本 enum で集中管理する
-/// （CLAUDE.md「DB モデリング」。DB ネイティブ ENUM は使わない）。
+/// Log levels to record. Stored in the DB as `VARCHAR` + `CHECK`, with allowed values managed centrally by this enum
+/// (CLAUDE.md "DB modeling". DB-native ENUMs are not used).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogLevel {
     Error,
@@ -26,7 +26,7 @@ impl LogLevel {
         }
     }
 
-    /// 保存文字列（大小無視）から復元する。未知の値は `None`。
+    /// Restores from the stored string (case-insensitive). Unknown values give `None`.
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_uppercase().as_str() {
             "ERROR" => Some(Self::Error),
@@ -36,8 +36,8 @@ impl LogLevel {
     }
 }
 
-/// ログの出力元サービス（ADR-0007 の api / web 分割）。web は DB を持たないため、自身のログを
-/// api の内部エンドポイントへ送って記録する。
+/// The service that emitted the log (the api / web split of ADR-0007). The web has no DB, so it sends its own logs
+/// to an internal api endpoint to be recorded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogService {
     Api,
@@ -61,14 +61,14 @@ impl LogService {
     }
 }
 
-/// 保存する列の長さ上限（DDL と一致させる）。超過分は保存側で切り詰める。
+/// Length limits of stored columns (kept in sync with the DDL). Excess is truncated on save.
 pub const MAX_TARGET_LEN: usize = 255;
 pub const MAX_CORRELATION_ID_LEN: usize = 64;
-/// `message` / `traceback` は TEXT だが、1 件で DB を圧迫しないよう上限を設ける。
+/// `message` / `traceback` are TEXT, but have a limit so one entry does not overwhelm the DB.
 pub const MAX_MESSAGE_LEN: usize = 4_000;
 pub const MAX_TRACEBACK_LEN: usize = 8_000;
 
-/// 書き込む 1 件（`tracing` イベントから組み立てる）。
+/// One entry to write (built from a `tracing` event).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplicationLogRecord {
     pub occurred_at: DateTime<Utc>,
@@ -82,7 +82,7 @@ pub struct ApplicationLogRecord {
 }
 
 impl ApplicationLogRecord {
-    /// 各列を DDL の上限へ収める（超過は末尾を落とす）。文字境界を壊さないよう `char` 単位で切る。
+    /// Fits each column within the DDL limit (drops the tail on overflow). Cuts per `char` so as not to break character boundaries.
     pub fn truncated(mut self) -> Self {
         self.target = truncate(&self.target, MAX_TARGET_LEN);
         self.message = truncate(&self.message, MAX_MESSAGE_LEN);
@@ -101,10 +101,10 @@ fn truncate(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
 }
 
-/// `log` から読み出した 1 行（管理コンソールの読み取りモデル）。
+/// One row read from `log` (the admin console's read model).
 ///
-/// `level` / `service` は保存時の文字列そのままを保持する（過去に廃止された値も欠落なく表示するため、
-/// enum へは restrict しない。[`AuditLogEntry`](crate::domain::audit::AuditLogEntry) と同じ方針）。
+/// `level` / `service` keep the stored string as is (not restricted to the enum, so that values retired in the past are still shown;
+/// same policy as [`AuditLogEntry`](crate::domain::audit::AuditLogEntry)).
 #[derive(Debug, Clone)]
 pub struct ApplicationLogEntry {
     pub id: i64,
@@ -118,18 +118,18 @@ pub struct ApplicationLogEntry {
     pub traceback: Option<String>,
 }
 
-/// 検索条件。指定した項目のみ AND で適用する。
+/// Search conditions. Only the specified items are applied, combined with AND.
 #[derive(Debug, Clone, Default)]
 pub struct ApplicationLogFilter {
     pub level: Option<LogLevel>,
     pub service: Option<LogService>,
-    /// `target` の前方一致（モジュール単位の絞り込み）。
+    /// Prefix match on `target` (narrowing by module).
     pub target_prefix: Option<String>,
     pub correlation_id: Option<String>,
-    /// 期間の下限・上限（`occurred_at`、含む）。
+    /// Lower and upper bounds of the period (`occurred_at`, inclusive).
     pub from: Option<DateTime<Utc>>,
     pub to: Option<DateTime<Utc>>,
-    /// ページング（新しい順）。
+    /// Paging (newest first).
     pub limit: i64,
     pub offset: i64,
 }
@@ -160,7 +160,7 @@ mod tests {
             level: LogLevel::Error,
             service: LogService::Api,
             target: "t".repeat(MAX_TARGET_LEN + 10),
-            // マルチバイト文字でもバイト境界を割らないこと。
+            // Must not split byte boundaries even with multibyte characters.
             message: "あ".repeat(MAX_MESSAGE_LEN + 10),
             correlation_id: Some("c".repeat(MAX_CORRELATION_ID_LEN + 10)),
             tenant_id: None,

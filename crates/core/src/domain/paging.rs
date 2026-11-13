@@ -1,15 +1,15 @@
-//! 一覧の分割取得（ページング）の共通語彙（G7）。
+//! Shared vocabulary for split retrieval of lists (paging; G7).
 //!
-//! 管理 API の一覧は、テナントの規模に比例して応答が膨らまないよう **1 ページ分と総件数**を返す。
-//! ここで定義するのは「何件目から何件」（[`PageRequest`]）と「1 ページ分＋総件数」（[`Page`]）の
-//! 二つだけで、絞り込み条件は一覧ごとに固有のため各ドメイン型（例
-//! [`crate::domain::tenant_membership::TenantMemberFilter`]）が持つ。
+//! Admin API lists return **one page plus the total count** so responses don't grow with tenant
+//! size. Only two things are defined here: "from which item, how many" ([`PageRequest`]) and "one
+//! page + total" ([`Page`]). Filter conditions are specific to each list, so each domain type holds
+//! them (e.g. [`crate::domain::tenant_membership::TenantMemberFilter`]).
 //!
-//! クランプ（既定値・上限）は Application 層ではなく本型に置く。Presentation 層が上限を
-//! 知らずに済み、同じ規則が複数の一覧へ複製されない。
+//! Clamping (defaults, upper bound) lives in this type rather than the Application layer. The
+//! Presentation layer need not know the limits, and the same rule is not duplicated across lists.
 
-/// 取得範囲。`limit` は 1 以上、`offset` は 0 以上であることを構築時に保証する
-/// （フィールドを直接組み立てられないよう [`PageRequest::clamped`] を唯一の入口にする）。
+/// Range to fetch. Guarantees at construction that `limit` >= 1 and `offset` >= 0
+/// ([`PageRequest::clamped`] is the only entry point so the fields cannot be built directly).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PageRequest {
     limit: i64,
@@ -17,10 +17,10 @@ pub struct PageRequest {
 }
 
 impl PageRequest {
-    /// 未検証の要求値（クエリ文字列由来）を許容範囲へ収める。
+    /// Brings unvalidated requested values (from the query string) into the allowed range.
     ///
-    /// - `limit`: 未指定・0 以下は `default`、`max` を超えたら `max`
-    /// - `offset`: 未指定・負値は 0
+    /// - `limit`: unset or <= 0 becomes `default`; above `max` becomes `max`
+    /// - `offset`: unset or negative becomes 0
     pub fn clamped(limit: Option<i64>, offset: Option<i64>, default: i64, max: i64) -> Self {
         let limit = match limit {
             Some(l) if l > 0 => l.min(max),
@@ -32,21 +32,21 @@ impl PageRequest {
         }
     }
 
-    /// 実際に適用する取得件数（1 以上）。
+    /// Number of items actually fetched (>= 1).
     pub fn limit(&self) -> i64 {
         self.limit
     }
 
-    /// 実際に適用する読み飛ばし件数（0 以上）。
+    /// Number of items actually skipped (>= 0).
     pub fn offset(&self) -> i64 {
         self.offset
     }
 }
 
-/// 1 ページ分の要素と、同じ絞り込み条件での総件数。
+/// One page of items and the total count under the same filter.
 ///
-/// 総件数を返すのは、呼び出し側が「次ページの有無」を**受信件数では判定できない**ため
-/// （最終ページがちょうど `limit` 件で埋まると、空ページへのリンクが出る）。
+/// The total is returned because callers **cannot tell whether a next page exists from the received
+/// count** (if the last page is exactly `limit` items, a link to an empty page would appear).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Page<T> {
     pub items: Vec<T>,
@@ -58,8 +58,9 @@ impl<T> Page<T> {
         Self { items, total }
     }
 
-    /// 全件を持つ `Vec` から 1 ページ分を切り出す。DB 側で `LIMIT`/`OFFSET` を書けない
-    /// 実装（インメモリのテスト用フェイク）のための補助で、本番の sqlx 実装は使わない。
+    /// Cuts one page out of a `Vec` holding all items. A helper for implementations that cannot
+    /// write `LIMIT`/`OFFSET` in the DB (in-memory test fakes); the production sqlx implementation
+    /// does not use it.
     pub fn from_all(all: Vec<T>, request: PageRequest) -> Self {
         let total = all.len() as i64;
         let items = all
@@ -71,11 +72,11 @@ impl<T> Page<T> {
     }
 }
 
-/// 1 ページ分の結果に、**実際に適用した**取得範囲を添えたもの。
+/// One page of results together with the range **actually applied**.
 ///
-/// 呼び出し側（Presentation・web のページャ）は要求値ではなくこちらを使う。クランプ規則を
-/// 上位層へ複製せずに済み、「`limit=10000` を要求したが 200 が適用された」ときも
-/// ページ送りが破綻しない。
+/// Callers (Presentation, web's pager) use this instead of the requested values. The clamping rule
+/// is not duplicated in upper layers, and paging does not break when "`limit=10000` was requested
+/// but 200 was applied".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PagedResult<T> {
     pub page: Page<T>,
@@ -120,7 +121,8 @@ mod tests {
         assert_eq!(page.total, 5);
     }
 
-    /// 範囲外の `offset` は空ページになるが、総件数は変わらない（画面が「前へ」を出せる）。
+    /// An out-of-range `offset` yields an empty page, but the total is unchanged (the screen can
+    /// show "Previous").
     #[test]
     fn offset_past_the_end_yields_an_empty_page() {
         let page = Page::from_all(

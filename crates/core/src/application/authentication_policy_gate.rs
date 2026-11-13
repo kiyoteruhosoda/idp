@@ -1,17 +1,17 @@
-//! 認証ポリシーの評価の入口（ユーザー認証・認証ポリシー仕様書 §9、AP2/AP3、ADR-0054 の決定 5）。
+//! Entry point for evaluating authentication policies (user authentication & authentication policy spec §9, AP2/AP3, ADR-0054 decision 5).
 //!
-//! 評価そのものはドメインの純粋関数（[`evaluate_policies`]）が担う。ここが持つのは、その材料を
-//! 揃える手順だけである:
+//! The evaluation itself is done by a pure domain function ([`evaluate_policies`]). This module only
+//! owns the steps that gather its inputs:
 //!
-//! 1. 宛先の読み替え —— フローが持っているのは `client_id` だけなので、アプリへ読み替える
-//!    （ポリシーの `conditions.application_ids` はアプリを指す）。まだアプリへ繋がっていない
-//!    client は `None` で、`application_ids` を持つポリシーは一致しない
-//! 2. 一致するポリシーが無いときの既定の効果（テナントの値を参照のたびに引く。ADR-0058 §4）
-//! 3. テナントの有効なポリシー
+//! 1. Target translation —— the flow only has a `client_id`, so it is translated to an application
+//!    (a policy's `conditions.application_ids` points at applications). A client not yet linked to
+//!    an application is `None`, and policies with `application_ids` do not match it
+//! 2. The default effect when no policy matches (the tenant's value, looked up every time. ADR-0058 §4)
+//! 3. The tenant's enabled policies
 //!
-//! ログイン・MFA・パスキー・パスワード変更・外部 IdP・SSO 復元・管理コンソール・ポータルの
-//! 8 経路が同じ手順を写していたのを、ここへ寄せた。結論（`PolicyDecision`）をどう扱うか
-//! （拒否の監査の書き方、第二要素を要求するか）は経路ごとに違うので、呼び出し側に残す。
+//! Eight paths — login, MFA, passkey, password change, external IdP, SSO restore, admin console and
+//! portal — each copied the same steps; they were gathered here. How to handle the conclusion (`PolicyDecision`)
+//! (how to audit a denial, whether to require a second factor) differs per path, so it stays with the caller.
 
 use crate::application::application_access::ApplicationAccessService;
 use crate::domain::authentication_policy::{
@@ -25,24 +25,24 @@ use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// ポリシーの宛先。
+/// The target of a policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolicyAudience<'a> {
-    /// OIDC の認可要求を出したクライアント（アプリへ読み替えて評価する）。
+    /// The client that sent the OIDC authorization request (evaluated after translating it to an application).
     OidcClient(&'a str),
-    /// 認可要求の外（管理コンソール・ポータル・アカウント設定から始めた外部 IdP 連携）。
-    /// 宛先が無いので、`application_ids` を持つポリシーは一致しない。
+    /// Outside an authorization request (external IdP linking started from the admin console, portal or account settings).
+    /// There is no target, so policies with `application_ids` do not match.
     Unaddressed,
 }
 
-/// 評価の問い: 誰が・どこへ・どこから・いつ。
+/// The question to evaluate: who, to where, from where, and when.
 #[derive(Debug, Clone, Copy)]
 pub struct PolicyQuery<'a> {
     pub tenant_id: TenantId,
     pub audience: PolicyAudience<'a>,
     pub user_id: Uuid,
     pub ip_address: Option<&'a str>,
-    /// 認可要求の `acr_values`（AP3 の `requested_acr` 条件が参照する）。認可要求の外では空。
+    /// `acr_values` of the authorization request (used by AP3's `requested_acr` condition). Empty outside an authorization request.
     pub requested_acr: &'a [String],
     pub now: DateTime<Utc>,
 }
@@ -66,7 +66,7 @@ impl AuthenticationPolicyGate {
         }
     }
 
-    /// 問いに対する結論を出す。材料のどれかが引けなければ `Err`（呼び出し側は内部エラーとして扱う）。
+    /// Reaches a conclusion for the question. `Err` if any input cannot be looked up (the caller treats it as an internal error).
     pub async fn decide(&self, query: PolicyQuery<'_>) -> Result<PolicyDecision, DomainError> {
         let application_id = match query.audience {
             PolicyAudience::OidcClient(client_id) => {
@@ -95,7 +95,7 @@ impl AuthenticationPolicyGate {
     }
 }
 
-/// 試験で評価の入口を組み立てる部品（アプリの読み替えはすべて「アプリ無し」）。
+/// Test helper that builds the evaluation entry point (every application lookup yields "no application").
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;

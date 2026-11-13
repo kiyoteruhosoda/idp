@@ -1,12 +1,12 @@
-//! 登録していない端末で正しく入ろうとしたときの、その場での端末の登録（task #916。ADR-0079）。
+//! On-the-spot device registration when signing in correctly from an unregistered device (task #916. ADR-0079).
 //!
-//! 登録した端末に限る組織では、どのログインの経路も「SSO を作らずに登録の札を返す」ことがある。
-//! そのとき web は札を Cookie（オリジン束縛名・10 分）に置いて `GET /{t}/device-enrollment?next=…` へ
-//! 回す。画面はだれのログインかを見せ、パスキーで確かめると、このブラウザを端末として登録して
-//! SSO Cookie を置き、`next`（元の画面）へ戻す。OIDC の認可フローの途中なら `next` はログイン画面で、
-//! 開き直すと、できた SSO から認可を続ける（`login::continue_with_sso`）。
+//! In organizations limited to registered devices, any login path may "return an enrollment ticket without SSO".
+//! web then puts the ticket in a cookie (origin-bound name, 10 minutes) and redirects to `GET /{t}/device-enrollment?next=…`.
+//! The screen shows whose login it is; after confirming with a passkey it registers this browser as a device,
+//! sets the SSO cookie and returns to `next` (the original screen). Mid OIDC authorization flow, `next` is the login screen,
+//! and reopening it continues authorization from the new SSO (`login::continue_with_sso`).
 //!
-//! パスキーのセレモニーはログイン画面と同じスクリプト（`passkey-login.js`）を使う。
+//! The passkey ceremony uses the same script as the login screen (`passkey-login.js`).
 
 use super::{api_internal_error, found, internal_call_status, locale};
 use crate::client_ip::ClientIp;
@@ -28,13 +28,13 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
 
-/// 札の Cookie の寿命（api の札と同じ 10 分）。
+/// Lifetime of the ticket cookie (10 minutes, same as the api's ticket).
 pub const DEVICE_ENROLLMENT_TTL_SECS: u64 = 600;
 
-/// 戻り先の長さの上限。
+/// Maximum length of the return destination.
 const MAX_NEXT_LEN: usize = 512;
 
-/// 登録の画面の道（`{prefix}/device-enrollment?next=…`）。
+/// Path of the enrollment screen (`{prefix}/device-enrollment?next=…`).
 pub(crate) fn enrollment_location(tenant: &WebTenant, next: &str) -> String {
     format!(
         "{}/device-enrollment?next={}",
@@ -43,7 +43,7 @@ pub(crate) fn enrollment_location(tenant: &WebTenant, next: &str) -> String {
     )
 }
 
-/// 札を Cookie に置く `Set-Cookie`。
+/// `Set-Cookie` placing the ticket in a cookie.
 pub(crate) fn ticket_cookie(state: &WebState, ticket: &str) -> crate::cookies::SetCookies {
     state.set_cookies().set_local(
         &state.origin_bound_cookie(cookies::DEVICE_ENROLLMENT_COOKIE),
@@ -52,7 +52,7 @@ pub(crate) fn ticket_cookie(state: &WebState, ticket: &str) -> crate::cookies::S
     )
 }
 
-/// 札を置いて登録の画面へ回す（302）。`next` は登録の後に戻す画面。
+/// Places the ticket and redirects to the enrollment screen (302). `next` is the screen to return to after enrollment.
 pub(crate) fn redirect(state: &WebState, tenant: &WebTenant, ticket: &str, next: &str) -> Response {
     (
         ticket_cookie(state, ticket).into_headers(),
@@ -61,7 +61,7 @@ pub(crate) fn redirect(state: &WebState, tenant: &WebTenant, ticket: &str, next:
         .into_response()
 }
 
-/// 戻り先として受け付ける形か（このテナントの画面の道だけ。外へは戻さない）。
+/// Whether the value is acceptable as a return destination (only this tenant's screen paths; never external).
 pub(crate) fn safe_next(tenant: &WebTenant, raw: Option<&str>) -> String {
     let prefix = tenant.prefix();
     let fallback = format!("{prefix}/settings");
@@ -80,7 +80,7 @@ pub(crate) fn safe_next(tenant: &WebTenant, raw: Option<&str>) -> String {
     }
 }
 
-/// ブラウザの名乗りから、端末の名前の初めの値を作る（表示の手掛かり。利用者が打ち直せる）。
+/// Builds the initial device name from the browser's user agent (a display hint; the user can retype it).
 pub(crate) fn suggested_device_name(user_agent: Option<&str>) -> String {
     let ua = user_agent.unwrap_or_default();
     let os = if ua.contains("Android") {
@@ -141,7 +141,7 @@ fn expired_page(messages: &Messages) -> Response {
         .into_response()
 }
 
-/// 登録の画面（`GET /{t}/device-enrollment`）。
+/// Enrollment screen (`GET /{t}/device-enrollment`).
 pub async fn page(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -190,7 +190,7 @@ pub async fn page(
     }
 }
 
-/// パスキーの確かめを始める（`POST /{t}/device-enrollment/begin`。JSON）。
+/// Starts the passkey check (`POST /{t}/device-enrollment/begin`. JSON).
 pub async fn begin_api(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -237,14 +237,14 @@ pub struct CompleteBody {
     pub next: Option<String>,
 }
 
-/// `passkey-login.js` が受ける形（ログインの完了と同じ）。
+/// Shape that `passkey-login.js` expects (same as login completion).
 #[derive(Debug, Serialize)]
 struct CompleteJson {
     redirect_to: Option<String>,
     error: Option<&'static str>,
 }
 
-/// パスキーで確かめて登録し、ログインする（`POST /{t}/device-enrollment/complete`。JSON）。
+/// Confirms with a passkey, registers and signs in (`POST /{t}/device-enrollment/complete`. JSON).
 pub async fn complete_api(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,

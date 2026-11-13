@@ -1,21 +1,23 @@
-//! Android の Key Attestation（鍵の証明）を確かめる（task #892。ADR-0077）。
+//! Verifies Android Key Attestation (task #892; ADR-0077).
 //!
-//! 認証アプリは Keystore の中で鍵を作るときに assay の challenge を入れ、Keystore が出した証明書の
-//! 鎖（鍵の証明書 → 中間 → Google の根）をそのまま送ってくる。ここで確かめること:
+//! When the authenticator app creates a key inside Keystore it includes assay's challenge, and
+//! sends the certificate chain Keystore produced (key certificate → intermediates → Google root) as
+//! is. What is checked here:
 //!
-//! | 項目 | 条件 |
+//! | Item | Condition |
 //! |---|---|
-//! | 鎖 | 1 枚ずつ上の証明書の鍵で署名がつながり、いちばん上の鍵が信じる根の鍵 |
-//! | 拡張 | `KeyDescription`（1.3.6.1.4.1.11129.2.1.17）は鍵の証明書だけにある。上の証明書は CA |
-//! | 置き場 | TEE か StrongBox（ソフトウェアは `allow_software` のときだけ。stg の確かめ用） |
-//! | challenge | assay が出した値 |
-//! | 鍵 | EC P-256・署名用・Keystore の中で作った |
-//! | 指紋 | 生体だけで解ける・使うたびに求める（`noAuthRequired` 無し・`authTimeout` 無し） |
-//! | 端末 | 起動の検証が Verified でロック済み（`allow_software` のときは見ない） |
-//! | アプリ | パッケージ名と署名の証明書の SHA-256 が、assay が信じる値 |
+//! | Chain | Each signature chains to the key of the certificate above, and the topmost key is a trusted root key |
+//! | Extension | `KeyDescription` (1.3.6.1.4.1.11129.2.1.17) only on the key certificate. Upper certificates are CAs |
+//! | Location | TEE or StrongBox (software only with `allow_software`, for stg checks) |
+//! | challenge | The value assay issued |
+//! | Key | EC P-256, for signing, generated inside Keystore |
+//! | Fingerprint | Unlockable by biometrics only, required on every use (no `noAuthRequired`, no `authTimeout`) |
+//! | Device | Verified boot and locked (not checked with `allow_software`) |
+//! | App | Package name and SHA-256 of the signing certificate are values assay trusts |
 //!
-//! ⚠ **ここで確かめないこと**: Google の失効一覧（https://android.googleapis.com/attestation/status）・
-//! 証明書の有効期間（鍵の証明書の期間は端末によって当てにならない）。ADR-0077 の「防げないこと」。
+//! ⚠ **Not checked here**: Google's revocation list
+//! (https://android.googleapis.com/attestation/status) and certificate validity periods (key
+//! certificate periods are unreliable across devices). See "what this cannot prevent" in ADR-0077.
 
 use crate::domain::der::{
     self, DerElement, DerError, DerReader, TagClass, TAG_BIT_STRING, TAG_BOOLEAN, TAG_ENUMERATED,
@@ -35,15 +37,16 @@ const OID_RSA_SHA256: &str = "1.2.840.113549.1.1.11";
 const OID_RSA_SHA384: &str = "1.2.840.113549.1.1.12";
 const OID_RSA_SHA512: &str = "1.2.840.113549.1.1.13";
 
-/// Google の Key Attestation の根（RSA 4096 と ECDSA P-384「Key Attestation CA1」）。
+/// Google's Key Attestation roots (RSA 4096 and ECDSA P-384 "Key Attestation CA1").
 ///
-/// 出所は https://android.googleapis.com/attestation/root （2026-11-04 に取得）。本番はこの 2 つだけを信じる。
+/// Source: https://android.googleapis.com/attestation/root (fetched 2026-11-04). Production trusts
+/// only these two.
 pub const GOOGLE_ROOTS_PEM: &str = include_str!("key_attestation/google-roots.pem");
 
-/// 鎖の長さの上限（RKP の端末でも 4〜5 枚）。
+/// Upper bound on chain length (4–5 certificates even on RKP devices).
 const MAX_CHAIN_LEN: usize = 8;
 
-// AuthorizationList の印（Android の KeyMint の定義）。
+// AuthorizationList tags (Android KeyMint definitions).
 const TAG_PURPOSE: u32 = 1;
 const TAG_ALGORITHM: u32 = 2;
 const TAG_EC_CURVE: u32 = 10;
@@ -58,12 +61,12 @@ const PURPOSE_SIGN: u64 = 2;
 const ALGORITHM_EC: u64 = 3;
 const EC_CURVE_P256: u64 = 1;
 const ORIGIN_GENERATED: u64 = 0;
-/// `HardwareAuthenticatorType` のビット。
+/// Bits of `HardwareAuthenticatorType`.
 const AUTH_TYPE_PASSWORD: u64 = 1;
 const AUTH_TYPE_FINGERPRINT: u64 = 2;
 const VERIFIED_BOOT_VERIFIED: u64 = 0;
 
-/// 鍵の置き場（`SecurityLevel`）。
+/// Where the key lives (`SecurityLevel`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeySecurityLevel {
     Software,
@@ -99,45 +102,45 @@ impl KeySecurityLevel {
     }
 }
 
-/// assay が信じるもの（環境変数から作る。組織ごとには変えない）。
+/// What assay trusts (built from environment variables; not varied per organization).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttestationPolicy {
-    /// 信じる根の公開鍵（SubjectPublicKeyInfo の DER）。
+    /// Public keys of trusted roots (SubjectPublicKeyInfo DER).
     pub trusted_root_keys: Vec<Vec<u8>>,
-    /// 認証アプリのパッケージ名（`com.nolumia.auth`）。
+    /// Package name of the authenticator app (`com.nolumia.auth`).
     pub package_name: String,
-    /// 認証アプリの署名の証明書の SHA-256（deck の配布鍵）。
+    /// SHA-256 of the authenticator app's signing certificate (deck's distribution key).
     pub signing_cert_digests: Vec<[u8; 32]>,
-    /// ソフトウェアの鍵と、検証されていない起動を受けるか（stg の確かめの台本のためだけ）。
+    /// Whether to accept software keys and unverified boot (only for the stg check scripts).
     pub allow_software: bool,
 }
 
-/// 確かめが通った鍵。
+/// A key that passed the checks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttestedKey {
-    /// 鍵の SubjectPublicKeyInfo（DER）。署名の確かめと鍵の番号に使う。
+    /// The key's SubjectPublicKeyInfo (DER). Used for signature checks and the key's identifier.
     pub public_key_spki: Vec<u8>,
     pub security_level: KeySecurityLevel,
 }
 
-/// 受け付けなかった理由（監査とアプリへの返事に使う。秘密は載らない）。
+/// Reasons for refusal (used for audit and the reply to the app; no secrets included).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttestationRejection {
-    /// 証明書・拡張の形が崩れている。
+    /// The certificate / extension structure is malformed.
     Malformed,
-    /// 署名がつながらない・信じる根に届かない・上の証明書が CA でない。
+    /// Signatures do not chain, do not reach a trusted root, or an upper certificate is not a CA.
     UntrustedChain,
-    /// challenge が assay の出した値でない。
+    /// The challenge is not the value assay issued.
     WrongChallenge,
-    /// 鍵がソフトウェアにある。
+    /// The key lives in software.
     InsecureKeyStore,
-    /// EC P-256・署名用・Keystore の中で作った鍵でない。
+    /// Not an EC P-256 signing key generated inside Keystore.
     WrongKeyParameters,
-    /// 使うたびに指紋を求める鍵でない。
+    /// Not a key that requires a fingerprint on every use.
     NoBiometricRequirement,
-    /// 端末の起動が検証されていない・ロックされていない。
+    /// The device's boot is not verified or not locked.
     UnverifiedDevice,
-    /// パッケージ名か署名の証明書が違う。
+    /// The package name or signing certificate differs.
     WrongApplication,
 }
 
@@ -162,7 +165,7 @@ impl From<DerError> for AttestationRejection {
     }
 }
 
-/// 証明書の鎖（鍵の証明書が先頭。DER）を確かめる。
+/// Verifies a certificate chain (key certificate first; DER).
 pub fn verify_attestation(
     chain: &[Vec<u8>],
     challenge: &[u8],
@@ -176,7 +179,8 @@ pub fn verify_attestation(
         .map(|der| Certificate::parse(der))
         .collect::<Result<Vec<_>, _>>()?;
 
-    // 1. 鎖: 1 枚ずつ上の鍵で署名がつながり、上の証明書は CA で鍵の証明（拡張）を持たない。
+    // 1. Chain: each signature chains to the key above; upper certificates are CAs and carry no key
+    //    attestation (extension).
     for pair in certs.windows(2) {
         let (child, parent) = (&pair[0], &pair[1]);
         if child.issuer != parent.subject || !parent.is_ca()? {
@@ -198,7 +202,7 @@ pub fn verify_attestation(
         return Err(AttestationRejection::UntrustedChain);
     }
 
-    // 2. 鍵の証明（拡張）を読む。
+    // 2. Read the key attestation (extension).
     let leaf = &certs[0];
     let value = leaf
         .extension(OID_KEY_DESCRIPTION)
@@ -215,14 +219,15 @@ pub fn verify_attestation(
     if level == KeySecurityLevel::Software && !policy.allow_software {
         return Err(AttestationRejection::InsecureKeyStore);
     }
-    // 守りの条件は、鍵の置き場が守る側の一覧（ソフトウェアならソフトウェアの一覧）で見る。
+    // Protection conditions are read from the list of the key's location (the software list if it
+    // is in software).
     let enforced = if level == KeySecurityLevel::Software {
         &description.software_enforced
     } else {
         &description.hardware_enforced
     };
 
-    // 3. 鍵: EC P-256・署名用・Keystore の中で作った。
+    // 3. Key: EC P-256, for signing, generated inside Keystore.
     if enforced.algorithm != Some(ALGORITHM_EC)
         || enforced.ec_curve != Some(EC_CURVE_P256)
         || !enforced.purposes.contains(&PURPOSE_SIGN)
@@ -232,7 +237,8 @@ pub fn verify_attestation(
         return Err(AttestationRejection::WrongKeyParameters);
     }
 
-    // 4. 使うたびに指紋（どちらの一覧にも「認証なし」が無く、生体だけ・時間で解けない）。
+    // 4. Fingerprint on every use (neither list has "no auth"; biometrics only; not unlockable by
+    //    time).
     let either_no_auth = description.software_enforced.no_auth_required
         || description.hardware_enforced.no_auth_required;
     let auth_type = enforced.user_auth_type.unwrap_or(0);
@@ -248,7 +254,7 @@ pub fn verify_attestation(
         return Err(AttestationRejection::NoBiometricRequirement);
     }
 
-    // 5. 端末: 起動が検証され、ロックされている。
+    // 5. Device: boot is verified and locked.
     if !policy.allow_software {
         match &description.hardware_enforced.root_of_trust {
             Some(root)
@@ -257,7 +263,8 @@ pub fn verify_attestation(
         }
     }
 
-    // 6. アプリ: パッケージ名と署名の証明書（どちらの一覧に載っていてもよい。ふつうはソフトウェア側）。
+    // 6. App: package name and signing certificate (may be in either list; usually the software
+    //    side).
     let application = description
         .software_enforced
         .application_id
@@ -285,7 +292,8 @@ pub fn verify_attestation(
     })
 }
 
-/// PEM の証明書（複数可）から公開鍵（SubjectPublicKeyInfo の DER）を取り出す。根の鍵の設定に使う。
+/// Extracts public keys (SubjectPublicKeyInfo DER) from PEM certificates (one or more). Used to
+/// configure root keys.
 pub fn root_keys_from_pem(pem: &str) -> Result<Vec<Vec<u8>>, AttestationRejection> {
     use base64::Engine;
     let mut keys = Vec::new();
@@ -312,7 +320,7 @@ pub fn root_keys_from_pem(pem: &str) -> Result<Vec<Vec<u8>>, AttestationRejectio
     Ok(keys)
 }
 
-/// 証明書の、確かめに要る部分だけ。
+/// Only the parts of a certificate needed for the checks.
 struct Certificate<'a> {
     tbs: &'a [u8],
     signature_algorithm: String,
@@ -320,7 +328,7 @@ struct Certificate<'a> {
     issuer: &'a [u8],
     subject: &'a [u8],
     spki: &'a [u8],
-    /// (OID, 中身の OCTET STRING の中身)
+    /// (OID, content of the inner OCTET STRING)
     extensions: Vec<(String, &'a [u8])>,
 }
 
@@ -362,7 +370,8 @@ impl<'a> Certificate<'a> {
                     return Err(AttestationRejection::Malformed);
                 }
                 if extensions.iter().any(|(o, _)| o == &oid) {
-                    // 同じ拡張が 2 つある証明書は受けない（どちらを読むかで結果が変わる）。
+                    // Certificates with the same extension twice are refused (the result would
+                    // depend on which one is read).
                     return Err(AttestationRejection::Malformed);
                 }
                 extensions.push((oid, next.contents));
@@ -386,7 +395,7 @@ impl<'a> Certificate<'a> {
             .map(|(_, value)| *value)
     }
 
-    /// 基本制約（basicConstraints）で CA と名乗っているか。
+    /// Whether it claims to be a CA in basicConstraints.
     fn is_ca(&self) -> Result<bool, AttestationRejection> {
         let Some(value) = self.extension(OID_BASIC_CONSTRAINTS) else {
             return Ok(false);
@@ -400,7 +409,7 @@ impl<'a> Certificate<'a> {
         Ok(first.class == TagClass::Universal && first.number == TAG_BOOLEAN && first.boolean()?)
     }
 
-    /// `issuer_spki` の鍵でこの証明書に署名されているか。
+    /// Whether this certificate is signed by the key of `issuer_spki`.
     fn is_signed_by(&self, issuer_spki: &[u8]) -> Result<bool, AttestationRejection> {
         let (key_kind, key_bytes) = public_key_of(issuer_spki)?;
         let algorithm: &'static dyn VerificationAlgorithm =
@@ -427,7 +436,8 @@ enum KeyKind {
     Rsa,
 }
 
-/// SubjectPublicKeyInfo から鍵の種類と、検証に渡す形の鍵（EC は点、RSA は PKCS#1）を取り出す。
+/// Extracts the key type and the key in the form passed to verification (point for EC, PKCS#1 for
+/// RSA) from SubjectPublicKeyInfo.
 fn public_key_of(spki: &[u8]) -> Result<(KeyKind, &[u8]), AttestationRejection> {
     let info = der::single(spki)?;
     let mut parts = expect_sequence(&info)?;
@@ -451,7 +461,8 @@ fn is_p256_key(spki: &[u8]) -> Result<bool, AttestationRejection> {
     Ok(public_key_of(spki)?.0 == KeyKind::P256)
 }
 
-/// 認証アプリの鍵（SubjectPublicKeyInfo）で、`message` への署名（ECDSA P-256・SHA-256・DER）が合うか。
+/// Whether a signature over `message` (ECDSA P-256, SHA-256, DER) matches the authenticator app's
+/// key (SubjectPublicKeyInfo).
 pub fn verify_p256_signature(spki: &[u8], message: &[u8], signature_der: &[u8]) -> bool {
     match public_key_of(spki) {
         Ok((KeyKind::P256, point)) => {
@@ -470,7 +481,7 @@ fn expect_sequence<'a>(element: &DerElement<'a>) -> Result<DerReader<'a>, Attest
     Ok(element.children())
 }
 
-/// `KeyDescription`（読むのは確かめに要る項目だけ）。
+/// `KeyDescription` (only the items needed for the checks are read).
 struct KeyDescription<'a> {
     attestation_level: KeySecurityLevel,
     keymint_level: KeySecurityLevel,
@@ -568,7 +579,7 @@ impl AuthorizationList {
                     }
                     out.application_id = Some(ApplicationId::parse(inner.contents)?);
                 }
-                // ほかの項目（鍵の長さ・作った時刻・OS の版など）は見ない。
+                // Other items (key size, creation time, OS version, etc.) are not checked.
                 _ => {}
             }
         }

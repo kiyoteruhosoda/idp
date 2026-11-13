@@ -1,7 +1,7 @@
-//! 同意画面（`GET /consent`）と同意処理（`POST /consent`、F3）。
+//! Consent screen (`GET /consent`) and consent processing (`POST /consent`, F3).
 //!
-//! ADR-0007: web はフォーム描画とリダイレクトのみを担い、同意の記録・code 発行は api の
-//! `/internal/consent-info`・`/internal/consent/approve`・`/internal/consent/deny` に委ねる。
+//! ADR-0007: web only renders forms and redirects; recording consent and issuing codes is delegated to the api's
+//! `/internal/consent-info`, `/internal/consent/approve` and `/internal/consent/deny`.
 
 use super::{api_internal_error, internal_call_status, locale};
 use crate::client_ip::ClientIp;
@@ -23,8 +23,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 
-/// 同意画面を表示する。`auth_session_id` Cookie（`/authorize` ハンドオフの受領時またはログイン成功時に
-/// web が発行した host-only Cookie。ADR-0018 決定 2）が必要。
+/// Shows the consent screen. Requires the `auth_session_id` cookie (a host-only cookie issued by web on
+/// receiving the `/authorize` hand-off or on successful login; ADR-0018 decision 2).
 pub async fn consent_page(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -40,7 +40,7 @@ pub async fn consent_page(
         );
     };
 
-    // FluentBundle は Send でないため、await をまたがないようここで生成する。
+    // FluentBundle is not Send, so create it here so it does not live across an await.
     let result = state
         .api
         .consent_info(&correlation.0, &tenant.0, &auth_session_id)
@@ -63,11 +63,11 @@ pub async fn consent_page(
                 client_name: &client_name,
                 requested_scopes: &requested_scopes,
             });
-            // 同意の送信は RP の `redirect_uri` への 302 で終わる。Chrome は `form-action` を
-            // 送信後のリダイレクト先にも適用するので、そのオリジンだけ許可する（SEC3）。
-            // ここを外すと、同意も code 発行も成功したままブラウザが RP へ戻れない。
-            // `None` は古い api（入れ替え中の数秒）。許可を足さずに描く —— 遷移は遮断されるが、
-            // 同意画面そのものは出る。
+            // Submitting consent ends with a 302 to the RP's `redirect_uri`. Chrome applies `form-action`
+            // to post-submission redirect targets too, so allow only that origin (SEC3).
+            // Without this, the browser cannot return to the RP even though consent and code issuance succeeded.
+            // `None` means an old api (a few seconds during rollover). Render without the allowance — the navigation
+            // is blocked, but the consent screen itself is shown.
             crate::security_headers::html_with_form_action_csp(
                 redirect_uri.as_deref().unwrap_or_default(),
                 body,
@@ -85,7 +85,7 @@ pub async fn consent_page(
     }
 }
 
-/// 同意フォームを処理する。`action` が `approve` なら同意付与、`deny` なら拒否。
+/// Processes the consent form. `action` = `approve` grants consent, `deny` denies it.
 pub async fn consent(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -96,11 +96,11 @@ pub async fn consent(
 ) -> Response {
     let ctx = forwarded_context(&headers, &correlation, &client_ip);
 
-    // 同意はフォーム値ではなく **Cookie の `auth_session_id`** に対して行う（SEC12）。
-    // フォーム値だけで動かしていたため、攻撃者が用意した認可セッションの id をフォームに
-    // 仕込んで踏ませれば、被害者のブラウザに「攻撃者のフローへの同意」を出せた。
-    // Cookie を権威にし、フォーム値はそれと一致する場合だけ受け付ける（値の運搬経路が 2 つある
-    // ことを利用した取り違えを塞ぐ）。
+    // Consent applies to the **`auth_session_id` cookie**, not the form value (SEC12).
+    // Since it used to work from the form value alone, an attacker could plant the id of an authorization session
+    // they prepared into a form and make the victim's browser show "consent to the attacker's flow".
+    // The cookie is authoritative; the form value is accepted only if it matches (closing the mix-up that
+    // exploited having two paths carrying the value).
     let Some(auth_session_id) = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE) else {
         let messages = Messages::new(locale(&headers));
         return error_page(
@@ -117,11 +117,11 @@ pub async fn consent(
         return see_other(&format!("{}/consent", tenant.prefix()));
     }
 
-    // CSRF チェック（FluentBundle を await 前に使わないよう先に行う）。
+    // CSRF check (done first so FluentBundle is not used before an await).
     let expected_csrf = consent_csrf_token(&auth_session_id, state.config.csrf_secret());
     if !assay_contracts::csrf::verify(&expected_csrf, &form.csrf_token) {
-        // PRG: 303 で同意画面の GET へ付け替え、新しいトークンのフォームを自動で再表示する
-        //（従来はエラーページを返すだけで、リロードすると POST が再送されて復帰できなかった）。
+        // PRG: switch to the consent screen's GET with 303 and automatically re-show the form with a new token
+        //(previously it just returned an error page, and reloading resent the POST with no recovery).
         tracing::warn!(
             correlation_id = %ctx.correlation_id,
             "consent failed: csrf token mismatch; redirecting to fresh consent form"
@@ -152,8 +152,8 @@ pub async fn consent(
                 )
                     .into_response()
             }
-            // 同意は付与できたが、このアプリの利用が許可されていない（ADR-0054）。
-            // auth_session Cookie は畳んで、assay の画面で断る。
+            // Consent was granted, but use of this app is not permitted (ADR-0054).
+            // Drop the auth_session cookie and refuse on an assay screen.
             Ok(InternalConsentApproveResponse::ApplicationNotPermitted { application_name }) => (
                 state
                     .set_cookies()

@@ -1,14 +1,15 @@
-//! 外部 IdP 認証（AP10。ユーザー認証・認証ポリシー仕様書 §13）。
+//! External IdP authentication (AP10; user authentication / auth policy spec §13).
 //!
-//! 外部の OpenID Provider での認証結果を、assay のログインとして引き受けるための型。
+//! Types for accepting an authentication result at an external OpenID Provider as an assay login.
 //!
-//! # 同一性の根拠は `iss` + `sub` だけ
+//! # Identity rests only on `iss` + `sub`
 //!
-//! 外部アカウントと assay の利用者を結び付ける根拠は `iss` + `sub` に限る（§13.2）。
-//! メールアドレスで結び付ける設計にしないのは、外部 IdP 側でメールを変更・再利用できる場合に
-//! **別人が同じメールを名乗って既存アカウントへ入れてしまう**ため。初回だけメール一致で自動連携
-//! したい要求はあるので、それはプロバイダ単位の明示的な設定（`allow_auto_link`）にし、
-//! 「外部 IdP がメールの所有を検証していること」を運用者が引き受ける形にする。
+//! The only basis for linking an external account to an assay user is `iss` + `sub` (§13.2). We do
+//! not link by email address because if the external IdP lets emails be changed or reused,
+//! **someone else could claim the same email and get into an existing account**. There is demand to
+//! auto-link by email match on first login, so that is an explicit per-provider setting
+//! (`allow_auto_link`), where the operator takes responsibility that "the external IdP verifies
+//! email ownership".
 #![allow(dead_code)]
 
 use crate::domain::error::DomainError;
@@ -16,10 +17,10 @@ use crate::domain::tenant::TenantId;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-/// 外部 IdP へ既定で要求する scope。
+/// Scopes requested from external IdPs by default.
 pub const DEFAULT_SCOPES: [&str; 3] = ["openid", "profile", "email"];
 
-/// 外部 IdP のプロトコル（ADR-0027）。許可値の単一の出所。
+/// Protocol of the external IdP (ADR-0027). The single source of allowed values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExternalIdpProtocol {
     #[default]
@@ -35,8 +36,9 @@ impl ExternalIdpProtocol {
         }
     }
 
-    /// 保存値・入力値を解釈する。未知の値は**既定へ丸めずエラー**にする。丸めると、SAML の
-    /// つもりで登録した設定が OIDC として扱われ、検証の要件ごと変わってしまう。
+    /// Interprets stored / input values. Unknown values are **an error, not coerced to the
+    /// default**. Coercing would treat a configuration registered as SAML as OIDC, changing the
+    /// verification requirements with it.
     pub fn parse(raw: &str) -> Result<Self, DomainError> {
         match raw.trim() {
             "oidc" => Ok(Self::Oidc),
@@ -48,20 +50,21 @@ impl ExternalIdpProtocol {
     }
 }
 
-/// OIDC の外部 IdP 固有設定。
+/// OIDC-specific settings of an external IdP.
 #[derive(Debug, Clone)]
 pub struct OidcProviderConfig {
     pub authorization_endpoint: String,
     pub token_endpoint: String,
     pub jwks_uri: String,
     pub client_id: String,
-    /// クライアントシークレット（暗号文）。public クライアントとして登録した場合は `None`。
+    /// Client secret (ciphertext). `None` when registered as a public client.
     pub client_secret_encrypted: Option<String>,
     pub scopes: Vec<String>,
 }
 
 impl OidcProviderConfig {
-    /// 認可要求に載せる scope（未設定なら既定）。`openid` は必ず含める（ID Token が要るため）。
+    /// Scopes put in the authorization request (default when unset). `openid` is always included
+    /// (an ID Token is needed).
     pub fn effective_scopes(&self) -> Vec<String> {
         let mut scopes: Vec<String> = if self.scopes.is_empty() {
             DEFAULT_SCOPES.iter().map(|s| s.to_string()).collect()
@@ -75,20 +78,22 @@ impl OidcProviderConfig {
     }
 }
 
-/// SAML の外部 IdP 固有設定（SP 側。ADR-0027）。
+/// SAML-specific settings of an external IdP (SP side; ADR-0027).
 #[derive(Debug, Clone)]
 pub struct SamlProviderConfig {
-    /// IdP の `SingleSignOnService` URL（HTTP-Redirect binding で AuthnRequest を送る先）。
+    /// The IdP's `SingleSignOnService` URL (where AuthnRequests are sent with the HTTP-Redirect
+    /// binding).
     pub sso_url: String,
-    /// 署名検証に使う X.509 証明書（base64 DER）。**複数持てる**——IdP の証明書更新期間は
-    /// 新旧 2 枚が同時に有効で、1 枚しか持てないと更新のたびにログインが止まる。
+    /// X.509 certificates for signature verification (base64 DER). **Several can be held** — during
+    /// an IdP certificate rollover old and new are valid at once, and holding only one would stop
+    /// logins at every rollover.
     pub certificates: Vec<String>,
-    /// `AuthnRequest` で要求する `NameIDFormat`。
+    /// `NameIDFormat` requested in the `AuthnRequest`.
     pub name_id_format: String,
 }
 
-/// プロトコル固有の設定。**どの組み合わせが妥当か**をここで表す（DB は使わない列を NULL に
-/// するだけなので、妥当性の単一の出所はこの enum になる）。
+/// Protocol-specific settings. **Which combinations are valid** is expressed here (the DB merely
+/// sets unused columns to NULL, so this enum is the single source of validity).
 #[derive(Debug, Clone)]
 pub enum ExternalIdpConfig {
     Oidc(OidcProviderConfig),
@@ -118,33 +123,34 @@ impl ExternalIdpConfig {
     }
 }
 
-/// テナントに設定された外部 IdP 1 件。
+/// One external IdP configured for a tenant.
 ///
-/// `issuer` は**両プロトコル共通の信頼の起点**である（ADR-0027）。OIDC では ID Token の `iss`、
-/// SAML では Response / Assertion の `<Issuer>`（IdP の entityID）で、どちらも「その主張を
-/// 出した発行者の識別子」なので、`user_external_identities.external_issuer` は同じ形で使える。
+/// `issuer` is **the trust anchor shared by both protocols** (ADR-0027). In OIDC it is the ID
+/// Token's `iss`, in SAML the Response / Assertion `<Issuer>` (the IdP's entityID); both are "the
+/// identifier of the issuer that made the claim", so `user_external_identities.external_issuer` can
+/// be used in the same form.
 #[derive(Debug, Clone)]
 pub struct ExternalIdentityProvider {
     pub id: Uuid,
     pub tenant_id: TenantId,
-    /// テナント内一意の識別コード（URL パスに載る）。
+    /// Identifier code unique within the tenant (appears in URL paths).
     pub provider_code: String,
     pub display_name: String,
-    /// 外部 IdP の issuer（OIDC: ID Token の `iss` / SAML: IdP の entityID）。完全一致で照合する。
+    /// The external IdP's issuer (OIDC: ID Token `iss` / SAML: IdP entityID). Matched exactly.
     pub issuer: String,
-    /// プロトコル固有の設定。
+    /// Protocol-specific settings.
     pub config: ExternalIdpConfig,
     pub enabled: bool,
-    /// 検証済みメール一致で既存利用者へ自動連携するか。
+    /// Whether to auto-link to an existing user on verified email match.
     pub allow_auto_link: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
 impl ExternalIdentityProvider {
-    /// `provider_code` の形式検証（英数字・`-`・`_`・`.`、1〜100 文字）。
-    /// URL パスセグメント・監査ログにそのまま載せられる文字に限る
-    /// （`AuthenticationPolicy::validate_code` と同じ基準）。
+    /// Format check of `provider_code` (alphanumerics, `-`, `_`, `.`, 1–100 characters).
+    /// Limited to characters that can go as is into URL path segments and audit logs
+    /// (same criteria as `AuthenticationPolicy::validate_code`).
     pub fn validate_code(code: &str) -> Result<(), DomainError> {
         if code.is_empty() || code.len() > 100 {
             return Err(DomainError::InvalidValue(
@@ -162,11 +168,11 @@ impl ExternalIdentityProvider {
         Ok(())
     }
 
-    /// エンドポイント URL の検証。
+    /// Endpoint URL validation.
     ///
-    /// `https` に限り、内部宛先（loopback・プライベート IP 等）を拒む。外部 IdP のエンドポイントは
-    /// assay のサーバが自ら取りに行く先なので、ここを緩めると管理 API が SSRF の踏み台になる
-    /// （back-channel logout URI と同じ理由。SEC2）。
+    /// Only `https`, refusing internal destinations (loopback, private IPs, etc.). External IdP
+    /// endpoints are fetched by assay's server itself, so loosening this would make the admin API
+    /// an SSRF stepping stone (same reason as back-channel logout URIs; SEC2).
     pub fn validate_endpoint(url: &str, field: &str) -> Result<(), DomainError> {
         let parsed = url::Url::parse(url.trim())
             .map_err(|_| DomainError::InvalidValue(format!("{field} must be a valid URL")))?;
@@ -186,7 +192,7 @@ impl ExternalIdentityProvider {
     }
 }
 
-/// 外部 IdP 上の同一性と assay 利用者の対応。
+/// Mapping between an identity at an external IdP and an assay user.
 #[derive(Debug, Clone)]
 pub struct ExternalIdentity {
     pub id: Uuid,
@@ -198,26 +204,28 @@ pub struct ExternalIdentity {
     pub last_used_at: Option<DateTime<Utc>>,
 }
 
-/// 外部 IdP へのリダイレクトからコールバックまでの進行状態。
+/// Progress state from the redirect to the external IdP until the callback.
 #[derive(Debug, Clone)]
 pub struct ExternalLoginRequest {
     pub id: Uuid,
     pub tenant_id: TenantId,
     pub provider_id: Uuid,
-    /// `state`（SAML では `RelayState`）の SHA-256。生値は外部 IdP から戻る値としてのみ扱う。
+    /// SHA-256 of `state` (`RelayState` in SAML). The raw value is handled only as the value
+    /// returned from the external IdP.
     pub state_hash: String,
-    /// こちらが作り、相手が返してくる値。**リプレイ検出の要**である。
-    /// OIDC では ID Token の `nonce`、SAML では `AuthnRequest` の `ID`（応答の `InResponseTo` と
-    /// 照合する）。役割が同じなので 1 つの列で持つ。
+    /// A value we create and the other side returns. **The key to replay detection.** In OIDC it is
+    /// the ID Token's `nonce`, in SAML the `AuthnRequest`'s `ID` (matched against the response's
+    /// `InResponseTo`). Same role, so one column holds it.
     pub nonce: String,
-    /// PKCE の `code_verifier`（暗号文）。**SAML では `None`**（PKCE に当たるものが無い）。
+    /// PKCE `code_verifier` (ciphertext). **`None` for SAML** (there is no PKCE equivalent).
     pub code_verifier_encrypted: Option<String>,
-    /// 呼び出し元の OIDC auth_session の `id_hash`（ポータル経由なら `None`）。
-    /// auth_session_id は bearer credential なので、写しもハッシュで持つ（SEC6）。
+    /// `id_hash` of the calling OIDC auth_session (`None` when via the portal).
+    /// auth_session_id is a bearer credential, so the copy is also kept as a hash (SEC6).
     pub auth_session_id_hash: Option<String>,
-    /// 開始したブラウザにだけ渡した値（Cookie）の SHA-256（task #581）。戻り口でこれと照らし、
-    /// **他人のブラウザに戻り URL を踏ませる**ログイン CSRF（攻撃者のアカウントでログインさせる）を断つ。
-    /// `state` は外部 IdP を経て URL に載るので、それだけではブラウザを特定できない。
+    /// SHA-256 of the value (cookie) given only to the browser that started (task #581). Checked at
+    /// the return point, blocking login CSRF that **makes someone else's browser follow the return
+    /// URL** (logging them in to the attacker's account). `state` goes through the external IdP
+    /// into the URL, so it alone cannot identify the browser.
     pub browser_binding_hash: Option<String>,
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
@@ -228,15 +236,16 @@ impl ExternalLoginRequest {
         self.expires_at <= now
     }
 
-    /// 戻ってきたブラウザが、開始したブラウザか（task #581）。
+    /// Whether the returning browser is the one that started (task #581).
     ///
-    /// 開始時の値が無い進行状態（この確認より前に作られたもの）も通さない ——どのブラウザから
-    /// 始めたかを確かめようがないので、利用者にはやり直してもらう（寿命は 10 分）。
+    /// Progress states without a start value (created before this check existed) are not let
+    /// through either — there is no way to confirm which browser started, so the user is asked to
+    /// start over (lifetime is 10 minutes).
     pub fn is_bound_to(&self, presented: Option<&str>) -> bool {
         match (self.browser_binding_hash.as_deref(), presented) {
             (Some(expected), Some(presented)) if !presented.is_empty() => {
                 let presented = crate::domain::crypto::sha256_hex(presented);
-                // ハッシュ同士の比較だが、長さと内容で早く抜けないようにしておく。
+                // It compares hashes, but avoid exiting early on length and content anyway.
                 expected.len() == presented.len()
                     && expected
                         .bytes()
@@ -249,16 +258,17 @@ impl ExternalLoginRequest {
     }
 }
 
-/// 外部 IdP の ID Token から取り出した、連携に必要な主張。
+/// Claims needed for linking, taken from the external IdP's ID Token.
 #[derive(Debug, Clone)]
 pub struct ExternalClaims {
     pub issuer: String,
     pub subject: String,
     pub email: Option<String>,
-    /// 外部 IdP がメールの所有を検証したと主張しているか。自動連携の前提。
+    /// Whether the external IdP claims it verified email ownership. A prerequisite for
+    /// auto-linking.
     pub email_verified: bool,
     pub name: Option<String>,
-    /// ID Token の `nonce`（リプレイ検出のため保存値と照合する）。
+    /// The ID Token's `nonce` (matched against the stored value for replay detection).
     pub nonce: Option<String>,
 }
 
@@ -286,7 +296,7 @@ mod tests {
         assert!(ExternalIdentityProvider::validate_code("スペース あり").is_err());
     }
 
-    /// エンドポイントは https のみ、内部宛先は拒否（SSRF の踏み台にしない）。
+    /// Endpoints are https only; internal destinations are refused (not an SSRF stepping stone).
     #[test]
     fn endpoints_must_be_public_https_urls() {
         assert!(ExternalIdentityProvider::validate_endpoint(
@@ -308,7 +318,7 @@ mod tests {
         }
     }
 
-    /// `openid` は必ず要求する（ID Token が無いと `iss`+`sub` を得られない）。
+    /// `openid` is always requested (without an ID Token, `iss`+`sub` cannot be obtained).
     #[test]
     fn openid_scope_is_always_requested() {
         assert_eq!(
@@ -330,8 +340,8 @@ mod tests {
 mod protocol_tests {
     use super::*;
 
-    /// 未知のプロトコルは既定へ丸めずエラーにする。丸めると、SAML のつもりで登録した設定が
-    /// OIDC として扱われ、検証の要件ごと変わってしまう。
+    /// Unknown protocols are an error, not coerced to the default. Coercing would treat a
+    /// configuration registered as SAML as OIDC, changing the verification requirements with it.
     #[test]
     fn unknown_protocols_are_rejected_not_defaulted() {
         assert_eq!(

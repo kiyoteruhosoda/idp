@@ -1,17 +1,17 @@
-//! メール送信（SMTP）設定だけを機械から入れる口の統合テスト（ADR-0051）。
+//! Integration tests for the endpoint that lets machines set only the mail (SMTP) settings (ADR-0051).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test admin_smtp_settings
 //!
-//! 検証の要:
-//! - `idp.smtp:write` を持つ**機械**が、システム設定の他の面（SMS・ランタイム・再起動）へ
-//!   触れないまま、メールの経路だけを入れられること。この口が無いと SMTP パスワードは
-//!   人が画面へ手で貼るしかない。
-//! - **パスワードの平文が返らない**こと。設定済みか否かだけを返す。
-//! - `idp.tenant.admin` からは届かないこと。届くと、root のテナント管理者が全体の
-//!   メール経路を変えられる。
-//! - root 以外のテナントでも配れるが（ADR-0058 §8）、届くのは**そのテナントの経路だけ**で、
-//!   全体の経路の口は root でなければ 403 のままであること。
+//! Key points checked:
+//! - A **machine** with `idp.smtp:write` can set only the mail route without touching other parts of
+//!   system settings (SMS, runtime, restart). Without this endpoint the SMTP password could only be
+//!   pasted into the screen by hand.
+//! - **The plaintext password is not returned**. Only whether it is set is returned.
+//! - `idp.tenant.admin` does not reach it. If it did, root's tenant admins could change the global
+//!   mail route.
+//! - It can be granted in tenants other than root (ADR-0058 §8), but it reaches **only that tenant's route**, and
+//!   the global route endpoint stays 403 unless root.
 
 mod support;
 
@@ -32,7 +32,7 @@ fn basic(client_id: &str, secret: &str) -> String {
     )
 }
 
-/// `client_credentials` + `resource={issuer}/{tenant}/admin` で管理トークンを得る。
+/// Gets an admin token via `client_credentials` + `resource={issuer}/{tenant}/admin`.
 async fn machine_token(
     env: &support::TestEnv,
     tenant_id: &str,
@@ -67,8 +67,8 @@ async fn a_machine_with_the_smtp_code_sets_the_mail_route_and_never_reads_the_pa
     let Some(env) = support::setup("admin smtp settings").await else {
         return;
     };
-    // ⚠ **SMTP の設定はシステムに 1 組しか無い。** 実際に書き換えるので、同じ設定を触る
-    //   他のテスト（`password_reset`）と**バイナリを跨いで**直列化し、終わったら元に戻す。
+    // ⚠ **There is only one SMTP configuration in the system.** It is actually rewritten, so serialize with other tests
+    //   touching the same settings (`password_reset`) **across binaries**, and restore it afterwards.
     let smtp_lock = SmtpSettingsLock::acquire(&env.pool).await;
     let saved = snapshot_smtp_settings(&env.pool).await;
 
@@ -119,7 +119,7 @@ async fn a_machine_with_the_smtp_code_sets_the_mail_route_and_never_reads_the_pa
         "the plaintext password must never come back: {updated}"
     );
 
-    // 読み取りは `:write` が含意する（ADR-0037 の含意 4）。別のコードを足さずに読める。
+    // Reading is implied by `:write` (implication 4 of ADR-0037). It can be read without adding another code.
     let res = send(&env.app, get(&machine_tok, &smtp_uri)).await;
     assert_eq!(res.status(), StatusCode::OK, "write implies read");
     let fetched = body_json(res).await;
@@ -128,7 +128,7 @@ async fn a_machine_with_the_smtp_code_sets_the_mail_route_and_never_reads_the_pa
     assert_eq!(fetched["smtp_password_set"], json!(true));
     assert!(fetched.get("smtp_password").is_none());
 
-    // ⚠ **広がっていないことまで見る。** メールの経路以外へは届かない。
+    // ⚠ **Also check it did not spread.** It does not reach anything other than the mail route.
     let res = send(
         &env.app,
         get(
@@ -187,8 +187,8 @@ async fn a_tenant_admin_cannot_reach_the_smtp_settings() {
     );
 }
 
-/// ADR-0058 §8: テナントの中でも `idp.smtp:*` を配れる。届くのは**そのテナントの経路だけ**で、
-/// 全体の経路の口は root でなければ 403 のまま。経路を持たないテナントの応答に全体の値は出ない。
+/// ADR-0058 §8: `idp.smtp:*` can be granted inside a tenant too. It reaches **only that tenant's route**, and
+/// the global route endpoint stays 403 unless root. Responses for tenants without a route do not show global values.
 #[tokio::test]
 async fn a_child_tenant_machine_sets_only_its_own_mail_route() {
     let Some(env) = support::setup("smtp tenant route").await else {
@@ -230,7 +230,7 @@ async fn a_child_tenant_machine_sets_only_its_own_mail_route() {
     let machine_tok = machine_token(&env, &child, &client_id, &secret).await;
     let own_uri = format!("/{child}/admin/settings/smtp");
 
-    // 経路を持たないうちは全体に従う。⚠ 全体の値はテナントへ見せない（項目は空）。
+    // Until it has a route it follows the global one. ⚠ Global values are not shown to the tenant (fields are empty).
     let res = send(&env.app, get(&machine_tok, &own_uri)).await;
     assert_eq!(res.status(), StatusCode::OK);
     let before = body_json(res).await;
@@ -259,7 +259,7 @@ async fn a_child_tenant_machine_sets_only_its_own_mail_route() {
     assert_eq!(updated["inherited"], json!(false));
     assert_eq!(updated["smtp_host"], json!(host));
 
-    // 宅内・ループバックを指す宛先は保存で断る（task #740）。
+    // Destinations pointing at the home network / loopback are rejected on save (task #740).
     for internal in ["mariadb", "10.10.2.11", "127.0.0.1", "169.254.169.254"] {
         let res = send(
             &env.app,
@@ -278,7 +278,7 @@ async fn a_child_tenant_machine_sets_only_its_own_mail_route() {
         "the plaintext password must never come back: {updated}"
     );
 
-    // ⚠ 全体の経路の口には届かない（使う側の root の関門）。
+    // ⚠ It does not reach the global route endpoint (the root gate on the using side).
     let whole_uri = format!("/{child}/admin/system-settings/smtp");
     let res = send(&env.app, get(&machine_tok, &whole_uri)).await;
     assert_eq!(
@@ -287,13 +287,13 @@ async fn a_child_tenant_machine_sets_only_its_own_mail_route() {
         "a tenant-scoped SMTP code must not reach the whole-IdP route"
     );
 
-    // 消すと全体に従う状態へ戻る。
+    // Deleting it reverts to following the global one.
     let res = send(&env.app, support::delete(&machine_tok, &own_uri)).await;
     assert_eq!(res.status(), StatusCode::OK);
     assert_eq!(body_json(res).await["inherited"], json!(true));
 }
 
-/// ⚠ `idp.tenant.admin` はテナントの経路にも届かない（付与は明示の 1 枚）。
+/// ⚠ `idp.tenant.admin` does not reach even the tenant route (granting is one explicit code).
 #[tokio::test]
 async fn a_tenant_admin_does_not_reach_its_own_mail_route_without_the_code() {
     let Some(env) = support::setup("smtp tenant admin").await else {
@@ -317,8 +317,8 @@ async fn a_tenant_admin_does_not_reach_its_own_mail_route_without_the_code() {
         .expect("tenant id")
         .to_string();
 
-    // 作成者は新テナントのブートストラップ管理者（ADR-0009 §5）＝ `idp.tenant.admin` を持つ。
-    // ⚠ `idp.system.admin` は root の scope にしか無いので、子テナントのトークンには載らない。
+    // The creator is the new tenant's bootstrap admin (ADR-0009 §5) = holds `idp.tenant.admin`.
+    // ⚠ `idp.system.admin` exists only in root's scope, so it is not in child tenant tokens.
     let child_tok = exchange_admin_token(&env.app, &child, &admin_sso).await;
     let own_uri = format!("/{child}/admin/settings/smtp");
 

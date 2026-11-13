@@ -1,38 +1,38 @@
-//! アカウントの管理者メモ（ADR-0063 / ADR-0065）。
+//! Admin notes on accounts (ADR-0063 / ADR-0065).
 //!
-//! 「どういう経緯のアカウントか」を管理者が書き残す自由記述。**人に向けたものであって、判定には
-//! 一切使わない**（ログイン・トークン・名簿のどこにも写さない）。
+//! Free text where admins record "how this account came about". **It is meant for people and is never
+//! used for decisions** (it is not copied into sign-in, tokens or the directory anywhere).
 //!
-//! 人とサービスアカウントのどちらにも付く（[`crate::domain::account::AccountRef`]）。規則
-//! （上限・正規化）は種別を問わず 1 つ。
+//! Attaches to both people and service accounts ([`crate::domain::account::AccountRef`]). There is one set
+//! of rules (limit, normalization) regardless of kind.
 //!
-//! - 人のメモはテナントの管理者が持つ事実なので、利用者ではなく**メンバーシップ**（テナント ×
-//!   利用者）に付く。同じ人でも HOME とゲスト先では別のことを書く
-//! - サービスアカウントは 1 テナントにしか属さないので、`clients.id` にそのまま付く
+//! - A person's note is a fact held by the tenant's admins, so it attaches to the **membership** (tenant x
+//!   user), not the user. The same person can have different notes in the HOME tenant and a guest tenant
+//! - A service account belongs to only one tenant, so it attaches directly to `clients.id`
 
 use crate::domain::message::MessageKey;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-/// メモの上限（文字数）。経緯を数行書くには十分で、議事録を貼り付ける場所にはしない長さ。
+/// Note limit (characters). Enough for a few lines of history; not long enough to become a place to paste minutes.
 ///
-/// 列は `TEXT`（64KB）なので、⚠ **バイトではなく文字で数える**（日本語は 1 文字 3 バイト）。
-/// 値は web の入力欄と共有する（契約 crate が単一の出所）。
+/// The column is `TEXT` (64KB), so ⚠ **count characters, not bytes** (Japanese is 3 bytes per character).
+/// The value is shared with the web input field (the contract crate is the single source).
 pub use assay_contracts::admin::ACCOUNT_NOTE_MAX_LEN;
 
-/// 保存されているメモ。
+/// A stored note.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountNote {
     pub text: String,
     pub updated_at: DateTime<Utc>,
-    /// 最後に書いた管理者。機械経由・書いた人が消えた場合は `None`。
+    /// The admin who last wrote it. `None` when written via a machine or the writer has been deleted.
     pub updated_by: Option<Uuid>,
 }
 
-/// 入力を検証し、保存する値を返す。**空（空白だけ）なら `None` ＝ メモを消す。**
+/// Validates input and returns the value to store. **Empty (whitespace only) means `None` = delete the note.**
 ///
-/// 改行は `\n` に揃え、前後の空白は落とす。行の中の空白は書いたとおりに残す（字下げで
-/// 箇条書きにする人がいる）。
+/// Line breaks are normalized to `\n` and leading/trailing whitespace is trimmed. Whitespace within lines is kept as written
+/// (some people make bullet lists with indentation).
 pub fn normalize_account_note(raw: &str) -> Result<Option<String>, MessageKey> {
     let unified = raw.replace("\r\n", "\n").replace('\r', "\n");
     let value = unified.trim();

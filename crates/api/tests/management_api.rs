@@ -1,15 +1,15 @@
-//! IdP 自身を機械から操作する管理 API の統合テスト（ADR-0037）。
+//! Integration tests for the admin API that operates the IdP itself from machines (ADR-0037).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test management_api
 //!
-//! 検証の要:
-//! - システム用クライアントが `client_credentials` + `resource` で**管理トークン**を得て、
-//!   付与された細粒度権限の範囲だけを操作できること。
-//! - `resource` を付けずに得たトークン（`aud` が `/userinfo`）で管理 API を叩けないこと。
-//!   ここが通ると、利用者ログイン用のトークンが管理面へ持ち込めることになる。
-//! - 包括的な管理権限（`idp.tenant.admin` / `idp.system.admin`）をクライアントへ付与できないこと。
-//! - 管理トークンがテナントを跨がないこと。
+//! Key points checked:
+//! - A system client obtains an **admin token** via `client_credentials` + `resource` and can operate only
+//!   within the fine-grained permissions granted.
+//! - A token obtained without `resource` (`aud` is `/userinfo`) cannot call the admin API.
+//!   If it could, tokens for user sign-in could be carried into the admin surface.
+//! - Broad admin permissions (`idp.tenant.admin` / `idp.system.admin`) cannot be granted to clients.
+//! - Admin tokens do not cross tenants.
 
 mod support;
 
@@ -20,9 +20,9 @@ use base64::Engine as _;
 use serde_json::json;
 use support::{admin_token, body_json, delete, get, post, send, unique};
 
-/// `MANAGEMENT_TOKEN_TTL_SECS` の既定（`domain::system_setting` の定義と対）。
+/// Default of `MANAGEMENT_TOKEN_TTL_SECS` (paired with the definition in `domain::system_setting`).
 const MANAGEMENT_TOKEN_TTL_SECS: u64 = 300;
-/// `ACCESS_TOKEN_TTL_SECS` の既定。
+/// Default of `ACCESS_TOKEN_TTL_SECS`.
 const ACCESS_TOKEN_TTL_SECS: u64 = 900;
 
 fn basic(client_id: &str, secret: &str) -> String {
@@ -32,7 +32,7 @@ fn basic(client_id: &str, secret: &str) -> String {
     )
 }
 
-/// `client_credentials` で `/token` を叩く（`resource` は任意）。
+/// Calls `/token` with `client_credentials` (`resource` is optional).
 async fn request_token(
     app: &axum::Router,
     tenant_id: &str,
@@ -60,7 +60,7 @@ async fn request_token(
     .await
 }
 
-/// assay の管理 API を指すリソース指標（`{issuer}/{tenant_id}/admin`）。
+/// Resource indicator pointing at assay's admin API (`{issuer}/{tenant_id}/admin`).
 fn management_resource(env: &support::TestEnv, tenant_id: &str) -> String {
     format!("{}/{}/admin", env.issuer, tenant_id)
 }
@@ -78,8 +78,8 @@ async fn a_system_client_operates_the_idp_within_the_permissions_it_was_granted(
         env.root_tenant_id
     );
 
-    // 権限が 1 つも無いうちは、管理 API を要求しても管理トークンは出ない（取れたのに何も
-    // 通らないトークンを作らない）。
+    // While there are no permissions, requesting the admin API issues no admin token (do not create a token
+    // that was obtained but lets nothing through).
     let res = request_token(
         &env.app,
         &env.root_tenant_id,
@@ -95,7 +95,7 @@ async fn a_system_client_operates_the_idp_within_the_permissions_it_was_granted(
         "no permissions -> invalid_target"
     );
 
-    // 読み取りだけを付与する。
+    // Grant read only.
     let res = send(
         &env.app,
         post(
@@ -111,7 +111,7 @@ async fn a_system_client_operates_the_idp_within_the_permissions_it_was_granted(
         json!(["idp.users:read"])
     );
 
-    // 管理トークンを取得する。
+    // Obtain an admin token.
     let res = request_token(
         &env.app,
         &env.root_tenant_id,
@@ -122,9 +122,9 @@ async fn a_system_client_operates_the_idp_within_the_permissions_it_was_granted(
     .await;
     assert_eq!(res.status(), StatusCode::OK);
     let issued = body_json(res).await;
-    // 管理トークンは通常のアクセストークンより短命（ADR-0037 決定 2）。`perms` はトークンから
-    // 読むので、この寿命がそのまま「権限を剥奪してから実際に効くまで」の上限になる。既定の
-    // ACCESS_TOKEN_TTL_SECS（900）が使われていると、剥奪が 3 倍長く効かないまま残る。
+    // Admin tokens are shorter-lived than normal access tokens (ADR-0037 decision 2). `perms` is read from the token,
+    // so this lifetime is the upper bound of "from revoking a permission until it actually takes effect". If the default
+    // ACCESS_TOKEN_TTL_SECS (900) were used, revocation would stay ineffective 3 times longer.
     assert_eq!(
         issued["expires_in"].as_u64(),
         Some(MANAGEMENT_TOKEN_TTL_SECS),
@@ -135,7 +135,7 @@ async fn a_system_client_operates_the_idp_within_the_permissions_it_was_granted(
         .expect("access_token")
         .to_string();
 
-    // 読み取りは通る。
+    // Reading passes.
     let user_uri = format!("/{}/admin/users/{}", env.root_tenant_id, env.root_admin_id);
     let res = send(&env.app, get(&machine_tok, &user_uri)).await;
     assert_eq!(
@@ -144,7 +144,7 @@ async fn a_system_client_operates_the_idp_within_the_permissions_it_was_granted(
         "idp.users:read allows reading"
     );
 
-    // 書き込みは通らない（`:read` は `:write` を含意しない）。
+    // Writing does not pass (`:read` does not imply `:write`).
     let res = send(
         &env.app,
         post(
@@ -160,7 +160,7 @@ async fn a_system_client_operates_the_idp_within_the_permissions_it_was_granted(
         "idp.users:read must not allow writing"
     );
 
-    // 別リソースにも及ばない。
+    // It does not extend to other resources either.
     let res = send(
         &env.app,
         get(
@@ -175,7 +175,7 @@ async fn a_system_client_operates_the_idp_within_the_permissions_it_was_granted(
         "idp.users:read must not reach clients"
     );
 
-    // 剥奪すると、次に取るトークンには載らない（発行済みトークンは TTL まで有効）。
+    // After revocation, the next token obtained does not carry it (issued tokens stay valid until TTL).
     let res = send(
         &env.app,
         delete(&admin_tok, &format!("{perms_uri}/idp.users:read")),
@@ -198,9 +198,9 @@ async fn a_system_client_operates_the_idp_within_the_permissions_it_was_granted(
     );
 }
 
-/// `resource` を付けずに得たトークンは `/userinfo` 向けであり、管理 API では 401。
+/// A token obtained without `resource` is for `/userinfo` and gets 401 at the admin API.
 ///
-/// これが通ると、RP が利用者ログインで受け取ったトークンも同じ `aud` で管理面へ届くことになる。
+/// If it passed, tokens RPs receive from user sign-in would reach the admin surface with the same `aud`.
 #[tokio::test]
 async fn a_token_minted_for_userinfo_cannot_reach_the_management_api() {
     let Some(env) = support::setup("management api audience").await else {
@@ -223,8 +223,8 @@ async fn a_token_minted_for_userinfo_cannot_reach_the_management_api() {
     .await;
     assert_eq!(res.status(), StatusCode::OK);
 
-    // `resource` 無し → `aud` は `/userinfo`。寿命も通常のアクセストークンのまま
-    // （管理トークンの短い寿命を、関係の無いトークンにまで広げない）。
+    // No `resource` → `aud` is `/userinfo`. The lifetime stays that of a normal access token
+    // (do not extend the short admin token lifetime to unrelated tokens).
     let res = request_token(&env.app, &env.root_tenant_id, &client_id, &secret, None).await;
     assert_eq!(res.status(), StatusCode::OK);
     let issued = body_json(res).await;
@@ -252,8 +252,8 @@ async fn a_token_minted_for_userinfo_cannot_reach_the_management_api() {
         "audience mismatch -> 401"
     );
 
-    // 利用者を認証した grant では `resource` を受け付けない（黙って無視すると、管理トークンを
-    // 頼んだつもりの呼び出し元が管理 API で 401 になる理由に辿り着けない）。
+    // Grants that authenticated a user do not accept `resource` (silently ignoring it would leave a caller who
+    // thought they asked for an admin token unable to find out why the admin API returns 401).
     let res = send(
         &env.app,
         Request::builder()
@@ -278,7 +278,7 @@ async fn a_token_minted_for_userinfo_cannot_reach_the_management_api() {
         "resource is only meaningful for client_credentials"
     );
 
-    // 知らないリソースの要求は `invalid_target`（RFC 8707 §2）。
+    // Requests for unknown resources get `invalid_target` (RFC 8707 §2).
     let res = request_token(
         &env.app,
         &env.root_tenant_id,
@@ -291,7 +291,7 @@ async fn a_token_minted_for_userinfo_cannot_reach_the_management_api() {
     assert_eq!(body_json(res).await["error"], "invalid_target");
 }
 
-/// 包括的な管理権限はクライアントへ付与できない（アプリ層と DB の CHECK の二重防御）。
+/// Broad admin permissions cannot be granted to clients (double defence: app layer and DB CHECK).
 #[tokio::test]
 async fn blanket_admin_permissions_cannot_be_granted_to_a_client() {
     let Some(env) = support::setup("management api blanket").await else {
@@ -318,7 +318,7 @@ async fn blanket_admin_permissions_cannot_be_granted_to_a_client() {
         );
     }
 
-    // 未知のコードも拒む（マスタに無い＝FK 違反）。
+    // Unknown codes are rejected too (not in the master = FK violation).
     let res = send(
         &env.app,
         post(
@@ -331,8 +331,8 @@ async fn blanket_admin_permissions_cannot_be_granted_to_a_client() {
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
 
-/// 細粒度コードだけを持つ**利用者**も、管理コンソール経由（管理トークン）で同じ境界に従う。
-/// 既存の `idp.tenant.admin` 保有者が今までどおり全部通ることも併せて確かめる。
+/// **Users** holding only fine-grained codes follow the same boundary via the admin console (admin token).
+/// Also checks that existing `idp.tenant.admin` holders still pass everything as before.
 #[tokio::test]
 async fn fine_grained_codes_bound_a_user_while_tenant_admin_still_implies_everything() {
     let Some(env) = support::setup("management api user scope").await else {
@@ -340,7 +340,7 @@ async fn fine_grained_codes_bound_a_user_while_tenant_admin_still_implies_everyt
     };
     let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
 
-    // 既存の包括コード保有者（seed の root 管理者は idp.system.admin）は全部通る。
+    // Existing holders of broad codes (the seeded root admin has idp.system.admin) pass everything.
     let res = send(
         &env.app,
         get(
@@ -351,7 +351,7 @@ async fn fine_grained_codes_bound_a_user_while_tenant_admin_still_implies_everyt
     .await;
     assert_eq!(res.status(), StatusCode::OK);
 
-    // `idp.audit:read` だけを持つ利用者を作る。
+    // Create a user holding only `idp.audit:read`.
     let target = support::create_plain_user(&env.pool, &env.root_tenant_id).await;
     let res = send(
         &env.app,
@@ -393,7 +393,7 @@ async fn fine_grained_codes_bound_a_user_while_tenant_admin_still_implies_everyt
         "idp.audit:read must not reach clients"
     );
 
-    // コンソールの入口（whoami）は包括コードを要求したままなので通らない（ADR-0037 積み残し）。
+    // The console entrance (whoami) still requires the broad code, so it does not pass (ADR-0037 leftover).
     let res = send(
         &env.app,
         get(
@@ -405,11 +405,11 @@ async fn fine_grained_codes_bound_a_user_while_tenant_admin_still_implies_everyt
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
 }
 
-/// 付与候補の絞り込みは api が行う（`?grantable_to=client`。ADR-0037）。
+/// Narrowing the grant candidates is done by api (`?grantable_to=client`; ADR-0037).
 ///
-/// web は core に依存しないので、この判定を web 側にも書くと**マスタが増えたときに片方だけ
-/// 古くなる**。管理コンソールの選択肢がこの応答そのものなので、包括コードが混ざれば画面から
-/// 「付けられない権限」を選べてしまう。
+/// web does not depend on core, so writing this decision on the web side too would leave **one side stale when the
+/// master grows**. The admin console's choices are this response itself, so if broad codes were mixed in,
+/// "permissions that cannot be granted" could be chosen on screen.
 #[tokio::test]
 async fn the_grantable_to_client_filter_removes_the_blanket_admin_codes() {
     let Some(env) = support::setup("management api grantable filter").await else {
@@ -418,7 +418,7 @@ async fn the_grantable_to_client_filter_removes_the_blanket_admin_codes() {
     let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let uri = format!("/{}/admin/permissions", env.root_tenant_id);
 
-    // 絞り込み無しはマスタ全件（包括コードを含む）。
+    // Without a filter, the whole master (including broad codes).
     let res = send(&env.app, get(&admin_tok, &uri)).await;
     assert_eq!(res.status(), StatusCode::OK);
     let all = body_json(res).await;
@@ -427,7 +427,7 @@ async fn the_grantable_to_client_filter_removes_the_blanket_admin_codes() {
     assert!(all.iter().any(|c| c == "idp.system.admin"));
     assert!(all.iter().any(|c| c == "idp.users:read"));
 
-    // `grantable_to=client` は包括コードだけを落とし、細粒度コードは残す。
+    // `grantable_to=client` drops only the broad codes and keeps fine-grained ones.
     let res = send(
         &env.app,
         get(&admin_tok, &format!("{uri}?grantable_to=client")),
@@ -447,7 +447,7 @@ async fn the_grantable_to_client_filter_removes_the_blanket_admin_codes() {
     assert!(filtered.iter().any(|c| c == "idp.users:read"));
     assert_eq!(filtered.len(), all.len() - 2);
 
-    // 未知の値は絞り込まない（支援 API なので綴り違いを 400 にはしない）。
+    // Unknown values do not filter (it is a support API, so typos are not made 400).
     let res = send(
         &env.app,
         get(&admin_tok, &format!("{uri}?grantable_to=nonsense")),
@@ -460,14 +460,14 @@ async fn the_grantable_to_client_filter_removes_the_blanket_admin_codes() {
     assert_eq!(unfiltered.len(), all.len());
 }
 
-/// 非 root テナントでは `idp.system.admin` を**付与できない**ので、付与候補にも出さない。
+/// In non-root tenants `idp.system.admin` **cannot be granted**, so it is not offered as a candidate either.
 ///
-/// この権限は root scope でしか存在できず（`user_permissions_system_admin_scope_chk`。ADR-0009 §4）、
-/// 実行者が誰であっても非 root では付与が通らない。候補に残すと、管理コンソールの付与フォームに
-/// **選べるのに必ず 403 になる選択肢**が並ぶ（ADR-0032「選べないものを見せない」）。
+/// This permission can exist only in root scope (`user_permissions_system_admin_scope_chk`; ADR-0009 §4),
+/// and granting it in non-root fails no matter who does it. Leaving it as a candidate would put **a choice that is
+/// selectable but always 403** on the admin console's grant form (ADR-0032 "do not show what cannot be chosen").
 ///
-/// 検証は 2 段で、候補から消えていることと、**api を直接叩けば依然 403 であること**の両方を見る。
-/// 前者だけだと、画面から消しただけで api を緩めた変更を通してしまう。
+/// It is checked in two steps: it is gone from the candidates, and **calling api directly is still 403**.
+/// With only the former, a change that just hid it on screen while loosening api would pass.
 #[tokio::test]
 async fn system_admin_is_neither_offered_nor_grantable_outside_the_root_tenant() {
     let Some(env) = support::setup("management api system admin scope").await else {
@@ -475,8 +475,8 @@ async fn system_admin_is_neither_offered_nor_grantable_outside_the_root_tenant()
     };
     let root_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
 
-    // root が子テナントを作る。作成者 root はその子テナントの ACTIVE GUEST 管理者として残る
-    // （ADR-0009 §4 のブートストラップ）ので、以降は「ゲスト管理者」としての操作になる。
+    // root creates a child tenant. The creator root remains an ACTIVE GUEST admin of that child tenant
+    // (bootstrap of ADR-0009 §4), so from here on it acts as a "guest admin".
     let res = send(
         &env.app,
         post(
@@ -493,7 +493,7 @@ async fn system_admin_is_neither_offered_nor_grantable_outside_the_root_tenant()
         .to_string();
     let guest_tok = admin_token(&env.app, &env.pool, &child, &env.root_admin_id).await;
 
-    // 1. 付与候補に idp.system.admin が出ない（root テナントでは出る。上のテストが押さえている）。
+    // 1. idp.system.admin does not appear in the grant candidates (it does in the root tenant; covered by the test above).
     let res = send(
         &env.app,
         get(&guest_tok, &format!("/{child}/admin/permissions")),
@@ -511,7 +511,7 @@ async fn system_admin_is_neither_offered_nor_grantable_outside_the_root_tenant()
         "tenant admin remains grantable in a child tenant"
     );
 
-    // 2. 候補から消しただけで api を緩めていないこと。
+    // 2. It was not just hidden from the candidates while loosening api.
     let res = send(
         &env.app,
         post(

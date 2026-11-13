@@ -1,32 +1,32 @@
-//! ヘルス情報の DTO と、公開してよい範囲の線引き（ADR-0031）。
+//! Health information DTOs and where to draw the line on what may be exposed (ADR-0031).
 //!
-//! `/healthz`（liveness）は**どのサービスが答えたか**までを無認証で返す。それ以上（ビルド版数・
-//! 稼働時間・依存先の検査結果）は `/internal/health` に置き、内部トークンの内側でしか読めない。
+//! `/healthz` (liveness) returns, without auth, only **which service answered**. Anything more (build version,
+//! uptime, dependency check results) lives in `/internal/health`, readable only behind the internal token.
 //!
-//! api と web が同じ形で組み立てるため、両者が使う型をここに単一定義する。片方だけ形が変わると
-//! 運用の見方（監視・切り分け手順）が service ごとに割れるため。
+//! api and web build it the same way, so the types both use are defined once here. If only one side's
+//! shape changed, the operational view (monitoring, triage procedures) would split per service.
 
 use crate::version::VersionInfo;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// サービスの識別子。`/healthz` の応答に載せ、どちらのサービスが答えたかを一目で分かるようにする。
+/// Service identifier. Put on the `/healthz` response so it is obvious at a glance which service answered.
 ///
-/// domain-split（ADR-0016・ADR-0019）では web と api が別ホストだが、前段プロキシの設定ミスや
-/// DNS の向き先違いで「叩いたつもりのサービスと違う方が答える」ことは起こり得る。ホスト名ではなく
-/// **応答そのもの**に載せておかないと、その取り違えは切り分けの最後まで残る。
+/// With domain-split (ADR-0016, ADR-0019), web and api are on separate hosts, but a misconfigured front proxy
+/// or a wrong DNS target can make "a different service than the one you meant to hit" answer. Unless it is on
+/// **the response itself** rather than the host name, that mix-up survives until the very end of triage.
 pub mod service {
     pub const API: &str = "api";
     pub const WEB: &str = "web";
 }
 
-/// `/healthz`（liveness）の応答。**無認証で全世界から読める**ので、ここへ増やしてよいのは
-/// 「秘密ではなく、かつ攻撃者の役に立たない」ものだけである（ADR-0031 決定 1）。
+/// The `/healthz` (liveness) response. **Readable by the whole world without auth**, so only things that are
+/// "not secret and of no use to an attacker" may be added here (decision 1 of ADR-0031).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LivenessResponse {
-    /// 常に `"ok"`（この応答が返っている時点でプロセスは生きている）。
+    /// Always `"ok"` (if this response comes back, the process is alive).
     pub status: String,
-    /// [`service`] のいずれか。
+    /// One of [`service`].
     pub service: String,
 }
 
@@ -39,15 +39,15 @@ impl LivenessResponse {
     }
 }
 
-/// 依存先 1 つ分の検査結果。
+/// Check result for one dependency.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HealthCheck {
-    /// 検査対象の名前（`"database"`・`"api"` 等）。
+    /// Name of the checked target (`"database"`, `"api"` etc.).
     pub name: String,
-    /// `"pass"` / `"fail"`。
+    /// `"pass"` / `"fail"`.
     pub status: String,
-    /// 人が読む補足（失敗理由・付随する値）。**内部エラーの原文は入れない**
-    /// （この応答は内部トークンの内側だが、運用ログとの二重管理を避けるため要約に留める）。
+    /// Human-readable detail (failure reason, related values). **No raw internal error text**
+    /// (this response is behind the internal token, but it stays a summary to avoid duplicating the operational log).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
 }
@@ -79,36 +79,36 @@ impl HealthCheck {
     }
 }
 
-/// `/internal/health` の応答（内部トークンの内側）。
+/// The `/internal/health` response (behind the internal token).
 ///
-/// 運用者が 1 回の要求で「どのサービスの・どの版が・いつから動いていて・依存先はどうか」を
-/// 取れるようにする。切り分けのたびに複数のエンドポイントを叩き回らずに済ませるのが狙い。
+/// Lets an operator get "which service, which version, running since when, and how dependencies are" in one
+/// request. The aim is to avoid hitting several endpoints on every triage.
 ///
-/// 送信専用（`Deserialize` を持たない）。埋め込む [`VersionInfo`] がビルド時の静的文字列を
-/// 借用しているためで、読み手はどのみち JSON として扱う（web がこの型を受け取る経路も無い）。
+/// Send-only (no `Deserialize`). The embedded [`VersionInfo`] borrows static build-time strings,
+/// and readers treat it as JSON anyway (there is no route where web receives this type either).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ServiceHealth {
-    /// [`service`] のいずれか。
+    /// One of [`service`].
     pub service: String,
-    /// 全 `checks` が pass なら `"pass"`、1 つでも落ちていれば `"fail"`。
+    /// `"pass"` if all `checks` pass, `"fail"` if even one fails.
     pub status: String,
-    /// 実行中のバイナリのビルド情報。
+    /// Build information of the running binary.
     pub version: VersionInfo,
-    /// プロセスの起動時刻（UTC）。
+    /// Process start time (UTC).
     pub started_at: DateTime<Utc>,
-    /// 起動からの経過秒。再起動が起きたかを一目で判断するために持つ
-    /// （`started_at` との差は読み手が計算せずに済む）。
+    /// Seconds since startup. Kept to tell at a glance whether a restart happened
+    /// (so readers need not compute the difference from `started_at`).
     pub uptime_seconds: i64,
-    /// 応答時点のサーバー時刻（UTC）。クライアントとの時計ずれの切り分けに使う ——
-    /// `private_key_jwt` の assertion は `exp` 5 分・許容 60 秒で判定するため（ADR-0030）、
-    /// 時計のずれは「理由の分からない `invalid_client`」として現れる。
+    /// Server time at response (UTC). Used to triage clock skew with clients:
+    /// `private_key_jwt` assertions are judged with `exp` of 5 minutes and 60 seconds tolerance (ADR-0030),
+    /// so clock skew shows up as "an `invalid_client` with no obvious reason".
     pub server_time: DateTime<Utc>,
-    /// 依存先の検査結果。依存を持たないサービスでは空。
+    /// Dependency check results. Empty for services without dependencies.
     pub checks: Vec<HealthCheck>,
 }
 
 impl ServiceHealth {
-    /// `checks` から全体の `status` を決めて組み立てる。
+    /// Builds it, deciding the overall `status` from `checks`.
     pub fn new(
         service: &str,
         version: VersionInfo,
@@ -175,13 +175,13 @@ mod tests {
             at(1060),
             vec![
                 HealthCheck::pass("database"),
-                HealthCheck::fail("schema", "DB が期待 version に達していない"),
+                HealthCheck::fail("schema", "DB has not reached the expected version"),
             ],
         );
         assert_eq!(broken.status, "fail");
     }
 
-    /// 検査を持たないサービスは pass（「依存が無い」を「壊れている」と読ませない）。
+    /// A service without checks is pass (so "no dependencies" does not read as "broken").
     #[test]
     fn a_service_without_dependencies_is_pass() {
         let health = ServiceHealth::new(service::WEB, version(), at(1000), at(1000), vec![]);
@@ -189,7 +189,7 @@ mod tests {
         assert_eq!(health.uptime_seconds, 0);
     }
 
-    /// 時計が巻き戻っても稼働時間は負にしない（NTP の補正で `server_time < started_at` は起こり得る）。
+    /// Uptime never goes negative even if the clock goes back (NTP correction can make `server_time < started_at`).
     #[test]
     fn uptime_never_goes_negative() {
         let health = ServiceHealth::new(service::API, version(), at(1000), at(900), vec![]);

@@ -1,16 +1,16 @@
-//! API エラーメッセージの多言語化（MT19）の統合テスト（DB あり）。
+//! Integration tests (with DB) for localized API error messages (MT19).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test api_i18n
 //!
-//! 検証するのは:
+//! What is checked:
 //!
-//! 1. `Accept-Language` **だけ**でレスポンス言語が決まること（Cookie・クエリは見ない）。
-//! 2. 既定が `ja` で、非対応言語も `ja` にフォールバックすること。
-//! 3. **エラーコード（`error`）は言語不変**で、`message` だけが変わること。
-//! 4. Domain / Application 層のバリデーションエラー（`MessageKey`）が訳出され、差し込み値
-//!    （不正な scope 名など）が本文に入ること。
-//! 5. extractor の拒否（401 / 403）も同じ言語で返ること。
+//! 1. The response language is decided **only** by `Accept-Language` (cookies and query are ignored).
+//! 2. The default is `ja`, and unsupported languages also fall back to `ja`.
+//! 3. **The error code (`error`) is language-independent**; only `message` changes.
+//! 4. Domain / application validation errors (`MessageKey`) are translated, and interpolated values
+//!    (invalid scope names etc.) appear in the text.
+//! 5. Extractor rejections (401 / 403) also come back in the same language.
 
 mod support;
 
@@ -20,7 +20,7 @@ use axum::http::{Method, Request, StatusCode};
 use serde_json::{json, Value};
 use support::{admin_token, body_json, send};
 
-/// `Accept-Language` を付けた管理 API リクエストを組み立てる（`None` はヘッダ無し）。
+/// Builds an admin API request with `Accept-Language` (`None` means no header).
 fn request(
     method: Method,
     token: &str,
@@ -49,7 +49,7 @@ async fn error_messages_follow_accept_language_while_codes_stay_invariant() {
         return;
     };
     let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
-    // 不明な利用者への操作 → 404（メッセージは `api-user-not-found`）。
+    // Operation on an unknown user → 404 (message is `api-user-not-found`).
     let uri = format!(
         "/{}/admin/users/{}",
         env.root_tenant_id,
@@ -57,13 +57,13 @@ async fn error_messages_follow_accept_language_while_codes_stay_invariant() {
     );
 
     let cases = [
-        // (Accept-Language, 期待される言語が日本語か)
-        (None, true),                    // 未指定は既定 ja
-        (Some("ja"), true),              // 明示 ja
-        (Some("ja-JP,en;q=0.8"), true),  // 地域コードは無視
-        (Some("fr-FR"), true),           // 非対応は ja へフォールバック
-        (Some("en"), false),             // 明示 en
-        (Some("en-US,ja;q=0.5"), false), // 先着優先
+        // (Accept-Language, whether the expected language is Japanese)
+        (None, true),                    // unspecified: default ja
+        (Some("ja"), true),              // explicit ja
+        (Some("ja-JP,en;q=0.8"), true),  // region code ignored
+        (Some("fr-FR"), true),           // unsupported falls back to ja
+        (Some("en"), false),             // explicit en
+        (Some("en-US,ja;q=0.5"), false), // first one wins
     ];
     for (header, expect_ja) in cases {
         let res = send(
@@ -73,7 +73,7 @@ async fn error_messages_follow_accept_language_while_codes_stay_invariant() {
         .await;
         assert_eq!(res.status(), StatusCode::NOT_FOUND, "header={header:?}");
         let body = body_json(res).await;
-        // コードは言語不変。
+        // The code is language-independent.
         assert_eq!(body["error"], "not_found", "header={header:?}");
         let message = body["message"].as_str().expect("message");
         if expect_ja {
@@ -83,8 +83,8 @@ async fn error_messages_follow_accept_language_while_codes_stay_invariant() {
         }
     }
 
-    // Cookie で言語を渡しても API は見ない（表示言語の決定は web の責務。CLAUDE.md「国際化」）。
-    // 資格情報は Bearer なので、ここでの Cookie は `lang` を運ぶためだけに付ける。
+    // Even if the language is passed by cookie, the API ignores it (deciding the display language is web's job; CLAUDE.md "i18n").
+    // Credentials are Bearer, so the cookie here is attached only to carry `lang`.
     let res = send(
         &env.app,
         Request::builder()
@@ -103,7 +103,7 @@ async fn error_messages_follow_accept_language_while_codes_stay_invariant() {
     );
 }
 
-/// Domain / Application 層のバリデーションエラー（`MessageKey`）が訳出され、差し込み値が入る。
+/// Domain / application validation errors (`MessageKey`) are translated with interpolated values.
 #[tokio::test]
 async fn validation_errors_from_the_domain_are_translated_with_their_value() {
     let Some(env) = support::setup("api i18n validation").await else {
@@ -133,13 +133,13 @@ async fn validation_errors_from_the_domain_are_translated_with_their_value() {
     let response = body_json(res).await;
     assert_eq!(response["error"], "invalid_request");
     let message = response["message"].as_str().expect("message");
-    // 訳文が出ており、翻訳キーがそのまま漏れていない。
+    // The translation is shown, and the translation key does not leak as is.
     assert!(!message.starts_with("api-"), "untranslated key: {message}");
-    // 差し込み値（不正な scope 名）が本文に入る。
+    // The interpolated value (the invalid scope name) appears in the text.
     assert!(message.contains("no-such-scope"), "{message}");
     assert!(message.contains("not supported"), "{message}");
 
-    // 同じ入力を ja で送ると日本語になる（コードは同じ）。
+    // Sending the same input with ja gives Japanese (same code).
     let res = send(
         &env.app,
         request(Method::POST, &admin_tok, &uri, Some("ja"), Some(body)),
@@ -152,7 +152,7 @@ async fn validation_errors_from_the_domain_are_translated_with_their_value() {
     assert!(message.contains("対応していません"), "{message}");
 }
 
-/// extractor の拒否（未認証 401・権限不足 403）も同じ言語で返る。
+/// Extractor rejections (unauthenticated 401, insufficient permission 403) also come back in the same language.
 #[tokio::test]
 async fn extractor_rejections_are_translated_too() {
     let Some(env) = support::setup("api i18n rejections").await else {
@@ -160,7 +160,7 @@ async fn extractor_rejections_are_translated_too() {
     };
     let uri = format!("/{}/admin/whoami", env.root_tenant_id);
 
-    // 未認証（トークン無し）。
+    // Unauthenticated (no token).
     for (header, expected) in [
         (Some("en"), "Sign-in is required."),
         (Some("ja"), "サインインが必要です。"),
@@ -177,7 +177,7 @@ async fn extractor_rejections_are_translated_too() {
         assert_eq!(body["message"], expected, "header={header:?}");
     }
 
-    // 権限不足（ログイン済みだが idp.tenant.admin なし）。
+    // Insufficient permission (signed in but without idp.tenant.admin).
     let plain = support::create_plain_user(&env.pool, &env.root_tenant_id).await;
     let plain_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &plain).await;
     for (header, expected) in [

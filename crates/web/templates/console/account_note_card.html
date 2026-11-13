@@ -1,9 +1,9 @@
-{#- 管理者メモ（ADR-0063 / ADR-0065）。人とサービスアカウントの 1 件の画面が同じものを使う。
-    経緯を書き残す欄で、本人・アプリ・トークンのどこにも出ない。
+{#- Admin note (ADR-0063 / ADR-0065). Shared by the single-item screens of people and service accounts.
+    A field to record history; it never appears to the person, apps or tokens.
 
-    呼ぶ側が用意する値:
+    Values the caller provides:
       account_note   … Option<&AccountNoteView>
-    送り先は呼ぶ側の構造体の `note_action()`（人・サービスアカウントで経路が違う）。 -#}
+    The target is the caller struct's `note_action()` (routes differ for people and service accounts). -#}
 <div class="card mb-4">
   <div class="card-header">
     <div class="fw-semibold"><label for="account-note">{{ messages.get("admin-member-note-title") }}</label></div>

@@ -1,16 +1,16 @@
-//! 列挙型（DB では VARCHAR + CHECK 制約に対応）と値オブジェクト。
+//! Enums (mapped to VARCHAR + CHECK constraints in the DB) and value objects.
 //!
-//! 許可値はここで集中管理する。DB ネイティブ ENUM は使わない（`CLAUDE.md`「DB モデリング」）。
-//! sqlx への依存はドメインに持ち込まないため、文字列変換（`as_str` / `parse`）のみを定義し、
-//! DB との相互変換は infrastructure 層のリポジトリが担う。
+//! Allowed values are managed centrally here. DB-native ENUM is not used (`CLAUDE.md` "DB modeling").
+//! sqlx dependencies are kept out of the domain, so only string conversion (`as_str` / `parse`) is defined;
+//! conversion to and from the DB is done by repositories in the infrastructure layer.
 #![allow(dead_code)]
 
 use crate::domain::message::MessageKey;
 
-/// 文字列許可値を持つ enum を、`as_str` / `parse` 付きで定義するマクロ。
+/// Macro defining an enum with string allowed values, with `as_str` / `parse`.
 ///
-/// バリアントにも doc コメント（属性）を書ける。状態遷移を持つ enum は「どの値が何を意味するか」を
-/// 型の隣に置けないと、DB の CHECK 制約とコードのどちらが正なのか読み手に伝わらない。
+/// Variants can carry doc comments (attributes) too. Unless an enum with state transitions can keep "what each value
+/// means" next to the type, readers can't tell whether the DB CHECK constraint or the code is authoritative.
 macro_rules! string_enum {
     (
         $(#[$meta:meta])*
@@ -47,11 +47,11 @@ macro_rules! string_enum {
     };
 }
 
-// 許可値の定義形式を 1 つに保つため、他のドメインモジュールからも同じマクロを使う。
+// Other domain modules use the same macro too, to keep a single form for defining allowed values.
 pub(crate) use string_enum;
 
 string_enum!(
-    /// ユーザーのアカウント状態。
+    /// User account status.
     UserStatus {
         Active => "ACTIVE",
         Disabled => "DISABLED",
@@ -60,7 +60,7 @@ string_enum!(
 );
 
 string_enum!(
-    /// テナントの状態（ADR-0009 §1）。各テナント独立で、親の DISABLED は子へ伝播しない。
+    /// Tenant status (ADR-0009 §1). Each tenant is independent; a parent's DISABLED does not propagate to children.
     TenantStatus {
         Active => "ACTIVE",
         Disabled => "DISABLED",
@@ -68,7 +68,7 @@ string_enum!(
 );
 
 string_enum!(
-    /// テナントメンバーシップの種別（ADR-0009 §3）。HOME は所属元（解除不可）、GUEST は招待による参加。
+    /// Tenant membership kind (ADR-0009 §3). HOME is the owning tenant (cannot be removed); GUEST is participation by invitation.
     MembershipType {
         Home => "HOME",
         Guest => "GUEST",
@@ -76,13 +76,13 @@ string_enum!(
 );
 
 string_enum!(
-    /// テナントメンバーシップの状態（ADR-0009 §3）。
+    /// Tenant membership status (ADR-0009 §3).
     ///
-    /// - `INVITED`: 招待中（未承諾）。
-    /// - `ACTIVE`: 参加中。`is_active_member` が true になる唯一の状態。
-    /// - `SUSPENDED`: 一時停止（GUEST のみ。MT24）。メンバーシップ行と当該テナント scope の権限行を
-    ///   残したままアクセスだけを止める。`ACTIVE` ではないため `is_active_member` は false を返し、
-    ///   再開すれば停止前の状態（権限を含む）に戻る。解除（削除）との違いはここ。
+    /// - `INVITED`: invited (not yet accepted).
+    /// - `ACTIVE`: participating. The only state in which `is_active_member` is true.
+    /// - `SUSPENDED`: suspended (GUEST only; MT24). Keeps the membership row and the permission rows scoped to the
+    ///   tenant and only stops access. Not `ACTIVE`, so `is_active_member` returns false, and
+    ///   resuming restores the pre-suspension state (including permissions). This is the difference from removal (deletion).
     MembershipStatus {
         Invited => "INVITED",
         Active => "ACTIVE",
@@ -91,11 +91,11 @@ string_enum!(
 );
 
 string_enum!(
-    /// 保護リソース（`aud` に入る宛名）の状態（ADR-0042）。
+    /// Status of a protected resource (the audience placed in `aud`) (ADR-0042).
     ///
-    /// `Disabled` は「登録は残すが、新しいトークンの宛先には使わせない」。行を消すと
-    /// アプリの名乗り（`application_bindings`）も一緒に消え（ON DELETE CASCADE）、戻すときに
-    /// どのアプリの宛名だったかが分からなくなる。発行済みのトークンは寿命が尽きるまで有効なままである点は変わらない。
+    /// `Disabled` means "keep the registration but don't allow it as the audience of new tokens". Deleting the row
+    /// also deletes the app's naming (`application_bindings`) (ON DELETE CASCADE), and when restoring it
+    /// you can no longer tell which app's audience it was. Already issued tokens still stay valid until they expire.
     ResourceStatus {
         Active => "ACTIVE",
         Disabled => "DISABLED",
@@ -103,11 +103,11 @@ string_enum!(
 );
 
 string_enum!(
-    /// アプリの状態（ADR-0054）。
+    /// Application status (ADR-0054).
     ///
-    /// `Disabled` は「登録を残したまま利用だけを止める」。アプリを止めると、ぶら下がる binding が
-    /// OIDC でも SAML でも一緒に止まる ——プロトコルごとに止め方を覚えなくてよいことが、
-    /// アプリという段を置いた見返りの 1 つである。
+    /// `Disabled` means "keep the registration and only stop usage". Stopping an app stops its bindings
+    /// for both OIDC and SAML together -- not having to learn how to stop each protocol is one of
+    /// the payoffs of having the application layer.
     ApplicationStatus {
         Active => "ACTIVE",
         Disabled => "DISABLED",
@@ -115,13 +115,13 @@ string_enum!(
 );
 
 string_enum!(
-    /// アプリを誰が使ってよいか（ADR-0054 の決定 3）。
+    /// Who may use the app (decision 3 of ADR-0054).
     ///
-    /// `Everyone` は**そのテナントの中だけ**を指す（他テナントの利用者は含まない）。
-    /// 既定は `Individual`。既定を `Everyone` にすると、絞り忘れたアプリが全員に開いたままになり、
-    /// **開いていることに誰も気付かない**。
+    /// `Everyone` means **only within that tenant** (users of other tenants are not included).
+    /// The default is `Individual`. With `Everyone` as the default, an app someone forgot to restrict stays open to all
+    /// and **nobody notices it is open**.
     ///
-    /// ⚠ `Individual` で名簿が空は「全員」ではなく「誰も入れない」。取り違えると全断になる。
+    /// ⚠ `Individual` with an empty roster means "nobody can get in", not "everyone". Mixing them up cuts everyone off.
     AssignmentMode {
         Everyone => "EVERYONE",
         Individual => "INDIVIDUAL",
@@ -129,13 +129,13 @@ string_enum!(
 );
 
 string_enum!(
-    /// 割り当ての判定をどこまでやるか（ADR-0054 の段階導入）。
+    /// How far to enforce the assignment check (staged rollout of ADR-0054).
     ///
-    /// `RecordOnly` は判定を走らせるが**断らない**。「割り当てが無いのに来た人」が監査ログに
-    /// 溜まるので、移行の漏れはここで全部出る。ログが静かになってから `Enforce` へ切り替える。
+    /// `RecordOnly` runs the check but **does not refuse**. "People who came without an assignment" accumulate
+    /// in the audit log, so every migration gap shows up there. Switch to `Enforce` once the log is quiet.
     ///
-    /// ⚠ 切り替えを設定にしてあるのは、**戻すのにデプロイを要らなくする**ためである
-    /// （テナントごとに決め、再起動を待たずに効く。ADR-0058 §4）。
+    /// ⚠ The switch is a setting so that **reverting does not require a deploy**
+    /// (decided per tenant, takes effect without waiting for a restart; ADR-0058 §4).
     AssignmentEnforcement {
         RecordOnly => "record_only",
         Enforce => "enforce",
@@ -143,7 +143,7 @@ string_enum!(
 );
 
 string_enum!(
-    /// クライアント種別。
+    /// Client type.
     ClientType {
         Public => "public",
         Confidential => "confidential",
@@ -151,12 +151,12 @@ string_enum!(
 );
 
 string_enum!(
-    /// クライアントの状態。
+    /// Client status.
     ///
-    /// `Deleted` は論理削除（ADR-0035）。物理削除にしないのは、発行済みトークン・同意・監査ログが
-    /// `client_id` で紐づいており、実体を消すと監査で追えなくなるため。認可・トークン・
-    /// introspection は `Client::is_active()` で門番をしているので、この値を増やすだけで
-    /// **新しい絞り込みを足さずに**全経路が削除済みを拒む。
+    /// `Deleted` is a logical delete (ADR-0035). It is not a physical delete because issued tokens, consents and audit logs
+    /// are linked by `client_id`, and deleting the entity would make it untraceable in audits. Authorization, tokens and
+    /// introspection are gated by `Client::is_active()`, so just adding this value makes every path
+    /// reject deleted clients **without adding new filters**.
     ClientStatus {
         Active => "ACTIVE",
         Disabled => "DISABLED",
@@ -165,27 +165,27 @@ string_enum!(
 );
 
 string_enum!(
-    /// トークンエンドポイントのクライアント認証方式（RFC 6749 §2.3.1）。
+    /// Client authentication method at the token endpoint (RFC 6749 §2.3.1).
     ///
-    /// confidential クライアントの既定は `private_key_jwt`（ADR-0036。仕様の既定である
-    /// `client_secret_basic` から意図的に外している）。`client_secret_basic` は RFC 6749 が
-    /// 推奨する共有秘密の提示方式で、明示的に選んだときだけ使う。
-    /// `client_secret_post`（body に `client_id` / `client_secret`）は多くの RP ライブラリ・
-    /// SaaS 連携が既定にしているため受け入れる（G3）。1 リクエストで両方を提示することは
-    /// 認められておらず（同 §2.3.1）、提示された場合は `invalid_request` で拒否する。
+    /// The default for confidential clients is `private_key_jwt` (ADR-0036; intentionally departs from the spec's default
+    /// `client_secret_basic`). `client_secret_basic` is the shared-secret presentation method RFC 6749
+    /// recommends, used only when explicitly chosen.
+    /// `client_secret_post` (`client_id` / `client_secret` in the body) is accepted because many RP libraries and
+    /// SaaS integrations default to it (G3). Presenting both in one request is
+    /// not allowed (same §2.3.1) and is rejected with `invalid_request`.
     TokenEndpointAuthMethod {
         ClientSecretBasic => "client_secret_basic",
         ClientSecretPost => "client_secret_post",
-        /// システム（人ではない呼び出し元）向け。クライアントが秘密鍵で署名した JWT（client
-        /// assertion）を提示し、IdP は登録済みの公開鍵（`Client.jwks`）で検証する。秘密は
-        /// クライアント側にしか存在しない（ADR-0030。RFC 7523）。
+        /// For systems (non-human callers). The client presents a JWT signed with its private key (client
+        /// assertion), and the IdP verifies it with the registered public key (`Client.jwks`). The secret
+        /// exists only on the client side (ADR-0030; RFC 7523).
         PrivateKeyJwt => "private_key_jwt",
         None => "none",
     }
 );
 
 string_enum!(
-    /// 署名鍵の状態。
+    /// Signing key status.
     SigningKeyStatus {
         Active => "ACTIVE",
         Retired => "RETIRED",
@@ -193,7 +193,7 @@ string_enum!(
 );
 
 string_enum!(
-    /// 署名アルゴリズム（DB algorithm カラムの許可値）。
+    /// Signing algorithm (allowed values of the DB algorithm column).
     SigningAlgorithm {
         Rs256 => "RS256",
         Es256 => "ES256",
@@ -201,33 +201,33 @@ string_enum!(
 );
 
 string_enum!(
-    /// PKCE の code_challenge_method。assay は S256 のみ。
+    /// PKCE code_challenge_method. assay supports only S256.
     CodeChallengeMethod {
         S256 => "S256",
     }
 );
 
 string_enum!(
-    /// 認可リクエストの `prompt`（OIDC Core §3.1.2.1 のうち assay が解釈する値）。
+    /// `prompt` of the authorization request (the values of OIDC Core §3.1.2.1 that assay interprets).
     ///
-    /// SSO 判定が `/authorize` から `/internal/authorize/resume` へ移った（ADR-0018 決定 2）ため、
-    /// 評価時点まで auth_session に保存して持ち越す。未指定・未知の値は保存しない
-    /// （`parse(...).ok()` で `None` に落とす。従来の「未知値は無視する」挙動を維持）。
+    /// The SSO decision moved from `/authorize` to `/internal/authorize/resume` (ADR-0018 decision 2),
+    /// so it is saved in auth_session and carried until evaluation. Unspecified/unknown values are not saved
+    /// (dropped to `None` via `parse(...).ok()`, keeping the existing "ignore unknown values" behavior).
     Prompt {
         None => "none",
         Login => "login",
         Consent => "consent",
-        /// assay はブラウザごとに SSO セッションを 1 つしか持たないため「選ばせる別アカウント」が
-        /// 存在しない。要求されたら **`login` と同じ扱い**（ログイン画面を必ず出す）にする。
-        /// 現在のアカウントで続けるか別のアカウントで入り直すかを利用者が選べる状態にはなる、
-        /// というのが単一セッションでの `select_account` の意味である（G12）。
+        /// assay has only one SSO session per browser, so there is no "other account to choose".
+        /// When requested it is **treated like `login`** (the login screen is always shown).
+        /// The user can then choose to continue with the current account or sign in again with another;
+        /// that is what `select_account` means with a single session (G12).
         SelectAccount => "select_account",
     }
 );
 
 string_enum!(
-    /// OIDC scope。要求 scope は `Clients.scopes` の部分集合であること。
-    /// `offline_access` は Refresh Token 発行を要求する（設計仕様 §9.1）。
+    /// OIDC scope. Requested scopes must be a subset of `Clients.scopes`.
+    /// `offline_access` requests issuing a Refresh Token (design spec §9.1).
     Scope {
         OpenId => "openid",
         Profile => "profile",
@@ -237,11 +237,11 @@ string_enum!(
 );
 
 string_enum!(
-    /// `/token` が受け付ける grant_type（RFC 6749 / OIDC Core）。
+    /// grant_type accepted by `/token` (RFC 6749 / OIDC Core).
     ///
-    /// クライアントごとの許可は `clients.grant_types`（JSON 配列）が持ち、その許可値の単一の出所が
-    /// 本 enum。`client_credentials`（G4）は利用者不在のサーバ間（M2M）用で、confidential client かつ
-    /// 明示的に許可されたクライアントに限る。
+    /// Per-client permission is held in `clients.grant_types` (JSON array), and the single source of its allowed values
+    /// is this enum. `client_credentials` (G4) is for server-to-server (M2M) use without a user, limited to confidential clients
+    /// that are explicitly allowed it.
     GrantType {
         AuthorizationCode => "authorization_code",
         RefreshToken => "refresh_token",
@@ -250,11 +250,11 @@ string_enum!(
 );
 
 string_enum!(
-    /// 認証セッションで実際に検証された認証方式（ユーザー認証・認証ポリシー仕様書 §14.3・§18.1）。
+    /// Authentication methods actually verified in the authentication session (user authentication / authentication policy spec §14.3, §18.1).
     ///
-    /// 「どの認証器で本人確認したか」の記録であり、認証ポリシー（どの条件を課すか）とは別軸。
-    /// `sso_sessions.authentication_methods` に JSON 配列として保存し、Step-up 認証（§15）と
-    /// MFA 経過時間による再認証（§18.2）の判定材料にする。
+    /// A record of "which authenticator verified identity", a separate axis from the authentication policy (which conditions to impose).
+    /// Stored as a JSON array in `sso_sessions.authentication_methods`, and used for Step-up authentication (§15) and
+    /// re-authentication by elapsed MFA time (§18.2).
     AuthenticationMethod {
         Password => "password",
         Totp => "totp",
@@ -263,14 +263,14 @@ string_enum!(
         EmailOtp => "email_otp",
         SmsOtp => "sms_otp",
         ExternalIdp => "external_idp",
-        // 登録した認証アプリ（Keystore の鍵・使うたびに指紋）での承認（task #892。ADR-0077）。
+        // Approval with a registered authenticator app (Keystore key, fingerprint on each use) (task #892, ADR-0077).
         AppApproval => "app_approval",
     }
 );
 
-/// 認証ポリシーの `effect_params`（JSON）で方式を指定できるよう、**保存値の文字列**で
-/// シリアライズする（`Debug` のバリアント名ではない）。派生 derive を使わないのは、
-/// 許可値の単一の出所を [`AuthenticationMethod::as_str`] / `parse` に保つためである。
+/// Serialized as the **stored string value** (not the `Debug` variant name) so that methods can be specified in the
+/// authentication policy's `effect_params` (JSON). Derives are not used to keep the single source
+/// of allowed values in [`AuthenticationMethod::as_str`] / `parse`.
 impl serde::Serialize for AuthenticationMethod {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(self.as_str())
@@ -285,8 +285,8 @@ impl<'de> serde::Deserialize<'de> for AuthenticationMethod {
 }
 
 impl AuthenticationMethod {
-    /// OIDC `amr`（Authentication Methods References、RFC 8176）の対応値。
-    /// ID Token へ載せる際の語彙は RFC 側に合わせる（内部の記録値は本 enum が単一の出所）。
+    /// Corresponding OIDC `amr` value (Authentication Methods References, RFC 8176).
+    /// The vocabulary in the ID Token follows the RFC (this enum is the single source of internally recorded values).
     pub fn amr(&self) -> &'static str {
         match self {
             Self::Password => "pwd",
@@ -295,16 +295,16 @@ impl AuthenticationMethod {
             Self::RecoveryCode => "rba",
             Self::EmailOtp | Self::SmsOtp => "otp",
             Self::ExternalIdp => "fed",
-            // 端末の中の取り出せない鍵（所持）を、指紋（生体）で解いて署名した。
+            // Signed with a non-extractable key on the device (possession), unlocked by fingerprint (biometric).
             Self::AppApproval => "hwk",
         }
     }
 
-    /// この方式が第二要素（所持・生体）として数えられるか。
+    /// Whether this method counts as a second factor (possession, biometric).
     ///
-    /// パスワードは知識要素のため単独では多要素にならない。外部 IdP は「外部での認証結果の
-    /// 引き受け」であり、外部側の MFA を信頼するかは認証ポリシーの判断（§13）に委ねるため、
-    /// ここでは第二要素として数えない。
+    /// A password is a knowledge factor, so it is not multi-factor on its own. An external IdP is "accepting the result of
+    /// external authentication", and whether to trust external MFA is left to the authentication policy (§13),
+    /// so it is not counted as a second factor here.
     pub fn is_second_factor(&self) -> bool {
         matches!(
             self,
@@ -317,7 +317,7 @@ impl AuthenticationMethod {
         )
     }
 
-    /// 全バリアント。方式を足したらここも足す（漏れはテストで気付ける）。
+    /// All variants. When adding a method, add it here too (omissions are caught by tests).
     pub const ALL: [AuthenticationMethod; 8] = [
         Self::Password,
         Self::Totp,
@@ -329,11 +329,11 @@ impl AuthenticationMethod {
         Self::AppApproval,
     ];
 
-    /// 第二要素として数えられる方式の全列挙（[`Self::is_second_factor`] が真のもの）。
+    /// Enumeration of all methods counted as second factors (those for which [`Self::is_second_factor`] is true).
     ///
-    /// 認証ポリシーの「いずれか 1 つ」（OR）へそのまま渡せる形で持つ。判定関数だけでは
-    /// 「第二要素を 1 つ足せ」という**要求**を組み立てられないため、列挙も要る。
-    /// 両者が食い違わないことはテストで確かめる。
+    /// Kept in a form that can be passed directly to the authentication policy's "any one of" (OR). A predicate alone
+    /// can't build the **requirement** "add one second factor", so the enumeration is needed too.
+    /// Tests check that the two never disagree.
     pub const SECOND_FACTORS: [AuthenticationMethod; 6] = [
         Self::Totp,
         Self::WebAuthn,
@@ -344,30 +344,30 @@ impl AuthenticationMethod {
     ];
 }
 
-/// 認証の強度を RP と受け渡すための予約語（ADR-0043）。
+/// Reserved words for exchanging authentication strength with RPs (ADR-0043).
 ///
-/// `acr_values` として要求を受け取り、ID Token の `acr` として結果を名乗る。**assay が意味を
-/// 定義する語彙**なので、テナントごとに変えられるようにはしない。名前空間をテナントの
-/// ドメインではなく製品名で切るのもそのためである。
+/// Received as `acr_values` in requests, and asserted as the ID Token's `acr` in results. **It is vocabulary whose meaning
+/// assay defines**, so it is not made configurable per tenant. That is also why the namespace is cut by product name
+/// rather than the tenant's domain.
 ///
-/// **順序を含む名前（`level1` / `level2`）にしない。** 公開した後は RP が依存するので変えられず、
-/// 後から中間の水準を挿せなくなる。
+/// **Don't use names implying order (`level1` / `level2`).** Once published, RPs depend on them so they can't change,
+/// and intermediate levels could not be inserted later.
 pub const ACR_MULTI_FACTOR: &str = "urn:assay:ac:mfa";
-/// 単一要素で認証したことを表す予約語（要求として送っても何も強制しない）。
+/// Reserved word meaning single-factor authentication (sending it as a request enforces nothing).
 pub const ACR_SINGLE_FACTOR: &str = "urn:assay:ac:single";
 
-/// discovery の `acr_values_supported` に載せる値。
+/// Values published in discovery's `acr_values_supported`.
 ///
-/// **保証できる値だけを載せる。** テナントが認証ポリシーの `requested_acr` 条件へ独自の
-/// 文字列を書くことは従来どおりできるが、それは assay が意味を定義していないので公開しない
-/// （ADR-0043 決定 5）。
+/// **Only values that can be guaranteed are published.** Tenants can still write their own strings in the authentication
+/// policy's `requested_acr` condition, but assay does not define their meaning, so they are not published
+/// (ADR-0043 decision 5).
 pub const SUPPORTED_ACR_VALUES: [&str; 2] = [ACR_MULTI_FACTOR, ACR_SINGLE_FACTOR];
 
 string_enum!(
-    /// 認証セッションの認証強度（同仕様 §14.3）。
+    /// Authentication strength of the authentication session (same spec §14.3).
     ///
-    /// 認証方式の集合から導出する派生値だが、判定のたびに数え直さなくて済むよう保存もする
-    /// （導出規則の単一の出所は [`AuthenticationStrength::from_methods`]）。
+    /// A value derived from the set of authentication methods, but also stored so it need not be recounted on every check
+    /// (the single source of the derivation rule is [`AuthenticationStrength::from_methods`]).
     AuthenticationStrength {
         SingleFactor => "single_factor",
         MultiFactor => "multi_factor",
@@ -375,7 +375,7 @@ string_enum!(
 );
 
 impl AuthenticationStrength {
-    /// 認証方式の集合から強度を導出する。第二要素を 1 つでも含めば `MultiFactor`。
+    /// Derives the strength from the set of authentication methods. `MultiFactor` if it contains at least one second factor.
     pub fn from_methods(methods: &[AuthenticationMethod]) -> Self {
         if methods.iter().any(|m| m.is_second_factor()) {
             Self::MultiFactor
@@ -384,7 +384,7 @@ impl AuthenticationStrength {
         }
     }
 
-    /// `required` 以上の強度か（`MultiFactor` は `SingleFactor` の要求を満たす）。
+    /// Whether the strength is at least `required` (`MultiFactor` satisfies a `SingleFactor` requirement).
     pub fn satisfies(&self, required: Self) -> bool {
         match required {
             Self::SingleFactor => true,
@@ -392,10 +392,10 @@ impl AuthenticationStrength {
         }
     }
 
-    /// この強度を RP へ名乗るときの `acr` 値（ADR-0043）。
+    /// `acr` value used when asserting this strength to RPs (ADR-0043).
     ///
-    /// 強度の 2 値はもともと内部の派生値としてあったもので、予約語はその**公開名**にすぎない。
-    /// 新しい概念を持ち込まないのが、語彙を 2 つに留められる理由である。
+    /// The two strength values originally existed as internal derived values; the reserved words are merely their **public names**.
+    /// Introducing no new concept is why the vocabulary can stay at two.
     pub fn acr(&self) -> &'static str {
         match self {
             Self::SingleFactor => ACR_SINGLE_FACTOR,
@@ -404,16 +404,16 @@ impl AuthenticationStrength {
     }
 }
 
-/// `users.email` の格納先カラム上限（`VARCHAR(320)`）。
+/// Column size limit for `users.email` (`VARCHAR(320)`).
 pub const EMAIL_MAX_LEN: usize = 320;
 
-/// メールアドレスの簡易バリデーション（MVP）。
+/// Simple email address validation (MVP).
 ///
-/// 空でなく、`@` を挟んで両側に文字があり、カラム長（`VARCHAR(320)`）に収まることを検証する。
-/// `register` と `user_management`・`user_lifecycle`（管理者による編集）で共通の基準として使う。
-/// 長さを見ないと、上限超過が永続化時の内部エラー（500）として現れ、入力エラーとして返せない。
+/// Checks it is non-empty, has characters on both sides of `@`, and fits the column length (`VARCHAR(320)`).
+/// Used as the common criterion by `register`, `user_management` and `user_lifecycle` (edits by admins).
+/// Without the length check, exceeding the limit would surface as an internal error (500) on persistence instead of an input error.
 ///
-/// エラーは利用者へそのまま返るため、訳文ではなく**翻訳キー**を返す（MT19。訳出は Presentation 層）。
+/// Errors go back to users as is, so this returns a **translation key** rather than translated text (MT19; translation happens in Presentation).
 pub fn validate_email(email: &str) -> Result<(), MessageKey> {
     if email.chars().count() > EMAIL_MAX_LEN {
         return Err(MessageKey::with_value(
@@ -429,11 +429,11 @@ pub fn validate_email(email: &str) -> Result<(), MessageKey> {
     }
 }
 
-/// `preferred_username`（ログイン識別子）が格納先カラムの上限に収まるか検証する。
+/// Checks that `preferred_username` (login identifier) fits within the column limit.
 ///
-/// `users.preferred_username` は `VARCHAR(255)`、`users.email` は `VARCHAR(320)` であり、未指定時に
-/// email を既定値へ採用する経路（`register` / `user_management`）で長い email がカラム長を超えると
-/// 永続化時に内部エラーになる。それを防ぐため、採用前に文字数上限を検証する。
+/// `users.preferred_username` is `VARCHAR(255)` and `users.email` is `VARCHAR(320)`; on paths that adopt the email
+/// as the default when unspecified (`register` / `user_management`), a long email would exceed the column length and
+/// cause an internal error on persistence. To prevent that, the character limit is checked before adoption.
 pub const PREFERRED_USERNAME_MAX_LEN: usize = 255;
 
 pub fn validate_preferred_username(value: &str) -> Result<(), MessageKey> {
@@ -446,11 +446,11 @@ pub fn validate_preferred_username(value: &str) -> Result<(), MessageKey> {
     Ok(())
 }
 
-/// `users.name`（表示名）の格納先カラム上限。
+/// Column size limit for `users.name` (display name).
 pub const DISPLAY_NAME_MAX_LEN: usize = 255;
 
-/// 表示名（`users.name`）が格納先カラムの上限に収まるか検証する。表示名は一意制約・書式制約を
-/// 持たない自由入力のため、長さのみを検証する（空・空白のみは呼び出し側で解除＝`None` に正規化する）。
+/// Checks that the display name (`users.name`) fits within the column limit. Display names are free input with no
+/// uniqueness or format constraints, so only length is checked (empty/whitespace-only is normalized to unset = `None` by callers).
 pub fn validate_display_name(value: &str) -> Result<(), MessageKey> {
     if value.chars().count() > DISPLAY_NAME_MAX_LEN {
         return Err(MessageKey::with_value(
@@ -467,8 +467,8 @@ mod tests {
 
     #[test]
     fn second_factors_matches_the_predicate() {
-        // 列挙と判定関数が食い違うと、「第二要素を 1 つ足せ」という要求が実際の判定と
-        // ずれる（要求は満たせるのに強度が上がらない、あるいはその逆）。
+        // If the enumeration and the predicate disagree, the requirement "add one second factor" diverges
+        // from the actual check (the requirement can be met but strength doesn't rise, or vice versa).
         let derived: Vec<AuthenticationMethod> = AuthenticationMethod::ALL
             .into_iter()
             .filter(|m| m.is_second_factor())
@@ -486,12 +486,12 @@ mod tests {
             AuthenticationStrength::from_methods(&[AuthenticationMethod::WebAuthn]).acr(),
             ACR_MULTI_FACTOR
         );
-        // 外部 IdP は第二要素として数えない（ADR-0008）。名乗る値もそれに従う。
+        // External IdPs are not counted as a second factor (ADR-0008). The asserted value follows that.
         assert_eq!(
             AuthenticationStrength::from_methods(&[AuthenticationMethod::ExternalIdp]).acr(),
             ACR_SINGLE_FACTOR
         );
-        // 公開する語彙は 2 つだけ（ADR-0043 決定 5）。
+        // Only two words of vocabulary are published (ADR-0043 decision 5).
         assert_eq!(
             SUPPORTED_ACR_VALUES.to_vec(),
             vec![ACR_MULTI_FACTOR, ACR_SINGLE_FACTOR]
@@ -547,7 +547,7 @@ mod tests {
             AuthenticationStrength::from_methods(&[WebAuthn]),
             AuthenticationStrength::MultiFactor
         );
-        // 外部 IdP 単体は多要素と数えない（外部 MFA の信頼は認証ポリシーの判断。仕様 §13）。
+        // An external IdP alone does not count as multi-factor (trusting external MFA is up to the authentication policy; spec §13).
         assert_eq!(
             AuthenticationStrength::from_methods(&[ExternalIdp]),
             AuthenticationStrength::SingleFactor
@@ -567,20 +567,20 @@ mod tests {
     }
 }
 
-/// 認可要求の `prompt`（**空白区切りの集合**。OIDC Core §3.1.2.1）。
+/// `prompt` of the authorization request (a **space-separated set**; OIDC Core §3.1.2.1).
 ///
-/// `prompt` は単一値ではない。`prompt=select_account consent` のように「アカウントを選ばせた
-/// うえで同意も取り直す」と要求できる。値をひとつしか持てない形にすると、複数指定された要求は
-/// どれかを取りこぼす —— しかも取りこぼしは**要求が無言で無視される**形で出る（有効な SSO が
-/// あれば黙って現在のアカウントで続く）。
+/// `prompt` is not a single value. One can request "have the user choose an account and also
+/// re-obtain consent", like `prompt=select_account consent`. A form that holds only one value drops
+/// some of a multi-valued request -- and the drop shows up as **the request being silently ignored** (with a valid SSO
+/// it silently continues with the current account).
 ///
-/// **未知の値は捨てる。** OIDC Core は未知の `prompt` 値をエラーにすることを求めておらず、
-/// 拒否すると将来値を送る RP が使えなくなる。捨てた結果が空集合なら「未指定」と同じに扱う。
+/// **Unknown values are discarded.** OIDC Core does not require unknown `prompt` values to be errors, and
+/// rejecting them would break RPs sending future values. If the result after discarding is empty, it is treated as "unspecified".
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PromptSet(Vec<Prompt>);
 
 impl PromptSet {
-    /// 空白区切りの生値を解釈する（重複は 1 つに畳む。順序は入力順）。
+    /// Interprets the raw space-separated value (duplicates folded into one; order as input).
     pub fn parse(raw: &str) -> Self {
         let mut values = Vec::new();
         for token in raw.split_whitespace() {
@@ -593,7 +593,7 @@ impl PromptSet {
         Self(values)
     }
 
-    /// DB へ保存する形（正規化した空白区切り）。空集合は `None`（＝未指定）。
+    /// Form stored in the DB (normalized, space-separated). The empty set is `None` (= unspecified).
     pub fn to_storage(&self) -> Option<String> {
         (!self.0.is_empty()).then(|| {
             self.0
@@ -617,8 +617,8 @@ impl PromptSet {
 mod prompt_tests {
     use super::{Prompt, PromptSet};
 
-    /// `select_account` は**既知の値**として解釈する（G12）。未知の値として落ちると「未指定」と
-    /// 区別できず、有効な SSO で黙って続いてしまう。
+    /// `select_account` is interpreted as a **known value** (G12). If it fell through as unknown it would be
+    /// indistinguishable from "unspecified" and silently continue with a valid SSO.
     #[test]
     fn select_account_is_a_known_prompt() {
         assert_eq!(
@@ -629,7 +629,7 @@ mod prompt_tests {
         assert!(Prompt::parse("switch_user").is_err());
     }
 
-    /// 複数指定を取りこぼさない（`select_account consent` は両方の要求）。
+    /// Multiple values are not dropped (`select_account consent` requests both).
     #[test]
     fn multiple_values_are_all_kept() {
         let set = PromptSet::parse("select_account consent");
@@ -639,8 +639,8 @@ mod prompt_tests {
         assert_eq!(set.to_storage().as_deref(), Some("select_account consent"));
     }
 
-    /// 未知の値は捨てるが、**同じ要求に含まれる既知の値は生かす**（未知の値ひとつで要求全体を
-    /// 落とすと、将来値を送る RP が使えなくなる）。
+    /// Unknown values are discarded, but **known values in the same request are kept** (dropping the whole request
+    /// for one unknown value would break RPs sending future values).
     #[test]
     fn unknown_values_are_dropped_without_losing_the_known_ones() {
         let set = PromptSet::parse("create login");

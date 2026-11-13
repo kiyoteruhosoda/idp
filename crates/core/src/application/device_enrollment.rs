@@ -1,23 +1,23 @@
-//! 登録した端末からだけログインを終わらせる（task #916。ADR-0079）。
+//! Complete logins only from registered devices (task #916. ADR-0079).
 //!
-//! # 流れ
+//! # Flow
 //!
-//! 1. **関門**（[`DeviceGate::admit`]）: どのログインの経路も、利用者を確かめた後に SSO セッションを作る前に
-//!    ここを通る。利用者の所属元テナントの `REGISTERED_DEVICE_REQUIRED` が有効で、今のブラウザの端末の印が
-//!    その人の登録済みの端末でなければ、**SSO セッションを作らず**、10 分だけの「登録の札」を返す。
-//!    認証アプリで承認したログイン（ADR-0077）は通す（承認した鍵がパスキーで登録した端末の鍵なので）。
-//! 2. **登録**（[`DeviceEnrollmentService`]）: 札を持つブラウザで、札の利用者のパスキーで確かめると、
-//!    そのブラウザを端末として登録し、そこで初めて SSO セッションを作る。
+//! 1. **Gate** ([`DeviceGate::admit`]): every login path passes here after verifying the user and before creating
+//!    the SSO session. If `REGISTERED_DEVICE_REQUIRED` of the user's home tenant is enabled and the current browser's
+//!    device marker is not one of that person's registered devices, **no SSO session is created** and a 10-minute
+//!    "enrollment ticket" is returned. Logins approved in the authenticator app (ADR-0077) pass (the approving key is the key of a device registered with a passkey).
+//! 2. **Enrollment** ([`DeviceEnrollmentService`]): in the browser holding the ticket, verifying with the ticket user's passkey
+//!    registers that browser as a device, and only then is the SSO session created.
 //!
-//! # 札
+//! # Ticket
 //!
-//! 札は DB に置かない署名付きの値（`CSRF_SECRET` から用途で分けた鍵の HMAC）。中身は要求のテナント・
-//! 利用者・端末の印の指紋・確かめた方式・期限。**札だけでは何もできない**（登録にはその人のパスキーが
-//! 要る）ので、使い切りにはしない。端末の印の指紋を入れるので、別のブラウザへ持ち出しても使えない。
+//! The ticket is a signed value not stored in the DB (HMAC with a purpose-specific key derived from `CSRF_SECRET`). It contains
+//! the requested tenant, the user, the fingerprint of the device marker, the verified methods and the expiry. **The ticket alone
+//! can do nothing** (enrollment needs that person's passkey), so it is not single-use. It includes the device marker's fingerprint, so it cannot be used if taken to another browser.
 //!
-//! # 家の中か外か
+//! # Inside or outside the home
 //!
-//! 見分けない（持ち主の決定 11/06「家の中も外と同じ扱い」）。ネットワークの場所は判定に使わない。
+//! Not distinguished (owner's decision 11/06: "treat inside the home the same as outside"). Network location is not used in the decision.
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::passkey_assertion::{
@@ -47,32 +47,32 @@ use uuid::Uuid;
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// 登録の札の有効期間（秒）。
+/// Lifetime of the enrollment ticket (seconds).
 pub const ENROLLMENT_TICKET_TTL_SECS: i64 = 600;
 
-/// 札の署名の用途の印（他の HMAC と鍵を分ける）。
+/// Purpose label for the ticket signature (separates the key from other HMACs).
 const TICKET_PURPOSE: &str = "assay-device-enrollment-v1";
 
-/// 関門に渡すログインの試み。
+/// A login attempt passed to the gate.
 pub struct AdmissionAttempt<'a> {
-    /// 認証したテナント（フローのテナント。札と監査の宛先）。
+    /// The authenticated tenant (the flow's tenant; destination of the ticket and audit).
     pub tenant_id: TenantId,
     pub user_id: Uuid,
-    /// 利用者の所属元テナント（設定はこちらで決まる）。
+    /// The user's home tenant (the setting is decided here).
     pub home_tenant_id: TenantId,
-    /// 確かめた方式。
+    /// Verified methods.
     pub methods: &'a [AuthenticationMethod],
     pub client_id: Option<&'a str>,
-    /// 認証アプリで承認したログインか（通す）。
+    /// Whether the login was approved in the authenticator app (passes).
     pub app_approved: bool,
 }
 
-/// 関門の結論。
+/// The gate's conclusion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Admission {
-    /// SSO セッションを作ってよい。
+    /// The SSO session may be created.
     Admitted,
-    /// 作らない。このブラウザを登録すれば続けられる（`ticket` は web が Cookie に置く平文）。
+    /// Not created. Continuing is possible by registering this browser (`ticket` is plaintext that web puts in a cookie).
     EnrollmentRequired { ticket: String },
 }
 
@@ -111,9 +111,9 @@ impl DeviceGate {
         }
     }
 
-    /// SSO セッションを作ってよいかを決める。
+    /// Decides whether the SSO session may be created.
     ///
-    /// ⚠ 設定を読めない・端末を引けないときはエラーを返す（ログインは成立しない側へ倒す）。
+    /// ⚠ Returns an error when the setting cannot be read or devices cannot be looked up (falls to the side where login does not succeed).
     pub async fn admit(
         &self,
         attempt: AdmissionAttempt<'_>,
@@ -178,7 +178,7 @@ impl DeviceGate {
         })
     }
 
-    /// 札を確かめる（署名・期限・テナント・**今のブラウザの印と同じか**）。
+    /// Verifies the ticket (signature, expiry, tenant, and **whether it matches the current browser's marker**).
     fn open_ticket(
         &self,
         tenant_id: TenantId,
@@ -193,7 +193,7 @@ impl DeviceGate {
         (current.as_str() == ticket.device).then_some(ticket)
     }
 
-    /// この組織で「有効にすると入れなくなる人」（登録した端末も認証アプリの鍵も無い、有効な人）の名前。
+    /// Names of the people in this organization who "would be locked out if enabled" (active, with neither a registered device nor an authenticator app key).
     pub async fn members_without_trusted_device(
         &self,
         tenant_id: TenantId,
@@ -204,15 +204,15 @@ impl DeviceGate {
     }
 }
 
-/// 札の中身。
+/// Contents of the ticket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct EnrollmentTicket {
     tenant_id: TenantId,
     user_id: Uuid,
-    /// 端末の印の SHA-256（印が無かったときは空。空の札では登録できない）。
+    /// SHA-256 of the device marker (empty when there was no marker; an empty ticket cannot enroll).
     device: String,
     methods: Vec<AuthenticationMethod>,
-    /// 期限（UNIX 秒）。
+    /// Expiry (UNIX seconds).
     expires_at: i64,
 }
 
@@ -297,7 +297,7 @@ fn method_codes(methods: &[AuthenticationMethod]) -> String {
         .join("+")
 }
 
-/// 知らせる（登録した端末に限る組織では、設定の `UNREGISTERED_DEVICE_ALERTS_ENABLED` に関わらず送る）。
+/// Sends an alert (in organizations limited to registered devices, sent regardless of the `UNREGISTERED_DEVICE_ALERTS_ENABLED` setting).
 async fn send_alert(
     alerts: &dyn SecurityAlertSink,
     user: &User,
@@ -329,17 +329,17 @@ async fn send_alert(
         .await;
 }
 
-/// 札の画面に出すもの。
+/// What is shown on the ticket screen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnrollmentView {
-    /// だれのログインか（画面で「〇〇さんとして続けます」と見せる）。
+    /// Whose login it is (the screen shows "continue as <name>").
     pub username: String,
 }
 
 #[derive(Debug)]
 pub enum DescribeEnrollmentOutcome {
     Ok(EnrollmentView),
-    /// 札が無い・期限切れ・別のブラウザ（ログインからやり直す）。
+    /// No ticket, expired, or another browser (start over from login).
     TicketInvalid,
     Internal(String),
 }
@@ -362,18 +362,18 @@ pub struct CompleteEnrollment<'a> {
 }
 
 pub enum CompleteEnrollmentOutcome {
-    /// 登録して SSO セッションを作った。
+    /// Enrolled and created the SSO session.
     Enrolled(EstablishedSso),
     TicketInvalid,
-    /// パスキーが通らない・札の利用者のパスキーではない。
+    /// The passkey failed, or it is not the ticket user's passkey.
     PasskeyRejected,
     InvalidName,
-    /// アカウントが使えない（無効・ロック等）。
+    /// The account cannot be used (disabled, locked, etc.).
     AccountUnavailable,
     Internal(String),
 }
 
-/// 札を持つブラウザを、パスキーで確かめて端末として登録する。
+/// Verifies the browser holding the ticket with a passkey and registers it as a device.
 pub struct DeviceEnrollmentService {
     gate: Arc<DeviceGate>,
     devices: Arc<dyn UserDeviceRepository>,
@@ -431,7 +431,7 @@ impl DeviceEnrollmentService {
         }
     }
 
-    /// パスキーの確かめを始める（本人確認の種別のチャレンジ。ログインには使えない）。
+    /// Starts passkey verification (a challenge of the identity-verification kind; cannot be used for login).
     pub async fn begin(&self, tenant_id: TenantId, ticket: &str) -> BeginEnrollmentOutcome {
         let now = self.clock.now();
         if self.gate.open_ticket(tenant_id, ticket, now).is_none() {
@@ -446,7 +446,7 @@ impl DeviceEnrollmentService {
         }
     }
 
-    /// パスキーで確かめ、端末を登録して SSO セッションを作る。
+    /// Verifies with the passkey, registers the device and creates the SSO session.
     pub async fn complete(
         &self,
         tenant_id: TenantId,
@@ -477,7 +477,7 @@ impl DeviceEnrollmentService {
             }
             Err(_) => return CompleteEnrollmentOutcome::PasskeyRejected,
         };
-        // ⚠ 札の利用者のパスキーでなければ通さない（他人のパスキーで自分の札を登録させない）。
+        // ⚠ Only the ticket user's passkey passes (don't let someone's passkey enroll your ticket).
         if verified.user_id != ticket.user_id {
             return CompleteEnrollmentOutcome::PasskeyRejected;
         }
@@ -553,7 +553,7 @@ impl DeviceEnrollmentService {
             .await
         {
             Ok(Establishment::Established(sso)) => CompleteEnrollmentOutcome::Enrolled(sso),
-            // 登録した直後なので通るはず。通らなければ（印が途中で変わった等）札からやり直させる。
+            // Just enrolled, so this should pass. If not (the marker changed midway, etc.), make them start over from the ticket.
             Ok(Establishment::DeviceEnrollmentRequired { .. }) => {
                 CompleteEnrollmentOutcome::TicketInvalid
             }

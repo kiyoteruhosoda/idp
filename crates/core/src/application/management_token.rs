@@ -1,25 +1,25 @@
-//! 管理 API のアクセストークン（ADR-0037）。
+//! Access tokens for the management API (ADR-0037).
 //!
-//! assay 自身を操作する API（`/{tenant_id}/admin/*`）の認可は、**主体が人か機械かに関わらず
-//! アクセストークン 1 本に寄せる**。管理コンソール（web）は SSO セッションを本サービスで管理
-//! トークンへ交換し、システム用クライアントは `client_credentials` に `resource` を添えて受け取る。
+//! Authorization of the API that operates assay itself (`/{tenant_id}/admin/*`) is **unified on a single access token
+//! regardless of whether the actor is a person or a machine**. The admin console (web) exchanges its SSO session for a
+//! management token through this service, and system clients receive one via `client_credentials` with `resource`.
 //!
-//! ## なぜ Cookie 転送をやめるのか
+//! ## Why stop forwarding cookies
 //!
-//! 従来 `/admin/*` は web が転送した SSO セッション Cookie だけを資格情報にしていた。機械から
-//! 呼ぶ手段が無く、かつ Cookie は ambient（ブラウザが自動で付ける）なので api 側に CSRF の
-//! 心配（オリジン検証）が残っていた。Bearer は ambient ではないため、api の管理面から CSRF の
-//! 論点そのものが消える。ブラウザ経路の CSRF は web が同期トークンで閉じて扱う（`web::csrf`）。
+//! Previously `/admin/*` used only the SSO session cookie forwarded by web as the credential. There was no way to call it
+//! from a machine, and since cookies are ambient (the browser attaches them automatically), CSRF concerns (origin
+//! checks) remained on the api side. Bearer tokens aren't ambient, so the CSRF question disappears from the api's admin surface.
+//! CSRF on the browser path is closed by web with synchronizer tokens (`web::csrf`).
 //!
-//! ## トークンが持つ権限と、リクエスト毎に確かめること
+//! ## Permissions carried by the token, and what is checked per request
 //!
-//! **権限の出所はトークン**（`perms` クレーム）である。リクエスト毎に権限を引き直すと、
-//! トークンに権限を載せる意味が無くなる。ただし**主体がまだ使えるか**（利用者が有効か・
-//! クライアントが有効か）だけは毎回確かめる。無効化した管理者や停止したシステム用クライアントが
-//! トークンの残存期間だけ操作を続けられる、という状態を作らないためである。
+//! **Permissions come from the token** (`perms` claim). Re-fetching permissions on every request would make
+//! putting them in the token pointless. However, **whether the actor is still usable** (user active,
+//! client active) is checked every time. So a disabled admin or a stopped system client can't keep operating
+//! for the token's remaining lifetime.
 //!
-//! `perms` は `aud` が管理 API のトークンにしか載らない。他のリソースサーバ向けトークンへ
-//! 権限コードが流れ込まないという ADR-0033 の決定は、この `aud` 固定で保たれる。
+//! `perms` is only put on tokens whose `aud` is the management API. ADR-0033's decision that permission codes
+//! don't leak into tokens for other resource servers is upheld by this fixed `aud`.
 
 use crate::application::admin_access::AdminAccessService;
 use crate::application::key_service::KeyService;
@@ -39,46 +39,46 @@ use std::sync::Arc;
 use std::time::Duration as StdDuration;
 use uuid::Uuid;
 
-/// 管理 API へのアクセス判定結果。Presentation へは可否のみを渡す（内部理由は漏らさない）。
+/// Result of the management API access check. Presentation only gets allowed/denied (internal reasons aren't leaked).
 #[derive(Debug, PartialEq, Eq)]
 pub enum ManagementAccess {
-    /// 認可済み。要求された管理操作を行ってよい。
+    /// Authorized. The requested management operation may proceed.
     Granted(AuthorizedPrincipal),
-    /// 有効な管理トークンが無い（未提示・改竄・期限切れ・失効済み）→ 401 相当。
+    /// No valid management token (not presented, tampered, expired, revoked) -> equivalent to 401.
     Unauthenticated,
-    /// トークンは有効だが必要権限を保有しない → 403 相当。
+    /// The token is valid but lacks the required permission -> equivalent to 403.
     Forbidden,
 }
 
-/// 認可された管理主体（Presentation ハンドラへ注入される最小限の身元）。
+/// An authorized management actor (the minimal identity injected into Presentation handlers).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorizedPrincipal {
-    /// 監査ログへ残す実行主体（利用者 or クライアント）。
+    /// The actor recorded in the audit log (user or client).
     pub actor: AdminActor,
-    /// 表示名（管理コンソールのヘッダ表示に使う。クライアント主体では `app_name`）。
+    /// Display name (shown in the admin console header. `app_name` for client actors).
     pub name: Option<String>,
-    /// ログイン識別子（クライアント主体では `None`）。
+    /// Login identifier (`None` for client actors).
     pub preferred_username: Option<String>,
-    /// この主体が管理トークンで提示した**保有**権限コード（`perms` クレームそのまま。含意は
-    /// 展開していない）。認可の判定はここに来るまでに済んでおり、以降の用途は「画面に何を出すか」
-    /// のような表示上の出し分けに限る。
+    /// Permission codes **held** by this actor as presented in the management token (the `perms` claim as-is; implications
+    /// are not expanded). Authorization is already decided before reaching here, and later uses are limited to
+    /// display decisions such as "what to show on screen".
     pub permission_codes: Vec<String>,
 }
 
-/// SSO セッションから発行した管理トークン。
+/// A management token issued from an SSO session.
 pub struct IssuedManagementToken {
     pub access_token: String,
     pub expires_in: u64,
-    /// 発行時点で主体が保有していた権限コード（コンソールが画面の出し分けに使う）。
+    /// Permission codes the actor held at issuance (used by the console to decide what to show).
     pub permission_codes: Vec<String>,
     pub name: Option<String>,
     pub preferred_username: Option<String>,
 }
 
-/// 管理トークンの発行に失敗した理由。
+/// Why issuing a management token failed.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ManagementTokenError {
-    /// 有効な SSO セッションが無い（未ログイン・期限切れ・利用者が無効）→ 401 相当。
+    /// No valid SSO session (not logged in, expired, or user disabled) -> equivalent to 401.
     Unauthenticated,
     Internal(String),
 }
@@ -124,11 +124,11 @@ impl ManagementTokenService {
         }
     }
 
-    /// SSO セッションを管理トークンへ交換する（管理コンソール経路。`POST /internal/admin/token`）。
+    /// Exchanges the SSO session for a management token (admin console path. `POST /internal/admin/token`).
     ///
-    /// セッションが無効なら `Unauthenticated`。セッションが有効なら、保有権限が 0 件でも
-    /// **トークンは発行する**。「ログインはしているが権限が無い」を 403 として表現できるように
-    /// するためで、ここで 403 に倒すと web はログイン画面へ戻す判断ができなくなる。
+    /// `Unauthenticated` if the session is invalid. If the session is valid, **a token is issued** even with zero
+    /// held permissions. This lets "logged in but no permissions" be expressed as 403; falling to 403 here
+    /// would leave web unable to decide to go back to the login screen.
     pub async fn issue_for_session(
         &self,
         tenant: TenantContext,
@@ -158,10 +158,10 @@ impl ManagementTokenService {
         })
     }
 
-    /// 管理トークンを検証し、要求権限コードを満たすかを判定する（`RequirePerms` から呼ぶ）。
+    /// Verifies the management token and decides whether it satisfies the required permission codes (called from `RequirePerms`).
     ///
-    /// 検証は 署名 → `typ` → `iss` → `aud` → `exp` → 失効（jti）→ 主体の有効性 → 権限 の順。
-    /// 失敗理由は 401 / 403 の 2 値へ畳んで返す（どの段で落ちたかは呼び出し側へ渡さない）。
+    /// Verification order: signature -> `typ` -> `iss` -> `aud` -> `exp` -> revocation (jti) -> actor validity -> permissions.
+    /// Failure reasons are folded into two values, 401 / 403 (which stage failed isn't passed to the caller).
     pub async fn authorize(
         &self,
         tenant: TenantContext,
@@ -179,11 +179,11 @@ impl ManagementTokenService {
         }
     }
 
-    /// 管理トークンを検証し、主体だけを返す（**権限コードは問わない**）。
+    /// Verifies the management token and returns only the actor (**permission codes aren't checked**).
     ///
-    /// 認可を権限コードではなく**主体そのもの**で決める口が使う（名簿の self。ADR-0059）。
-    /// ⚠ ここを通っただけで何かを許してはいけない ——呼び出し側が主体を見て決めること。
-    /// 結果は `Granted` か `Unauthenticated` のどちらかで、`Forbidden` にはならない。
+    /// Used by endpoints that authorize by **the actor itself** rather than permission codes (the roster's self. ADR-0059).
+    /// ⚠ Passing here alone must not allow anything ——the caller decides by looking at the actor.
+    /// The result is either `Granted` or `Unauthenticated`, never `Forbidden`.
     pub async fn authenticate(
         &self,
         tenant: TenantContext,
@@ -200,14 +200,14 @@ impl ManagementTokenService {
             }
         };
 
-        // 主体がまだ使えるか（無効化された管理者・停止したクライアントを締め出す）。
+        // Whether the actor is still usable (locks out disabled admins and stopped clients).
         match self.resolve_principal(tenant, &claims).await {
             Some(principal) => ManagementAccess::Granted(principal),
             None => ManagementAccess::Unauthenticated,
         }
     }
 
-    /// 管理トークンへ署名する。`aud` は要求テナントの管理 API に固定する。
+    /// Signs a management token. `aud` is fixed to the requested tenant's management API.
     async fn sign(
         &self,
         tenant: TenantContext,
@@ -222,8 +222,8 @@ impl ManagementTokenService {
             iss: issuer.clone(),
             sub: subject.to_string(),
             aud: management_audience(&issuer),
-            // 利用者主体の管理トークンはクライアント経由で得たものではないため、`client_id` は
-            // 主体自身（クライアント主体のとき）だけが埋まる。
+            // A user actor's management token isn't obtained via a client, so `client_id` is filled only
+            // with the actor itself (when the actor is a client).
             client_id: client_id.unwrap_or_default().to_string(),
             scope: String::new(),
             exp: iat + self.ttl.as_secs() as i64,
@@ -248,7 +248,7 @@ impl ManagementTokenService {
         .map_err(|e| ManagementTokenError::Internal(e.to_string()))
     }
 
-    /// 署名・`typ`・`iss`・`aud`・`exp`・失効を検証してクレームを返す。
+    /// Verifies signature, `typ`, `iss`, `aud`, `exp` and revocation, and returns the claims.
     async fn verify(
         &self,
         tenant: TenantContext,
@@ -272,7 +272,7 @@ impl ManagementTokenService {
         if claims.iss != expected_issuer {
             return Err("issuer mismatch");
         }
-        // `aud` が管理 API であることが要。`/userinfo` 向けトークンを管理 API へ持ち込ませない。
+        // `aud` being the management API is the key. Tokens for `/userinfo` must not be carried into the management API.
         if claims.aud != management_audience(&expected_issuer) {
             return Err("audience mismatch");
         }
@@ -290,7 +290,7 @@ impl ManagementTokenService {
         Ok(claims)
     }
 
-    /// `perms` クレーム（空白区切り）を保有コードの並びへ写す。
+    /// Maps the `perms` claim (space-separated) to a list of held codes.
     fn held_codes(claims: &AccessTokenClaims) -> Vec<String> {
         claims
             .perms
@@ -301,7 +301,7 @@ impl ManagementTokenService {
             .collect()
     }
 
-    /// トークンの `sub` から主体を解決し、まだ使える状態かを確かめる（fail-closed）。
+    /// Resolves the actor from the token's `sub` and confirms it is still usable (fail-closed).
     async fn resolve_principal(
         &self,
         tenant: TenantContext,
@@ -348,13 +348,13 @@ impl ManagementTokenService {
     }
 }
 
-/// 署名を検証してクレームを取り出す（`verify` から切り出した純粋部分）。
+/// Verifies the signature and extracts the claims (the pure part split out of `verify`).
 ///
-/// **鍵の algorithm で検証する**ことがこの関数の要である。署名は `jwt::sign` が鍵の algorithm
-/// （RS256 / ES256）で行うため、ここを片方に決め打ちすると、もう一方の鍵を ACTIVE にした瞬間に
-/// **すべての管理 API が 401** になる —— 鍵を戻すための `/admin/signing-keys` にも入れなくなるので、
-/// 運用から復旧できない。サービス本体から切り出してあるのは、この対応関係を鍵の種類ごとに
-/// テストできるようにするためである。
+/// **Verifying with the key's algorithm** is the point of this function. Signing is done by `jwt::sign` with the key's
+/// algorithm (RS256 / ES256), so hard-coding one here would make **every management API return 401** the moment a key of the
+/// other kind became ACTIVE —— even `/admin/signing-keys`, needed to switch keys back, would be unreachable, so
+/// operations couldn't recover. It is split out from the service so this correspondence can be tested
+/// per key kind.
 fn decode_signed_claims(
     key_algorithm: &str,
     public_pem: &str,
@@ -363,7 +363,7 @@ fn decode_signed_claims(
     let (decoding_key, algorithm) =
         jwt::decoding_key_for(key_algorithm, public_pem).map_err(|_| "unusable public key")?;
 
-    // exp / aud は Clock トレイト経由の時刻で自前検証する（テストで時刻固定するため）。
+    // exp / aud are verified by us with the time from the Clock trait (so tests can fix the time).
     let mut validation = Validation::new(algorithm);
     validation.validate_exp = false;
     validation.validate_aud = false;
@@ -394,11 +394,11 @@ mod tests {
         }
     }
 
-    /// 署名に使える鍵の種類はどれも検証できること。
+    /// Every key kind usable for signing can be verified.
     ///
-    /// `signing_keys.algorithm` は `RS256` / `ES256` の 2 値（DB の CHECK 制約）で、どちらも
-    /// `POST /admin/signing-keys` から ACTIVE にできる。検証側が片方を決め打ちしていると、
-    /// もう一方へ切り替えた瞬間に管理 API が全滅し、鍵を戻す操作にも入れなくなる。
+    /// `signing_keys.algorithm` has two values, `RS256` / `ES256` (DB CHECK constraint), and both can be made ACTIVE
+    /// from `POST /admin/signing-keys`. If verification hard-coded one, switching to the other would take down the whole
+    /// management API, and even the operation to switch keys back would be unreachable.
     #[test]
     fn every_supported_signing_algorithm_round_trips() {
         for (algorithm, (private_pem, public_pem)) in [
@@ -420,7 +420,7 @@ mod tests {
         }
     }
 
-    /// 別の鍵で署名されたトークンは通さない（同じ algorithm でも）。
+    /// Tokens signed with a different key don't pass (even with the same algorithm).
     #[test]
     fn a_token_signed_by_another_key_is_rejected() {
         let (private_pem, _) = generate_rsa_keypair().unwrap();
@@ -439,8 +439,8 @@ mod tests {
         );
     }
 
-    /// 鍵の algorithm とトークンの `alg` が食い違うものは通さない
-    /// （`alg` を差し替えて検証を迂回する古典的な攻撃を、鍵側の algorithm で閉じる）。
+    /// Tokens whose `alg` disagrees with the key's algorithm don't pass
+    /// (the classic attack of swapping `alg` to bypass verification is closed by the key-side algorithm).
     #[test]
     fn an_algorithm_mismatch_is_rejected() {
         let (rsa_private, _) = generate_rsa_keypair().unwrap();

@@ -1,14 +1,14 @@
-//! authorization code 発行の共通モジュール（設計仕様 §4.2 / §4.3 で共用）。
+//! Shared module for issuing authorization codes (used by design spec §4.2 / §4.3).
 //!
-//! code は 256bit の暗号学的乱数として生成し、DB には `SHA-256(code)` のみ保存する。
-//! 発行時に `authorization_code.issued` を監査ログへ記録する。
+//! A code is generated as a 256-bit cryptographic random value and only `SHA-256(code)` is stored in the DB.
+//! On issuance, `authorization_code.issued` is recorded in the audit log.
 //!
-//! # ここが「アプリを使ってよいか」の門でもある（ADR-0054）
+//! # This is also the gate for "may this user use the application" (ADR-0054)
 //!
-//! ログイン・MFA・パスキー・外部 IdP・パスワード変更・同意・SSO 復元の 7 経路は、どれも最後に
-//! ここへ来る
-//! ——**code を発行できる経路はここだけ**である。だから判定もここに置く。認証ごとの経路へ判定を
-//! 書き写すと、経路が 1 つ増えるたびに書き忘れがそのまま門を開ける。
+//! All seven paths — login, MFA, passkey, external IdP, password change, consent and SSO restore — end
+//! up here
+//! ——**this is the only path that can issue a code**. So the check lives here too. Copying the check
+//! into each authentication path means every new path that forgets it opens the gate as-is.
 
 use crate::application::application_access::{ApplicationAccessService, ApplicationGate};
 use crate::application::audit::{AuditService, RequestContext};
@@ -23,29 +23,29 @@ use crate::domain::tenant_context::TenantContext;
 use chrono::Duration;
 use std::sync::Arc;
 
-/// code 発行に必要な認可情報: **どの認可要求に**、**どの認証で**応えるか。
+/// Authorization data needed to issue a code: **which authorization request** is answered **with which authentication**.
 ///
-/// どちらも AuthSession（またはSSO 復元）から引き継ぐ。認可要求は `/authorize` で受理された
-/// ときのまま、認証は ID Token の `sub` / `auth_time` / `sid` / `acr` / `amr` の出所になる。
+/// Both are carried over from the AuthSession (or SSO restore). The authorization request is as accepted
+/// at `/authorize`; the authentication is the source of the ID Token's `sub` / `auth_time` / `sid` / `acr` / `amr`.
 pub struct IssueCodeCommand {
-    /// code を発行するテナント（フローのテナント）。
+    /// The tenant that issues the code (the flow's tenant).
     pub tenant: TenantContext,
     pub request: AuthorizationRequest,
     pub authentication: Authentication,
 }
 
-/// code 発行の結果。
+/// Result of issuing a code.
 ///
-/// 「拒否」を `Err` にしないのは、**呼び出し側の扱いが違う**ためである。`Err` は RP へ
-/// `server_error` で戻す種類の失敗だが、割り当ての拒否は assay の画面で伝える（ADR-0054 の決定 2）。
-/// 同じ型に混ぜると、どちらかの経路で取り違えたときに利用者へ出るものが変わってしまう。
+/// "Denied" is not an `Err` because **callers handle them differently**. An `Err` is a failure returned
+/// to the RP as `server_error`, while an assignment denial is shown on assay's screen (ADR-0054 decision 2).
+/// Mixing them in one type means a mix-up on either path changes what the user sees.
 pub enum CodeIssuance {
-    /// 発行できた（平文の code。呼び出し側が `redirect_uri` に付与する）。
+    /// Issued (plaintext code; the caller appends it to `redirect_uri`).
     Issued(String),
-    /// このアプリの利用が許可されていない。⚠ **RP へ戻さない。**
+    /// Use of this application is not permitted. ⚠ **Do not return to the RP.**
     ApplicationDenied {
-        /// 画面に出すアプリ名。「どのアプリで断られたのか」が分からないと、利用者は次に何を
-        /// すればよいか（誰に頼めばよいか）を決められない。
+        /// Application name shown on screen. Without knowing "which application refused me", the user
+        /// cannot decide what to do next (whom to ask).
         application_name: String,
     },
 }
@@ -75,10 +75,10 @@ impl CodeIssuanceService {
         }
     }
 
-    /// authorization code を発行する。
+    /// Issues an authorization code.
     ///
-    /// 判定（ADR-0054）は**書き込みより先**に行う。後に置くと、断ったときに使われない code が
-    /// DB に残る。
+    /// The check (ADR-0054) runs **before the write**. If placed after, a denial leaves an unused code
+    /// in the DB.
     pub async fn issue(
         &self,
         cmd: IssueCodeCommand,

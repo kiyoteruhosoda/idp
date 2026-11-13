@@ -1,10 +1,10 @@
-//! テナントメンバー管理エンドポイント（`/{tenant_id}/admin/members`。ADR-0009 §3・§6）。
+//! Tenant member management endpoints (`/{tenant_id}/admin/members`, ADR-0009 §3, §6).
 //!
-//! 一覧・取得は `idp.members:read`、解除・一時停止/再開・メモの更新は `idp.members:write` が要る
-//! （`RequirePerms<MembersRead>` / `<MembersWrite>`。`idp.tenant.admin` は両方を含意する）。参加先テナントの管理者が行えるのは
-//! メンバー一覧の閲覧と**ゲストメンバーシップの解除・一時停止/再開**（MT24）のみで、HOME は解除も停止も
-//! できない。ゲストの `users` レコード（パスワード・状態・MFA・プロフィール）は操作できない
-//! （所属元テナントの管理者と本人のみ。§3）。
+//! Listing/getting needs `idp.members:read`; removing, suspending/resuming and updating notes need `idp.members:write`
+//! (`RequirePerms<MembersRead>` / `<MembersWrite>`; `idp.tenant.admin` implies both). Admins of the joining tenant can only
+//! view the member list and **remove, suspend/resume guest memberships** (MT24); HOME can be neither removed nor
+//! suspended. Guests' `users` records (password, status, MFA, profile) cannot be operated on
+//! (only by home tenant admins and the user themselves, §3).
 
 use crate::application::account_note::AccountNoteError;
 use crate::application::invitation::InvitationError;
@@ -30,12 +30,12 @@ use axum::Json;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-/// メンバー 1 人を名指しで引く（`GET /{tenant_id}/admin/members/{user_id}`）。
+/// Looks up one member by name (`GET /{tenant_id}/admin/members/{user_id}`).
 ///
-/// メンバーの詳細画面のためにある。⚠ **一覧を引いて呼び出し側で探させない** ——一覧は
-/// ページングされているので、目的の 1 人が何ページ目に居るかは呼び出し側には分からない。
+/// Exists for the member detail screen. ⚠ **Don't make callers fetch the list and search it** -- the list is
+/// paginated, so callers can't know which page the desired person is on.
 ///
-/// 要求テナントに所属していなければ 404（他テナントのメンバーの存在を推測させない）。
+/// 404 if not a member of the requesting tenant (doesn't let anyone infer the existence of other tenants' members).
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/members/{user_id}",
@@ -54,9 +54,9 @@ pub async fn get_member(
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
-    // ⚠ **経路には `{tenant_id}` と `{user_id}` の 2 つがある。** `Path<Uuid>` の 1 つだけで
-    //   受けると**先頭のテナント ID を取ってしまい**、必ず「メンバーではない」になる
-    //   （同じ経路の `revoke_member` / `update_member_status` も 2 つで受けている）。
+    // ⚠ **The route has two parameters, `{tenant_id}` and `{user_id}`.** Receiving just one `Path<Uuid>`
+    //   **would take the leading tenant ID**, always yielding "not a member"
+    //   (`revoke_member` / `update_member_status` on the same route also take two).
     Path((_tenant_id, user_id)): Path<(String, Uuid)>,
 ) -> Result<Json<MemberResponse>, ApiError> {
     let found = state
@@ -73,10 +73,10 @@ pub async fn get_member(
     }
 }
 
-/// 当該テナントのメンバー（HOME / GUEST）を一覧する（MT22 でページング・絞り込みを追加）。
+/// Lists the tenant's members (HOME / GUEST) (paging and filtering added in MT22).
 ///
-/// 絞り込み・並び替え・ページングはすべて DB 側で行う。全件を返して呼び出し側で絞る方式は、
-/// テナントの規模に比例して応答が膨らむため採らない。
+/// Filtering, sorting and paging all happen in the DB. Returning everything and filtering on the caller side
+/// is not used, as responses would grow with tenant size.
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/members",
@@ -120,8 +120,8 @@ pub async fn list_members(
     }))
 }
 
-/// ゲストメンバーシップを解除する（ゲストの追放）。HOME は解除できない（403）。解除時、当該テナントを
-/// scope とするそのユーザーの権限行も削除する（§3）。
+/// Removes a guest membership (expels the guest). HOME cannot be removed (403). On removal, that user's
+/// permission rows scoped to this tenant are deleted too (§3).
 #[utoipa::path(
     delete,
     path = "/{tenant_id}/admin/members/{user_id}",
@@ -170,11 +170,11 @@ pub async fn revoke_member(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// ゲストメンバーシップの一時停止・再開（`PATCH /{tenant_id}/admin/members/{user_id}`。MT24）。
+/// Suspends / resumes a guest membership (`PATCH /{tenant_id}/admin/members/{user_id}`, MT24).
 ///
-/// `status` に `SUSPENDED` を指定すると停止、`ACTIVE` を指定すると再開する。停止できるのは GUEST の
-/// `ACTIVE` のみ、再開できるのは `SUSPENDED` のみ（それ以外は 403）。解除（`DELETE`）と違い
-/// メンバーシップ行と当該テナント scope の権限行は残るため、再開すれば停止前の状態に戻る。
+/// `status` of `SUSPENDED` suspends, `ACTIVE` resumes. Only GUEST `ACTIVE` can be suspended,
+/// only `SUSPENDED` can be resumed (otherwise 403). Unlike removal (`DELETE`),
+/// the membership row and the permission rows scoped to this tenant remain, so resuming restores the pre-suspension state.
 #[utoipa::path(
     patch,
     path = "/{tenant_id}/admin/members/{user_id}",
@@ -201,8 +201,8 @@ pub async fn update_member_status(
     Path((_tenant_id, user_id)): Path<(String, String)>,
     Json(body): Json<UpdateMemberStatusRequest>,
 ) -> Result<StatusCode, ApiError> {
-    // `ApiMessages`（fluent バンドル）は `Send` ではないため、`.await` を跨いで保持しない
-    // （保持するとハンドラの future が `Send` でなくなり axum の `Handler` を満たさない）。
+    // `ApiMessages` (a fluent bundle) is not `Send`, so it is not held across `.await`
+    // (holding it would make the handler's future non-`Send`, failing axum's `Handler`).
     let target = Uuid::parse_str(&user_id)
         .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request")))?;
     state
@@ -215,8 +215,8 @@ pub async fn update_member_status(
         )
         .await
         .map_err(|e| map_admin_account_guard_error(e, locale))?;
-    // 受け付けるのは停止・再開の 2 遷移のみ。`INVITED` は招待フローが管理する状態のため、
-    // ここから直接は設定させない。
+    // Only the two transitions suspend and resume are accepted. `INVITED` is a state managed by the invitation flow,
+    // so it can't be set directly from here.
     let status = MembershipStatus::parse(body.status.trim())
         .ok()
         .filter(|s| matches!(s, MembershipStatus::Active | MembershipStatus::Suspended))
@@ -244,10 +244,10 @@ pub async fn update_member_status(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// 管理者メモを書く・消す（`PUT /{tenant_id}/admin/members/{user_id}/note`。ADR-0063）。
+/// Writes / clears an admin note (`PUT /{tenant_id}/admin/members/{user_id}/note`, ADR-0063).
 ///
-/// HOME / GUEST を問わず書ける（メモはこのテナントの管理者の覚え書きで、ゲストの利用者そのものは
-/// 変えない）。空（空白だけ）を送るとメモを消す。
+/// Writable for both HOME and GUEST (the note is this tenant's admins' memo and doesn't change the guest user
+/// themselves). Sending empty (whitespace only) clears the note.
 #[utoipa::path(
     put,
     path = "/{tenant_id}/admin/members/{user_id}/note",
@@ -302,7 +302,7 @@ pub async fn update_member_note(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// メンバー 1 人の応答（一覧・名指し・アカウント一覧の人の行が共有する）。
+/// Response for one member (shared by the list, lookup by name and the people rows of the account list).
 pub(crate) fn member_response(m: TenantMember, now: DateTime<Utc>) -> MemberResponse {
     MemberResponse {
         user_id: m.user_id.to_string(),
@@ -312,10 +312,10 @@ pub(crate) fn member_response(m: TenantMember, now: DateTime<Utc>) -> MemberResp
         membership_type: m.membership_type.as_str().to_string(),
         status: m.status.as_str().to_string(),
         user_status: m.user_status.map(|s| s.as_str().to_string()),
-        // 期限切れのロックは「掛かっていない」として返す（読んだ時点で判定する）。
+        // An expired lock is returned as "not locked" (decided at read time).
         locked: m.locked_until.is_some_and(|until| until > now),
         pending_setup: m.pending_setup,
-        // 期限は仮登録の人にだけ意味がある（設定を終えた人のリンクは使い道が無い）。
+        // The expiry only matters for provisionally registered people (a link for someone who finished setup is of no use).
         setup_link_expires_at: m
             .setup_link_expires_at
             .filter(|_| m.pending_setup)
@@ -326,7 +326,7 @@ pub(crate) fn member_response(m: TenantMember, now: DateTime<Utc>) -> MemberResp
     }
 }
 
-/// 管理者メモの応答（人・サービスアカウントで同じ形。ADR-0065）。
+/// Admin note response (same shape for people and service accounts, ADR-0065).
 pub(crate) fn note_response(note: Option<AccountNote>) -> Option<AccountNoteResponse> {
     note.map(|n| AccountNoteResponse {
         text: n.text,

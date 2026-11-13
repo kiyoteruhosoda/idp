@@ -1,10 +1,10 @@
-//! メンバー一覧の参照ユースケース（`GET /{tenant_id}/admin/members`。MT22）。
+//! Member list lookup use case (`GET /{tenant_id}/admin/members`. MT22).
 //!
-//! 当該テナントに参加している利用者（HOME / GUEST）を、メール・氏名の部分一致で絞り込みながら
-//! ページ単位で返す。参照専用のため監査記録は行わない（読み取りは `log` テーブル側で追える）。
+//! Returns users who belong to the tenant (HOME / GUEST) page by page, filtered by partial match on
+//! email and name. Read-only, so nothing is audited (reads can be traced in the `log` table).
 //!
-//! メンバーシップの**変更**（招待・承諾・解除・一時停止）は [`crate::application::invitation`] の
-//! 責務で、本サービスは参照のみを担う（SRP。[`crate::application::audit_query`] と同じ位置づけ）。
+//! **Changes** to membership (invite, accept, remove, suspend) are the responsibility of
+//! [`crate::application::invitation`]; this service only reads (SRP; same role as [`crate::application::audit_query`]).
 
 use crate::domain::error::DomainError;
 use crate::domain::repositories::TenantMemberQuery;
@@ -12,12 +12,12 @@ use crate::domain::tenant_context::TenantContext;
 use crate::domain::tenant_membership::{TenantMember, TenantMemberFilter, TenantMemberPage};
 use std::sync::Arc;
 
-/// 1 ページの既定件数。
+/// Default number of items per page.
 pub const DEFAULT_LIMIT: i64 = 50;
-/// 1 ページの上限件数（過大な取得を防ぐ）。
+/// Maximum number of items per page (prevents oversized fetches).
 pub const MAX_LIMIT: i64 = 200;
 
-/// 検索パラメータ（Presentation から受け取る素の値。`limit`/`offset` は未クランプ）。
+/// Search parameters (raw values from Presentation; `limit`/`offset` not yet clamped).
 #[derive(Debug, Clone, Default)]
 pub struct MemberSearchParams {
     pub search: Option<String>,
@@ -25,9 +25,9 @@ pub struct MemberSearchParams {
     pub offset: Option<i64>,
 }
 
-/// 検索結果。`limit` / `offset` は**実際に適用した**値（クランプ後）で、呼び出し側がページ送りを
-/// 計算するときに要求値ではなくこちらを使えるようにする（クランプ規則を Presentation 層へ
-/// 複製しないため）。
+/// Search result. `limit` / `offset` are the values **actually applied** (after clamping), so the caller can
+/// use these instead of the requested values when computing pagination (so the clamping rules are not
+/// duplicated in the Presentation layer).
 #[derive(Debug)]
 pub struct MemberSearchResult {
     pub page: TenantMemberPage,
@@ -44,8 +44,8 @@ impl MemberDirectoryService {
         Self { members }
     }
 
-    /// 条件に一致するメンバーを 1 ページ分返す。テナントは要求テナントに固定する
-    /// （テナント越しの閲覧を防ぐため、呼び出し側が上書きできる余地を作らない）。
+    /// Returns one page of members matching the filter. The tenant is fixed to the requested tenant
+    /// (to prevent cross-tenant viewing, the caller is given no room to override it).
     pub async fn search(
         &self,
         tenant: TenantContext,
@@ -66,10 +66,10 @@ impl MemberDirectoryService {
         })
     }
 
-    /// 1 人を名指しで引く（メンバーの詳細画面）。要求テナントに所属していなければ `None`。
+    /// Looks up one person by name (member detail screen). `None` if not in the requested tenant.
     ///
-    /// ⚠ **一覧を引いてから web 側で探させない。** メンバーはページングされているので、
-    /// 目的の 1 人が何ページ目に居るかは呼び出し側には分からない。
+    /// ⚠ **Do not fetch the list and make the web side search it.** Members are paginated, so the
+    /// caller cannot know which page the target person is on.
     pub async fn find(
         &self,
         tenant: TenantContext,
@@ -92,7 +92,7 @@ impl MemberDirectoryService {
     }
 }
 
-/// `limit` を 1..=MAX_LIMIT に収める。未指定・非正値は既定値。
+/// Clamps `limit` into 1..=MAX_LIMIT. Missing or non-positive values become the default.
 fn clamp_limit(limit: Option<i64>) -> i64 {
     match limit {
         Some(l) if l > 0 => l.min(MAX_LIMIT),
@@ -100,7 +100,7 @@ fn clamp_limit(limit: Option<i64>) -> i64 {
     }
 }
 
-/// 空文字列を `None` に正規化する（クエリ未指定の `?q=` を「絞り込みなし」として扱うため）。
+/// Normalizes an empty string to `None` (so an unset query `?q=` is treated as "no filter").
 fn normalize(value: Option<String>) -> Option<String> {
     value
         .map(|v| v.trim().to_string())
@@ -116,7 +116,7 @@ mod tests {
     use std::sync::Mutex;
     use uuid::Uuid;
 
-    /// 渡されたフィルタを記録するだけのフェイク（クランプ・正規化の検証用）。
+    /// A fake that only records the filter it receives (for verifying clamping and normalization).
     #[derive(Default)]
     struct CapturingQuery {
         seen: Mutex<Vec<TenantMemberFilter>>,

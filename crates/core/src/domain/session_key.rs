@@ -1,16 +1,19 @@
-//! SSO セッションを端末の鍵へ結び付ける（DBSC）ときの、鍵と署名の確かめ（task #887。ADR-0074）。
+//! Checking keys and signatures when binding an SSO session to a device key (DBSC) (task #887;
+//! ADR-0074).
 //!
-//! Chrome は登録と更新のたびに、TPM の中の鍵で JWT（`typ: dbsc+jwt`）に署名して送ってくる。
+//! On every registration and refresh, Chrome signs a JWT (`typ: dbsc+jwt`) with a key inside the
+//! TPM and sends it.
 //!
-//! | | ヘッダー | 中身 |
+//! | | Header | Payload |
 //! |---|---|---|
-//! | 登録 | `alg`（ES256 / RS256）・`typ`・**`jwk`（公開鍵）** | `jti` = challenge |
-//! | 更新 | `alg`・`typ`（`jwk` は無い） | `jti` = challenge |
+//! | Registration | `alg` (ES256 / RS256), `typ`, **`jwk` (public key)** | `jti` = challenge |
+//! | Refresh | `alg`, `typ` (no `jwk`) | `jti` = challenge |
 //!
-//! 登録では JWT に添えられた公開鍵で署名を確かめ、その鍵を覚える。更新では覚えた鍵で確かめる。
-//! challenge がこの SSO セッションのものかは呼び出し側（application）が確かめる。
+//! On registration the signature is checked with the public key attached to the JWT, and that key
+//! is remembered. On refresh it is checked with the remembered key. Whether the challenge belongs
+//! to this SSO session is checked by the caller (application).
 //!
-//! ⚠ 鍵が TPM の中にあるかは、ここからは分からない（DBSC は鍵の証明を運ばない）。
+//! ⚠ Whether the key is inside a TPM cannot be known from here (DBSC carries no key attestation).
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -19,19 +22,20 @@ use jsonwebtoken::jwk::{AlgorithmParameters, EllipticCurve, Jwk, ThumbprintHash}
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 
-/// RSA の鍵の長さの下限（ビット）。
+/// Lower bound on RSA key length (bits).
 const MIN_RSA_BITS: usize = 2048;
-/// 署名の JWT の長さの上限（バイト）。RSA 4096 の公開鍵を添えても 2KB に満たない。
+/// Upper bound on the signature JWT length (bytes). Under 2KB even with an RSA 4096 public key
+/// attached.
 const MAX_PROOF_LEN: usize = 8 * 1024;
 
-/// 結び付けた公開鍵。
+/// The bound public key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionPublicKey {
-    /// `ES256` / `RS256`。
+    /// `ES256` / `RS256`.
     pub algorithm: SessionKeyAlgorithm,
-    /// 公開鍵の JWK（JSON）。
+    /// JWK (JSON) of the public key.
     pub jwk_json: String,
-    /// RFC 7638 の指紋（SHA-256・base64url）。
+    /// RFC 7638 thumbprint (SHA-256, base64url).
     pub thumbprint: String,
 }
 
@@ -73,32 +77,34 @@ impl SessionKeyAlgorithm {
     }
 }
 
-/// SSO セッションと端末の鍵の結び付け（1 つのログイン状態に 1 回だけ）。
+/// Binding between an SSO session and a device key (only once per sign-in state).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionKeyBinding {
-    /// Chrome が更新のときに `Sec-Secure-Session-Id` で送る識別子（32 文字の 16 進）。
+    /// Identifier Chrome sends in `Sec-Secure-Session-Id` on refresh (32 hex characters).
     pub session_identifier: String,
     pub key: SessionPublicKey,
     pub bound_at: DateTime<Utc>,
 }
 
-/// ログイン状態の結び付けの種類（task #887・#892。ADR-0074・ADR-0077）。
+/// Kind of binding of a sign-in state (task #887, #892; ADR-0074, ADR-0077).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionBinding {
-    /// 結び付けなし。
+    /// No binding.
     Unbound,
-    /// DBSC で端末の鍵に結び付いた（Windows の Chrome）。
+    /// Bound to a device key via DBSC (Chrome on Windows).
     DeviceKey,
-    /// 登録した認証アプリで承認して作った（Android の Chrome。持ち主の決定「アプリで認証なら 30 日」）。
+    /// Created by approval in a registered authenticator app (Chrome on Android; owner's decision
+    /// "30 days when authenticated by app").
     AppApproval,
 }
 
-/// ログイン状態の長さを決める。
+/// Decides the length of a sign-in state.
 ///
-/// 30 日（`bound_ttl`）にするのは、DBSC で結び付き**かつ**そのログイン状態の端末が自分の端末に
-/// 登録済みのとき（ADR-0074 §6）と、認証アプリで承認したとき（ADR-0077。承認した鍵そのものが
-/// パスキーで登録した端末の鍵なので、ブラウザの端末の登録は問わない）。それ以外は確立したときの
-/// 長さ（`absolute_ttl`）。どちらも**作った時刻から**数える。返すのは (idle の期限, absolute の期限)。
+/// It is 30 days (`bound_ttl`) when bound via DBSC **and** the sign-in state's device is registered
+/// as one of the user's devices (ADR-0074 §6), and when approved by the authenticator app
+/// (ADR-0077; the approving key itself is a device key registered with a passkey, so the browser's
+/// device registration does not matter). Otherwise the length at establishment (`absolute_ttl`).
+/// Both count **from creation time**. Returns (idle expiry, absolute expiry).
 pub fn lifetime_for(
     created_at: DateTime<Utc>,
     current_idle: DateTime<Utc>,
@@ -109,7 +115,8 @@ pub fn lifetime_for(
 ) -> (DateTime<Utc>, DateTime<Utc>) {
     if lifetime_basis(binding, device_registered, absolute_ttl, bound_ttl).is_long() {
         let absolute = created_at + bound_ttl;
-        // 結び付いたログイン状態は「使わなかった」で切らない（持ち主の決定。idle も同じ長さ）。
+        // A bound sign-in state is not cut off for "not being used" (owner's decision; idle has the
+        // same length).
         (absolute, absolute)
     } else {
         let absolute = created_at + absolute_ttl;
@@ -117,26 +124,27 @@ pub fn lifetime_for(
     }
 }
 
-/// ログイン状態の長さがなぜその長さか（task #896。本人の「状況」に 1 行で出す）。
+/// Why a sign-in state has the length it has (task #896; shown as one line in the user's "status").
 ///
-/// [`lifetime_for`] はこの判定だけで長さを選ぶ。画面の説明と実際の長さが食い違わないよう、判定は
-/// ここ 1 か所に置く。
+/// [`lifetime_for`] chooses the length by this decision alone. So the on-screen explanation and the
+/// actual length never disagree, the decision lives in this one place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifetimeBasis {
-    /// 端末の鍵に結び付き、かつその端末が登録済み → 長い（`bound_ttl`）。
+    /// Bound to a device key and that device is registered → long (`bound_ttl`).
     BoundOnRegisteredDevice,
-    /// 登録した認証アプリで承認して入った → 長い（`bound_ttl`）。
+    /// Signed in by approval in a registered authenticator app → long (`bound_ttl`).
     AppApproval,
-    /// 端末の鍵に結び付いたが、その端末は登録していない → 確立したときの長さ。
+    /// Bound to a device key but that device is not registered → the length at establishment.
     BoundOnUnregisteredDevice,
-    /// 結び付いていない → 確立したときの長さ。
+    /// Not bound → the length at establishment.
     Unbound,
-    /// 長くしてよい条件は満たすが、組織の長さの設定が延ばさない（`bound_ttl` ≦ `absolute_ttl`）。
+    /// Meets the conditions for a longer length, but the organization's length setting does not
+    /// extend it (`bound_ttl` ≤ `absolute_ttl`).
     NotExtendedBySetting,
 }
 
 impl LifetimeBasis {
-    /// 長い長さ（`bound_ttl`）を使うか。
+    /// Whether to use the long length (`bound_ttl`).
     pub fn is_long(self) -> bool {
         matches!(self, Self::BoundOnRegisteredDevice | Self::AppApproval)
     }
@@ -152,7 +160,7 @@ impl LifetimeBasis {
     }
 }
 
-/// 結び付けの種類と端末の登録から、長さの根拠を決める。
+/// Decides the basis for the length from the binding kind and device registration.
 pub fn lifetime_basis(
     binding: SessionBinding,
     device_registered: bool,
@@ -174,16 +182,16 @@ pub fn lifetime_basis(
     }
 }
 
-/// 署名を受け付けなかった理由（監査ログに残す。利用者には出さない）。
+/// Why a signature was not accepted (recorded in the audit log; not shown to users).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProofError {
-    /// JWT の形・`typ`・方式が違う、長すぎる。
+    /// The JWT shape, `typ`, or algorithm is wrong, or it is too long.
     Malformed,
-    /// 登録なのに公開鍵が無い・使えない鍵（曲線・長さ）。
+    /// Registration without a public key, or an unusable key (curve, length).
     UnusableKey,
-    /// 署名が合わない。
+    /// The signature does not match.
     BadSignature,
-    /// `jti`（challenge）が無い・違う。
+    /// `jti` (challenge) is missing or wrong.
     WrongChallenge,
 }
 
@@ -203,7 +211,8 @@ struct ProofClaims {
     jti: Option<String>,
 }
 
-/// 登録の署名を確かめ、添えられた公開鍵を返す。`challenge` は署名の `jti` と一致しなければならない。
+/// Checks a registration signature and returns the attached public key. `challenge` must match the
+/// signature's `jti`.
 pub fn verify_registration(proof: &str, challenge: &str) -> Result<SessionPublicKey, ProofError> {
     let header = read_header(proof)?;
     let algorithm = SessionKeyAlgorithm::from_jwt(header.alg).ok_or(ProofError::Malformed)?;
@@ -222,10 +231,11 @@ pub fn verify_registration(proof: &str, challenge: &str) -> Result<SessionPublic
     })
 }
 
-/// 更新の署名を、結び付けた公開鍵で確かめる。
+/// Checks a refresh signature with the bound public key.
 ///
-/// 方式が登録と違う・`jwk` が添えられていてそれが登録した鍵と違う、はどちらも [`ProofError::BadSignature`]
-/// （別の鍵で作った署名＝持ち出しの疑い）として返す。
+/// An algorithm different from registration, or an attached `jwk` that differs from the registered
+/// key, are both returned as [`ProofError::BadSignature`] (a signature made with a different key =
+/// suspected theft).
 pub fn verify_refresh(
     proof: &str,
     bound: &SessionPublicKey,
@@ -257,7 +267,7 @@ fn read_header(proof: &str) -> Result<jsonwebtoken::Header, ProofError> {
     Ok(header)
 }
 
-/// 方式に合った鍵か（ES256 は P-256、RS256 は 2048 ビット以上）。
+/// Whether the key fits the algorithm (P-256 for ES256, 2048 bits or more for RS256).
 fn usable_key(jwk: &Jwk, algorithm: SessionKeyAlgorithm) -> Result<DecodingKey, ProofError> {
     match (&jwk.algorithm, algorithm) {
         (AlgorithmParameters::EllipticCurve(ec), SessionKeyAlgorithm::Es256)
@@ -279,7 +289,8 @@ fn verify_signature(
     challenge: &str,
 ) -> Result<(), ProofError> {
     let mut validation = Validation::new(algorithm.jwt());
-    // DBSC の署名に `exp`・`aud` は無い（草案は `jti` だけを定める）。新しさは challenge で測る。
+    // DBSC signatures have no `exp` or `aud` (the draft defines only `jti`). Freshness is measured
+    // by the challenge.
     validation.set_required_spec_claims::<&str>(&[]);
     validation.validate_exp = false;
     validation.validate_nbf = false;
@@ -293,7 +304,7 @@ fn verify_signature(
     }
 }
 
-/// 覚えておく公開鍵（`kid` などの付け足しを落とし、鍵そのものだけにする）。
+/// The public key to remember (drops additions like `kid`, keeping only the key itself).
 fn public_part(jwk: &Jwk) -> serde_json::Value {
     match &jwk.algorithm {
         AlgorithmParameters::EllipticCurve(ec) => serde_json::json!({
@@ -403,7 +414,7 @@ mod tests {
             verify_refresh(&proof(&thief, "c2", false, "dbsc+jwt"), &bound, "c2"),
             Err(ProofError::BadSignature)
         );
-        // 別の鍵を添えて差し替えようとしても同じ。
+        // Same even when trying to swap by attaching another key.
         assert_eq!(
             verify_refresh(&proof(&thief, "c2", true, "dbsc+jwt"), &bound, "c2"),
             Err(ProofError::BadSignature)
@@ -433,12 +444,12 @@ mod tests {
                 "binding={binding:?} registered={registered}"
             );
         }
-        // 30 日から 7 日へ戻すとき、idle は absolute を越えない。
+        // When going back from 30 days to 7 days, idle does not exceed absolute.
         assert_eq!(
             lifetime_for(created, created + month, DeviceKey, false, week, month),
             (created + week, created + week)
         );
-        // 組織が長さを短く決めていれば、結び付いても延ばさない。
+        // If the organization decided a shorter length, binding does not extend it.
         assert_eq!(
             lifetime_for(created, idle, DeviceKey, true, month, week),
             (idle, created + month)
@@ -492,7 +503,7 @@ mod tests {
             lifetime_basis(DeviceKey, true, month, week),
             LifetimeBasis::NotExtendedBySetting
         );
-        // 長いと言う根拠のときだけ lifetime_for も長くする。
+        // Only when the basis says long does lifetime_for also make it long.
         use chrono::TimeZone;
         let created = Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).unwrap();
         for (binding, registered) in [

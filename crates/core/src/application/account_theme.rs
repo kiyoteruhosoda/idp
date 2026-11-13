@@ -1,31 +1,31 @@
-//! ユーザーの配色設定更新ユースケース。
+//! Use case: update the user's color scheme setting.
 //!
-//! ログイン済みユーザーが SSO セッション経由で自分の `theme` 列（`light` / `dark` / `system`）を
-//! 更新する。DB への書き込みのみで、実際の配色の適用は web（`data-bs-theme`）が行う。
+//! A logged-in user updates their own `theme` column (`light` / `dark` / `system`) via the SSO
+//! session. It only writes to the DB; web applies the actual colors (`data-bs-theme`).
 //!
-//! `system`（OS に合わせる）を `NULL`（未設定）と別の値として持つのは、前者が**利用者の選択**
-//! だからである。未設定なら端末に残った Cookie を尊重してよいが、`system` を選んだ利用者の
-//! 画面は端末をまたいで OS 追従であるべきで、この 2 つを同じ値にすると区別が付かない。
+//! `system` (follow the OS) is kept as a value distinct from `NULL` (unset) because the former is
+//! **the user's choice**. When unset, a cookie left on the device may be honored, but a user who chose
+//! `system` should get OS-following colors across devices; one shared value could not tell them apart.
 
 use crate::domain::crypto;
 use crate::domain::repositories::{SsoSessionRepository, UserRepository};
 use std::sync::Arc;
 
-/// 許可する配色設定の値（DB の CHECK 制約と一致させる）。
+/// Allowed color scheme values (keep in sync with the DB CHECK constraint).
 const ALLOWED_THEMES: [&str; 3] = ["light", "dark", "system"];
 
 pub struct UpdateThemeCommand {
-    /// SSO セッション Cookie の生値（SHA-256 ハッシュで DB 検索する）。
+    /// Raw value of the SSO session cookie (looked up in the DB by its SHA-256 hash).
     pub sso_session_id: String,
-    /// 設定する配色（`light` / `dark` / `system`）。不正値は Validation エラー。
+    /// Color scheme to set (`light` / `dark` / `system`). Invalid values are a Validation error.
     pub theme: String,
 }
 
 pub enum UpdateThemeOutcome {
     Ok,
-    /// SSO セッションが無い・期限切れ。
+    /// No SSO session, or it has expired.
     SessionExpired,
-    /// 配色の値が非対応。
+    /// Unsupported color scheme value.
     InvalidTheme,
     Internal(String),
 }
@@ -58,7 +58,7 @@ impl AccountThemeService {
 
         let now = self.clock.now();
 
-        // SSO セッションから本人を解決する。
+        // Resolve the user from the SSO session.
         let session_hash = crypto::sha256_hex(&cmd.sso_session_id);
         let session = match self.sso_sessions.find_by_hash(&session_hash).await {
             Ok(Some(s)) if s.is_valid_at(now) => s,

@@ -1,4 +1,4 @@
-//! web のハンドラ。
+//! web's handlers.
 
 pub mod account_setup;
 pub mod admin_accounts_console;
@@ -54,17 +54,17 @@ use axum::http::header::{HeaderValue, ACCEPT_LANGUAGE, LOCATION, USER_AGENT};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 
-/// `/internal/*` 呼び出しの失敗を、画面へ返すステータスコードへ写す（MT28）。
+/// Maps a failed `/internal/*` call to the status code returned to the screen (MT28).
 ///
-/// **テナントを解決できなかった（URL のテナント ID が不存在・`DISABLED`）ときだけ 404。**
-/// テナントプレフィクス付きの他の経路（api の `TenantResolver` が返す 404）と揃える —— これは
-/// 利用者の入力の誤りであって、web の実装/構成エラーではない。区別が無かった頃は、存在しない
-/// テナント ID を打っただけでログイン送信が素の 502 になっていた。
+/// **404 only when the tenant could not be resolved (tenant ID in the URL does not exist or is `DISABLED`).**
+/// Aligned with other tenant-prefixed paths (404 returned by the api's `TenantResolver`) — this is
+/// a user input error, not a web implementation/configuration error. Before the distinction, merely typing a
+/// nonexistent tenant ID made the login submission a bare 502.
 ///
-/// それ以外は従来どおり 502（api へ到達できない・応答が壊れている・トークン不一致）。
+/// Everything else is 502 as before (api unreachable, broken response, token mismatch).
 ///
-/// 本文は共通のエラーページ middleware（[`crate::error_pages`]）が補完するので、ここは
-/// ステータスだけを決める。
+/// The body is filled in by the shared error page middleware ([`crate::error_pages`]), so this
+/// only decides the status.
 pub(crate) fn internal_call_status(error: &InternalCallError) -> StatusCode {
     match error {
         InternalCallError::UnknownTenant => StatusCode::NOT_FOUND,
@@ -72,28 +72,28 @@ pub(crate) fn internal_call_status(error: &InternalCallError) -> StatusCode {
     }
 }
 
-/// api が業務結果として「内部エラー」を返したときの 500 応答。
+/// 500 response when the api returns "internal error" as a business result.
 ///
-/// **必ず 1 行残す。** api に届いた要求が落ちたときは api 側にも記録が出るが、web のログに
-/// tower_http の「response failed 500」しか無いと、**どの内部呼び出しで落ちたのか**が分からず、
-/// 調査の取っかかりが無い。2026-09-15 の TOTP 登録の 500 がまさにこれで、画面の症状から
-/// 原因の関数へ辿り着くまでに丸ごと時間を溶かした。
+/// **Always leave one line.** When a request reaching the api fails, the api also records it, but if web's log
+/// has only tower_http's "response failed 500", **which internal call failed** is unknown and there is
+/// nowhere to start investigating. The TOTP registration 500 on 2026-09-15 was exactly this; getting from the
+/// screen symptom to the culprit function burned a lot of time.
 ///
-/// `call` には呼んだ内部 API を表す短い識別子を渡す（`totp_setup` など）。人間向けの説明は
-/// 書かない —— 文言を直すたびに grep が壊れる。
+/// Pass in `call` a short identifier of the internal API called (`totp_setup` etc.). Do not write a human
+/// description — every wording fix would break grep.
 pub(crate) fn api_internal_error(call: &'static str) -> Response {
     tracing::error!(call, "api reported an internal error");
     StatusCode::INTERNAL_SERVER_ERROR.into_response()
 }
 
-/// 表示言語を決める（MT20）。
+/// Decides the display language (MT20).
 ///
-/// 決定順（`?lang=` > ユーザー設定 > Cookie > ブラウザ言語 > 既定 `ja`）のうち上位 2 つは
-/// [`crate::display_preferences::resolve_display_preferences`] middleware が解決し、結果を**リクエストの `lang` Cookie へ
-/// 正規化して**渡してくる。したがってここでは Cookie > `Accept-Language` > 既定 `ja` を見れば足りる。
+/// Of the decision order (`?lang=` > user setting > cookie > browser language > default `ja`), the top 2 are
+/// resolved by the [`crate::display_preferences::resolve_display_preferences`] middleware, which passes the result
+/// **normalized into the request's `lang` cookie**. So here it suffices to look at cookie > `Accept-Language` > default `ja`.
 ///
-/// 優先順位の判断を middleware 1 箇所に集約するため、ハンドラは `?lang=` を自前で解釈しない
-/// （画面ごとに解釈すると、画面が増えたときに優先順位が食い違う）。
+/// To keep the priority decision in one place (the middleware), handlers do not interpret `?lang=` themselves
+/// (interpreting per screen would make priorities diverge as screens are added).
 pub(crate) fn locale(headers: &HeaderMap) -> Locale {
     let cookie_lang = crate::cookies::get(headers, crate::cookies::LANG_COOKIE);
     Locale::resolve(
@@ -104,9 +104,9 @@ pub(crate) fn locale(headers: &HeaderMap) -> Locale {
     )
 }
 
-/// PRG（Post/Redirect/Get）で戻ったフォームページの `?error=` をエラーバナーの翻訳キーへ写す。
-/// CSRF 不一致の POST は 303 で `?error=csrf` 付きの GET へ付け替え、新しいトークンのフォームを
-/// 自動で再表示する（POST 応答のままエラーページを返すと、リロードが再送信になり復帰できない）。
+/// Maps `?error=` of a form page returned via PRG (Post/Redirect/Get) to the error banner's translation key.
+/// A POST with a CSRF mismatch is switched by 303 to a GET with `?error=csrf`, automatically re-showing a form with a
+/// new token (returning an error page as the POST response would make reload a resubmission with no recovery).
 pub(crate) fn form_retry_error_key(error: Option<&str>) -> Option<&'static str> {
     match error {
         Some("csrf") => Some("login-error-csrf-retry"),
@@ -114,11 +114,11 @@ pub(crate) fn form_retry_error_key(error: Option<&str>) -> Option<&'static str> 
     }
 }
 
-/// パスワードが拒否された理由（AP7）を、画面に出す文言キーへ写す。
+/// Maps the reason a password was rejected (AP7) to the wording key shown on screen.
 ///
-/// 長さ等（`Policy`）だけ画面ごとに既存のキーがあるため呼び出し側から受け取り、漏えい済み・
-/// 再利用は**全画面共通のキー**を使う。理由ごとに違う文言を出すのは、利用者が次に取るべき
-/// 行動が違うためである（伸ばす／別の値を考える）。
+/// Only length etc. (`Policy`) has existing per-screen keys, so it is received from the caller; breached and
+/// reused use **keys shared by all screens**. Different wording per reason because the user's next
+/// action differs (make it longer / think of another value).
 pub(crate) fn password_rejection_key(
     reason: PasswordRejectionReason,
     policy_key: &'static str,
@@ -130,7 +130,7 @@ pub(crate) fn password_rejection_key(
     }
 }
 
-/// 上記を PRG リダイレクトの `?error=` コードへ写す（フォームを再表示せずに戻す画面用）。
+/// Maps the above to the `?error=` code of a PRG redirect (for screens that return without re-showing the form).
 pub(crate) fn password_rejection_error_code(
     reason: PasswordRejectionReason,
     policy_code: &'static str,
@@ -142,19 +142,19 @@ pub(crate) fn password_rejection_error_code(
     }
 }
 
-/// 内部認証呼び出しへ転送する接続元情報。
+/// Connection origin information forwarded to internal authentication calls.
 pub(crate) struct ForwardedContext {
     pub correlation_id: String,
     pub ip_address: Option<String>,
     pub user_agent: Option<String>,
 }
 
-/// api へ転送する接続元情報を組み立てる。
+/// Builds the connection origin information forwarded to the api.
 ///
-/// IP は**ここでヘッダから読まない**。`X-Forwarded-For` を信じてよいかの判定
-/// （`TRUST_FORWARDED_HEADERS`）と接続元アドレスへのフォールバックは
-/// [`crate::client_ip::resolve_client_ip`] middleware が一括で行い、結果を `Extension<ClientIp>`
-/// で渡してくる（SEC1）。ハンドラごとにヘッダを読むとゲートの掛け忘れが混ざるため。
+/// The IP is **not read from headers here**. Deciding whether `X-Forwarded-For` may be trusted
+/// (`TRUST_FORWARDED_HEADERS`) and falling back to the peer address are done centrally by the
+/// [`crate::client_ip::resolve_client_ip`] middleware, which passes the result as `Extension<ClientIp>`
+/// (SEC1). Reading headers per handler would mix in forgotten gates.
 pub(crate) fn forwarded_context(
     headers: &HeaderMap,
     correlation: &CorrelationId,
@@ -172,7 +172,7 @@ pub(crate) fn forwarded_context(
     }
 }
 
-/// `302 Found` リダイレクト（設計仕様 §4.2。axum の `Redirect::to` は 303 のため使わない）。
+/// `302 Found` redirect (design spec §4.2. axum's `Redirect::to` is 303, so it is not used).
 pub(crate) fn found(location: &str) -> Response {
     match HeaderValue::from_str(location) {
         Ok(value) => (StatusCode::FOUND, [(LOCATION, value)]).into_response(),
@@ -183,8 +183,8 @@ pub(crate) fn found(location: &str) -> Response {
     }
 }
 
-/// `303 See Other` リダイレクト。ハンドオフ URL の単回ハンドル（`?auth_session=`）をアドレスバー・
-/// 履歴から即座に除去する自 URL への付け替えに使う（ADR-0018 決定 2）。
+/// `303 See Other` redirect. Used for the switch to our own URL that immediately removes the hand-off URL's
+/// single-use handle (`?auth_session=`) from the address bar and history (ADR-0018 decision 2).
 pub(crate) fn see_other(location: &str) -> Response {
     match HeaderValue::from_str(location) {
         Ok(value) => (StatusCode::SEE_OTHER, [(LOCATION, value)]).into_response(),
@@ -206,7 +206,7 @@ mod tests {
     use tracing_subscriber::prelude::*;
     use tracing_subscriber::registry::LookupSpan;
 
-    /// ERROR イベントの `call` フィールドを集める層。
+    /// Layer collecting the `call` field of ERROR events.
     #[derive(Clone, Default)]
     struct CallCollector(Arc<Mutex<Vec<String>>>);
 
@@ -235,9 +235,9 @@ mod tests {
         }
     }
 
-    /// **500 を黙って返さない。** api が内部エラーを返したとき、web のログに残るのが
-    /// tower_http の「response failed 500」だけだと、どの内部呼び出しで落ちたのかが分からず、
-    /// 画面の症状から原因へ辿る手がかりが無くなる（2026-09-15 の TOTP 登録の 500）。
+    /// **Do not return 500 silently.** If all web's log keeps when the api returns an internal error is
+    /// tower_http's "response failed 500", which internal call failed is unknown, and there is no
+    /// clue from the screen symptom to the cause (the TOTP registration 500 on 2026-09-15).
     #[test]
     fn reporting_an_api_internal_error_names_the_failing_call() {
         let collector = CallCollector::default();
@@ -250,12 +250,12 @@ mod tests {
         assert_eq!(calls, vec!["totp_setup".to_string()]);
     }
 
-    /// **黙って 500 を返す分岐を増やさない歯止め。**
+    /// **Guard against adding more branches that silently return 500.**
     ///
-    /// api の `Internal` を 500 に写す箇所は 27 か所あり、どこもログを出していなかった。
-    /// 1 箇所ずつ直しても、次に増えた分岐でまた同じ穴が開く。ソースを読んで検査するのは
-    /// ルート一覧（`router::declared_route_paths`）と同じ理由 —— 実物と別の一覧が
-    /// 食い違わないようにするため。
+    /// There were 27 places mapping the api's `Internal` to 500, and none of them logged.
+    /// Fixing them one by one, the next new branch opens the same hole. The source is inspected for the
+    /// same reason as the route list (`router::declared_route_paths`) — so a separate list does not
+    /// diverge from the real thing.
     #[test]
     fn every_internal_result_that_becomes_a_500_says_which_call_failed() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/handlers");
@@ -267,8 +267,8 @@ mod tests {
                 continue;
             }
             let source = std::fs::read_to_string(&path).expect("read handler source");
-            // 試験専用コード（この検査自身が持つ文字列を含む）は対象外。`router.rs` の
-            // ルート一覧の検査と同じ切り方。
+            // Test-only code (containing the strings this check itself holds) is excluded. Same cut as
+            // the route list check in `router.rs`.
             let source = source.split("#[cfg(test)]").next().unwrap_or_default();
             let lines: Vec<&str> = source.lines().collect();
             for (i, line) in lines.iter().enumerate() {
@@ -279,7 +279,7 @@ mod tests {
                 if !window.contains("INTERNAL_SERVER_ERROR")
                     && !window.contains("api_internal_error")
                 {
-                    // 500 以外へ倒している分岐（JSON 経路など）は対象外。
+                    // Branches mapping to something other than 500 (JSON paths etc.) are excluded.
                     continue;
                 }
                 checked += 1;
@@ -289,10 +289,10 @@ mod tests {
                 }
             }
         }
-        assert!(checked > 20, "検査対象を見失っている（{checked} 箇所）");
+        assert!(checked > 20, "lost track of the targets ({checked} found)");
         assert!(
             offenders.is_empty(),
-            "api の内部エラーを黙って 500 にしている箇所がある（`api_internal_error` を通すこと）: {offenders:?}"
+            "some places silently turn api internal errors into 500 (route them through `api_internal_error`): {offenders:?}"
         );
     }
 }

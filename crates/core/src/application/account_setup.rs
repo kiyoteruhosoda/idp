@@ -1,20 +1,20 @@
-//! アカウント設定のワンタイムリンク（ADR-0062）。
+//! One-time account setup links (ADR-0062).
 //!
-//! 管理者が利用者を作った直後・パスワードを再発行した直後に渡す「1 回だけ開けるリンク」の、
-//! **発行**と**消費**をここに閉じる。渡し方は管理者の手（画面に出たリンクを共有する）で、
-//! メールは前提にしない —— 送信が整っていない環境でも、作ったその場で渡せる必要がある。
+//! Encloses here the **issuance** and **consumption** of the "link that opens only once" handed out right after
+//! an admin creates a user or reissues a password. It is handed over by the admin (sharing the link shown on screen);
+//! email is not assumed: even where sending is not set up, it must be possible to hand it over on the spot.
 //!
-//! リンク先でできることは 2 つ。**どちらか一方で完了**し、その時点でリンクは死ぬ。
+//! Two things can be done at the link. **Either one completes it**, and the link dies at that moment.
 //!
-//! 1. **パスキーを登録する**（主）。以後その利用者はパスワードを知らないまま入れる
-//!    （パスキーのログイン経路は `must_change_password` を見ない）。
-//! 2. **パスワードを設定する**。実体は忘失時の再設定と同じ経路
-//!    （[`crate::application::password_reset::PasswordResetService::reset_password`]）で、
-//!    トークンの表が同じなのでそのまま通る。
+//! 1. **Register a passkey** (primary). From then on the user can sign in without knowing a password
+//!    (the passkey login path does not look at `must_change_password`).
+//! 2. **Set a password**. In substance the same path as the forgotten-password reset
+//!    ([`crate::application::password_reset::PasswordResetService::reset_password`]);
+//!    the token table is the same, so it passes as is.
 //!
-//! ⚠ **開いただけでは消費しない。** チャットに貼ったリンクは、相手より先にプレビューの bot が
-//! 取りに来る（過去にワンタイムリンクを 1 本食われた）。消費するのは実際に資格情報を決める
-//! 操作だけで、[`AccountSetupService::describe`] は読むだけである。
+//! ⚠ **Merely opening it does not consume it.** A link pasted into chat gets fetched by a preview bot
+//! before the recipient (a one-time link was eaten this way before). Only operations that actually set
+//! credentials consume it; [`AccountSetupService::describe`] only reads.
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::passkey_registration::{
@@ -33,30 +33,30 @@ use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// リンクのトークンのバイト長（base64url で 43 文字程度。再設定リンクと同じ）。
+/// Byte length of the link token (about 43 chars in base64url; same as the reset link).
 const SETUP_TOKEN_BYTES: usize = 32;
 
-/// 発行したリンク。`token` は平文で、**この一度だけ**返す（保存はハッシュのみ）。
+/// An issued link. `token` is plain text and returned **only this once** (only the hash is stored).
 #[derive(Debug, Clone)]
 pub struct SetupLink {
     pub token: String,
-    /// 本人へ渡す絶対 URL。**リンクの形を決めるのはここ 1 か所**にする（画面も機械も同じ値を配る）。
+    /// Absolute URL handed to the user. **The link's shape is decided only here** (screens and machines hand out the same value).
     pub url: String,
     pub expires_at: DateTime<Utc>,
 }
 
-/// リンクを開いた画面が出す中身（消費しない）。
+/// Content shown by the screen that opened the link (does not consume).
 #[derive(Debug, Clone)]
 pub struct SetupLinkView {
     pub user_id: Uuid,
-    /// 誰のリンクかを画面に出す。リンクの持ち主にしか見えない（トークンが鍵）。
+    /// Shows on screen whose link it is. Visible only to the link holder (the token is the key).
     pub email: String,
     pub purpose: ResetPurpose,
     pub expires_at: DateTime<Utc>,
 }
 
 impl SetupLinkView {
-    /// この画面でパスキーを登録してよいか（用途で決まる）。
+    /// Whether a passkey may be registered on this screen (decided by the purpose).
     pub fn allows_passkey_registration(&self) -> bool {
         self.purpose.allows_passkey_registration()
     }
@@ -64,11 +64,11 @@ impl SetupLinkView {
 
 #[derive(Debug, thiserror::Error)]
 pub enum AccountSetupError {
-    /// 不存在・期限切れ・使用済み・テナント違い・利用者が ACTIVE でない。**言い分けない**
-    /// （どれなのかを返すと、リンクを拾った相手に当たりを与える）。
+    /// Nonexistent, expired, used, wrong tenant, or the user is not ACTIVE. **Not distinguished**
+    /// (telling which would give hints to whoever picked up the link).
     #[error("invalid or expired setup link")]
     InvalidOrExpired,
-    /// この用途のリンクでは許していない操作（`reset` のリンクでパスキーを登録しようとした等）。
+    /// An operation not allowed for a link of this purpose (e.g. trying to register a passkey with a `reset` link).
     #[error("not allowed for this link")]
     NotAllowed,
     #[error("invalid credential: {0}")]
@@ -93,24 +93,24 @@ impl From<PasskeyRegistrationError> for AccountSetupError {
     }
 }
 
-/// リンクを**出す**側（管理者の操作の一部として呼ばれる）。
+/// The side that **issues** links (called as part of an admin operation).
 ///
-/// 出すのに要るのはトークンの表と寿命だけで、パスキーも利用者の読み出しも要らない。
-/// ⚠ **消費する側と型を分ける**のは、出すだけの利用者作成に WebAuthn 一式を引きずらせないため。
+/// Issuing needs only the token table and the lifetime; no passkeys and no user reads.
+/// ⚠ **Separate types from the consuming side** so that user creation, which only issues, does not drag in the whole WebAuthn set.
 pub struct AccountSetupLinkIssuer {
     tokens: Arc<dyn PasswordResetTokenRepository>,
     settings: Arc<dyn EffectiveTenantSettings>,
     clock: Arc<dyn Clock>,
-    /// リンクの土台となる公開ベース URL（web 画面。末尾スラッシュ無し）。
+    /// Public base URL the link is built on (web screens; no trailing slash).
     console_base_url: String,
 }
 
-/// リンクを**使う**側（本人が開いた画面から呼ばれる）。
-/// このユースケースが要るのは「本人性を確かめた利用者へパスキーを 1 本足す」ことだけである。
+/// The side that **uses** links (called from the screen the user opened).
+/// All this use case needs is "add one passkey to a user whose identity has been confirmed".
 ///
-/// WebAuthn 一式（`PasskeyRegistrationService`）をそのまま抱えると、リンクを読むだけの試験まで
-/// 認証器・チャレンジ・SSO セッションのフェイクを要求することになる。要るところだけを
-/// トレイトで受ける（CLAUDE.md の DIP）。
+/// Holding the whole WebAuthn set (`PasskeyRegistrationService`) would make even tests that only read the link
+/// require fakes for authenticators, challenges and SSO sessions. Only what is needed is taken
+/// through a trait (DIP in CLAUDE.md).
 #[async_trait::async_trait]
 pub trait PasskeyEnrollment: Send + Sync {
     async fn begin(
@@ -118,7 +118,7 @@ pub trait PasskeyEnrollment: Send + Sync {
         user_id: Uuid,
         user_name: &str,
     ) -> Result<(Uuid, serde_json::Value), PasskeyRegistrationError>;
-    /// 登録したパスキーの行の id を返す（[`Self::discard`] で取り消すため）。
+    /// Returns the id of the registered passkey row (to undo it with [`Self::discard`]).
     async fn complete(
         &self,
         user_id: Uuid,
@@ -126,7 +126,7 @@ pub trait PasskeyEnrollment: Send + Sync {
         name: &str,
         credential: serde_json::Value,
     ) -> Result<Uuid, PasskeyRegistrationError>;
-    /// 登録したパスキーを取り消す（リンクの消費に負けたとき。task #586）。
+    /// Undoes a registered passkey (when losing the race to consume the link; task #586).
     async fn discard(
         &self,
         user_id: Uuid,
@@ -187,10 +187,10 @@ impl AccountSetupLinkIssuer {
         }
     }
 
-    /// 設定リンクを発行する（管理者の操作の一部として呼ばれる）。
+    /// Issues a setup link (called as part of an admin operation).
     ///
-    /// **その利用者の未使用リンクは、発行のたびに失効させる。** 生きたリンクが同時に 2 本ある
-    /// と、どれを渡したかが分からなくなり、渡し間違いを止める手段も無くなる（再設定と同じ規則）。
+    /// **The user's unused links are revoked on every issuance.** With 2 live links at once
+    /// it is unclear which was handed over, and there is no way to stop a mis-delivery (same rule as reset).
     pub async fn issue(
         &self,
         tenant_id: TenantId,
@@ -252,7 +252,7 @@ impl AccountSetupService {
         }
     }
 
-    /// リンクの中身を読む（**消費しない**）。
+    /// Reads the link's content (**does not consume**).
     pub async fn describe(
         &self,
         tenant: TenantContext,
@@ -267,8 +267,8 @@ impl AccountSetupService {
         })
     }
 
-    /// パスキー登録の開始。⚠ **ここではまだトークンを消費しない**（登録が終わらなかった相手を
-    /// リンクごと締め出さないため。消費は [`Self::complete_passkey`] で行う）。
+    /// Starts passkey registration. ⚠ **The token is not consumed here yet** (so someone whose registration did not
+    /// finish is not locked out along with the link; consumption happens in [`Self::complete_passkey`]).
     pub async fn begin_passkey(
         &self,
         tenant: TenantContext,
@@ -278,12 +278,12 @@ impl AccountSetupService {
         if !record.purpose.allows_passkey_registration() {
             return Err(AccountSetupError::NotAllowed);
         }
-        // 認証器に出す名前は、本人が自分のアカウントだと分かる値にする（メールアドレス）。
+        // The name shown to the authenticator is a value the user recognizes as their own account (email address).
         let options = self.passkeys.begin(user.id, &user.email).await?;
         Ok(options)
     }
 
-    /// パスキー登録の完了。成功したらリンクを消費する（1 本のリンクで登録できるのは 1 つ）。
+    /// Completes passkey registration. On success the link is consumed (one link registers only one).
     pub async fn complete_passkey(
         &self,
         tenant: TenantContext,
@@ -303,8 +303,8 @@ impl AccountSetupService {
             .complete(user.id, challenge_id, name, credential)
             .await?;
 
-        // 本人が資格情報を決めたので、仮登録を外す（ADR-0064）。⚠ **リンクを消費する前に**行う
-        // ——外せないまま消費すると、パスキーはあるのに入れず、リンクも無い人になる。
+        // The user has set credentials, so remove the provisional state (ADR-0064). ⚠ Do it **before consuming the link**:
+        // consuming without being able to remove it leaves a person with a passkey who cannot get in, and no link.
         if user.pending_setup {
             self.users
                 .finish_setup(user.id)
@@ -312,13 +312,13 @@ impl AccountSetupService {
                 .map_err(|e| AccountSetupError::Internal(e.to_string()))?;
         }
 
-        // ⚠ **登録が通ってから消費する。** 先に消費すると、認証器の側で断られた相手が
-        // リンクも失って手詰まりになる（管理者に出し直してもらうしかなくなる）。
+        // ⚠ **Consume only after registration succeeds.** Consuming first would leave someone refused on the
+        // authenticator side without a link and stuck (the only way out would be the admin reissuing it).
         let now = self.clock.now();
         match self.tokens.consume(&crypto::sha256_hex(token), now).await {
             Ok(Some(_)) => {}
-            // ⚠ **同じリンクで同時に登録した別の要求が先に消費した**（task #586）。1 本のリンクで
-            // 登録できるのは 1 つなので、こちらで登録したものは取り消して断る。
+            // ⚠ **Another request registering with the same link concurrently consumed it first** (task #586). One
+            // link registers only one, so undo the registration made here and refuse.
             Ok(None) => {
                 if let Err(e) = self.passkeys.discard(user.id, registered).await {
                     tracing::error!(
@@ -328,7 +328,7 @@ impl AccountSetupService {
                 }
                 return Err(AccountSetupError::InvalidOrExpired);
             }
-            // 登録は済んでいる。消費に失敗してもリンクは期限で切れるので、ここでは落とさない。
+            // Registration is done. Even if consumption fails, the link expires anyway, so do not fail here.
             Err(e) => {
                 tracing::warn!(error = %e, "failed to consume the setup link after registering a passkey");
             }
@@ -348,11 +348,11 @@ impl AccountSetupService {
         Ok(())
     }
 
-    /// トークンから「未使用・期限内・テナントが一致・ACTIVE な利用者」を解決する。
+    /// Resolves "an unused, unexpired, tenant-matching, ACTIVE user" from the token.
     ///
-    /// 仮登録（ADR-0064）の利用者も通す ——このリンクは仮登録を終わらせるためのものである。
+    /// Provisional users (ADR-0064) also pass: this link exists to finish provisional registration.
     ///
-    /// ⚠ 断る理由を分けない（[`AccountSetupError::InvalidOrExpired`] のコメント参照）。
+    /// ⚠ Refusal reasons are not distinguished (see the comment on [`AccountSetupError::InvalidOrExpired`]).
     async fn resolve(
         &self,
         tenant: TenantContext,
@@ -369,7 +369,7 @@ impl AccountSetupService {
             .map_err(|e| AccountSetupError::Internal(e.to_string()))?
             .ok_or(AccountSetupError::InvalidOrExpired)?;
 
-        // リンクの経路（テナント）と所属元が一致すること。他テナントの画面へ持ち込ませない。
+        // The link's route (tenant) must match the home tenant. Do not let it be carried to another tenant's screen.
         match self.users.find_by_id(record.user_id).await {
             Ok(Some(user)) if user.can_finish_setup() && user.tenant_id == tenant.tenant_id() => {
                 Ok((record, user))
@@ -412,12 +412,12 @@ mod tests {
         }
     }
 
-    /// 呼ばれた回数だけ覚える（本物の WebAuthn は要らない。トレイトで切ってある）。
+    /// Only counts how many times it was called (no real WebAuthn needed; it is cut off by a trait).
     #[derive(Default)]
     struct FakePasskeys {
         completed: Mutex<Vec<Uuid>>,
         discarded: Mutex<Vec<Uuid>>,
-        /// 登録の最中に、同じリンクを別の要求が使い切った形を作る（task #586）。
+        /// Simulates another request using up the same link during registration (task #586).
         race_with: Mutex<Option<Arc<FakeSetupTokens>>>,
     }
     #[async_trait::async_trait]
@@ -488,7 +488,7 @@ mod tests {
         ) -> DomainResult<crate::domain::user::LoginFailureRecord> {
             unreachable!()
         }
-        // この試験が通らない口（資格情報の書き換えはリンクの経路の外）。
+        // A route this test never reaches (rewriting credentials is outside the link's path).
         async fn update_login_state(
             &self,
             _id: Uuid,
@@ -548,7 +548,7 @@ mod tests {
             must_change_password: true,
             password_changed_at: None,
             status: UserStatus::Active,
-            // 管理者が作った直後の形（ADR-0064）。
+            // The shape right after an admin created it (ADR-0064).
             pending_setup: true,
             failed_login_count: 0,
             locked_until: None,
@@ -598,7 +598,7 @@ mod tests {
         )
     }
 
-    /// リンクを開くと、誰のものかとできることが分かる。
+    /// Opening the link shows whose it is and what can be done.
     #[tokio::test]
     async fn a_setup_link_tells_who_it_belongs_to() {
         let (f, token) = fixture().await;
@@ -611,8 +611,8 @@ mod tests {
         assert!(view.allows_passkey_registration());
     }
 
-    /// ⚠ **開いただけでは消費しない。** チャットのプレビュー bot が先に取りに来ても、本人が
-    /// 開いたときリンクは生きている（過去に 1 本食われた）。
+    /// ⚠ **Merely opening it does not consume it.** Even if a chat preview bot fetches it first, the link is
+    /// alive when the user opens it (one was eaten before).
     #[tokio::test]
     async fn opening_the_link_does_not_consume_it() {
         let (f, token) = fixture().await;
@@ -625,7 +625,7 @@ mod tests {
         assert!(f.tokens.rows.lock().unwrap()[0].used_at.is_none());
     }
 
-    /// パスキーを登録し終えるとリンクは死ぬ（1 本のリンクで登録できるのは 1 つ）。
+    /// Once a passkey is registered the link dies (one link registers only one).
     #[tokio::test]
     async fn finishing_a_passkey_consumes_the_link() {
         let (f, token) = fixture().await;
@@ -646,7 +646,7 @@ mod tests {
             .await
             .expect("registered");
         assert_eq!(f.passkeys.completed.lock().unwrap().as_slice(), [f.user_id]);
-        // ADR-0064: 本人が資格情報を決めたので、仮登録が外れる。
+        // ADR-0064: the user set credentials, so the provisional state is removed.
         assert!(
             !f.users.0.lock().unwrap()[0].pending_setup,
             "setup must end the pending state"
@@ -660,7 +660,7 @@ mod tests {
         ));
     }
 
-    /// 同じリンクで同時に 2 つ登録しようとすると、消費に負けた側の登録は取り消される（task #586）。
+    /// Trying to register 2 at once with the same link undoes the registration of the side that lost consumption (task #586).
     #[tokio::test]
     async fn a_registration_that_loses_the_link_is_discarded() {
         let (f, token) = fixture().await;
@@ -688,7 +688,7 @@ mod tests {
         );
     }
 
-    /// 別テナントの画面へ持ち込んでも通らない。
+    /// Carrying it to another tenant's screen does not pass.
     #[tokio::test]
     async fn a_link_does_not_work_on_another_tenants_screen() {
         let (f, token) = fixture().await;
@@ -699,11 +699,11 @@ mod tests {
         ));
     }
 
-    /// ⚠ **忘失時の再設定リンクではパスキーを登録させない**（ADR-0062 の決定 2）。
+    /// ⚠ **A forgotten-password reset link may not register a passkey** (decision 2 of ADR-0062).
     #[tokio::test]
     async fn a_password_reset_link_may_not_add_a_passkey() {
         let (f, _) = fixture().await;
-        // 同じ利用者に「再設定」用途のトークンを 1 本置く。
+        // Put one "reset"-purpose token for the same user.
         let token = "reset-token-plain";
         f.tokens
             .create(&PasswordResetToken {
@@ -725,7 +725,7 @@ mod tests {
         ));
     }
 
-    /// ADR-0064: 無効にされた仮登録の利用者は、手元のリンクで入り直せない。
+    /// ADR-0064: a disabled provisional user cannot get back in with the link at hand.
     #[tokio::test]
     async fn a_disabled_pending_user_cannot_use_the_link() {
         let (f, token) = fixture().await;
@@ -739,10 +739,10 @@ mod tests {
     }
 }
 
-/// 試験用の組み立て。
+/// Test assembly.
 ///
-/// リンクを**出す**側は、利用者作成・パスワード再発行のユースケースが抱えている。それらの
-/// 試験にトークンの表のフェイクを毎回書かせないよう、ここに 1 つ置く。
+/// The **issuing** side is held by the user creation and password reissue use cases. So that their
+/// tests need not write a token table fake every time, one lives here.
 #[cfg(test)]
 pub(crate) mod testing {
     use super::*;
@@ -750,7 +750,7 @@ pub(crate) mod testing {
     use async_trait::async_trait;
     use std::sync::Mutex;
 
-    /// 発行したトークンを覚えておくだけのフェイク（消費・失効も素直に写す）。
+    /// A fake that just remembers issued tokens (also mirrors consumption and revocation plainly).
     #[derive(Default)]
     pub struct FakeSetupTokens {
         pub rows: Mutex<Vec<PasswordResetToken>>,
@@ -806,7 +806,7 @@ pub(crate) mod testing {
         }
     }
 
-    /// 既定の寿命で動く発行側（`https://idp.example.com` のリンクを作る）。
+    /// Issuing side with the default lifetime (makes `https://idp.example.com` links).
     pub fn link_issuer(
         tokens: Arc<FakeSetupTokens>,
         clock: Arc<dyn Clock>,

@@ -1,14 +1,14 @@
-//! 認証アプリで承認するログイン（「アプリで続ける」）と、認証アプリの鍵の登録（task #892。ADR-0077）。
+//! Logins approved with the authenticator app ("continue with the app") and registering the authenticator app's key (task #892, ADR-0077).
 //!
-//! 口は 3 種類:
+//! There are three kinds of routes:
 //!
-//! | 呼ぶ側 | 何を | 確かめ |
+//! | Caller | What | Verified by |
 //! |---|---|---|
-//! | 認証アプリ（公開の口） | 登録の受付・鍵の証明・有効化・依頼の中身・承認・断り・取り消し | 鍵の署名（[`signed_message`]） |
-//! | web（ログイン画面） | 依頼を始める・コードで完了する | 依頼を始めたブラウザの印（Cookie） |
-//! | web（アカウント画面） | 登録の確認・鍵の一覧・取り消し | SSO セッション＋パスキー（5 分以内） |
+//! | Authenticator app (public routes) | registration intake, key attestation, activation, request content, approve, deny, revoke | key signature ([`signed_message`]) |
+//! | web (login screen) | start a request, complete with a code | mark of the browser that started the request (cookie) |
+//! | web (account screen) | confirm registration, list keys, revoke | SSO session + passkey (within 5 minutes) |
 //!
-//! ⚠ 依頼を始めたブラウザの側から「承認されたか」を待って完了する口は作らない（`domain::app_approver`）。
+//! ⚠ No route is made where the browser that started the request waits for "was it approved" and completes (`domain::app_approver`).
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authentication_policy_gate::{
@@ -52,31 +52,31 @@ use chrono::{DateTime, Duration, Utc};
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// 証明書の鎖の 1 枚の上限（base64 で受ける前の DER のバイト数）。
+/// Upper limit for one certificate in the chain (DER byte count before receiving as base64).
 const MAX_CERT_BYTES: usize = 8 * 1024;
 
-// ⚠ コード・印は SHA-256 にしてから比べる（DB には SHA-256 だけを置く）。比べる値が秘密そのものではないので、
-//   定数時間の比較は要らない。
+// ⚠ Codes and marks are compared after SHA-256 (only SHA-256 is stored in the DB). The compared values are not the
+//   secrets themselves, so constant-time comparison is not needed.
 
-// ─── 結果 ─────────────────────────────────────────────────────────────
+// ─── Results ─────────────────────────────────────────────────────────────
 
-/// 公開の口の失敗（アプリへ返すコード。秘密は載らない）。
+/// Failure on a public route (code returned to the app; carries no secret).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppApproverError {
-    /// 認証アプリの口が閉じている（パッケージ名の設定が無い）。
+    /// The authenticator app routes are closed (no package name configured).
     Disabled,
     NotFound,
     Expired,
-    /// 段階・状態が合わない（二重の送信・順番違い）。
+    /// Stage or state does not match (double submission, wrong order).
     Conflict,
     AttestationRejected(AttestationRejection),
-    /// 同じ鍵が既に登録されている。
+    /// The same key is already registered.
     AlreadyRegistered,
-    /// 署名が合わない・コードが違う。
+    /// Signature does not match, or the code is wrong.
     SignatureInvalid,
-    /// 鍵が無い（取り消された）。
+    /// No key (revoked).
     KeyRevoked,
-    /// 鍵の持ち主がこの組織で使えない（止まっている・組織を抜けた）。
+    /// The key's owner cannot use this organization (stopped, or left the organization).
     NotAMember,
     BadRequest,
     RateLimited,
@@ -89,21 +89,21 @@ impl From<DomainError> for AppApproverError {
     }
 }
 
-/// 受付を始めた結果。
+/// Result of starting the intake.
 pub struct EnrollmentStarted {
     pub enrollment_id: String,
     pub challenge: String,
     pub expires_at: DateTime<Utc>,
 }
 
-/// 有効にした鍵。
+/// An activated key.
 pub struct ActivatedKey {
     pub key_id: String,
     pub username: String,
     pub display_name: Option<String>,
 }
 
-/// アプリに見せる依頼の中身。
+/// Request content shown to the app.
 pub struct ApprovalRequestView {
     pub request_id: String,
     pub challenge: String,
@@ -112,20 +112,20 @@ pub struct ApprovalRequestView {
     pub expires_at: DateTime<Utc>,
     pub ip_address: Option<String>,
     pub country: Option<String>,
-    /// 認可の途中から来たなら、その RP の名前（無ければ client_id）。
+    /// If it came mid-authorization, that RP's name (client_id if none).
     pub client_name: Option<String>,
 }
 
-/// 承認した結果（アプリが同じスマホのブラウザで開くコード）。
+/// Approval result (a code the app opens in the browser on the same phone).
 pub struct Approved {
     pub code: String,
 }
 
-/// web が依頼を始めた結果。
+/// Result of web starting a request.
 pub enum StartApprovalOutcome {
     Started {
         request_id: String,
-        /// 始めたブラウザにだけ渡す印（web が Cookie に置く）。
+        /// Mark handed only to the browser that started it (web puts it in a cookie).
         browser_binding: String,
     },
     Disabled,
@@ -133,9 +133,9 @@ pub enum StartApprovalOutcome {
     Internal(String),
 }
 
-/// 完了の結果（外部 IdP のログインと同じ形で web が受ける）。
+/// Completion result (web receives it in the same shape as an external IdP login).
 pub enum CompleteApprovalOutcome {
-    /// ログインした。`location` が `None` なら assay のアカウント画面へ。
+    /// Logged in. If `location` is `None`, go to assay's account screen.
     Success {
         location: Option<String>,
         form_post: Option<Vec<(String, String)>>,
@@ -152,16 +152,16 @@ pub enum CompleteApprovalOutcome {
         sso_session_id: String,
         sso_absolute_ttl_secs: u64,
     },
-    /// コードが違う・切れた・使用済み・依頼が無い。
+    /// The code is wrong, expired or used, or there is no request.
     Invalid,
-    /// 依頼を始めたのとは別のブラウザ（印が無い・違う）。ログインはさせない。
+    /// A browser other than the one that started the request (mark missing or different). No login is allowed.
     AnotherBrowser,
     PolicyDenied,
     UserUnavailable,
     Internal(String),
 }
 
-/// アカウント画面の登録の確認に見せる中身。
+/// Content shown on the account screen's registration confirmation.
 pub struct EnrollmentView {
     pub device_name: String,
     pub security_level: KeySecurityLevel,
@@ -176,7 +176,7 @@ pub enum EnrollmentViewOutcome {
 }
 
 pub enum ConfirmEnrollmentOutcome {
-    /// アプリへ返すコード（Auth Tab の戻り先に載せる）。
+    /// Code returned to the app (put on the Auth Tab return target).
     Confirmed {
         code: String,
     },
@@ -186,7 +186,7 @@ pub enum ConfirmEnrollmentOutcome {
     Internal(String),
 }
 
-/// アカウント画面の「認証アプリ」の行。
+/// An "authenticator app" row on the account screen.
 pub struct ApproverKeySummary {
     pub id: Uuid,
     pub device_name: String,
@@ -208,13 +208,13 @@ pub enum RevokeApproverKeyOutcome {
     Internal(String),
 }
 
-/// web が依頼を始めるときの材料。
+/// Inputs for web starting a request.
 pub struct StartApproval<'a> {
     pub auth_session_id: Option<&'a str>,
     pub country: Option<&'a str>,
 }
 
-// ─── サービス ─────────────────────────────────────────────────────────
+// ─── Service ─────────────────────────────────────────────────────────
 
 pub struct AppApprovalDependencies {
     pub keys: Arc<dyn ApproverKeyRepository>,
@@ -237,7 +237,7 @@ pub struct AppApprovalDependencies {
 
 pub struct AppApprovalService {
     deps: AppApprovalDependencies,
-    /// `None` なら認証アプリの口は閉じている。
+    /// `None` means the authenticator app routes are closed.
     policy: Option<AttestationPolicy>,
 }
 
@@ -254,9 +254,9 @@ impl AppApprovalService {
         self.policy.as_ref().ok_or(AppApproverError::Disabled)
     }
 
-    // ── 鍵の登録（アプリ） ──────────────────────────────────────────────
+    // ── Key registration (app) ──────────────────────────────────────────────
 
-    /// 登録の受付を始め、Key Attestation に入れてもらう challenge を返す。
+    /// Starts registration intake and returns the challenge to include in the Key Attestation.
     pub async fn start_enrollment(
         &self,
         tenant: TenantContext,
@@ -274,7 +274,7 @@ impl AppApprovalService {
         })
     }
 
-    /// 鍵の証明書の鎖（base64 の DER・鍵の証明書が先頭）を確かめ、利用者の確認を待つ段階へ進める。
+    /// Verifies the key's certificate chain (base64 DER, key certificate first) and moves to waiting for the user's confirmation.
     pub async fn submit_key(
         &self,
         tenant: TenantContext,
@@ -317,7 +317,7 @@ impl AppApprovalService {
                         ctx,
                     )
                     .await;
-                // 受付は捨てる（同じ challenge で作り直させない）。
+                // Discard the intake (do not let it be redone with the same challenge).
                 let _ = self.deps.enrollments.delete(&enrollment.id).await;
                 return Err(AppApproverError::AttestationRejected(rejection));
             }
@@ -342,7 +342,7 @@ impl AppApprovalService {
         Ok(())
     }
 
-    /// 利用者の確認で出したコードと、鍵の署名で受付を有効にする。
+    /// Activates the intake with the code issued at the user's confirmation and the key's signature.
     pub async fn activate(
         &self,
         tenant: TenantContext,
@@ -380,7 +380,7 @@ impl AppApprovalService {
         if !signature_matches(public_key_spki, &message, signature) {
             return Err(AppApproverError::SignatureInvalid);
         }
-        // 受付を消せた 1 回だけが有効にする（同じコードの二重の送信は片方だけ通る）。
+        // Only the one that managed to delete the intake activates (double submission of the same code passes only once).
         if !self.deps.enrollments.delete(&enrollment.id).await? {
             return Err(AppApproverError::Conflict);
         }
@@ -434,13 +434,13 @@ impl AppApprovalService {
         })
     }
 
-    /// アプリの鍵がまだ有効か（アプリが起動のたびに聞く。取り消されたら登録し直しを勧める）。
+    /// Whether the app's key is still valid (the app asks on every launch; if revoked, it suggests registering again).
     pub async fn key_is_active(&self, key_id: &str) -> Result<bool, AppApproverError> {
         self.policy()?;
         Ok(self.deps.keys.find_by_key_id(key_id).await?.is_some())
     }
 
-    /// アプリから鍵を取り消す（`signed_at` は 5 分以内）。その鍵で承認したログイン状態も終わる。
+    /// Revokes the key from the app (`signed_at` within 5 minutes). Login states approved with that key also end.
     pub async fn revoke_by_app(
         &self,
         tenant: TenantContext,
@@ -481,9 +481,9 @@ impl AppApprovalService {
         Ok(())
     }
 
-    // ── 承認（アプリ） ───────────────────────────────────────────────────
+    // ── Approval (app) ───────────────────────────────────────────────────
 
-    /// 依頼の中身（アプリが承認の前に見せる）。
+    /// Request content (shown by the app before approval).
     pub async fn view_request(
         &self,
         tenant: TenantContext,
@@ -524,7 +524,7 @@ impl AppApprovalService {
         })
     }
 
-    /// 承認する。返すコードは 30 秒・1 回だけ使える。
+    /// Approves. The returned code is usable once, for 30 seconds.
     pub async fn approve(
         &self,
         tenant: TenantContext,
@@ -572,7 +572,7 @@ impl AppApprovalService {
         Ok(Approved { code })
     }
 
-    /// 断る。
+    /// Denies.
     pub async fn deny(
         &self,
         tenant: TenantContext,
@@ -608,7 +608,7 @@ impl AppApprovalService {
         Ok(())
     }
 
-    /// 承認・断りの共通の確かめ: 依頼が生きていて待っている、鍵が有効、署名が合う、持ち主がこの組織で使える。
+    /// Common checks for approve/deny: the request is alive and waiting, the key is valid, the signature matches, the owner can use this organization.
     async fn signed_decision(
         &self,
         tenant: TenantContext,
@@ -649,9 +649,9 @@ impl AppApprovalService {
         Ok((request, key, user))
     }
 
-    // ── 依頼と完了（web のログイン画面） ─────────────────────────────────
+    // ── Request and completion (web login screen) ─────────────────────────────────
 
-    /// 「アプリで続ける」の依頼を始める。返す印は始めたブラウザにだけ渡す（Cookie）。
+    /// Starts a "continue with the app" request. The returned mark is handed only to the starting browser (cookie).
     pub async fn start_request(
         &self,
         tenant: TenantContext,
@@ -665,7 +665,7 @@ impl AppApprovalService {
         if self.rate_limit(ctx, now).is_err() {
             return StartApprovalOutcome::RateLimited;
         }
-        // 認可の途中から来ていれば、その AuthSession を結ぶ（RP の名前を見せ、完了で続きを進める）。
+        // If it came mid-authorization, link that AuthSession (show the RP's name, continue on completion).
         let (auth_session_hash, client_id) = match cmd.auth_session_id {
             Some(id) => {
                 let hash = AuthSessionIdHash::of_plain(id);
@@ -715,7 +715,7 @@ impl AppApprovalService {
         }
     }
 
-    /// アプリが開いたブラウザで、コードと印を照らして完了する。
+    /// Completes in the browser the app opened, matching the code and the mark.
     pub async fn complete_request(
         &self,
         tenant: TenantContext,
@@ -759,7 +759,7 @@ impl AppApprovalService {
                 .refuse_another_browser(tenant, &request, user_id, key_ref, now, ctx)
                 .await;
         }
-        // 状態を移せた 1 回だけが完了する（同じコードの二重の使用は片方だけ通る）。
+        // Only the one that managed to move the state completes (double use of the same code passes only once).
         match self
             .deps
             .requests
@@ -783,7 +783,7 @@ impl AppApprovalService {
             .await
     }
 
-    /// 印の合わないブラウザでの完了: 依頼を終わらせ、監査に残し、知らせる。ログインはさせない。
+    /// Completion in a browser whose mark does not match: end the request, audit it, notify. No login is allowed.
     async fn refuse_another_browser(
         &self,
         tenant: TenantContext,
@@ -800,7 +800,7 @@ impl AppApprovalService {
             .await
         {
             Ok(true) => {}
-            // 先に完了・拒否された依頼の 2 度目は知らせない。
+            // Do not notify a second time for a request already completed or denied.
             Ok(false) => return CompleteApprovalOutcome::AnotherBrowser,
             Err(e) => return CompleteApprovalOutcome::Internal(e.to_string()),
         }
@@ -842,7 +842,7 @@ impl AppApprovalService {
         CompleteApprovalOutcome::AnotherBrowser
     }
 
-    /// 認証ポリシーを通し、SSO セッション（アプリで承認・30 日）を作り、認可の続きを進める。
+    /// Runs the authentication policy, creates an SSO session (app-approved, 30 days) and continues the authorization.
     async fn sign_in(
         &self,
         tenant: TenantContext,
@@ -890,8 +890,8 @@ impl AppApprovalService {
             Ok(d) => d,
             Err(e) => return CompleteApprovalOutcome::Internal(e.to_string()),
         };
-        // 承認は Keystore の鍵（所持）を指紋（生体）で解いた署名なので、MFA の要求は満たす。
-        // 方式の指定（「パスキーでなければ」）は満たさない。
+        // The approval is a signature by a Keystore key (possession) unlocked by fingerprint (biometric), so it satisfies an MFA requirement.
+        // It does not satisfy a method requirement ("must be a passkey").
         let denied = matches!(decision, PolicyDecision::Deny { .. })
             || decision
                 .unmet_method_requirement(&[AuthenticationMethod::AppApproval], true)
@@ -932,7 +932,7 @@ impl AppApprovalService {
             .await
         {
             Ok(crate::application::sign_in_completion::Establishment::Established(sso)) => sso,
-            // 認証アプリで承認したログインは関門を通る（task #916。承認した鍵がパスキーで登録した端末の鍵）。
+            // A login approved with the authenticator app passes the gate (task #916; the approving key is a key of a device registered with a passkey).
             Ok(
                 crate::application::sign_in_completion::Establishment::DeviceEnrollmentRequired {
                     ..
@@ -950,7 +950,7 @@ impl AppApprovalService {
             .link_session(&sso.session().session_hash, key_ref)
             .await
         {
-            // 結び付けを残せないなら、取り消しで切れないログイン状態になる。作ったものを消して断る。
+            // If the binding cannot be kept, the login state could not be cut by revocation. Delete what was created and refuse.
             let _ = self
                 .deps
                 .sso_sessions
@@ -1012,9 +1012,9 @@ impl AppApprovalService {
         }
     }
 
-    // ── アカウント画面（web） ──────────────────────────────────────────
+    // ── Account screen (web) ──────────────────────────────────────────
 
-    /// 登録の確認の画面に出す中身。
+    /// Content shown on the registration confirmation screen.
     pub async fn enrollment_for_confirmation(
         &self,
         tenant: TenantContext,
@@ -1052,7 +1052,7 @@ impl AppApprovalService {
         }
     }
 
-    /// 利用者が登録を確かめた（パスキーで確かめてから 5 分以内だけ）。アプリへ返すコードを出す。
+    /// The user confirmed the registration (only within 5 minutes of confirming with a passkey). Issues the code returned to the app.
     pub async fn confirm_enrollment(
         &self,
         tenant: TenantContext,
@@ -1123,7 +1123,7 @@ impl AppApprovalService {
         }
     }
 
-    /// 「自分の端末」の「認証アプリ」の行。
+    /// The "authenticator app" rows of "my devices".
     pub async fn keys_for_account(&self, sso_session_id: &str) -> ApproverKeysOutcome {
         let now = self.deps.clock.now();
         let user = match self.active_session(sso_session_id, now).await {
@@ -1147,7 +1147,7 @@ impl AppApprovalService {
         }
     }
 
-    /// アカウント画面から鍵を取り消す。その鍵で承認したログイン状態も終わる（今の画面のものは残す）。
+    /// Revokes a key from the account screen. Login states approved with that key also end (the current screen's stays).
     pub async fn revoke_from_account(
         &self,
         tenant: TenantContext,
@@ -1171,9 +1171,9 @@ impl AppApprovalService {
         }
     }
 
-    /// 鍵を消し、その鍵で承認したログイン状態と refresh token を終わらせる。消した件数を返す。
+    /// Deletes the key and ends login states and refresh tokens approved with it. Returns the number deleted.
     ///
-    /// `keep_session` はアカウント画面のログイン状態（自分の画面から追い出さない）。
+    /// `keep_session` is the account screen's login state (do not kick the user out of their own screen).
     async fn remove_key(
         &self,
         tenant: TenantContext,
@@ -1183,7 +1183,7 @@ impl AppApprovalService {
         now: DateTime<Utc>,
         ctx: &RequestContext,
     ) -> Result<Option<usize>, AppApproverError> {
-        // 消す前に、その鍵で承認したログイン状態を引く（消すと結び付けが NULL になる）。
+        // Before deleting, fetch login states approved with the key (deleting makes the binding NULL).
         let sessions = self.deps.keys.approved_sessions(key).await?;
         let Some(removed) = self.deps.keys.delete(user.id, key).await? else {
             return Ok(None);
@@ -1226,7 +1226,7 @@ impl AppApprovalService {
         Ok(Some(ended))
     }
 
-    // ── 共通 ───────────────────────────────────────────────────────────
+    // ── Common ───────────────────────────────────────────────────────────
 
     async fn live_enrollment(
         &self,
@@ -1246,7 +1246,7 @@ impl AppApprovalService {
         Ok(enrollment)
     }
 
-    /// 鍵の持ち主が、この組織で今使える利用者か。
+    /// Whether the key's owner is a user who can currently use this organization.
     async fn member(&self, tenant_id: TenantId, user_id: Uuid) -> Result<User, AppApproverError> {
         let now = self.deps.clock.now();
         let user = self
@@ -1285,7 +1285,7 @@ impl AppApprovalService {
         }
     }
 
-    /// 認証の無い口（受付・依頼の開始）は IP ごとの枠で絞る（ログインと同じ枠）。
+    /// Unauthenticated routes (intake, starting a request) are throttled by a per-IP bucket (same bucket as login).
     fn rate_limit(&self, ctx: &RequestContext, now: DateTime<Utc>) -> Result<(), AppApproverError> {
         match &ctx.ip_address {
             Some(ip) if !self.deps.rate_limiter.check_and_record(ip, now) => {
@@ -1295,7 +1295,7 @@ impl AppApprovalService {
         }
     }
 
-    /// 知らせる（所属元テナントで有効なときだけ。読めなければ知らせる側へ倒す）。
+    /// Notifies (only when enabled in the home tenant; if unreadable, fall to notifying).
     async fn alert(
         &self,
         user: &User,
@@ -1344,7 +1344,7 @@ fn display_username(user: &User) -> String {
         .unwrap_or_else(|| format!("利用者 {}", &user.sub.simple().to_string()[..8]))
 }
 
-/// アプリの署名（base64url の DER）が鍵と文に合うか。
+/// Whether the app's signature (base64url DER) matches the key and the message.
 fn signature_matches(spki: &[u8], message: &str, signature: &str) -> bool {
     match URL_SAFE_NO_PAD.decode(signature.trim().as_bytes()) {
         Ok(sig) => verify_p256_signature(spki, message.as_bytes(), &sig),

@@ -1,11 +1,11 @@
-//! システム設定エンドポイント（`/{tenant_id}/admin/system-settings`。MT14）。
+//! System settings endpoints (`/{tenant_id}/admin/system-settings`, MT14).
 //!
-//! 設定の一覧・更新とランタイム設定は `idp.system.admin` が必要（`RequirePerms<IdpSystemAdmin>`）。
-//! `idp.system.admin` は root scope でしか存在できないため、システム設定を参照・更新できるのは root
-//! テナントの system 管理者だけになる（ADR-0009 §4）。SMTP 設定だけの口（`/system-settings/smtp`）は
-//! `idp.smtp:read` / `idp.smtp:write`（`RequirePerms<SmtpRead>` / `<SmtpWrite>`。ADR-0051）で、
-//! `idp.tenant.admin` は含意しない（`idp.system.admin` は含意する）。SMTP パスワードは暗号化して保存し、参照時は平文を返さない
-//! （設定済みか否かのみ）。
+//! Listing/updating settings and runtime settings need `idp.system.admin` (`RequirePerms<IdpSystemAdmin>`).
+//! `idp.system.admin` can only exist in root scope, so only system admins of the root tenant can read and update
+//! system settings (ADR-0009 §4). The SMTP-only endpoint (`/system-settings/smtp`) uses
+//! `idp.smtp:read` / `idp.smtp:write` (`RequirePerms<SmtpRead>` / `<SmtpWrite>`, ADR-0051),
+//! not implied by `idp.tenant.admin` (implied by `idp.system.admin`). The SMTP password is stored encrypted and never returned as plaintext
+//! (only whether it is set).
 
 use crate::application::tenant_settings::TenantSettingAdoption;
 use crate::config::{ResolvedSetting, SettingSafetyStatus, SettingSource};
@@ -30,7 +30,7 @@ use axum::http::HeaderMap;
 use axum::Json;
 use std::collections::HashMap;
 
-/// システム設定（SMTP 等）を取得する。
+/// Gets the system settings (SMTP, etc.).
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/system-settings",
@@ -71,8 +71,8 @@ pub async fn get_system_settings(
     )))
 }
 
-/// ランタイム設定の DB 上書き値を更新する（`DB_MANAGED` かつ非 secret のキーのみ）。
-/// `value` が `None` または空のときは上書きを解除する。反映には再起動が必要。
+/// Updates the DB override values of runtime settings (only `DB_MANAGED`, non-secret keys).
+/// When `value` is `None` or empty the override is cleared. Takes effect after a restart.
 #[utoipa::path(
     put,
     path = "/{tenant_id}/admin/system-settings/runtime",
@@ -106,17 +106,17 @@ pub async fn update_runtime_setting(
         .update_runtime_setting(tenant.context(), &body.key, body.value, &admin.actor, &ctx)
         .await
         .map_err(|e| match e {
-            // ランタイム設定の値の書式違反（キー未知・パース不能）。運用者向けの管理 API であり、
-            // どのキーが不正かは要求本文から自明なため、共通の「不正なリクエスト」を返す。
+            // Malformed runtime setting value (unknown key, unparseable). This is an admin API for operators,
+            // and which key is invalid is obvious from the request body, so return the common "bad request".
             DomainError::InvalidValue(_) => {
                 ApiError::BadRequest(ApiMessages::new(locale).get("api-runtime-setting-invalid"))
             }
-            // 書式は正しいが、その値では次回起動できない（https ISSUER × 開発用既定 secret、
-            // または COOKIE_DOMAIN との不整合）。400 と混ぜると画面が「書式が不正」としか言えず、
-            // 運用者は正しい URL を疑い続ける。配置状態との衝突として 409 で区別する（ADR-0017）。
+            // Well-formed, but the next startup would fail with this value (https ISSUER x dev default secret,
+            // or a mismatch with COOKIE_DOMAIN). Mixed with 400 the screen could only say "malformed", and
+            // operators would keep doubting a correct URL. Distinguish it as a conflict with deployment state via 409 (ADR-0017).
             //
-            // 画面へ返すのは翻訳済みの一般的な案内なので、**どの条件で落ちたか**は運用ログへ出す
-            // （原因を突き止めるにはこちらが要る。運用ログは運用言語で統一する）。
+            // The screen gets a translated generic message, so **which condition failed** goes to the ops log
+            // (needed to find the cause; ops logs are kept in the ops language).
             DomainError::Conflict(reason) => {
                 tracing::warn!(
                     key = %body.key,
@@ -127,8 +127,8 @@ pub async fn update_runtime_setting(
             }
             other => ApiError::Internal(other.to_string()),
         })?;
-    // テナントが上書きできるキーは再起動を待たずに参照のたびに引く（ADR-0058 §9）。全体の行の
-    // キャッシュをここで捨てないと、テナント解決のキャッシュの寿命ぶん古い値で判定が続く。
+    // Tenant-overridable keys are read on every lookup without waiting for a restart (ADR-0058 §9). Unless the global rows'
+    // cache is dropped here, decisions keep using stale values for the lifetime of the tenant-resolution cache.
     state.tenant_settings.invalidate_global();
     let smtp = state
         .system_settings
@@ -155,7 +155,7 @@ pub async fn update_runtime_setting(
     )))
 }
 
-/// システム設定（SMTP 等）を更新する。`smtp_password` が指定されたときのみパスワードを上書きする。
+/// Updates the system settings (SMTP, etc.). The password is overwritten only when `smtp_password` is given.
 #[utoipa::path(
     put,
     path = "/{tenant_id}/admin/system-settings",
@@ -198,8 +198,8 @@ pub async fn update_system_settings(
         )
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    // SMS ゲートウェイ（AP13）。SMTP と同じ 1 回の保存で扱う（設定画面が 1 枚のため、
-    // 別々に保存させると片方だけ更新した状態が生まれる）。
+    // SMS gateway (AP13). Handled in the same single save as SMTP (the settings screen is one page,
+    // and saving separately would create a state where only one side was updated).
     let sms = state
         .system_settings
         .update_sms(
@@ -230,9 +230,9 @@ pub async fn update_system_settings(
     )))
 }
 
-/// SMTP 設定だけを参照する（`GET /{tenant_id}/admin/system-settings/smtp`。ADR-0051）。
+/// Reads only the SMTP settings (`GET /{tenant_id}/admin/system-settings/smtp`, ADR-0051).
 ///
-/// 保護は `idp.smtp:read`。**パスワードの平文は返さない**（設定済みか否かのみ）。
+/// Protected by `idp.smtp:read`. **The password plaintext is never returned** (only whether it is set).
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/system-settings/smtp",
@@ -259,10 +259,10 @@ pub async fn get_smtp_settings(
     Ok(Json(to_smtp_response(smtp)))
 }
 
-/// SMTP 設定だけを更新する（`PUT /{tenant_id}/admin/system-settings/smtp`。ADR-0051）。
+/// Updates only the SMTP settings (`PUT /{tenant_id}/admin/system-settings/smtp`, ADR-0051).
 ///
-/// 保護は `idp.smtp:write`。SMS・ランタイム設定には触れない ——機械へ開けるのはメールの経路だけ
-/// である、という範囲を**型と経路の両方**で示す。`smtp_password` を省略したときは現行維持。
+/// Protected by `idp.smtp:write`. Does not touch SMS or runtime settings -- the scope "only the mail route is opened to machines"
+/// is expressed **both by type and by route**. Omitting `smtp_password` keeps the current one.
 #[utoipa::path(
     put,
     path = "/{tenant_id}/admin/system-settings/smtp",
@@ -321,9 +321,9 @@ fn to_smtp_response(smtp: SmtpSettingsView) -> SmtpSettingsResponse {
     }
 }
 
-/// テナントが上書きできる各キーについて、従っているテナントの件数と外れているテナント（ADR-0058 §6）。
+/// For each tenant-overridable key, the number of tenants following it and the tenants deviating from it (ADR-0058 §6).
 ///
-/// ⚠ テナントをまたいで読む。`idp.system.admin` の口（本モジュールの全体設定）からだけ呼ぶ。
+/// ⚠ Reads across tenants. Call only from `idp.system.admin` endpoints (this module's global settings).
 async fn tenant_adoption(
     state: &AppState,
 ) -> Result<HashMap<&'static str, TenantSettingAdoption>, ApiError> {
@@ -401,8 +401,8 @@ fn to_runtime_response(
             db_value.cloned()
         },
         editable: setting.owner == SettingOwner::DbManaged && !setting.secret,
-        // 保存しただけでは挙動が変わらないことを画面から見えるようにする（MT27）。判定規則は
-        // `ResolvedSetting::is_pending_restart` が単一の出所（上書きの解除も未反映に含む）。
+        // Make it visible on screen that just saving doesn't change behaviour (MT27). The single source of the
+        // rule is `ResolvedSetting::is_pending_restart` (clearing an override also counts as not yet applied).
         pending_restart: setting.is_pending_restart(db_value.map(String::as_str)),
         shared_with_web: is_shared_with_web(&setting.key),
         tenant_overridable: is_tenant_overridable(&setting.key),

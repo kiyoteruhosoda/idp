@@ -1,25 +1,25 @@
-//! web の統合テスト共通土台（G11）。
+//! Shared foundation for web integration tests (G11).
 //!
-//! web は DB を持たず、データ操作はすべて api への HTTP 呼び出しである（ADR-0007）。したがって
-//! **api を HTTP でスタブすれば、ルータ経由の振る舞いを DB 無しで検証できる**。ここで見たいのは
-//! ハンドラ内の純関数ではなく、その外側 —— Cookie の発行と読み出し、CSRF の同期トークン、
-//! リダイレクトの行き先とステータス、そして api が落ちているときの処理である。いずれも
-//! `#[test]` の単体検証では通らない経路で、これまで `scripts/e2e.sh` のシェルスクリプトだけが
-//! 通していた。
+//! web has no DB; all data operations are HTTP calls to the api (ADR-0007). So
+//! **stubbing the api over HTTP lets router-level behaviour be verified without a DB**. What we want to see is
+//! not the handler's pure functions but the outside -- issuing and reading Cookies, the CSRF synchronizer token,
+//! redirect targets and statuses, and handling when the api is down. None of these
+//! are covered by `#[test]` unit checks; until now only the `scripts/e2e.sh` shell script
+//! exercised them.
 //!
-//! # 設定の渡し方（環境変数を掴む理由）
+//! # How configuration is passed (why env vars are locked)
 //!
-//! `Config::from_env()` は環境変数から読む。スタブサーバの URL は起動するまで決まらない
-//! （ポートが動的）ため、`API_BASE_URL` を立ててから設定を組む必要がある。環境変数はプロセス
-//! 全体で共有なので、**「立てる → 設定を組む」までを 1 つのロックで囲う**。組み上がった
-//! `Config` は自分の写しを持つので、その後で別のテストが同じ変数を書き換えても影響しない。
+//! `Config::from_env()` reads from environment variables. The stub server's URL is unknown until it starts
+//! (dynamic port), so `API_BASE_URL` must be set before building the config. Environment variables are shared
+//! process-wide, so **"set -> build config" is wrapped in one lock**. The built
+//! `Config` holds its own copy, so other tests rewriting the same variable afterwards do not affect it.
 //!
-//! # 秘密鍵を実行環境から受け取らない
+//! # Secrets are not taken from the runtime environment
 //!
-//! `CSRF_SECRET` は**テスト側で固定する**（[`TEST_CSRF_SECRET`]）。CI は job の環境変数として
-//! 独自の `CSRF_SECRET` を渡すため、そのまま `Config::from_env()` に拾わせるとルータは CI の鍵で
-//! トークンを検証し、テストが手元の鍵で作ったトークンと必ず食い違う —— ローカルでは通り CI だけが
-//! 落ちる、いちばん読み解きにくい形の失敗になる。同じ理由で `INTERNAL_SERVICE_TOKEN` も固定する。
+//! `CSRF_SECRET` is **fixed on the test side** ([`TEST_CSRF_SECRET`]). CI passes its own `CSRF_SECRET` as a job
+//! environment variable, so letting `Config::from_env()` pick it up would make the router verify tokens with CI's key,
+//! always mismatching the tokens tests build with their local key -- passing locally and failing only in CI,
+//! the hardest kind of failure to decipher. For the same reason `INTERNAL_SERVICE_TOKEN` is fixed too.
 
 #![allow(dead_code)]
 
@@ -36,7 +36,7 @@ use tower::ServiceExt;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// api のスタブと、それを向いた web ルータ。
+/// The api stub and a web router pointed at it.
 pub struct WebEnv {
     pub app: axum::Router,
     pub api: MockServer,
@@ -44,36 +44,36 @@ pub struct WebEnv {
 }
 
 impl WebEnv {
-    /// `/{tenant_id}` プレフィクス。
+    /// `/{tenant_id}` prefix.
     pub fn prefix(&self) -> String {
         format!("/{}", self.tenant)
     }
 }
 
-/// テストが使う CSRF 鍵（ちょうど 32 バイト）。フォームへ出るトークンをテスト側で導出するために、
-/// ルータと同じ値を使う必要がある。実行環境の値は使わない（モジュールコメント参照）。
+/// CSRF key used by tests (exactly 32 bytes). Must be the same value as the router's so tests can derive
+/// the tokens that appear in forms. The runtime environment's value is not used (see the module comment).
 pub const TEST_CSRF_SECRET: &[u8; 32] = b"assay-web-integration-tests-csrf";
 
-/// テストが使うサービス間トークン（長さの下限は `assay_contracts::deployment` の契約が決める）。
+/// Service-to-service token used by tests (the minimum length is set by the `assay_contracts::deployment` contract).
 pub const TEST_INTERNAL_SERVICE_TOKEN: &str = "assay-web-integration-test-service-token";
 
-/// 環境変数を書き換えて設定を組むまでの排他区間（モジュールコメント参照）。
+/// Critical section from rewriting env vars to building the config (see the module comment).
 fn env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-/// api のスタブを起動し、そこを向いた web ルータを組む。
+/// Starts the api stub and builds a web router pointed at it.
 ///
-/// 管理トークンの交換（`POST /internal/admin/token`。ADR-0037）は**既定で成功を返す**ように
-/// 積んでおく。web は管理 API を呼ぶ前に必ずここを通るため、各テストに積ませると全テストが
-/// 同じ 1 行を書くことになる。交換の失敗（未ログイン）を見たいテストは
-/// [`mount_unauthenticated_management_token`] で上書きする。
+/// The admin token exchange (`POST /internal/admin/token`; ADR-0037) is mounted to **succeed by default**.
+/// web always goes through it before calling the admin API, so making each test mount it would have every test
+/// write the same line. Tests that want to see the exchange fail (not logged in) override it with
+/// [`mount_unauthenticated_management_token`].
 pub async fn setup() -> WebEnv {
     setup_with_env(&[]).await
 }
 
-/// `setup()` に、web の起動のときだけ環境変数を足す（環境変数だけの設定を試すため。起動の後は外す）。
+/// `setup()` plus env vars added only while starting web (to test env-only settings; removed after startup).
 pub async fn setup_with_env(extra: &[(&str, &str)]) -> WebEnv {
     let api = MockServer::start().await;
     let uri = api.uri();
@@ -93,13 +93,13 @@ pub async fn setup_with_env(extra: &[(&str, &str)]) -> WebEnv {
             "name": "Admin",
             "preferred_username": "admin",
         })))
-        // 既定は最も低い優先度にしておき、テストが上書きできるようにする（wiremock は
-        // 優先度が同じなら**先に積んだ方**が勝つため、上書きは優先度で表す必要がある）。
+        // The default gets the lowest priority so tests can override it (with equal priority wiremock
+        // lets **the one mounted first** win, so overrides must be expressed by priority).
         .with_priority(10)
         .mount(&env.api)
         .await;
-    // 入口の確かめ（task #887）が「SSO セッションは端末の鍵に結び付いているか」を毎回聞く。既定は
-    // 「結び付いていない」（今までどおり長い Cookie だけで通る）。結び付いた場合を試すテストは上書きする。
+    // The entry check (task #887) asks every time "is the SSO session bound to a device key". The default is
+    // "not bound" (passes with the long Cookie alone, as before). Tests of the bound case override it.
     Mock::given(method("POST"))
         .and(path("/internal/sso/key-binding"))
         .respond_with(
@@ -111,9 +111,9 @@ pub async fn setup_with_env(extra: &[(&str, &str)]) -> WebEnv {
     env
 }
 
-/// 管理トークンの交換が 401 を返す（＝未ログイン）スタブを積む。
+/// Mounts a stub where the admin token exchange returns 401 (= not logged in).
 ///
-/// `setup()` の既定スタブ（優先度 10）より高い優先度で積むことで上書きする。
+/// Overrides by mounting with higher priority than `setup()`'s default stub (priority 10).
 pub async fn mount_unauthenticated_management_token(env: &WebEnv) {
     Mock::given(method("POST"))
         .and(path("/internal/admin/token"))
@@ -125,11 +125,11 @@ pub async fn mount_unauthenticated_management_token(env: &WebEnv) {
         .await;
 }
 
-/// **誰も listen していない**宛先を向いた web ルータ（api 障害の検証用）。
+/// A web router pointed at a destination **nobody listens on** (for testing api outages).
 ///
-/// スタブサーバを drop して落とす方法は使わない。停止が完了する前に届いた要求へ 404 が返り、
-/// 「api 不通」ではなく「テナントが無い」として扱われて偽陰性になる。閉じたポートなら接続が
-/// 即座に拒否され、常に同じ経路（api 呼び出しの失敗）を通る。
+/// Dropping the stub server to take it down is not used. Requests arriving before shutdown completes get 404,
+/// treated as "no tenant" rather than "api unreachable", a false negative. A closed port refuses connections
+/// immediately and always takes the same path (api call failure).
 pub fn unreachable_api_app() -> axum::Router {
     build_app("http://127.0.0.1:1")
 }
@@ -142,11 +142,11 @@ fn build_app_with(api_base_url: &str, extra: &[(&str, &str)]) -> axum::Router {
     let config = {
         let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("API_BASE_URL", api_base_url);
-        // 秘密は実行環境から受け取らない（CI の値を拾うとテストの鍵と食い違う）。
+        // Secrets are not taken from the runtime environment (picking up CI's value would mismatch the test key).
         std::env::set_var("CSRF_SECRET", STANDARD.encode(TEST_CSRF_SECRET));
         std::env::set_var("INTERNAL_SERVICE_TOKEN", TEST_INTERNAL_SERVICE_TOKEN);
-        // 開発用の既定シークレットで起動できるよう、公開オリジンはループバックのままにする
-        //（本番相当のオリジンでは fail-fast する。SEC11）。
+        // Keep the public origin on loopback so it can start with the development default secret
+        //(fails fast with a production-like origin; SEC11).
         std::env::remove_var("PUBLIC_WEB_BASE_URL");
         std::env::remove_var("COOKIE_DOMAIN");
         for (key, value) in extra {
@@ -161,7 +161,7 @@ fn build_app_with(api_base_url: &str, extra: &[(&str, &str)]) -> axum::Router {
     router::build(WebState::build(Arc::new(config)))
 }
 
-/// テナント経路の組み立て（`unreachable_api_app` は `WebEnv` を持たないため単体で使う）。
+/// Building tenant routes (`unreachable_api_app` has no `WebEnv`, so used standalone).
 pub fn tenant_prefix() -> String {
     format!("/{}", uuid::Uuid::now_v7())
 }
@@ -187,7 +187,7 @@ pub fn get_with_cookies(uri: &str, cookies: &str) -> Request<Body> {
         .unwrap()
 }
 
-/// `application/x-www-form-urlencoded` の POST（画面のフォーム送信と同じ形）。
+/// `application/x-www-form-urlencoded` POST (same shape as the screen's form submission).
 pub fn post_form(uri: &str, cookies: Option<&str>, fields: &[(&str, &str)]) -> Request<Body> {
     let body = fields
         .iter()
@@ -224,7 +224,7 @@ pub fn location(response: &Response<Body>) -> String {
         .to_string()
 }
 
-/// 応答の `Set-Cookie` から指定名の値を取り出す（削除指示＝空値も value として返す）。
+/// Extracts the named value from the response's `Set-Cookie` (a delete instruction = empty value is also returned as value).
 pub fn set_cookie(response: &Response<Body>, name: &str) -> Option<String> {
     response
         .headers()
@@ -238,7 +238,7 @@ pub fn set_cookie(response: &Response<Body>, name: &str) -> Option<String> {
         })
 }
 
-/// 応答の `Set-Cookie` 1 本の生の文字列（属性まで検証したいとき）。
+/// The raw string of one `Set-Cookie` in the response (when attributes must be verified too).
 pub fn set_cookie_raw(response: &Response<Body>, name: &str) -> Option<String> {
     response
         .headers()

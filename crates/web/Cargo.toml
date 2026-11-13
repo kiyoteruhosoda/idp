@@ -2,7 +2,7 @@
 name = "assay-web"
 version = "0.1.0"
 edition = "2021"
-description = "OIDC IdP Web: HTML 描画（ログイン画面・管理コンソール）+ i18n + API クライアント"
+description = "OIDC IdP Web: HTML rendering (login screens and admin console) + i18n + API client"
 license = "MIT"
 
 [lib]
@@ -16,8 +16,8 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
-# ADR-0007 の肝: web は DB（sqlx）/ infrastructure に依存しない。データ操作は api へ HTTP 越しに行う。
-# 依存に assay-core を含めない（sqlx を間接依存させない）ことを crate 境界で強制する。
+# The core of ADR-0007: web does not depend on the DB (sqlx) / infrastructure. Data operations go to api over HTTP.
+# Not listing assay-core as a dependency (so sqlx is not pulled in indirectly) enforces this at the crate boundary.
 [dependencies]
 percent-encoding = { workspace = true }
 assay-contracts = { path = "../contracts" }
@@ -27,7 +27,7 @@ tower-http = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-# 起動時刻・サーバー時刻（`/internal/health`。ADR-0031）。
+# Startup time and server time (`/internal/health`, ADR-0031).
 chrono = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -46,6 +46,6 @@ url = { workspace = true }
 
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }
-# ルータ経由の統合テスト（G11）。api を HTTP でスタブし、DB 無しで Cookie・CSRF・リダイレクト・
-# api クライアントのエラー処理を検証する。
+# Integration tests through the router (G11). Stubs api over HTTP and verifies cookies, CSRF, redirects and
+# the api client's error handling without a DB.
 wiremock = { workspace = true }

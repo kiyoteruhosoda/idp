@@ -1,27 +1,27 @@
-//! 設定画面の絞り込み（`GET /{tenant_id}/admin/settings?q=&mine=&runtime=`）。
+//! Filtering on the settings screen (`GET /{tenant_id}/admin/settings?q=&mine=&runtime=`).
 //!
-//! テナントの設定（16 項目前後）と全体のランタイム設定（約 50 行）を、既存の一覧（メンバー・監査ログ）と
-//! 同じく **GET のフォームでサーバ側で**絞る。スクリプトを足さない（CSP を広げず、スマホでも同じに動く）。
+//! Tenant settings (around 16 items) and global runtime settings (about 50 rows) are filtered **server-side via a GET
+//! form**, like the existing lists (members, audit log). No script is added (CSP stays narrow; works the same on phones).
 //!
-//! 判定をここに集め、テンプレートは絞った結果を描くだけにする（`CLAUDE.md`「画面描画」）。
+//! The decisions are collected here; templates only render the filtered result (`CLAUDE.md` "Screen rendering").
 
 use crate::admin_dto::{RuntimeSettingView, TenantSettingView};
 
-/// 全体のランタイム設定の種類での絞り込み。
+/// Filtering of global runtime settings by kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RuntimeSettingFilter {
     #[default]
     All,
-    /// テナントが上書きできるキー（ADR-0058）。
+    /// Keys a tenant can override (ADR-0058).
     TenantOverridable,
-    /// 要対応（危険な既定値のまま等）。
+    /// Needs attention (still on a dangerous default, etc.).
     NeedsAction,
-    /// 保存済みだが再起動するまで効かないキー（MT27）。
+    /// Keys that are saved but take effect only after a restart (MT27).
     PendingRestart,
 }
 
 impl RuntimeSettingFilter {
-    /// クエリの値から読む。知らない値は「すべて」に倒す（壊れた URL で一覧が空にならないように）。
+    /// Reads from the query value. Unknown values fall back to "all" (so a broken URL does not empty the list).
     pub fn parse(raw: Option<&str>) -> Self {
         match raw.unwrap_or_default() {
             "tenant" => Self::TenantOverridable,
@@ -31,7 +31,7 @@ impl RuntimeSettingFilter {
         }
     }
 
-    /// フォームの `<option value>` に使う綴り。
+    /// Spelling used for the form's `<option value>`.
     pub fn as_query(self) -> &'static str {
         match self {
             Self::All => "",
@@ -42,12 +42,12 @@ impl RuntimeSettingFilter {
     }
 }
 
-/// 設定画面の絞り込み条件。
+/// Filter conditions of the settings screen.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SettingsFilter {
-    /// 文字（前後の空白を落とした入力そのもの。フォームへ書き戻すために保持する）。
+    /// Text (the input with surrounding whitespace trimmed; kept to write back into the form).
     pub text: String,
-    /// 「このテナントで決めたものだけ」。
+    /// "Only what this tenant decided".
     pub tenant_overrides_only: bool,
     pub runtime: RuntimeSettingFilter,
 }
@@ -61,14 +61,14 @@ impl SettingsFilter {
         }
     }
 
-    /// 何かで絞っているか（「絞り込みを解除」を出すかどうか）。
+    /// Whether anything is filtering (whether to show "clear filters").
     pub fn is_active(&self) -> bool {
         !self.text.is_empty()
             || self.tenant_overrides_only
             || self.runtime != RuntimeSettingFilter::All
     }
 
-    /// 文字の一致（大小を区別しない部分一致）。キー・表示名・説明のどれかに含まれていればよい。
+    /// Text match (case-insensitive substring). Matches if contained in the key, display name or description.
     fn matches_text(&self, fields: &[&str]) -> bool {
         if self.text.is_empty() {
             return true;
@@ -79,13 +79,13 @@ impl SettingsFilter {
             .any(|field| field.to_lowercase().contains(&needle))
     }
 
-    /// テナントの設定 1 項目を残すか。`label` は画面に出す表示名（訳）。
+    /// Whether to keep one tenant setting item. `label` is the display name shown on screen (translated).
     pub fn keeps_tenant_value(&self, item: &TenantSettingView, label: &str) -> bool {
         (!self.tenant_overrides_only || item.is_tenant_override())
             && self.matches_text(&[&item.key, label, &item.description])
     }
 
-    /// 全体のランタイム設定 1 行を残すか。
+    /// Whether to keep one global runtime setting row.
     pub fn keeps_runtime_setting(&self, item: &RuntimeSettingView) -> bool {
         let kind = match self.runtime {
             RuntimeSettingFilter::All => true,
@@ -129,7 +129,7 @@ mod tests {
         assert!(filter.keeps_runtime_setting(&runtime("A", false, "SAFE", false)));
     }
 
-    /// 文字はキー・表示名・説明のどれでも当たり、大小を区別しない。
+    /// Text matches any of key, display name or description, case-insensitively.
     #[test]
     fn text_matches_key_label_or_description_case_insensitively() {
         let filter = SettingsFilter::new(Some("  password "), None, None);
@@ -151,7 +151,7 @@ mod tests {
         let filter = SettingsFilter::new(None, Some("1"), None);
         assert!(filter.keeps_tenant_value(&tenant_value("A", "TENANT_OVERRIDE", ""), "a"));
         assert!(!filter.keeps_tenant_value(&tenant_value("B", "INHERITED", ""), "b"));
-        // 空の値は付いていない扱い（チェックを外したフォームと同じ）。
+        // An empty value counts as not set (same as a form with the box unchecked).
         assert!(!SettingsFilter::new(None, Some(""), None).tenant_overrides_only);
     }
 
@@ -170,7 +170,7 @@ mod tests {
         assert!(!pending.keeps_runtime_setting(&runtime("B", false, "SAFE", false)));
     }
 
-    /// 知らない値は「すべて」に倒す（壊れた URL で一覧が空にならない）。
+    /// Unknown values fall back to "all" (a broken URL does not empty the list).
     #[test]
     fn unknown_runtime_kind_means_all() {
         let filter = SettingsFilter::new(None, None, Some("bogus"));

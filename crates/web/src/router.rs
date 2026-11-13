@@ -1,7 +1,7 @@
-//! web の axum ルータ組立（ADR-0009 §6・§10、MT13）。
+//! Assembly of web's axum router (ADR-0009 §6, §10, MT13).
 //!
-//! テナント外パス（`/healthz`・`/readyz`）を除き、すべての画面 URL を `/{tenant_id}/...` 配下に
-//! 一律配置する（root を含め特別分岐を設けない。api の router.rs と同じ方式）。
+//! Except for non-tenant paths (`/healthz`, `/readyz`), every screen URL is uniformly placed under
+//! `/{tenant_id}/...` (no special branch even for root; same scheme as the api's router.rs).
 
 use crate::client_ip::resolve_client_ip;
 use crate::correlation;
@@ -37,10 +37,10 @@ pub fn build(state: WebState) -> Router {
     let cookie_policy = state.config.cookie_policy().clone();
     let tenant_scoped = Router::new()
         .route("/login", get(login::login_page).post(login::login))
-        // エンドユーザー・ポータルの TOTP 入力（`/login` 直接ログイン経路の 2 段階目）。
+        // End-user portal TOTP input (the second step of the `/login` direct login path).
         .route("/login/mfa", get(portal::mfa_page).post(portal::mfa_submit))
-        // 「アプリで続ける」（task #892・ADR-0077）。
-        // 登録していない端末で正しく入ろうとしたときの、その場での端末の登録（task #916）。
+        // "Continue in the app" (task #892, ADR-0077).
+        // On-the-spot device registration when signing in correctly from an unregistered device (task #916).
         .route("/device-enrollment", get(device_enrollment::page))
         .route(
             "/device-enrollment/begin",
@@ -60,31 +60,31 @@ pub fn build(state: WebState) -> Router {
             "/settings/security/revoke-approver-key",
             post(app_approval::revoke_key),
         )
-        // エンドユーザー・ポータルの強制パスワード変更（初回ログイン時。ADR-0009 §5。管理コンソールと
-        // 同じ共有画面を流用）。
+        // End-user portal forced password change (at first login. ADR-0009 §5. Reuses the same shared screen as the
+        // admin console).
         .route(
             "/login/password-change",
             get(portal::password_change_page).post(portal::password_change),
         )
-        // GET: OIDC RP-initiated Logout（end_session_endpoint。ADR-0018 決定 2 で api から移設）。
-        // POST: エンドユーザーのログアウト（アカウント画面から。SSO 失効）。
+        // GET: OIDC RP-initiated Logout (end_session_endpoint. Moved from the api under ADR-0018 decision 2).
+        // POST: end-user logout (from the account screen. Revokes SSO).
         .route("/logout", get(rp_logout::logout).post(portal::logout))
-        // `id_token_hint` の無いサインアウト要求の確認画面から押す口（task #588）。
+        // Endpoint pressed from the confirmation screen of sign-out requests without `id_token_hint` (task #588).
         .route("/logout/confirm", post(rp_logout::confirm))
-        // SAML SSO の継続（api の /saml/sso からのハンドオフ受領と、ログイン後のフロー復帰）。
+        // SAML SSO continuation (receiving the hand-off from the api's /saml/sso and returning to the flow after login).
         .route("/saml/continue", get(saml_sso::continue_sso))
-        // 強制パスワード変更（ADR-0009 §5、MT12）。パスワード認証成功後・SSO 発行前の pending 状態で使う。
+        // Forced password change (ADR-0009 §5, MT12). Used in the pending state after password authentication, before SSO issuance.
         .route(
             "/password-change",
             get(password_change::page).post(password_change::submit),
         )
-        // パスワードリセット（忘失時。MT18）。未ログイン経路（メールのリンクから開く）。
+        // Password reset (forgotten. MT18). Unauthenticated path (opened from the email link).
         .route(
             "/forgot-password",
             get(password_reset::forgot_page).post(password_reset::forgot_submit),
         )
         .route(
-            // アカウント設定リンクの着地点（ADR-0062）。未ログイン経路。
+            // Landing point of the account setup link (ADR-0062). Unauthenticated path.
             "/account-setup",
             get(account_setup::setup_page).post(account_setup::set_password),
         )
@@ -101,36 +101,36 @@ pub fn build(state: WebState) -> Router {
             "/password-reset",
             get(password_reset::reset_page).post(password_reset::reset_submit),
         )
-        // メール検証画面（SEC6b）。自己登録の確認メールのリンクから開く。未ログイン経路（SSO 不要）。
+        // Email verification screen (SEC6b). Opened from the self-registration confirmation email link. Unauthenticated (no SSO).
         .route(
             "/verify-email",
             get(verify_email::page).post(verify_email::submit),
         )
-        // 利用者のセルフサービス設定画面（MT15）。パスワード変更・言語・MFA 導線。SSO 認証が必要。
+        // User self-service settings screen (MT15). Password change, language, MFA entry points. Requires SSO authentication.
         .route("/settings", get(user_settings::page))
         .route("/settings/password", post(user_settings::change_password))
         .route("/settings/name", post(user_settings::change_name))
-        // 表示設定（言語・配色）をユーザー設定へ保存する唯一の経路（task #79。CSRF 付きの POST）。
+        // The only path saving display settings (language, color scheme) to user settings (task #79. POST with CSRF).
         .route(
             "/settings/display",
             post(user_settings::save_display_preferences),
         )
-        // 外部 IdP ログイン（AP10）。開始は 302、コールバックは外部 IdP からの戻り先。
+        // External IdP login (AP10). Start is a 302; the callback is where the external IdP returns.
         .route("/external/{provider}/start", get(external_login::start))
         .route(
             "/external/{provider}/callback",
             get(external_login::callback),
         )
-        // SAML の ACS。外部 IdP がブラウザに POST させてくるので、GET は受けない。
+        // SAML ACS. The external IdP makes the browser POST, so GET is not accepted.
         .route(
             "/external/{provider}/saml/acs",
             post(external_login::saml_acs),
         )
-        // MFA 入力画面から「メールでコードを送る」（AP9）。
+        // "Send a code by email" from the MFA input screen (AP9).
         .route("/mfa/totp/email-code", post(mfa_totp::send_email_code))
-        // SMS OTP の送信要求（AP13）。email OTP と同じ位置づけ。
+        // SMS OTP send request (AP13). Same role as email OTP.
         .route("/mfa/totp/sms-code", post(mfa_totp::send_sms_code))
-        // 認証器の管理（一覧・一時停止・失効・リカバリーコード発行。AP9）。
+        // Authenticator management (list, suspend, revoke, issue recovery codes. AP9).
         .route("/settings/authenticators", get(authenticators::page))
         .route(
             "/settings/authenticators/phone",
@@ -148,8 +148,8 @@ pub fn build(state: WebState) -> Router {
             "/settings/recovery-codes",
             post(authenticators::issue_recovery_codes),
         )
-        // Step-up 認証の本人確認画面（重要操作の直前。AP5）。パスワード（+TOTP）の POST と、
-        // パスキーの JSON 2 段構え（T38。ブラウザの WebAuthn API を通るためフォームにできない）。
+        // Step-up re-verification screen (right before sensitive operations. AP5). Password (+TOTP) POST and
+        // the two-step passkey JSON exchange (T38; goes through the browser's WebAuthn API, so it cannot be a form).
         .route("/settings/verify", get(step_up::page))
         .route("/settings/verify", post(step_up::verify))
         .route(
@@ -160,9 +160,9 @@ pub fn build(state: WebState) -> Router {
             "/settings/verify/passkey/complete",
             post(step_up::passkey_complete),
         )
-        // セルフサービスのセキュリティ画面（セッション一覧・失効／連携アプリ解除。G10）。
+        // Self-service security screen (session list/revocation, unlinking apps. G10).
         .route("/settings/security", get(user_security::page))
-        // 端末の登録・取り消し（task #872）。
+        // Registering/revoking devices (task #872).
         .route(
             "/settings/security/register-device",
             post(user_security::register_device),
@@ -171,7 +171,7 @@ pub fn build(state: WebState) -> Router {
             "/settings/security/revoke-device",
             post(user_security::revoke_device),
         )
-        // SSH の公開鍵の登録・取り消し（task #885）。
+        // Registering/revoking SSH public keys (task #885).
         .route(
             "/settings/security/register-ssh-key",
             post(user_security::register_ssh_key),
@@ -192,39 +192,39 @@ pub fn build(state: WebState) -> Router {
             "/settings/security/reissue-tokens",
             post(user_security::reissue_tokens),
         )
-        // 招待承諾画面（ADR-0009 §3・MT17）。招待メールのリンクから開く。SSO 認証が必要。
+        // Invitation acceptance screen (ADR-0009 §3, MT17). Opened from the invitation email link. Requires SSO authentication.
         .route(
             "/invitations/accept",
             get(invitation_accept::page).post(invitation_accept::submit),
         )
-        // 同意画面（F3: Consent）。
+        // Consent screen (F3: Consent).
         .route(
             "/consent",
             get(consent::consent_page).post(consent::consent),
         )
-        // MFA: ログインフロー TOTP 入力（パスワード認証後）。
+        // MFA: login flow TOTP input (after password authentication).
         .route(
             "/mfa/totp",
             get(mfa_totp::verify_page).post(mfa_totp::verify),
         )
-        // MFA: ユーザー自己登録（TOTP セットアップ・削除）。SSO 認証が必要。
+        // MFA: user self-enrollment (TOTP setup/deletion). Requires SSO authentication.
         .route(
             "/account/mfa/totp/setup",
             get(mfa_totp::setup_page).post(mfa_totp::setup_confirm),
         )
         .route("/account/mfa/totp/delete", post(mfa_totp::setup_delete))
-        // Passkey（WebAuthn）自己登録。SSO 認証が必要。
+        // Passkey (WebAuthn) self-registration. Requires SSO authentication.
         .route("/account/passkey", get(passkey::list_page))
         .route("/account/passkey/register", get(passkey::register_page))
         .route("/account/passkey/delete", post(passkey::delete))
-        // Passkey 登録 JSON API（ブラウザ JS から呼ぶ）。
+        // Passkey registration JSON API (called from browser JS).
         .route("/passkey/register/begin", post(passkey::register_begin_api))
         .route(
             "/passkey/register/complete",
             post(passkey::register_complete_api),
         )
-        // Passkey 認証 JSON API（3 つのログイン画面の JS から呼ぶ）。開始は「認可フローの
-        // Cookie を読むか」で 2 つ、完了は発行する Cookie と遷移先が違うので画面ごとに 3 つ。
+        // Passkey authentication JSON API (called from the JS of the 3 login screens). Two begin endpoints split by
+        // "whether the authorization flow cookie is read", and 3 complete endpoints, one per screen, since issued cookies and destinations differ.
         .route("/passkey/login/begin", post(passkey::login_begin_api))
         .route("/passkey/login/complete", post(passkey::login_complete_api))
         .route(
@@ -239,7 +239,7 @@ pub fn build(state: WebState) -> Router {
             "/passkey/login/portal/complete",
             post(passkey::portal_login_complete_api),
         )
-        // 管理コンソール（ADR-0006 §6・ADR-0007 §4・ADR-0009 §10）。ログインはクライアント不要。
+        // Admin console (ADR-0006 §6, ADR-0007 §4, ADR-0009 §10). Login needs no client.
         .route(
             "/admin/login",
             get(admin_console::login_page).post(admin_console::login),
@@ -250,18 +250,18 @@ pub fn build(state: WebState) -> Router {
         )
         .route("/admin/logout", post(admin_console::logout))
         .route("/admin", get(admin_console::home))
-        // ホーム画面へ入れるためのマニフェスト（テナントごと）。⚠ 認証の外に置く
-        // （ブラウザは Cookie 無しで取りに来る。`handlers::web_app_manifest`）。
+        // Manifest for adding to the home screen (per tenant). ⚠ Placed outside authentication
+        // (browsers fetch it without cookies. `handlers::web_app_manifest`).
         .route(
             "/admin/manifest.webmanifest",
             get(web_app_manifest::manifest),
         )
-        // テナント切り替え（所属テナントの管理コンソールへ遷移。ADR-0009 §8）。
+        // Tenant switching (move to a member tenant's admin console. ADR-0009 §8).
         .route("/admin/switch-tenant", get(admin_console::switch_tenant))
-        // 設定画面（MT14）。テナント設定（idp.tenant.admin）＋ root のみのシステム設定区画（SMTP）。
+        // Settings screen (MT14). Tenant settings (idp.tenant.admin) + root-only system settings section (SMTP).
         .route("/admin/settings", get(admin_settings::page))
-        // 認証ポリシー（AP1）。一覧・作成・編集・削除。HTML フォームは PUT/DELETE を送れないため、
-        // 更新・削除は専用の POST パスを経由して api の PUT/DELETE へ変換する。
+        // Authentication policies (AP1). List, create, edit, delete. HTML forms cannot send PUT/DELETE, so
+        // updates and deletes go through dedicated POST paths converted to the api's PUT/DELETE.
         .route(
             "/admin/authentication-policies",
             get(admin_authentication_policies_console::list)
@@ -275,20 +275,20 @@ pub fn build(state: WebState) -> Router {
             "/admin/authentication-policies/{policy_id}/delete",
             post(admin_authentication_policies_console::delete),
         )
-        // 外部 IdP 設定（AP16。API は AP10）。HTML フォームは PATCH/DELETE を送れないため、
-        // 更新・削除は専用の POST パスを経由して api の PATCH/DELETE へ変換する。
+        // External IdP settings (AP16; the API is AP10). HTML forms cannot send PATCH/DELETE, so
+        // updates and deletes go through dedicated POST paths converted to the api's PATCH/DELETE.
         .route(
             "/admin/external-idps",
             get(admin_external_idps_console::list).post(admin_external_idps_console::create),
         )
-        // 登録はプロトコルを選ぶところから始める。1 枚のフォームに OIDC と SAML の欄を並べると、
-        // 埋めるべき欄と埋めなくてよい欄が同居して読み取れない。
+        // Registration starts by choosing the protocol. Putting OIDC and SAML fields on one form mixes
+        // fields to fill with fields not needed, which is unreadable.
         .route(
             "/admin/external-idps/new",
             get(admin_external_idps_console::choose_protocol),
         )
-        // プロトコルごとに別のパスにする。「登録できるのはこの 2 つ」を経路が表すので、綴りの
-        // 誤った URL は 404 になる（既定のプロトコルへ黙って落ちない）。
+        // A separate path per protocol. The routes express "these two can be registered", so misspelled
+        // URLs become 404 (instead of silently falling back to the default protocol).
         .route(
             "/admin/external-idps/new/oidc",
             get(admin_external_idps_console::new_oidc_form),
@@ -301,12 +301,12 @@ pub fn build(state: WebState) -> Router {
             "/admin/external-idps/{id}/edit",
             get(admin_external_idps_console::edit_form),
         )
-        // 外部 IdP メタデータの取り込み（AP12）。`{id}/update` と衝突しない静的パス。
+        // Importing external IdP metadata (AP12). A static path that does not collide with `{id}/update`.
         .route(
             "/admin/external-idps/import",
             post(admin_external_idps_console::import_metadata),
         )
-        // OIDC discovery ドキュメントの取り込み（task #77）。同じく静的パス。
+        // Importing an OIDC discovery document (task #77). Likewise a static path.
         .route(
             "/admin/external-idps/import-discovery",
             post(admin_external_idps_console::import_discovery),
@@ -319,7 +319,7 @@ pub fn build(state: WebState) -> Router {
             "/admin/external-idps/{id}/delete",
             post(admin_external_idps_console::delete),
         )
-        // ログイン識別子（AP16。API は AP8）。同じく更新・削除は専用の POST パスを経由する。
+        // Login identifiers (AP16; the API is AP8). Likewise updates and deletes go through dedicated POST paths.
         .route(
             "/admin/users/{user_id}/login-identifiers",
             get(admin_login_identifiers_console::list).post(admin_login_identifiers_console::add),
@@ -340,7 +340,7 @@ pub fn build(state: WebState) -> Router {
             "/admin/settings/tenant",
             post(admin_settings::update_tenant),
         )
-        // テナントの設定値（ADR-0058）。
+        // Tenant setting values (ADR-0058).
         .route(
             "/admin/settings/tenant/keys",
             post(admin_settings::update_tenant_setting),
@@ -349,7 +349,7 @@ pub fn build(state: WebState) -> Router {
             "/admin/settings/tenant/keys/clear",
             post(admin_settings::clear_tenant_setting),
         )
-        // テナント自身のメールの経路（ADR-0058 §8）。
+        // The tenant's own mail route (ADR-0058 §8).
         .route(
             "/admin/settings/smtp",
             post(admin_settings::update_tenant_smtp),
@@ -362,18 +362,18 @@ pub fn build(state: WebState) -> Router {
             "/admin/system-settings",
             post(admin_settings::update_system),
         )
-        // ランタイム設定の DB 上書き（root のみ。反映には再起動が必要）。
+        // DB overrides of runtime settings (root only. A restart is needed to apply).
         .route(
             "/admin/system-settings/runtime",
             post(admin_settings::update_runtime),
         )
-        // 保存したランタイム設定を反映するための api → web の再起動（root のみ。ADR-0017）。
+        // api → web restart to apply saved runtime settings (root only. ADR-0017).
         .route("/admin/restart", post(admin_restart_console::restart))
         .route(
             "/admin/tenants",
             get(admin_tenants_console::list).post(admin_tenants_console::create),
         )
-        // 子テナントの編集（表示名・状態。MT23）・削除・管理者パスワード再発行（root のみ）。
+        // Child tenant editing (display name, status. MT23), deletion, admin password reissue (root only).
         .route(
             "/admin/tenants/{child_id}/update",
             post(admin_tenants_console::update),
@@ -386,11 +386,11 @@ pub fn build(state: WebState) -> Router {
             "/admin/tenants/{child_id}/reset-admin-password",
             post(admin_tenants_console::reset_admin_password),
         )
-        // クライアント（RP）管理画面。静的セグメント（new）は動的 {client_id} より優先。
+        // Client (RP) management screens. The static segment (new) takes priority over the dynamic {client_id}.
         .route("/admin/clients", get(admin_clients_console::list))
-        // サービスアカウント（機械の主体）の登録（ADR-0038）。一覧と 1 件の画面はアカウントの側
-        // （ADR-0065。下の `/admin/accounts`）。編集・シークレット・権限・削除は
-        // `/admin/clients/{client_id}/*` を共有する。
+        // Service account (machine principal) registration (ADR-0038). The list and single-item screen are on the account side
+        // (ADR-0065; `/admin/accounts` below). Edit, secret, permissions and delete share
+        // `/admin/clients/{client_id}/*`.
         .route(
             "/admin/service-accounts/new",
             get(admin_clients_console::new_service_account_form)
@@ -408,8 +408,8 @@ pub fn build(state: WebState) -> Router {
             "/admin/clients/{client_id}/edit",
             get(admin_clients_console::edit_form).post(admin_clients_console::update),
         )
-        // 管理権限の付与・剥奪（ADR-0037）。区画は詳細画面にあり、ここは実行だけを受ける
-        // （Post/Redirect/Get で詳細へ戻る）。
+        // Granting/revoking admin permissions (ADR-0037). The section is on the details screen; this only receives execution
+        // (returns to the details via Post/Redirect/Get).
         .route(
             "/admin/clients/{client_id}/permissions/grant",
             post(admin_clients_console::grant_permission),
@@ -424,25 +424,25 @@ pub fn build(state: WebState) -> Router {
         )
         .route(
             "/admin/clients/{client_id}/delete",
-            // 論理削除（ADR-0035）。ブラウザからは POST（HTML フォームは DELETE を送れない）。
+            // Logical deletion (ADR-0035). POST from browsers (HTML forms cannot send DELETE).
             post(admin_clients_console::delete),
         )
-        // SAML SP（クライアント）一覧・追加画面。
+        // SAML SP (client) list and add screens.
         .route(
             "/admin/saml-clients",
             get(admin_saml_clients_console::list).post(admin_saml_clients_console::create),
         )
-        // SP メタデータ取り込み（登録フォームへ初期値反映）。
+        // SP metadata import (prefills the registration form).
         .route(
             "/admin/saml-clients/import",
             post(admin_saml_clients_console::import_metadata),
         )
-        // IdP メタデータを web オリジンからダウンロードする（api への直接リンクを露出しない）。
+        // Download IdP metadata from the web origin (do not expose a direct link to the api).
         .route(
             "/admin/saml-clients/idp-metadata",
             get(admin_saml_clients_console::download_idp_metadata),
         )
-        // SP の更新・削除（HTML フォームは POST のみのため専用パス）。
+        // SP update/delete (dedicated paths since HTML forms only POST).
         .route(
             "/admin/saml-clients/{id}/update",
             post(admin_saml_clients_console::update),
@@ -451,7 +451,7 @@ pub fn build(state: WebState) -> Router {
             "/admin/saml-clients/{id}/delete",
             post(admin_saml_clients_console::delete),
         )
-        // 利用者の作成・権限付与/剥奪画面（一覧・検索の起点はメンバー画面。/admin/members）。
+        // User creation and permission grant/revoke screens (listing and search start from the members screen, /admin/members).
         .route(
             "/admin/users/new",
             get(admin_users_console::new_form).post(admin_users_console::create),
@@ -460,7 +460,7 @@ pub fn build(state: WebState) -> Router {
             "/admin/users/{user_id}/permissions",
             get(admin_users_console::view),
         )
-        // プロフィール（メール・ログイン識別子・表示名）の編集（MT25）。
+        // Profile (email, login identifier, display name) editing (MT25).
         .route(
             "/admin/users/{user_id}/profile",
             post(admin_users_console::update_profile),
@@ -473,17 +473,17 @@ pub fn build(state: WebState) -> Router {
             "/admin/users/{user_id}/permissions/revoke",
             post(admin_users_console::revoke),
         )
-        // メンバー（HOME/GUEST）一覧・ゲスト解除（ADR-0009 §3）と、所属元（HOME）利用者の
-        // 無効化・有効化・パスワード再発行・削除（ADR-0009 §5）。
-        // アカウント（人とサービスアカウント。ADR-0065）。旧来の 2 つの一覧は種別を絞ったこの一覧へ転送する。
+        // Member (HOME/GUEST) list and guest removal (ADR-0009 §3), and for users whose home (HOME) is this tenant,
+        // disable, enable, password reissue and deletion (ADR-0009 §5).
+        // Accounts (people and service accounts. ADR-0065). The two legacy lists redirect to this list filtered by kind.
         .route("/admin/accounts", get(admin_accounts_console::list))
         .route("/admin/members", get(admin_accounts_console::members_list))
         .route(
             "/admin/service-accounts",
             get(admin_accounts_console::service_accounts_list),
         )
-        // サービスアカウント 1 件の画面（人の `/admin/members/{user_id}` と同じ骨組み）と、その
-        // 管理者メモ・使えるアプリの出し入れ。
+        // Single service account screen (same skeleton as the person `/admin/members/{user_id}`), and its
+        // admin note and adding/removing available apps.
         .route(
             "/admin/service-accounts/{client_id}",
             get(admin_accounts_console::service_account_detail),
@@ -500,7 +500,7 @@ pub fn build(state: WebState) -> Router {
             "/admin/service-accounts/{client_id}/applications/{application_id}/unassign",
             post(admin_accounts_console::unassign_service_account_application),
         )
-        // メンバー 1 人の画面（操作はここに集める。一覧は探す場所）。
+        // Single member screen (operations are gathered here; the list is the place to find).
         .route(
             "/admin/members/{user_id}",
             get(admin_members_console::detail),
@@ -525,12 +525,12 @@ pub fn build(state: WebState) -> Router {
             "/admin/members/{user_id}/unlock",
             post(admin_members_console::unlock),
         )
-        // 発行済みトークンの再発行（管理者が対象を指定する。ADR-0047）。
+        // Reissuing issued tokens (the admin specifies the target. ADR-0047).
         .route(
             "/admin/members/{user_id}/reissue-tokens",
             post(admin_members_console::reissue_tokens),
         )
-        // ゲストメンバーシップの一時停止・再開（MT24）。解除（削除）と違い元に戻せる。
+        // Suspending/resuming guest memberships (MT24). Unlike removal (deletion), it can be undone.
         .route(
             "/admin/members/{user_id}/suspend",
             post(admin_members_console::suspend),
@@ -543,7 +543,7 @@ pub fn build(state: WebState) -> Router {
             "/admin/members/{user_id}/delete",
             post(admin_members_console::delete),
         )
-        // 管理者メモ（ADR-0063）と、その人のアプリの割り当て（アプリの詳細と同じ API を呼ぶ）。
+        // Admin note (ADR-0063) and the person's app assignments (calls the same API as the app details).
         .route(
             "/admin/members/{user_id}/note",
             post(admin_members_console::update_note),
@@ -556,25 +556,25 @@ pub fn build(state: WebState) -> Router {
             "/admin/members/{user_id}/applications/{application_id}/unassign",
             post(admin_members_console::unassign_application),
         )
-        // ゲスト招待の作成（ADR-0009 §3）。
+        // Creating guest invitations (ADR-0009 §3).
         .route(
             "/admin/invitations",
             get(admin_invitations_console::new_form).post(admin_invitations_console::create),
         )
-        // 状況確認画面（監査ログ・クライアント状況）。読み取り専用。
+        // Status screens (audit log, client status). Read-only.
         .route("/admin/audit-logs", get(admin_status_console::audit_logs))
-        // エラー・警告ログ（`log` テーブル）。api 側は idp.system.admin を要求する。
+        // Error/warning logs (`log` table). The api requires idp.system.admin.
         .route("/admin/logs", get(admin_status_console::application_logs))
         .route("/admin/status", get(admin_status_console::client_status))
-        // 稼働中のビルドと適用済みスキーマ（ADR-0034）。無認証の面には出さない。
+        // The running build and applied schema (ADR-0034). Not exposed on an unauthenticated surface.
         .route("/admin/version", get(admin_status_console::version))
-        // 稼働中のビルドの表記だけ（開いたままの画面が新しいバージョンに気付くための口）。
+        // Only the running build's label (endpoint for open screens to notice a new version).
         .route(
             "/admin/version/current",
             get(admin_status_console::current_build),
         )
-        // アプリ（ADR-0054）。認証方法（OIDC / SAML）と利用者の割り当ては、この段にぶら下がる。
-        // ⚠ **ここが締め出しの復旧経路**（決定 4 の手順 4）。一覧 → 1 件 → 割り当て、で終わる。
+        // Apps (ADR-0054). Authentication methods (OIDC / SAML) and user assignments hang off this level.
+        // ⚠ **This is the recovery path for lockouts** (step 4 of decision 4). List → item → assignment, and done.
         .route("/admin/applications", get(admin_applications_console::list))
         .route(
             "/admin/applications/create",
@@ -608,7 +608,7 @@ pub fn build(state: WebState) -> Router {
             "/admin/applications/{application_id}/unassign",
             post(admin_applications_console::unassign),
         )
-        // 保護リソース（`aud` に入る宛名。ADR-0042）。貸し出しはクライアント詳細にある。
+        // Protected resources (names that go into `aud`. ADR-0042). Lending is in the client details.
         .route("/admin/resources", get(admin_resources_console::list))
         .route(
             "/admin/resources/register",
@@ -622,7 +622,7 @@ pub fn build(state: WebState) -> Router {
             "/admin/resources/delete",
             post(admin_resources_console::delete),
         )
-        // 署名鍵管理画面（K1）。
+        // Signing key management screen (K1).
         .route("/admin/signing-keys", get(admin_signing_keys_console::list))
         .route(
             "/admin/signing-keys/generate",
@@ -636,15 +636,15 @@ pub fn build(state: WebState) -> Router {
             "/admin/signing-keys/delete",
             post(admin_signing_keys_console::delete),
         )
-        // 表示言語の決定（MT20）は tenant 解決より内側で行う。`?lang=` / ユーザー設定 / Cookie /
-        // `ui_locales` / ブラウザ言語の優先順位をここへ一本化し、各ハンドラは `handlers::locale` を
-        // 呼ぶだけにする。
+        // Deciding the display language (MT20) happens inside tenant resolution. The priority of `?lang=` / user setting / cookie /
+        // `ui_locales` / browser language is unified here, and each handler just calls
+        // `handlers::locale`.
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             resolve_display_preferences,
         ))
-        // 認可要求が持ち込む文脈（`login_hint` / `ui_locales`。G12）の取り直し。言語決定が
-        // `ui_locales` を読むため、`resolve_display_preferences` より外側（＝先に走る）に置く。
+        // Re-fetching the context an authorization request brings (`login_hint` / `ui_locales`. G12). The language decision
+        // reads `ui_locales`, so it sits outside (= runs before) `resolve_display_preferences`.
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             load_rp_login_context,
@@ -655,8 +655,8 @@ pub fn build(state: WebState) -> Router {
         .route("/", get(root_entrypoint))
         .route("/healthz", get(health::liveness))
         .route("/readyz", get(health::readiness))
-        // 詳細ヘルス（ADR-0031）。版数・稼働時間・サーバー時刻・api への到達性を返す。
-        // 公開面（`/healthz`・`/readyz`）はサービス名までで、詳細はサービストークンの内側に置く。
+        // Detailed health (ADR-0031). Returns version, uptime, server time and reachability of the api.
+        // The public surface (`/healthz`, `/readyz`) goes only as far as the service name; details are behind the service token.
         .merge(
             Router::new()
                 .route("/internal/health", get(health::internal_health))
@@ -689,7 +689,7 @@ pub fn build(state: WebState) -> Router {
             "/assets/submit-feedback.js",
             get(submit_feedback_script::submit_feedback_js),
         )
-        // 画面固有スクリプト（旧インライン script。SEC12）。
+        // Screen-specific scripts (former inline scripts. SEC12).
         .route(
             "/assets/passkey-login.js",
             get(page_scripts::passkey_login_js),
@@ -746,20 +746,20 @@ pub fn build(state: WebState) -> Router {
             get(vendor_assets::fa_v4compatibility_woff2),
         )
         .route("/assets/react/app.js", get(react_assets::app_js))
-        // SSO セッションの端末の鍵への結び付け（Chrome の DBSC。task #887・ADR-0074）。テナントに属さない
-        // （SSO セッションの Cookie はオリジンに 1 つ）。
+        // Binding SSO sessions to the device key (Chrome's DBSC. task #887, ADR-0074). Not tenant-scoped
+        // (there is one SSO session cookie per origin).
         .route("/dbsc/register", post(crate::session_key::register))
         .route("/dbsc/refresh", post(crate::session_key::refresh))
-        // この nest 配下で `{user_id}` 等を持つルートは、ネスト元の `{tenant_id}` と合わせて
-        // パスパラメータが 2 つになる。ハンドラは `Path<(String, String)>` のタプルで受けること
-        // （`Path<String>` だと実行時に 500 "Wrong number of path arguments" になる）。
+        // Routes under this nest with `{user_id}` etc. have two path parameters together with the
+        // nesting `{tenant_id}`. Handlers must receive them as a `Path<(String, String)>` tuple
+        // (`Path<String>` gives a runtime 500 "Wrong number of path arguments").
         .nest("/{tenant_id}", tenant_scoped)
-        // どのルートにも一致しないリクエストには 404 エラーページを返す（axum 既定の空応答を避ける）。
+        // Requests matching no route get the 404 error page (avoids axum's default empty response).
         .fallback(error_pages::fallback)
-        // ログインした端末を api へ伝える（task #872）。どのログイン経路でも、応答が SSO セッションの
-        // Cookie を置いたことだけを見る。追跡キー（correlation）と接続元 IP より内側に置く。
-        // 端末の鍵に結び付いた SSO セッションは、合う短い Cookie が無ければ長い Cookie を外す（task #887）。
-        // Cookie の名前の読み替えより内側（読み替え後の名前で見る）、追跡キーより内側に置く。
+        // Tell the api which device signed in (task #872). Whatever the login path, only whether the response set the SSO
+        // session cookie is looked at. Placed inside the tracking key (correlation) and client IP.
+        // For SSO sessions bound to the device key, the long cookie is removed without a matching short cookie (task #887).
+        // Placed inside the cookie name mapping (looks at mapped names) and inside the tracking key.
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::session_key::enforce,
@@ -768,28 +768,28 @@ pub fn build(state: WebState) -> Router {
             state.clone(),
             crate::device_observation::observe_sign_ins,
         ))
-        // 今の要求の信じてよい国を、api への内部の呼び出しに添えられるよう要求の間だけ置く（task #895）。
+        // Keep the current request's trustworthy country only for the request so it can be attached to internal api calls (task #895).
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::client_country::scope_client_country,
         ))
         .layer(axum::middleware::from_fn(correlation::propagate))
-        // セッション Cookie の名前の読み替え（HTTPS では `__Host-` 前置のものだけを読む。task #583）。
-        // どのハンドラ・route_layer よりも先に走るよう、ルートの外側に置く。
+        // Mapping session cookie names (over HTTPS only `__Host-` prefixed ones are read. task #583).
+        // Placed outside the routes so it runs before any handler or route_layer.
         .layer(axum::middleware::from_fn(move |req, next| {
             crate::cookies::bind_session_cookie_names(cookie_policy.clone(), req, next)
         }))
-        // 接続元 IP の決定（SEC1）。`X-Forwarded-For` を信じるかは api と同じ設定キーでゲートし、
-        // 非信頼時は TCP 接続元へ落とす。ハンドラは `Extension<ClientIp>` で結果だけを受け取る。
+        // Deciding the client IP (SEC1). Whether to trust `X-Forwarded-For` is gated by the same setting key as the api;
+        // when untrusted it falls back to the TCP peer. Handlers receive only the result via `Extension<ClientIp>`.
         .layer(axum::middleware::from_fn(move |req, next| {
             resolve_client_ip(trust_forwarded, req, next)
         }))
-        // 全エラー応答（4xx / 5xx）の本文を共通エラーページへ揃える。ハンドラが本文なしで返した応答・
-        // extractor の拒否・メソッド不一致（405）もここで HTML 化される（`error_pages` のモジュール
-        // ドキュメント参照）。ルーティングの外側に置くことで、未マッチ・拒否経路も対象になる。
+        // Make the bodies of all error responses (4xx / 5xx) the shared error page. Responses returned by handlers without a body,
+        // extractor rejections and method mismatches (405) are also turned into HTML here (see the `error_pages` module
+        // documentation). Placing it outside routing covers unmatched and rejected paths too.
         .layer(axum::middleware::from_fn(error_pages::render_error_pages))
-        // アクセススパンはパスのみを記録する（クエリ文字列に載る `?auth_session=` 等の単回ハンドルを
-        // ログへ落とさない。SEC9）。組み立ては api と共有する。
+        // The access span records only the path (do not drop single-use handles like `?auth_session=` in the query string
+        // into logs. SEC9). The building is shared with the api.
         .layer(TraceLayer::new_for_http().make_span_with(assay_contracts::http_trace::request_span))
         .layer(axum::middleware::from_fn(move |req, next| {
             add_security_headers(req, next, hsts_max_age)
@@ -797,12 +797,12 @@ pub fn build(state: WebState) -> Router {
         .with_state(state)
 }
 
-/// ルート（テナント未指定）のランディング。
+/// Landing for the root (no tenant specified).
 ///
-/// 以前は `/{root_tenant_id}/admin/login` へリダイレクトしていたが、これは素のドメインへアクセス
-/// しただけで root テナントの UUID と管理ログイン画面を露出させ、root を狙う攻撃の起点になり得た。
-/// テナントを推測させないため、リダイレクトを廃止し、特定テナントに触れない汎用の案内ページを
-/// 描画する（正規の利用者は管理者から案内された `/{tenant_id}/...` URL でアクセスする）。
+/// It used to redirect to `/{root_tenant_id}/admin/login`, which exposed the root tenant's UUID and the admin login
+/// screen just by accessing the bare domain, a possible starting point for attacks on root.
+/// To avoid revealing tenants, the redirect was removed and a generic guidance page not touching any specific tenant is
+/// rendered (legitimate users access via the `/{tenant_id}/...` URL given by their admin).
 async fn root_entrypoint(headers: HeaderMap) -> impl IntoResponse {
     let messages = Messages::new(locale(&headers));
     (
@@ -815,17 +815,17 @@ async fn root_entrypoint(headers: HeaderMap) -> impl IntoResponse {
     )
 }
 
-/// `build` が `route` に宣言したパスを、パラメータ名を潰した形（`/admin/users/{}`）で集める。
+/// Collects the paths `build` declared in `route`, with parameter names collapsed (`/admin/users/{}`).
 ///
-/// 自分のソースを読むのは、axum の `Router` が登録済みパスを公開しないため。ルート一覧を必要とする
-/// 検査（テンプレートのリンク先・リバースプロキシの振り分け）が、ルート追加のたびに手で更新される
-/// 別の一覧と食い違わないようにする。
+/// It reads its own source because axum's `Router` does not expose registered paths. This keeps checks needing the route
+/// list (template link targets, reverse proxy routing) from diverging from a separate list updated by hand
+/// whenever routes are added.
 #[cfg(test)]
 pub(crate) fn declared_route_paths() -> std::collections::HashSet<String> {
     let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/router.rs"))
         .expect("read router.rs");
-    // 本関数より下（テスト専用コード）にはルートでないパス文字列が並ぶので切り落とす。
-    // コメント行も落とす（説明として書いた `route` の例を実在のルートと数えないため）。
+    // Below this function (test-only code) there are path strings that are not routes, so cut them off.
+    // Comment lines are also dropped (so example `route`s written as explanations are not counted as real routes).
     let source: String = source
         .split("#[cfg(test)]")
         .next()
@@ -847,8 +847,8 @@ pub(crate) fn declared_route_paths() -> std::collections::HashSet<String> {
     paths
 }
 
-/// `{{ expr }}`（Askama）・`{param}`（axum ルート）といったパラメータを `{}` に潰す。
-/// 開き記号が連続する `{{` も 1 つのパラメータとして扱えるよう、閉じ記号までを一括で捨てる。
+/// Collapses parameters like `{{ expr }}` (Askama) and `{param}` (axum routes) into `{}`.
+/// Discards everything up to the closing symbol at once so consecutive opening symbols `{{` count as one parameter.
 #[cfg(test)]
 pub(crate) fn collapse_params(raw: &str) -> String {
     let mut out = String::new();
@@ -860,7 +860,7 @@ pub(crate) fn collapse_params(raw: &str) -> String {
             return out;
         };
         out.push_str("{}");
-        // `}}` のように閉じ記号が連続する分を読み飛ばす。
+        // Skip consecutive closing symbols like `}}`.
         rest = rest[start + end..].trim_start_matches('}');
     }
     out.push_str(rest);
@@ -875,13 +875,13 @@ mod tests {
     use std::sync::Arc;
     use tower::ServiceExt;
 
-    /// 単一オリジン構成（`PUBLISH_TOPOLOGY=single-origin`）のリバースプロキシは、パスを見て web と
-    /// api へ振り分ける。web の画面のパスが `docker/nginx.conf` に列挙されていないと catch-all で
-    /// api へ流れ、404 になる（web にルートはあるのに届かない。ドメイン分割構成で web オリジン相対
-    /// リンクが api のパスへ届かないのと同じ、経路とサービスの取り違え）。
+    /// The reverse proxy in the single-origin setup (`PUBLISH_TOPOLOGY=single-origin`) routes to web or the api
+    /// by path. If a web screen path is not listed in `docker/nginx.conf`, it flows to the api via the catch-all
+    /// and becomes 404 (the route exists in web but is never reached; the same mix-up of path and service as
+    /// web-origin-relative links not reaching api paths in the domain-split setup).
     ///
-    /// 正規表現の評価まではしない。**画面の第 1 セグメントが設定に現れること**だけを見て、ルートを
-    /// 足したのに振り分けを足し忘れた退行を検出する。
+    /// Regular expressions are not evaluated. It only checks that **the screen's first segment appears in the config**,
+    /// detecting regressions where a route was added but its routing forgotten.
     #[test]
     fn single_origin_proxy_routes_every_web_page_to_web() {
         let conf = std::fs::read_to_string(concat!(
@@ -889,17 +889,17 @@ mod tests {
             "/../../docker/nginx.conf"
         ))
         .expect("read docker/nginx.conf");
-        // `location` ブロックの宣言行だけを対象にする（コメントに書いてあるだけでは振り分けされない）。
+        // Only `location` block declaration lines are considered (merely mentioning it in a comment does not route).
         let locations: String = conf
             .lines()
             .map(str::trim)
             .filter(|line| line.starts_with("location"))
             .collect::<Vec<_>>()
             .join("\n");
-        // 非テナントのパスは対象外。`/`・`/assets/...` はプロキシに個別の location があり、
-        // `/healthz`・`/readyz` は api にも同じルートがあるので catch-all で api が答えてよい。
-        // `/internal/health` は**外から到達させない**のが正しい（`location /internal/ { return 404; }`
-        // で遮断する。ADR-0031 決定 2）。web へ流れないことが期待どおりなので対象外にする。
+        // Non-tenant paths are excluded. `/` and `/assets/...` have dedicated locations in the proxy, and
+        // `/healthz` and `/readyz` also exist as api routes, so the api may answer via the catch-all.
+        // `/internal/health` correctly **must not be reachable from outside** (blocked by `location /internal/ { return 404; }`;
+        // ADR-0031 decision 2). Not flowing to web is as expected, so it is excluded.
         let non_tenant = ["/", "/healthz", "/readyz", "/internal/health"];
         let mut checked = 0;
         for route in declared_route_paths() {
@@ -913,13 +913,13 @@ mod tests {
             assert!(
                 locations.contains(segment),
                 "route `{route}` is served by web but `{segment}` does not appear in any \
-                 location of docker/nginx.conf; 単一オリジン構成で api へ流れて 404 になる"
+                 location of docker/nginx.conf; in the single-origin setup it flows to the api and becomes 404"
             );
         }
         assert!(checked > 0, "expected routes to check");
     }
 
-    /// ADR-0031 決定 1: 200 だけでは「どちらのサービスが答えたか」が分からなかった。
+    /// ADR-0031 decision 1: with only a 200, "which service answered" could not be told.
     #[tokio::test]
     async fn liveness_names_the_service_that_answered() {
         let response = build(test_state())
@@ -940,7 +940,7 @@ mod tests {
         assert_eq!(json["service"], "web");
     }
 
-    /// ADR-0031 決定 2: 詳細は内部トークンの内側にしか出さない。
+    /// ADR-0031 decision 2: details are exposed only behind the internal token.
     #[tokio::test]
     async fn the_detailed_health_is_not_readable_without_the_service_token() {
         for header in [None, Some("wrong-token")] {
@@ -956,19 +956,19 @@ mod tests {
             assert_eq!(
                 response.status(),
                 StatusCode::UNAUTHORIZED,
-                "token={header:?} で詳細ヘルスが読めてはならない"
+                "detailed health must not be readable with token={header:?}"
             );
             let body = axum::body::to_bytes(response.into_body(), usize::MAX)
                 .await
                 .expect("body");
             assert!(
                 !String::from_utf8_lossy(&body).contains("git_version"),
-                "拒否応答にビルド情報を載せない"
+                "the rejection response must not carry build info"
             );
         }
     }
 
-    /// トークンを付ければ、版数・稼働時間・サーバー時刻・依存先の検査結果が返る。
+    /// With the token, version, uptime, server time and dependency check results are returned.
     #[tokio::test]
     async fn the_detailed_health_reports_the_service_state() {
         let state = test_state();
@@ -993,7 +993,7 @@ mod tests {
         assert!(json["started_at"].is_string());
         assert!(json["server_time"].is_string());
         assert!(json["uptime_seconds"].is_number());
-        // web が見る依存先は api だけ（テストでは api が居ないので fail になる）。
+        // The only dependency web checks is the api (there is no api in tests, so it is a fail).
         assert_eq!(json["checks"][0]["name"], "api");
         assert_eq!(json["status"], json["checks"][0]["status"]);
     }
@@ -1004,8 +1004,8 @@ mod tests {
         ))
     }
 
-    /// ルート `/` はリダイレクトせず案内ページ（404）を返し、レスポンスに root テナントの UUID を
-    /// 一切含めない（素のドメインアクセスで root を露出させない）ことの回帰テスト。
+    /// Regression test that the root `/` does not redirect but returns a guidance page (404) and the response never contains
+    /// the root tenant's UUID (bare domain access must not expose root).
     #[tokio::test]
     async fn root_does_not_redirect_or_leak_tenant() {
         let response = build(test_state())
@@ -1019,7 +1019,7 @@ mod tests {
             .expect("response");
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        // リダイレクトしない（Location ヘッダを付けない）。
+        // No redirect (no Location header).
         assert!(
             response
                 .headers()
@@ -1031,7 +1031,7 @@ mod tests {
             .await
             .expect("body");
         let text = String::from_utf8_lossy(&body);
-        // UUID（`/{tenant_id}/...`）を本文に埋め込まない。
+        // Do not embed a UUID (`/{tenant_id}/...`) in the body.
         assert!(
             !text.contains("/admin/login"),
             "root page must not expose an admin login link"
@@ -1042,8 +1042,8 @@ mod tests {
         assert!(!uuid_re_hits, "root page must not embed any tenant UUID");
     }
 
-    /// どのルートにも一致しない URL は 404 のエラーページ（HTML 本文つき）を返す（axum 既定の空応答に
-    /// しない）ことの回帰テスト。
+    /// Regression test that a URL matching no route returns the 404 error page (with an HTML body) (not axum's
+    /// default empty response).
     #[tokio::test]
     async fn unmatched_route_returns_404_error_page() {
         let response = build(test_state())
@@ -1061,7 +1061,7 @@ mod tests {
             .await
             .expect("body");
         let text = String::from_utf8_lossy(&body);
-        // ステータスコードと説明文を含むエラーページが描画される。
+        // An error page containing the status code and description is rendered.
         assert!(text.contains("404"), "error page must show the status code");
         assert!(
             text.contains("<!DOCTYPE html>"),
@@ -1069,12 +1069,12 @@ mod tests {
         );
     }
 
-    /// 実ルータでもエラーページのミドルウェアが効いていること（メソッド不一致の 405 と、
-    /// extractor 拒否の内部メッセージ非露出）の回帰テスト。エラー応答の HTML 化は
-    /// `error_pages` に集約しているため、ここでは配線されていることだけを確認する。
+    /// Regression test that the error page middleware works on the real router too (405 for a method mismatch, and
+    /// no exposure of extractor rejection internal messages). Turning error responses into HTML is centralized in
+    /// `error_pages`, so this only checks it is wired up.
     #[tokio::test]
     async fn error_responses_are_rendered_as_pages_by_the_router() {
-        // GET 専用ルートへ POST（405）。
+        // POST to a GET-only route (405).
         let response = build(test_state())
             .oneshot(
                 Request::builder()
@@ -1093,7 +1093,7 @@ mod tests {
         assert!(text.contains("405"), "error page must show the status code");
         assert!(text.contains("<!DOCTYPE html>"));
 
-        // フォーム抽出の拒否で axum 既定のプレーンテキスト（内部詳細）を露出させない。
+        // Form extraction rejections must not expose axum's default plain text (internal details).
         let tenant = "019f6514-08ea-7138-ad71-838a7bdd3575";
         let response = build(test_state())
             .oneshot(
@@ -1117,12 +1117,12 @@ mod tests {
         assert!(text.contains("<!DOCTYPE html>"));
     }
 
-    /// MT20: 表示言語の決定は middleware が担い、**全画面**で `?lang=` が効く。
+    /// MT20: the middleware decides the display language, and `?lang=` works on **every screen**.
     ///
-    /// 未ログインのログイン画面（api を呼ばずに描画できる画面）で検証する。`?lang=` を付けた
-    /// リクエストは (1) その応答が指定言語で描画され、(2) `lang` Cookie が保存される（一時切替。
-    /// ユーザー設定へは書かない —— task #79）。
-    /// 以前は画面ごとに `?lang=` を解釈する／しないが分かれていた（設定画面のみ対応）。
+    /// Verified on the signed-out login screen (a screen renderable without calling the api). A request with `?lang=`
+    /// (1) is rendered in the given language and (2) saves the `lang` cookie (a temporary switch;
+    /// not written to user settings — task #79).
+    /// Previously screens differed in whether they interpreted `?lang=` (only the settings screen did).
     #[tokio::test]
     async fn language_query_applies_to_every_page_and_is_kept_in_the_cookie() {
         let tenant = "019f6514-08ea-7138-ad71-838a7bdd3575";
@@ -1130,12 +1130,12 @@ mod tests {
         let japanese = Messages::new(crate::i18n::Locale::Ja).get("login-title");
 
         for (uri, expected, expect_cookie) in [
-            // `?lang=` が最優先（Accept-Language より強い）。
+            // `?lang=` has top priority (stronger than Accept-Language).
             (format!("/{tenant}/admin/login?lang=en"), &english, true),
             (format!("/{tenant}/login?lang=en"), &english, true),
-            // 非対応値は無視して次順位（ここでは Accept-Language 無しのため既定 ja）。
+            // Unsupported values are ignored and fall to the next priority (here no Accept-Language, so the default ja).
             (format!("/{tenant}/admin/login?lang=fr"), &japanese, false),
-            // `?lang=` 無しは既定 ja。Cookie も書き換えない。
+            // Without `?lang=`, the default ja. The cookie is not rewritten either.
             (format!("/{tenant}/admin/login"), &japanese, false),
         ] {
             let response = build(test_state())
@@ -1166,14 +1166,14 @@ mod tests {
         }
     }
 
-    /// `?lang=` が無ければ `lang` Cookie が効き、それも無ければブラウザ言語へ落ちる。
+    /// Without `?lang=` the `lang` cookie applies, and without it, it falls back to the browser language.
     #[tokio::test]
     async fn language_falls_back_to_the_cookie_then_the_browser() {
         let tenant = "019f6514-08ea-7138-ad71-838a7bdd3575";
         let english = Messages::new(crate::i18n::Locale::En).get("login-title");
         let uri = format!("/{tenant}/admin/login");
 
-        // Cookie はブラウザ言語より優先する。
+        // The cookie takes priority over the browser language.
         let response = build(test_state())
             .oneshot(
                 Request::builder()
@@ -1190,7 +1190,7 @@ mod tests {
             .expect("body");
         assert!(String::from_utf8_lossy(&body).contains(english.as_str()));
 
-        // Cookie が無ければブラウザ言語。
+        // Without the cookie, the browser language.
         let response = build(test_state())
             .oneshot(
                 Request::builder()
@@ -1207,10 +1207,10 @@ mod tests {
         assert!(String::from_utf8_lossy(&body).contains(english.as_str()));
     }
 
-    /// nest 配下の `{tenant_id}` ＋ `{user_id}` 等の 2 パラメータルートで `Path` 抽出が成立する
-    /// ことの回帰テスト。抽出が不一致だと axum が 500（"Wrong number of path arguments"）を返す。
-    /// ここではボディ無し POST のため `Form` 抽出の失敗（4xx）で止まるのが期待値であり、
-    /// API への到達は不要（ネットワークに依存しない）。
+    /// Regression test that `Path` extraction works for two-parameter routes under the nest, `{tenant_id}` + `{user_id}` etc.
+    /// A mismatched extraction makes axum return 500 ("Wrong number of path arguments").
+    /// Here a body-less POST is expected to stop at the `Form` extraction failure (4xx), and
+    /// reaching the API is unnecessary (no network dependency).
     #[tokio::test]
     async fn nested_two_param_routes_extract_path_without_error() {
         let tenant = "019f6514-08ea-7138-ad71-838a7bdd3575";

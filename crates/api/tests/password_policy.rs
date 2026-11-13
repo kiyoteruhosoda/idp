@@ -1,28 +1,28 @@
-//! パスワードポリシー（AP7。仕様 §11.2）の統合テスト。
+//! Integration tests for the password policy (AP7; spec §11.2).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test password_policy
 //!
-//! 単体テスト（`assay_core::application::password_policy`）が見るのは判定そのもので、ここで見るのは
-//! **判定に使う材料が実際に DB へ載るか**である。履歴の行が積まれ剪定されること、パスワード設定
-//! 時刻が記録されること、そして期限切れがログインで強制変更に化けることは、フェイクの
-//! リポジトリでは確かめられない。
+//! Unit tests (`assay_core::application::password_policy`) look at the decision itself; here we look at
+//! **whether the inputs to the decision actually land in the DB**. That history rows pile up and get pruned, that the
+//! password set time is recorded, and that expiry turns into a forced change at login cannot be checked with fake
+//! repositories.
 //!
-//! 有効期限は設定値（`PASSWORD_MAX_AGE_DAYS`）で決まるため、本ファイルは専用のテストバイナリとして
-//! 起動時に環境変数を立てる。同じ値を全テストで立てるので、並行実行しても食い違わない。
+//! The expiry is decided by a setting (`PASSWORD_MAX_AGE_DAYS`), so this file is a dedicated test binary that
+//! sets the env var at startup. Every test sets the same value, so parallel runs do not disagree.
 
 mod support;
 
 use serde_json::json;
 use support::{body_json, create_sso_session, post_internal, send, SERVICE_TOKEN};
 
-/// 本バイナリのポリシー設定。履歴は「現行 + 退役 2 件」、有効期限は 30 日。
+/// Policy settings of this binary. History is "current + 2 retired", expiry is 30 days.
 fn apply_policy_env() {
     std::env::set_var("PASSWORD_HISTORY_COUNT", "3");
     std::env::set_var("PASSWORD_MAX_AGE_DAYS", "30");
 }
 
-/// セルフサービスのパスワード変更（`/internal/account/change-password`）を 1 回叩く。
+/// Calls self-service password change (`/internal/account/change-password`) once.
 async fn change_password(
     app: &axum::Router,
     sso_session_id: &str,
@@ -61,7 +61,7 @@ async fn rejects_reused_passwords_and_prunes_history_to_the_policy_depth() {
         .expect("registered user");
     let sso = create_sso_session(&env.pool, &user_id).await;
 
-    // 自己登録の時点で設定時刻が入っている（有効期限の起点。NULL のままだと作成時刻へ落ちる）。
+    // The set time is recorded at self-registration (the start of expiry; if NULL it falls back to the creation time).
     let changed_at: Option<chrono::NaiveDateTime> =
         sqlx::query_scalar("SELECT password_changed_at FROM users WHERE id = ?")
             .bind(&user_id)
@@ -73,17 +73,17 @@ async fn rejects_reused_passwords_and_prunes_history_to_the_policy_depth() {
         "self-registration must record when the password was set"
     );
 
-    // 現行と同じ値は再利用として拒否する（履歴の深さ 1 の部分）。
+    // The same value as the current one is rejected as reuse (the depth-1 part of the history).
     let body = change_password(&env.app, &sso, p1, p1).await;
     assert_eq!(body["result"], "weak_password");
     assert_eq!(body["reason"], "reused");
 
-    // 別の値へは変えられる。
+    // Changing to another value works.
     let p2 = "second-password-2";
     let body = change_password(&env.app, &sso, p1, p2).await;
     assert_eq!(body["result"], "ok", "unexpected response: {body}");
 
-    // 退役したハッシュが 1 件積まれる。
+    // One retired hash is stored.
     let history: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM user_password_history WHERE user_id = ?")
             .bind(&user_id)
@@ -92,12 +92,12 @@ async fn rejects_reused_passwords_and_prunes_history_to_the_policy_depth() {
             .expect("count history");
     assert_eq!(history, 1);
 
-    // 退役したパスワードへは戻せない。
+    // Cannot go back to a retired password.
     let body = change_password(&env.app, &sso, p2, p1).await;
     assert_eq!(body["result"], "weak_password");
     assert_eq!(body["reason"], "reused");
 
-    // さらに 2 回変えると、退役側は深さ（3 - 現行 1 = 2 件）で剪定される。
+    // Changing twice more prunes the retired side to the depth (3 - 1 current = 2).
     let p3 = "third-password-333";
     let p4 = "fourth-password-44";
     assert_eq!(
@@ -116,7 +116,7 @@ async fn rejects_reused_passwords_and_prunes_history_to_the_policy_depth() {
             .expect("count history");
     assert_eq!(history, 2, "history must be pruned to the policy depth");
 
-    // 剪定で落ちた最古のパスワードは再び使える（保持していないものは判定できない、を明示する）。
+    // The oldest password pruned away can be used again (makes explicit that what is not kept cannot be checked).
     let body = change_password(&env.app, &sso, p4, p1).await;
     assert_eq!(
         body["result"], "ok",
@@ -141,7 +141,7 @@ async fn expired_password_sends_the_user_to_the_forced_change_form() {
         "password": password,
     });
 
-    // 設定した直後は期限内。
+    // Right after setting it is within the expiry.
     let response = send(
         &env.app,
         post_internal(
@@ -154,7 +154,7 @@ async fn expired_password_sends_the_user_to_the_forced_change_form() {
     let body = body_json(response).await;
     assert_eq!(body["result"], "success", "unexpected response: {body}");
 
-    // 設定時刻を 31 日前へ戻すと（= 有効日数 30 を超える）、次のログインで変更を要求する。
+    // Moving the set time back 31 days (= beyond the 30-day validity) requires a change at the next login.
     let aged_user_id = support::find_user_id_by_username(&env.pool, &env.root_tenant_id, &username)
         .await
         .expect("registered user");
@@ -182,7 +182,7 @@ async fn expired_password_sends_the_user_to_the_forced_change_form() {
         "an expired password must not sign in directly: {body}"
     );
 
-    // 変更フォーム（強制変更経路）は `must_change_password` が立っていなくても受け付ける。
+    // The change form (forced change path) accepts it even if `must_change_password` is not set.
     let new_password = "renewed-password-22";
     let response = send(
         &env.app,
@@ -201,7 +201,7 @@ async fn expired_password_sends_the_user_to_the_forced_change_form() {
     let body = body_json(response).await;
     assert_eq!(body["result"], "success", "unexpected response: {body}");
 
-    // 変更で設定時刻が更新され、期限内へ戻る。
+    // The change updates the set time and brings it back within the expiry.
     let response = send(
         &env.app,
         post_internal(

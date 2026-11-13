@@ -1,10 +1,10 @@
-//! Passkey（WebAuthn）登録ユースケース。
+//! Passkey (WebAuthn) registration use case.
 //!
-//! SSO 認証済みユーザーが自分でパスキーを登録・削除する。登録フロー:
-//! 1. `begin()` — チャレンジ生成・保存・options JSON を返す。
-//! 2. `complete()` — ブラウザからのクレデンシャルを検証してDBに保存する。
-//! 3. `delete()` — クレデンシャルを削除する。
-//! 4. `list()` — 登録済みクレデンシャル一覧を返す（管理画面用）。
+//! An SSO-authenticated user registers and deletes their own passkeys. Registration flow:
+//! 1. `begin()` — generates and stores a challenge and returns the options JSON.
+//! 2. `complete()` — verifies the credential from the browser and saves it to the DB.
+//! 3. `delete()` — deletes a credential.
+//! 4. `list()` — returns the list of registered credentials (for the management screen).
 
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
@@ -21,7 +21,7 @@ use std::time::Duration;
 use uuid::Uuid;
 use webauthn_rs::prelude::{Passkey, PasskeyRegistration, RegisterPublicKeyCredential};
 
-/// チャレンジの有効期限（5 分）。
+/// Challenge expiry (5 minutes).
 const CHALLENGE_TTL: Duration = Duration::from_secs(300);
 
 #[derive(Debug, thiserror::Error)]
@@ -46,21 +46,21 @@ impl From<DomainError> for PasskeyRegistrationError {
     }
 }
 
-/// 登録済みクレデンシャルの一覧表示用。
+/// For displaying the list of registered credentials.
 #[derive(Debug, Clone)]
 pub struct CredentialInfo {
     pub id: Uuid,
     pub name: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
-    /// 登録簿（AP9）で一時停止されている。鍵を引く経路は「失効していない行」しか見ないため
-    /// 停止中のパスキーもこの一覧には出る。**出るのに使えない**ので、状態を添えて返す。
+    /// Suspended in the registry (AP9). The key-fetching path only looks at "not revoked rows", so
+    /// suspended passkeys also appear in this list. **They appear but can't be used**, so the state is attached.
     pub suspended: bool,
 }
 
 pub struct PasskeyRegistrationService {
-    /// 認証器の登録簿（AP9）。削除・一時停止で状態を動かす（行そのものは
-    /// `WebAuthnCredentialRepository` が作る。AP11b）。
+    /// The authenticator registry (AP9). Deletion and suspension change its state (the row itself is
+    /// created by `WebAuthnCredentialRepository`. AP11b).
     authenticators:
         Arc<crate::application::authenticator_management::AuthenticatorManagementService>,
     webauthn_credentials: Arc<dyn WebAuthnCredentialRepository>,
@@ -94,10 +94,10 @@ impl PasskeyRegistrationService {
         }
     }
 
-    /// 登録開始。
+    /// Starts registration.
     ///
-    /// 返り値: `(challenge_id, options_json)` — `challenge_id` は complete で使う一時 ID。
-    /// `options_json` はブラウザの `navigator.credentials.create()` に渡す JSON。
+    /// Returns: `(challenge_id, options_json)` — `challenge_id` is a temporary ID used by complete.
+    /// `options_json` is the JSON passed to the browser's `navigator.credentials.create()`.
     pub async fn begin(
         &self,
         sso_session_id: &str,
@@ -107,17 +107,17 @@ impl PasskeyRegistrationService {
         self.begin_for_user(user_id, user_name).await
     }
 
-    /// 登録開始（**本人性を解決済み**の利用者に対して）。
+    /// Starts registration (for a user **whose identity is already resolved**).
     ///
-    /// SSO セッションのほかに、管理者が発行したアカウント設定リンク（ADR-0062）からも呼ばれる。
-    /// ⚠ **本人性の根拠はこのメソッドの外にある** ——呼ぶ側が、セッションかワンタイムトークンかの
-    /// どちらかで「この `user_id` を名乗ってよい」ことを確かめてから渡す。
+    /// Besides the SSO session, it is also called from account setup links issued by an admin (ADR-0062).
+    /// ⚠ **The basis for identity is outside this method** ——the caller confirms, by either a session or a one-time token,
+    /// that "this `user_id` may be claimed" before passing it.
     pub async fn begin_for_user(
         &self,
         user_id: Uuid,
         user_name: &str,
     ) -> Result<(Uuid, serde_json::Value), PasskeyRegistrationError> {
-        // 既存クレデンシャルを exclude_credentials に渡して二重登録を防ぐ。
+        // Pass existing credentials to exclude_credentials to prevent double registration.
         let existing = self.webauthn_credentials.list_by_user_id(user_id).await?;
         let existing_passkeys: Vec<Passkey> = existing
             .iter()
@@ -151,7 +151,7 @@ impl PasskeyRegistrationService {
         Ok((challenge_id, options_json))
     }
 
-    /// 登録完了。
+    /// Completes registration.
     pub async fn complete(
         &self,
         sso_session_id: &str,
@@ -164,7 +164,7 @@ impl PasskeyRegistrationService {
             .await
     }
 
-    /// 登録したパスキーを取り消す（設定リンクの消費に負けたとき。task #586）。
+    /// Revokes a registered passkey (when it lost to the consumption of a setup link. task #586).
     pub async fn discard_for_user(
         &self,
         user_id: Uuid,
@@ -176,8 +176,8 @@ impl PasskeyRegistrationService {
         Ok(())
     }
 
-    /// 登録完了（**本人性を解決済み**の利用者に対して）。呼ぶ側の責務は
-    /// [`Self::begin_for_user`] と同じ。
+    /// Completes registration (for a user **whose identity is already resolved**). The caller's responsibility is
+    /// the same as [`Self::begin_for_user`].
     pub async fn complete_for_user(
         &self,
         user_id: Uuid,
@@ -187,15 +187,15 @@ impl PasskeyRegistrationService {
     ) -> Result<Uuid, PasskeyRegistrationError> {
         let now = self.clock.now();
 
-        // チャレンジを取得して消費する。
+        // Fetch and consume the challenge.
         let challenge = self
             .passkey_challenges
             .find_by_id(challenge_id)
             .await?
             .ok_or(PasskeyRegistrationError::ChallengeNotFound)?;
 
-        // 用途と持ち主が一致しないチャレンジは受け付けない（種別を見るのは、ログイン・本人確認の
-        // ために出したチャレンジをここで使わせないため。`user_id` の一致だけでは種別を跨げる）。
+        // Reject challenges whose purpose and owner don't match (the kind is checked so challenges issued for login or
+        // identity verification can't be used here; matching `user_id` alone can cross kinds).
         if challenge.expires_at <= now
             || challenge.challenge_type != PasskeyChallengeType::Register
             || challenge.user_id != Some(user_id)
@@ -204,11 +204,11 @@ impl PasskeyRegistrationService {
             return Err(PasskeyRegistrationError::ChallengeNotFound);
         }
 
-        // チャレンジ状態を復元する。
+        // Restore the challenge state.
         let reg_state: PasskeyRegistration = serde_json::from_str(&challenge.state_json)
             .map_err(|e| PasskeyRegistrationError::Internal(e.to_string()))?;
 
-        // ブラウザからのクレデンシャルをデシリアライズして検証する。
+        // Deserialize and verify the credential from the browser.
         let reg_credential: RegisterPublicKeyCredential = serde_json::from_value(credential_value)
             .map_err(|e| PasskeyRegistrationError::InvalidCredential(e.to_string()))?;
 
@@ -217,7 +217,7 @@ impl PasskeyRegistrationService {
             .finish_registration(&reg_credential, &reg_state)
             .map_err(PasskeyRegistrationError::InvalidCredential)?;
 
-        // credential_id は base64url エンコードして保存する。
+        // credential_id is stored base64url-encoded.
         let credential_id = base64::Engine::encode(
             &base64::engine::general_purpose::URL_SAFE_NO_PAD,
             passkey.cred_id(),
@@ -236,15 +236,15 @@ impl PasskeyRegistrationService {
             last_used_at: None,
         };
 
-        // チャレンジを先に削除してから登録（失敗してもチャレンジは使えなくなる）。⚠ **消せた側だけが
-        // 登録する**（task #586。同じチャレンジで同時に 2 本来ても 1 つしか登録しない）。
+        // Delete the challenge first, then register (even on failure the challenge becomes unusable). ⚠ **Only the side that
+        // managed to delete it registers** (task #586; even if two arrive at once with the same challenge, only one registers).
         if !self.passkey_challenges.delete(challenge_id).await? {
             return Err(PasskeyRegistrationError::ChallengeNotFound);
         }
 
-        // 登録簿へ 1 行として作る（AP11b）。公開鍵も状態も同じ行に載るので、書き込みは 1 回で
-        // 済む —— 移行中にあった「元の表へ入れてから登録簿へ積む」の 2 段構えは、片方だけ
-        // 成功した中途半端な状態を作り得た。
+        // Created as one row in the registry (AP11b). The public key and state go on the same row, so one write
+        // suffices —— the two-step "insert into the original table, then add to the registry" during the migration
+        // could leave a half-done state where only one side succeeded.
         self.webauthn_credentials.create(&cred).await.map_err(|e| {
             if matches!(e, DomainError::Conflict(_)) {
                 PasskeyRegistrationError::DuplicateCredential
@@ -256,11 +256,11 @@ impl PasskeyRegistrationService {
         Ok(cred_id)
     }
 
-    /// クレデンシャルを削除する。
+    /// Deletes a credential.
     ///
-    /// 削除は「消えていること」が結果なので、無い行を消しても DB は何も言わない。**先に存在と
-    /// 持ち主を確かめる**のはそのためで、これが無いと他人の id・既に消えた id・打ち間違いの
-    /// いずれでも画面が「削除しました」と答えてしまう。
+    /// Deletion's result is "it is gone", so the DB says nothing when deleting a missing row. That's why **existence and
+    /// owner are checked first**; without it, the screen would answer "deleted" for someone else's id, an already
+    /// deleted id, or a typo alike.
     pub async fn delete(
         &self,
         sso_session_id: &str,
@@ -281,12 +281,12 @@ impl PasskeyRegistrationService {
         Ok(())
     }
 
-    /// 登録済みクレデンシャル一覧を返す。
+    /// Returns the list of registered credentials.
     ///
-    /// 一時停止（AP9）は登録簿の `status` にしか無く、鍵を引く経路（`WebAuthnCredentialRepository`）
-    /// は失効した行しか落とさない。**停止中のパスキーもこの一覧に出る**ので、登録簿を突き合わせて
-    /// 状態を添える（1 行 = パスキー 1 本なので id で対応する。AP11b）。添えないと、画面は使えない
-    /// パスキーを使えるものとして並べる。
+    /// Suspension (AP9) only exists in the registry's `status`, and the key-fetching path (`WebAuthnCredentialRepository`)
+    /// only drops revoked rows. **Suspended passkeys also appear in this list**, so the registry is matched against it
+    /// to attach the state (1 row = 1 passkey, so matched by id. AP11b). Without it, the screen would list unusable
+    /// passkeys as usable.
     pub async fn list(
         &self,
         sso_session_id: &str,
@@ -310,7 +310,7 @@ impl PasskeyRegistrationService {
             .collect())
     }
 
-    /// SSO Cookie 値からユーザー ID とセッションハッシュを解決する。
+    /// Resolves the user ID and session hash from the SSO cookie value.
     async fn resolve_user(
         &self,
         sso_session_id: &str,

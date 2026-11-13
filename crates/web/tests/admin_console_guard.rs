@@ -1,10 +1,10 @@
-//! 管理コンソールの入口ガードと共通ヘッダのルータ経由の統合テスト（G11）。
+//! Router-level integration tests of the admin console entry guard and shared header (G11).
 //!
-//! 管理コンソールの各画面は「api の `/admin/whoami` に SSO Cookie を転送し、その応答で
-//! 通す／弾く」形になっている。**弾き方が api の応答ごとに違う**（未ログインはログイン画面へ、
-//! 権限不足は 403、api 不通は 502）ため、ここが崩れると「権限が無いのにログイン画面へ飛ばされて
-//! 無限に往復する」「api 障害を権限不足と誤って表示する」といった形で出る。単体テストは
-//! ステータスの写像だけを見ており、Cookie の転送とルータの結線は通っていなかった。
+//! Each admin console screen "forwards the SSO Cookie to the api's `/admin/whoami` and passes or rejects
+//! based on the response". **The rejection differs per api response** (not logged in -> login screen,
+//! insufficient permission -> 403, api unreachable -> 502), so if this breaks it shows up as "redirected to login despite
+//! lacking permission, looping forever" or "api outage shown as missing permission". Unit tests
+//! only checked the status mapping; Cookie forwarding and router wiring were not exercised.
 
 mod support;
 
@@ -15,7 +15,7 @@ use support::{body_text, get, get_with_cookies, location, send, setup};
 use wiremock::matchers::{method, path_regex};
 use wiremock::{Mock, ResponseTemplate};
 
-/// `/admin/whoami` のスタブ（api は `/{tenant_id}/admin/whoami` で受ける）。
+/// Stub of `/admin/whoami` (the api receives it at `/{tenant_id}/admin/whoami`).
 async fn stub_whoami(env: &support::WebEnv, status: u16, body: Option<serde_json::Value>) {
     let template = match body {
         Some(json) => ResponseTemplate::new(status).set_body_json(json),
@@ -31,7 +31,7 @@ async fn stub_whoami(env: &support::WebEnv, status: u16, body: Option<serde_json
 #[tokio::test]
 async fn without_a_session_cookie_the_console_sends_you_to_the_admin_login() {
     let env = setup().await;
-    // Cookie が無いので api は呼ばれない想定だが、呼ばれても 401 を返す形にしておく。
+    // With no Cookie the api is not expected to be called, but return 401 even if it is.
     stub_whoami(&env, 401, None).await;
 
     let response = send(&env.app, get(&format!("{}/admin", env.prefix()))).await;
@@ -126,11 +126,11 @@ async fn an_authenticated_admin_sees_the_console() {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
-/// 稼働中のビルドを返す口（`/admin/version/current`）は、ログイン済みの管理者にだけ答える。
+/// The endpoint returning the running build (`/admin/version/current`) answers only logged-in admins.
 ///
-/// 開いたままの画面はこの値を、自分が描かれたときのビルド（`data-build`）と比べて
-/// 「新しいバージョンがあります」を出す。⚠ **同じプロセスが描いた画面と値が食い違うと、
-/// 何も配っていないのに知らせが出続ける**ので、2 つが同じ文字列であることを通しで見る。
+/// A screen left open compares this value with the build it was rendered by (`data-build`) and
+/// shows "a new version is available". ⚠ **If the value disagrees with screens rendered by the same process,
+/// the notice keeps showing though nothing was deployed**, so check end to end that the two are the same string.
 #[tokio::test]
 async fn the_running_build_is_answered_only_to_a_signed_in_admin() {
     let env = setup().await;
@@ -159,7 +159,7 @@ async fn the_running_build_is_answered_only_to_a_signed_in_admin() {
             .get("cache-control")
             .and_then(|v| v.to_str().ok()),
         Some("no-store"),
-        "比べる相手は「いま答えたプロセス」なので、途中で持たせない"
+        "the comparison target is \"the process answering now\", so it must not be cached"
     );
     let running = body_text(response).await;
     assert!(!running.trim().is_empty());
@@ -174,11 +174,11 @@ async fn the_running_build_is_answered_only_to_a_signed_in_admin() {
     .await;
     assert!(
         page.contains(&format!(r#"data-build="{running}""#)),
-        "画面が持つビルドと、口が返すビルドが食い違っている（{running}）: {page}"
+        "the build on the page and the build the endpoint returns disagree ({running}): {page}"
     );
 
-    // 未ログインには答えない（ログイン画面へ送る。稼働中のビルドは無認証の面に出さない）。
-    // セッションを確かめるのは api なので、whoami が 401 を返す別の環境で見る。
+    // Not answered when logged out (sent to the login screen; the running build is not exposed on unauthenticated surfaces).
+    // The api checks the session, so this is checked in another environment where whoami returns 401.
     let env = setup().await;
     stub_whoami(&env, 401, None).await;
     let anonymous = send(
@@ -211,7 +211,7 @@ async fn every_response_carries_the_shared_security_headers() {
         "clickjacking protection must be present even on redirects"
     );
     assert!(headers.get("referrer-policy").is_some());
-    // HSTS の既定は 0（無効）。http のローカル配置で誤って固定化しないための回帰。
+    // HSTS defaults to 0 (disabled). Regression guard against accidentally pinning it in local http deployments.
     assert!(
         headers.get("strict-transport-security").is_none(),
         "HSTS must stay off until HSTS_MAX_AGE is configured"
@@ -220,7 +220,7 @@ async fn every_response_carries_the_shared_security_headers() {
 
 #[tokio::test]
 async fn liveness_is_answered_without_touching_the_api() {
-    // api を持たない構成でも生存確認は答える（依存を持ち込んでいないことの回帰）。
+    // Liveness answers even without an api (regression guard that no dependency was introduced).
     let app = support::unreachable_api_app();
 
     let response = send(&app, get("/healthz")).await;
@@ -231,12 +231,12 @@ async fn liveness_is_answered_without_touching_the_api() {
     );
 }
 
-/// ADR-0037: web は SSO Cookie を api の管理 API へ**転送しない**。必ず管理トークンへ交換し、
-/// `Authorization: Bearer` で呼ぶ。
+/// ADR-0037: web **does not forward** the SSO Cookie to the api's admin API. It always exchanges it for an admin token
+/// and calls with `Authorization: Bearer`.
 ///
-/// 転送に戻ると api 側は Cookie を資格情報として読まないので全部 401 になる——つまり壊れれば
-/// 気づく。ここで押さえたいのはその一段手前、**Cookie が api へ漏れていないこと**である。
-/// 漏れていても動いてしまうため、動作確認では検出できない。
+/// If it went back to forwarding, the api does not read the Cookie as a credential, so everything would be 401 -- i.e. breakage
+/// would be noticed. What we want to pin here is one step before that: **the Cookie does not leak to the api**.
+/// A leak still works, so functional checks cannot detect it.
 #[tokio::test]
 async fn the_console_sends_a_bearer_token_and_never_forwards_the_session_cookie() {
     let env = setup().await;
@@ -268,8 +268,8 @@ async fn the_console_sends_a_bearer_token_and_never_forwards_the_session_cookie(
         .await
         .expect("recorded requests");
 
-    // 交換は `/internal/*` なのでサービス認証トークンが要る（付け忘れると api は 401 を返し、
-    // コンソール全体が未ログイン扱いになる）。
+    // The exchange is `/internal/*`, so it needs the service auth token (if forgotten the api returns 401 and
+    // the whole console is treated as logged out).
     let exchange = requests
         .iter()
         .find(|r| r.url.path() == "/internal/admin/token")
@@ -302,12 +302,12 @@ async fn the_console_sends_a_bearer_token_and_never_forwards_the_session_cookie(
     );
 }
 
-/// 交換が 401（セッションが無効）なら、api の管理 API を呼ぶ前にログイン画面へ戻す。
+/// If the exchange returns 401 (invalid session), go back to the login screen before calling the api's admin API.
 #[tokio::test]
 async fn a_rejected_token_exchange_sends_you_to_the_admin_login() {
     let env = setup().await;
     support::mount_unauthenticated_management_token(&env).await;
-    // whoami は 200 を返す形にしておく（交換で止まるので呼ばれないことを併せて確かめる）。
+    // whoami is set to return 200 (also checks it is not called because the exchange stops first).
     stub_whoami(
         &env,
         200,

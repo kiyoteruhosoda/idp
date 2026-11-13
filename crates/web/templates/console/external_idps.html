@@ -33,15 +33,15 @@
         <td data-label="{{ messages.get("admin-external-idps-col-name") }}">{{ p.display_name }}</td>
         <td data-label="{{ messages.get("admin-external-idps-col-protocol") }}">{% if p.is_saml() %}<span class="badge text-bg-primary">{{ messages.get("admin-external-idps-protocol-saml") }}</span>{% else %}<span class="badge text-bg-secondary">{{ messages.get("admin-external-idps-protocol-oidc") }}</span>{% endif %}</td>
         <td data-label="{{ messages.get("admin-external-idps-col-issuer") }}"><span class="text-break">{{ p.issuer }}</span></td>
-        {# SAML にクライアントシークレットは無い（真正性はアサーションの署名が担保する）。
-           「未設定」と出すと設定し忘れに見えるため、そもそも該当しないことを示す。 #}
+        {# SAML has no client secret (authenticity is guaranteed by the assertion's signature).
+           Showing "not set" would look like a forgotten setting, so show that it does not apply at all. #}
         <td data-label="{{ messages.get("admin-external-idps-col-secret") }}">{% if p.is_saml() %}<span class="text-muted">—</span>{% else if p.has_client_secret %}<span class="badge text-bg-secondary">{{ messages.get("admin-external-idps-secret-set") }}</span>{% else %}<span class="badge bg-secondary-subtle text-secondary-emphasis">{{ messages.get("admin-external-idps-secret-unset") }}</span>{% endif %}</td>
         <td data-label="{{ messages.get("admin-external-idps-col-state") }}">
           {% if p.enabled %}<span class="badge text-bg-success">{{ messages.get("admin-external-idps-state-enabled") }}</span>{% else %}<span class="badge text-bg-secondary">{{ messages.get("admin-external-idps-state-disabled") }}</span>{% endif %}
           {% if p.allow_auto_link %}<span class="badge text-bg-info ms-1">{{ messages.get("admin-external-idps-state-auto-link") }}</span>{% endif %}
         </td>
-        {# 外部 IdP 側へ貼る URL。OIDC はコールバック、SAML は ACS。組み立て規則を管理者に推測させない。
-           ⚠ 長いので折って全文を見せ（`code-wrap`）、写し間違えないようにコピーのボタンを添える。 #}
+        {# URLs to paste on the external IdP side: callback for OIDC, ACS for SAML. Do not make admins guess the build rule.
+           ⚠ They are long, so wrap to show in full (`code-wrap`) and add a copy button to avoid copy mistakes. #}
         <td data-label="{{ messages.get("admin-external-idps-col-redirect") }}">
           <code class="code-wrap">{{ p.callback_url() }}</code>
           <button type="button" class="btn btn-link btn-sm p-0 ms-1 align-baseline" data-copy-text="{{ p.callback_url() }}" title="{{ messages.get("admin-external-idps-copy-url") }}" aria-label="{{ messages.get("admin-external-idps-copy-url") }}"><i class="fa-regular fa-copy" aria-hidden="true"></i></button>
@@ -62,7 +62,7 @@
     </tbody>
   </table>
 </div>
-{# コピーのボタンが写し終えたことを読み上げる（`console.js` の `data-copy-text`）。 #}
+{# Announces when the copy button has finished copying (`data-copy-text` in `console.js`). #}
 <p class="visually-hidden" role="status" data-copy-status data-copied-text="{{ messages.get("admin-external-idps-copied") }}"></p>
 {% endif %}
 {% endblock %}

@@ -1,10 +1,10 @@
-//! 時刻取得の抽象（テストで固定実装に差し替えるための境界）。
+//! Abstraction over reading the time (a boundary so tests can swap in a fixed implementation).
 //!
-//! 実環境の時刻取得は必ず本トレイト越しに行う（`CLAUDE.md`「テスト」）。実装は infrastructure 層。
+//! Real time must always be read through this trait (`CLAUDE.md` "Tests"). Implemented in the infrastructure layer.
 
 use chrono::{DateTime, Utc};
 
 pub trait Clock: Send + Sync {
-    /// 現在時刻（常に UTC）。
+    /// Current time (always UTC).
     fn now(&self) -> DateTime<Utc>;
 }

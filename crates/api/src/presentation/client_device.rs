@@ -1,11 +1,11 @@
-//! web が添えた今のブラウザの端末の印を、内部の要求の間だけ持つ（task #916。ADR-0079）。
+//! Holds the current browser's device mark attached by web, only during an internal request (task #916, ADR-0079).
 //!
-//! web はどの要求でも端末の印（Cookie `assay_device`。無ければその場で作る）を内部の呼び出しに
-//! [`CLIENT_DEVICE_HEADER`] として添える。この middleware は **`/internal/*` のサブルータにだけ**付ける
-//! （サービストークンの内側）。外から直接 api に来た要求の同じ見出しは読まない。
+//! On every request web attaches the device mark (cookie `assay_device`, created on the spot if absent) to internal calls
+//! as [`CLIENT_DEVICE_HEADER`]. This middleware is attached **only to the `/internal/*` subrouter**
+//! (behind the service token). The same header on requests hitting the api directly is not read.
 //!
-//! ログインの経路ごとに DTO へ欄を足さないのは、足し忘れた経路だけ「印が無い＝登録していない」に
-//! 落ちるため（関門は断る側へ倒れるので通しはしないが、正しい利用者が入れなくなる）。
+//! We don't add a field to each sign-in path's DTO because any path that forgot it would fall into "no mark = not registered"
+//! (the gate fails closed so nothing is let through, but legitimate users would be locked out).
 
 use crate::domain::user_device::{DeviceRef, RequestDevice};
 use assay_contracts::auth::CLIENT_DEVICE_HEADER;
@@ -17,7 +17,7 @@ tokio::task_local! {
     static CLIENT_DEVICE: Option<DeviceRef>;
 }
 
-/// 内部の要求の間だけ、web が添えた端末の印（の指紋）を置く。
+/// Holds the device mark (its fingerprint) attached by web, only during an internal request.
 pub async fn capture_client_device(request: Request, next: Next) -> Response {
     let device = request
         .headers()
@@ -27,7 +27,7 @@ pub async fn capture_client_device(request: Request, next: Next) -> Response {
     CLIENT_DEVICE.scope(device, next.run(request)).await
 }
 
-/// 今の要求の端末の印を引く口（要求の外・外からの要求では `None`）。
+/// Accessor for the current request's device mark (`None` outside a request or for external requests).
 pub struct TaskLocalRequestDevice;
 
 impl RequestDevice for TaskLocalRequestDevice {

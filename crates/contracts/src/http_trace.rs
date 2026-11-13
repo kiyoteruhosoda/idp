@@ -1,23 +1,23 @@
-//! HTTP アクセススパンの組み立て（api ↔ web 共有。SEC9）。
+//! Building the HTTP access span (shared by api and web; SEC9).
 //!
-//! `TraceLayer::new_for_http()` の既定スパンは `uri` を**クエリ文字列込み**で記録する。assay の
-//! URL には `?auth_session=`（web ハンドオフの単回ハンドル）・`?code_challenge=`・`?code=` といった
-//! 資格情報に準じる値が載るため、既定のままだと `RUST_LOG=debug` で秘密が stdout・`log` テーブルへ
-//! 落ちる（ADR-0018 の受け入れ条件）。
+//! The default span of `TraceLayer::new_for_http()` records `uri` **including the query string**. assay
+//! URLs carry credential-like values such as `?auth_session=` (the web handoff single-use handle),
+//! `?code_challenge=` and `?code=`, so with the default, `RUST_LOG=debug` leaks secrets to stdout and
+//! the `log` table (an acceptance criterion of ADR-0018).
 //!
-//! そこで両サービスとも `make_span_with(assay_contracts::http_trace::request_span)` を使い、記録するのは
-//! **パスのみ**にする。api と web で別々に組み立てると片方だけ既定へ戻る事故が起きるため、
-//! cookie 名・CSRF 導出と同じく本 crate に単一定義する。
+//! So both services use `make_span_with(assay_contracts::http_trace::request_span)` and record
+//! **only the path**. Building it separately in api and web risks one side reverting to the default,
+//! so, like cookie names and CSRF derivation, it is defined once in this crate.
 //!
-//! 注: パス自体にも `/{tenant_id}/...` のような識別子は載るが、これは秘密ではない（テナント UUID は
-//! ブラウザのアドレスバーに出る公開値）。
+//! Note: the path itself carries identifiers like `/{tenant_id}/...`, but they are not secret (the tenant
+//! UUID is a public value shown in the browser's address bar).
 
 use tracing::Span;
 
-/// アクセスログ用のスパン。`uri` は**クエリ文字列を落として**パスだけを載せる。
+/// Span for the access log. `uri` carries **only the path, with the query string dropped**.
 ///
-/// スパン名・フィールド名は `TraceLayer` の既定（`http_request` / `method` / `uri` / `version`）に
-/// 揃えてあるため、既存のログ検索・ダッシュボードはそのまま使える。
+/// The span name and field names match `TraceLayer`'s defaults (`http_request` / `method` / `uri` /
+/// `version`), so existing log searches and dashboards keep working.
 pub fn request_span<B>(request: &http::Request<B>) -> Span {
     tracing::info_span!(
         "http_request",
@@ -38,8 +38,8 @@ mod tests {
             .body(())
             .unwrap();
         let span = request_span(&request);
-        // `tracing` のフィールド値は外から読めないため、スパンへ渡す元の値で確認する
-        //（`request_span` はこの値をそのまま `uri` に載せる）。
+        // `tracing` field values cannot be read from outside, so check the original value passed to the span
+        // (`request_span` puts this value into `uri` as is).
         assert_eq!(request.uri().path(), "/6f0b/login");
         assert!(!request.uri().path().contains("secret-handle"));
         assert_eq!(span.metadata().map(|m| m.name()), Some("http_request"));

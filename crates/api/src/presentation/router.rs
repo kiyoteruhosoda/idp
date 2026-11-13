@@ -1,4 +1,4 @@
-//! axum ルータの組立。各コンテキストのルータを `.merge()` / `.nest()` で集約する。
+//! Assembles the axum router. Merges each context's router with `.merge()` / `.nest()`.
 
 use crate::presentation::correlation;
 use crate::presentation::cors;
@@ -28,31 +28,31 @@ use utoipa_swagger_ui::SwaggerUi;
 pub fn build(state: AppState) -> Router {
     let hsts_max_age = state.config.hsts_max_age();
     let api_docs_enabled = state.config.api_docs_enabled();
-    // 内部認証 API（ADR-0007 §3・§5）。web（将来）→api のサービス間 I/F。外部公開しない
-    // （リバースプロキシで /internal/* を遮断する前提）。多層防御としてサービス認証トークン
-    // （X-Internal-Auth-Token）を必須にする route_layer をこのサブルータにのみ付ける。
+    // Internal auth API (ADR-0007 §3, §5). Service-to-service I/F from web (future) to api. Not public
+    // (assumes the reverse proxy blocks /internal/*). As defence in depth, a route_layer requiring the
+    // service auth token (X-Internal-Auth-Token) is attached to this sub-router only.
     let internal = Router::new()
-        // 認可フローの再開（web ハンドオフのハンドル交換 + SSO 判定。ADR-0018 決定 2）。
+        // Resumes the authorization flow (web handoff handle exchange + SSO check; ADR-0018 decision 2).
         .route(
             "/internal/authorize/resume",
             post(authorize::authorize_resume),
         )
-        // 認可フローの継続（ログイン画面の開き直しで、別タブで確立された SSO から続ける）。
+        // Continues the authorization flow (on reopening the login screen, continue from an SSO set up in another tab).
         .route(
             "/internal/authorize/continue",
             post(authorize::authorize_continue),
         )
-        // ログイン画面の文脈（`login_hint` / `ui_locales` の引き直し。G12）。
+        // Login screen context (re-reading `login_hint` / `ui_locales`; G12).
         .route(
             "/internal/authorize/login-context",
             post(authorize::authorize_login_context),
         )
-        // SAML SSO フローの再開（web ハンドオフのハンドル交換 + SSO 判定 + 応答発行）。
+        // Resumes the SAML SSO flow (web handoff handle exchange + SSO check + response issuance).
         .route("/internal/saml/resume", post(saml_sso::saml_resume))
-        // RP-initiated logout（end_session_endpoint は web。api は失効・通知・URL 組み立てを担う）。
+        // RP-initiated logout (end_session_endpoint is on web; api handles revocation, notifications, URL building).
         .route("/internal/logout/rp", post(logout::rp_logout))
-        // 管理コンソールの SSO セッション → 管理トークンの交換（ADR-0037）。api の `/admin/*` は
-        // Bearer しか受け付けないため、web はデータ操作の前に必ずここを通る。
+        // Exchanges an admin console SSO session for an admin token (ADR-0037). The api `/admin/*` accepts
+        // only Bearer, so web always goes through here before operating on data.
         .route(
             "/internal/admin/token",
             post(internal_admin_token::issue_management_token),
@@ -66,7 +66,7 @@ pub fn build(state: AppState) -> Router {
             "/internal/authenticate/admin/change-password",
             post(internal_auth::admin_change_password),
         )
-        // エンドユーザー・ポータルの直接ログイン（クライアント非依存。TOTP 尊重）。
+        // Direct login to the end-user portal (client-independent; honours TOTP).
         .route(
             "/internal/authenticate/portal",
             post(internal_auth::authenticate_portal),
@@ -75,7 +75,7 @@ pub fn build(state: AppState) -> Router {
             "/internal/authenticate/portal/mfa",
             post(internal_auth::authenticate_portal_mfa),
         )
-        // ポータルの強制パスワード変更（初回ログイン時。ADR-0009 §5）。
+        // Forced password change in the portal (at first login; ADR-0009 §5).
         .route(
             "/internal/authenticate/portal/change-password",
             post(internal_auth::authenticate_portal_change_password),
@@ -84,22 +84,22 @@ pub fn build(state: AppState) -> Router {
             "/internal/change-password",
             post(internal_auth::change_password),
         )
-        // セルフサービスのパスワード変更（ログイン済みユーザーの設定画面。MT15）。
+        // Self-service password change (settings screen of a signed-in user; MT15).
         .route(
             "/internal/account/change-password",
             post(internal_auth::account_change_password),
         )
-        // セルフサービスの表示言語変更（ログイン済みユーザーの設定画面。MT20）。
+        // Self-service display language change (settings screen of a signed-in user; MT20).
         .route(
             "/internal/account/update-language",
             post(internal_auth::account_update_language),
         )
-        // セルフサービスの配色変更（ログイン済みユーザーの設定画面）。
+        // Self-service color scheme change (settings screen of a signed-in user).
         .route(
             "/internal/account/update-theme",
             post(internal_auth::account_update_theme),
         )
-        // セルフサービスのプロフィール取得・表示名更新（ログイン済みユーザーの設定画面）。
+        // Self-service profile read and display name update (settings screen of a signed-in user).
         .route(
             "/internal/account/profile",
             post(internal_auth::account_profile),
@@ -108,7 +108,7 @@ pub fn build(state: AppState) -> Router {
             "/internal/account/update-name",
             post(internal_auth::account_update_name),
         )
-        // 外部 IdP ログイン（AP10）。
+        // External IdP login (AP10).
         .route(
             "/internal/external/providers",
             post(internal_auth::external_providers),
@@ -125,7 +125,7 @@ pub fn build(state: AppState) -> Router {
             "/internal/external/saml/acs",
             post(internal_auth::external_saml_acs),
         )
-        // 認証器の統合管理（一覧・状態変更・リカバリーコード・email OTP。AP9）。
+        // Unified authenticator management (list, state change, recovery codes, email OTP; AP9).
         .route(
             "/internal/account/authenticators",
             post(internal_auth::account_authenticators),
@@ -142,7 +142,7 @@ pub fn build(state: AppState) -> Router {
             "/internal/account/email-otp",
             post(internal_auth::account_email_otp),
         )
-        // SMS OTP と電話番号の登録（AP13）。送信は MFA 待ちの利用者のみ、登録は SSO セッションで。
+        // SMS OTP and phone number registration (AP13). Sending only for users awaiting MFA, registration via SSO session.
         .route(
             "/internal/account/sms-otp",
             post(internal_auth::account_sms_otp),
@@ -155,7 +155,7 @@ pub fn build(state: AppState) -> Router {
             "/internal/account/phone/confirm",
             post(internal_auth::account_phone_confirm),
         )
-        // Step-up 認証（重要操作の直前の本人確認。AP5）。
+        // Step-up authentication (re-verifying identity right before a sensitive operation; AP5).
         .route(
             "/internal/step-up/check",
             post(internal_auth::step_up_check),
@@ -164,7 +164,7 @@ pub fn build(state: AppState) -> Router {
             "/internal/step-up/verify",
             post(internal_auth::step_up_verify),
         )
-        // 本人確認のパスキー経路（T38）。ログインの開始・完了とは用途の違うチャレンジを扱う。
+        // Passkey path for identity verification (T38). Handles challenges with a different purpose from login begin/finish.
         .route(
             "/internal/step-up/passkey/begin",
             post(internal_auth::step_up_passkey_begin),
@@ -173,7 +173,7 @@ pub fn build(state: AppState) -> Router {
             "/internal/step-up/passkey/verify",
             post(internal_auth::step_up_passkey_verify),
         )
-        // セルフサービスのセキュリティ画面（セッション一覧・失効／連携アプリ解除。G10）。
+        // Self-service security screen (session list, revocation / unlinking apps; G10).
         .route(
             "/internal/account/security",
             post(internal_auth::account_security),
@@ -186,14 +186,14 @@ pub fn build(state: AppState) -> Router {
             "/internal/account/security/revoke-consent",
             post(internal_auth::account_revoke_consent),
         )
-        // 発行済みトークンの再発行（本人。ADR-0047）。
+        // Reissuing issued tokens (by the user; ADR-0047).
         .route(
             "/internal/account/security/reissue-tokens",
             post(internal_auth::account_reissue_tokens),
         )
-        // 利用者の端末（task #872）。ログインした端末の結び付けと「端末」の欄。
+        // The user's devices (task #872). Binding the signed-in device and the "Devices" section.
         .route("/internal/devices/observe", post(internal_devices::observe))
-        // 登録していない端末で正しく入ろうとしたときの、その場での端末の登録（task #916）。
+        // Registering the device on the spot when signing in correctly from an unregistered device (task #916).
         .route(
             "/internal/device-enrollment/describe",
             post(internal_device_enrollment::describe),
@@ -206,7 +206,7 @@ pub fn build(state: AppState) -> Router {
             "/internal/device-enrollment/passkey/complete",
             post(internal_device_enrollment::complete),
         )
-        // 「アプリで続ける」と認証アプリの鍵（task #892・ADR-0077）。
+        // "Continue with the app" and the authenticator app keys (task #892, ADR-0077).
         .route(
             "/internal/app-approval/start",
             post(internal_app_approval::start),
@@ -231,7 +231,7 @@ pub fn build(state: AppState) -> Router {
             "/internal/account/app-approver/keys/revoke",
             post(internal_app_approval::account_revoke_key),
         )
-        // SSO セッションの端末の鍵への結び付け（DBSC。task #887）。
+        // Binding the SSO session to the device key (DBSC; task #887).
         .route(
             "/internal/sso/key-binding",
             post(internal_session_keys::binding),
@@ -256,17 +256,17 @@ pub fn build(state: AppState) -> Router {
             "/internal/account/devices/revoke",
             post(internal_devices::account_revoke_device),
         )
-        // 本人が見る「状況」（task #896）。
+        // The "Status" the user sees (task #896).
         .route(
             "/internal/account/security/status",
             post(internal_security_status::account_security_status),
         )
-        // 本人のログイン履歴（task #879）。
+        // The user's sign-in history (task #879).
         .route(
             "/internal/account/sign-in-history",
             post(internal_sign_in_history::account_sign_in_history),
         )
-        // 利用者が登録する SSH の公開鍵（task #885）。
+        // SSH public keys registered by the user (task #885).
         .route(
             "/internal/account/ssh-keys",
             post(internal_ssh_keys::account_ssh_keys),
@@ -279,15 +279,15 @@ pub fn build(state: AppState) -> Router {
             "/internal/account/ssh-keys/revoke",
             post(internal_ssh_keys::account_revoke_ssh_key),
         )
-        // ログイン中ユーザーの所属テナント列挙（テナント切り替え UI）。
+        // Lists the tenants of the signed-in user (tenant switcher UI).
         .route(
             "/internal/account/tenants",
             post(internal_auth::account_tenants),
         )
         .route("/internal/logout", post(internal_auth::logout))
-        // パスワードリセット（忘失時。MT18）。未ログイン経路（web がフォームを仲介する）。
+        // Password reset (when forgotten; MT18). Unauthenticated path (web relays the form).
         .route(
-            // アカウント設定リンク（ADR-0062）。describe は読むだけで消費しない。
+            // Account setup link (ADR-0062). describe only reads and does not consume it.
             "/internal/account-setup/describe",
             post(account_setup::describe),
         )
@@ -307,16 +307,16 @@ pub fn build(state: AppState) -> Router {
             "/internal/password-reset/complete",
             post(internal_auth::password_reset_complete),
         )
-        // 同意 API（F3: Consent）。
+        // Consent API (F3: Consent).
         .route("/internal/consent-info", get(consent::consent_info))
         .route("/internal/consent/approve", post(consent::consent_approve))
         .route("/internal/consent/deny", post(consent::consent_deny))
-        // MFA（TOTP）自己登録・ログイン検証 API。
+        // MFA (TOTP) self-registration and login verification API.
         .route("/internal/mfa/totp/setup", post(mfa::setup_totp))
         .route("/internal/mfa/totp/confirm", post(mfa::confirm_totp))
         .route("/internal/mfa/totp/delete", post(mfa::delete_totp))
         .route("/internal/mfa/totp/verify", post(mfa::verify_totp))
-        // Passkey（WebAuthn）セルフ登録 API。
+        // Passkey (WebAuthn) self-registration API.
         .route(
             "/internal/passkey/register/begin",
             post(passkey::register_begin),
@@ -327,14 +327,14 @@ pub fn build(state: AppState) -> Router {
         )
         .route("/internal/passkey/delete", post(passkey::passkey_delete))
         .route("/internal/passkey/list", post(passkey::passkey_list))
-        // Passkey ログインフロー API。
+        // Passkey login flow API.
         .route("/internal/passkey/login/begin", post(passkey::login_begin))
         .route(
             "/internal/passkey/login/complete",
             post(passkey::login_complete),
         )
-        // 認可フロー外の直接ログイン（管理コンソール・ポータル）。開始は上の login/begin を共有し、
-        // `auth_session_id` を渡さずに得たチャレンジをここで完了する。
+        // Direct login outside the authorization flow (admin console, portal). Begin shares login/begin above,
+        // and the challenge obtained without an `auth_session_id` is finished here.
         .route(
             "/internal/passkey/login/admin/complete",
             post(passkey::admin_login_complete),
@@ -343,37 +343,37 @@ pub fn build(state: AppState) -> Router {
             "/internal/passkey/login/portal/complete",
             post(passkey::portal_login_complete),
         )
-        // web が起動時に読む共有ランタイム設定（MT26 / ADR-0013）。web は DB を持たないため、
-        // api/web の両方が消費する DB 管理値（COOKIE_SECURE 等）はここが唯一の出所になる。
+        // Shared runtime settings web reads at startup (MT26 / ADR-0013). web has no DB, so this is the single
+        // source of DB-managed values consumed by both api and web (COOKIE_SECURE etc.).
         .route(
             assay_contracts::runtime_settings::SHARED_RUNTIME_SETTINGS_PATH,
             get(internal_runtime_settings::shared_runtime_settings),
         )
-        // web の WARN / ERROR 取り込み（CLAUDE.md「ログ」）。web は DB を持たないため、自身の
-        // アプリケーションログはここへ送って `log` テーブルへ書いてもらう。
+        // Ingests web WARN / ERROR logs (CLAUDE.md "Logs"). web has no DB, so it sends its own
+        // application logs here to have them written to the `log` table.
         .route(
             "/internal/logs",
             post(admin_application_logs::ingest_application_logs),
         )
-        // Prometheus メトリクス（G6）。公開面ではなく内部面に置く（誰がいつ何回失敗したかを
-        // 集約した情報であり、外から読めてよい値ではない）。プロキシ遮断 + サービストークンの二重。
+        // Prometheus metrics (G6). Placed on the internal surface, not the public one (it aggregates who
+        // failed when and how often; not something readable from outside). Proxy block + service token.
         .route(
             "/internal/metrics",
             get(crate::presentation::metrics::metrics_endpoint),
         )
-        // 詳細ヘルス（ADR-0031）。版数・稼働時間・サーバー時刻・依存先の検査結果を返す。
-        // 公開面（`/healthz`・`/readyz`）はサービス名までで、詳細はここにしか出さない。
+        // Detailed health (ADR-0031). Returns version, uptime, server time and dependency check results.
+        // The public surface (`/healthz`, `/readyz`) shows only the service name; details appear only here.
         .route("/internal/health", get(health::internal_health))
-        // ビルド情報とスキーマ適用状態（ADR-0034）。稼働中のコミットが分かると、どの既知の
-        // 不具合が塞がっていないかを外から判断できるため、無認証では出さない。web は
-        // サービストークンを付けて呼ぶので、コンソールのバージョン画面はそのまま動く。
+        // Build info and schema state (ADR-0034). Knowing the running commit lets outsiders tell which
+        // known bugs are still open, so it is not exposed without auth. web calls it with the
+        // service token, so the console's version screen keeps working.
         .route("/internal/version", get(health::version))
         .route("/internal/version/schema", get(health::schema_version))
-        // web が添えた「信じてよい国」（task #895）。サービストークンの確かめ（外側）を通った要求でだけ読む。
+        // The "trusted country" attached by web (task #895). Read only on requests that passed the service token check (outer).
         .route_layer(axum::middleware::from_fn(
             crate::presentation::client_country::capture_client_country,
         ))
-        // web が添えた今のブラウザの端末の印（task #916）。同じくサービストークンの内側でだけ読む。
+        // The current browser's device mark attached by web (task #916). Likewise read only inside the service token check.
         .route_layer(axum::middleware::from_fn(
             crate::presentation::client_device::capture_client_device,
         ))
@@ -382,14 +382,14 @@ pub fn build(state: AppState) -> Router {
             internal_auth::require_service_token,
         ));
 
-    // テナントスコープのルート（ADR-0009 §6）。パスに `/{tenant_id}` は書かず、`.nest()` で前置する。
-    // `resolve_tenant` を `route_layer` で付与し、各ハンドラは `Extension<ResolvedTenant>` を受け取る。
+    // Tenant-scoped routes (ADR-0009 §6). Paths do not contain `/{tenant_id}`; it is prefixed with `.nest()`.
+    // `resolve_tenant` is attached via `route_layer`, and each handler receives `Extension<ResolvedTenant>`.
     let tenant_scoped = Router::new()
         .route("/auth/register", post(register::register))
         .route("/auth/verify-email", post(register::verify_email))
         .route("/authorize", get(authorize::authorize))
-        // トークン系 3 本（クライアント認証 = Argon2 照合を伴う）は負荷ゲートを通す（SEC10）。
-        // ルートを増やすときは、クライアント認証を伴うなら同じゲートへ載せる。
+        // The three token endpoints (client auth = Argon2 verification) go through the load gate (SEC10).
+        // When adding routes, put them on the same gate if they involve client authentication.
         .merge(
             Router::new()
                 .route("/token", post(token::token))
@@ -401,12 +401,12 @@ pub fn build(state: AppState) -> Router {
                 )),
         )
         .route("/userinfo", get(userinfo::userinfo))
-        // `/logout`（end_session_endpoint）は web が受ける（ADR-0018 決定 2）。api はブラウザ
-        // Cookie を読まないため、公開の logout ルートを持たない（処理は /internal/logout/rp）。
-        // 管理者身元確認（idp.tenant.admin 必須。RequirePerms<IdpAdmin>）。web の管理コンソールが
-        // 管理トークンで認証状態・身元を得るのに使う（ADR-0007 §4 / ADR-0037）。HTML 画面は web crate 側。
+        // `/logout` (end_session_endpoint) is served by web (ADR-0018 decision 2). api does not read browser
+        // cookies, so it has no public logout route (handled by /internal/logout/rp).
+        // Admin identity check (requires idp.tenant.admin; RequirePerms<IdpAdmin>). The web admin console uses it
+        // to get auth state and identity with the admin token (ADR-0007 §4 / ADR-0037). HTML screens are in the web crate.
         .route("/admin/whoami", get(admin::whoami))
-        // テナント作成・管理（ADR-0009 §5・§6）。idp.system.admin 必須（実質 root のみ）。
+        // Tenant creation and management (ADR-0009 §5, §6). Requires idp.system.admin (effectively root only).
         .route(
             "/admin/tenants",
             get(admin_tenants::list_tenants).post(admin_tenants::create_tenant),
@@ -417,15 +417,15 @@ pub fn build(state: AppState) -> Router {
                 .patch(admin_tenants::update_tenant)
                 .delete(admin_tenants::delete_tenant),
         )
-        // 子テナント管理者のパスワード再発行（idp.system.admin 必須）。
+        // Reissues the password of a child tenant admin (requires idp.system.admin).
         .route(
             "/admin/tenants/{child_id}/admin-password-reset",
             post(admin_tenants::reset_tenant_admin_password),
         )
-        // テナントへのドメイン割り当て（ADR-0029。idp.system.admin 必須）。対象は**自テナントまたは
-        // 直下の子**で、root 自身にも割り当てられる（root の利用者は作成したテナントへゲストとして
-        // 入るため、ドメイン修飾で入れなければ意味がない）。ドメインの一意性はグローバルなので、
-        // 早い者勝ちにしないよう root の system 管理者だけが操作できる。
+        // Assigns domains to tenants (ADR-0029; requires idp.system.admin). Targets are **the own tenant or
+        // its direct children**, and root itself can be assigned too (root users enter tenants they created
+        // as guests, so it is pointless unless they can enter with the domain qualifier). Domain uniqueness is
+        // global, so only root's system admins may operate it, to avoid first-come-first-served.
         .route(
             "/admin/tenants/{target_id}/domains",
             get(admin_tenants::list_tenant_domains).post(admin_tenants::add_tenant_domain),
@@ -434,12 +434,12 @@ pub fn build(state: AppState) -> Router {
             "/admin/tenants/{target_id}/domains/{domain_id}",
             delete(admin_tenants::remove_tenant_domain),
         )
-        // 設定画面（MT14）のテナント設定区画。自テナントの表示名（idp.tenant-settings:read / :write）。
+        // Tenant settings section of the settings screen (MT14). The own tenant's display name (idp.tenant-settings:read / :write).
         .route(
             "/admin/settings/tenant",
             get(admin_tenants::get_current_tenant).patch(admin_tenants::update_current_tenant),
         )
-        // テナントの設定値（ADR-0058）。項目はキー定義から導き、全体で決めるキーは開かない。
+        // Tenant setting values (ADR-0058). Items derive from the key definitions; keys decided globally are not exposed.
         .route(
             "/admin/settings/tenant/keys",
             get(admin_tenant_settings::list_tenant_settings),
@@ -449,44 +449,44 @@ pub fn build(state: AppState) -> Router {
             axum::routing::put(admin_tenant_settings::set_tenant_setting)
                 .delete(admin_tenant_settings::clear_tenant_setting),
         )
-        // 設定画面のシステム設定区画（idp.system.admin 必須 = 実質 root のみ）。細粒度へは分割しない
-        // ——例外は下の SMTP の口だけ（ADR-0051）。
+        // System settings section of the settings screen (requires idp.system.admin = effectively root only). Not split
+        // into fine-grained permissions — the only exception is the SMTP endpoint below (ADR-0051).
         .route(
             "/admin/system-settings",
             get(admin_system_settings::get_system_settings)
                 .put(admin_system_settings::update_system_settings),
         )
-        // テナント自身のメールの経路（ADR-0058 §8）。`idp.smtp:read` / `:write` 必須で、どのテナントでも通る。
+        // The tenant's own mail route (ADR-0058 §8). Requires `idp.smtp:read` / `:write`; works in any tenant.
         .route(
             "/admin/settings/smtp",
             get(admin_tenant_smtp::get_tenant_smtp)
                 .put(admin_tenant_smtp::update_tenant_smtp)
                 .delete(admin_tenant_smtp::clear_tenant_smtp),
         )
-        // 全体の SMTP だけの口（ADR-0051）。保護は `idp.smtp:read` / `:write` で、システム設定の
-        // 本体（`/admin/system-settings`）とは別の権限。⚠ **root テナントでのみ通る。**
+        // The global-SMTP-only endpoint (ADR-0051). Guarded by `idp.smtp:read` / `:write`, a permission separate
+        // from the system settings body (`/admin/system-settings`). ⚠ **Works only in the root tenant.**
         .route(
             "/admin/system-settings/smtp",
             get(admin_system_settings::get_smtp_settings)
                 .put(admin_system_settings::update_smtp_settings),
         )
-        // ランタイム設定の DB 上書き（DB_MANAGED キーのみ。idp.system.admin 必須）。
+        // DB overrides of runtime settings (DB_MANAGED keys only; requires idp.system.admin).
         .route(
             "/admin/system-settings/runtime",
             axum::routing::put(admin_system_settings::update_runtime_setting),
         )
-        // 保存したランタイム設定を反映するための api 再起動（idp.system.admin 必須。ADR-0017）。
+        // Restarts api to apply saved runtime settings (requires idp.system.admin; ADR-0017).
         .route("/admin/restart", post(admin_restart::restart_service))
-        // メンバー・招待（ADR-0009 §3・§6）。idp.members:read / idp.members:write 必須。
+        // Members and invitations (ADR-0009 §3, §6). Requires idp.members:read / idp.members:write.
         .route("/admin/members", get(admin_members::list_members))
-        // ゲストメンバーシップの解除（DELETE）と一時停止・再開（PATCH。MT24）。
+        // Removing (DELETE) and suspending / resuming (PATCH) guest memberships (MT24).
         .route(
             "/admin/members/{user_id}",
             get(admin_members::get_member)
                 .delete(admin_members::revoke_member)
                 .patch(admin_members::update_member_status),
         )
-        // 管理者メモ（ADR-0063）と、その人が使えるアプリ（アプリの詳細の裏返し）。
+        // Admin notes (ADR-0063) and the apps that person can use (the inverse of the app details).
         .route(
             "/admin/members/{user_id}/note",
             axum::routing::put(admin_members::update_member_note),
@@ -495,9 +495,9 @@ pub fn build(state: AppState) -> Router {
             "/admin/members/{user_id}/applications",
             get(admin_applications::list_member_applications),
         )
-        // アカウント（人とサービスアカウント。ADR-0065）。一覧は読める種別だけを並べる
-        // （人は idp.members:read、サービスアカウントは idp.clients:read）。サービスアカウント 1 件と
-        // その管理者メモ・使えるアプリは、人の `/admin/members/{user_id}/*` と同じ形の口。
+        // Accounts (people and service accounts; ADR-0065). The list shows only readable kinds
+        // (people need idp.members:read, service accounts idp.clients:read). A single service account and
+        // its admin notes and usable apps have the same shape as the people's `/admin/members/{user_id}/*`.
         .route("/admin/accounts", get(admin_accounts::list_accounts))
         .route(
             "/admin/service-accounts/{client_id}",
@@ -515,14 +515,14 @@ pub fn build(state: AppState) -> Router {
             "/admin/invitations",
             post(admin_invitations::create_invitation),
         )
-        // 招待の承諾（管理 API ではない。ログイン済み利用者本人が用いる。ADR-0009 §3）。
+        // Accepting an invitation (not an admin API; used by the signed-in user themselves; ADR-0009 §3).
         .route("/invitations/accept", post(invitations::accept_invitation))
-        // クライアント（RP）登録・管理 API（A1、設計仕様 §9.3）。idp.clients:read / idp.clients:write 必須。
+        // Client (RP) registration and management API (A1, design spec §9.3). Requires idp.clients:read / idp.clients:write.
         .route(
             "/admin/clients",
             post(admin_clients::create_client).get(admin_clients::list_clients),
         )
-        // 状況一覧（静的 status は動的 {client_id} より優先）。
+        // Status list (static status takes precedence over dynamic {client_id}).
         .route(
             "/admin/clients/status",
             get(admin_clients::list_client_status),
@@ -531,16 +531,16 @@ pub fn build(state: AppState) -> Router {
             "/admin/clients/{client_id}",
             get(admin_clients::get_client)
                 .patch(admin_clients::update_client)
-                // 論理削除（ADR-0035）。実体は残し、状態を DELETED にする。
+                // Logical deletion (ADR-0035). Keeps the row and sets the state to DELETED.
                 .delete(admin_clients::delete_client),
         )
         .route(
             "/admin/clients/{client_id}/secret",
             post(admin_clients::rotate_client_secret),
         )
-        // システム用クライアントへの管理権限の付与・剥奪（ADR-0037）。ここで付けた権限コードが
-        // `client_credentials`（`resource={issuer}/admin`）で得る管理トークンの `perms` になる。
-        // idp.clients:read / idp.clients:write 必須。
+        // Grants and revokes admin permissions for system clients (ADR-0037). The permission codes given here
+        // become the `perms` of the admin token obtained via `client_credentials` (`resource={issuer}/admin`).
+        // Requires idp.clients:read / idp.clients:write.
         .route(
             "/admin/clients/{client_id}/permissions",
             get(admin_client_permissions::list_client_permissions)
@@ -550,8 +550,8 @@ pub fn build(state: AppState) -> Router {
             "/admin/clients/{client_id}/permissions/{permission_code}",
             delete(admin_client_permissions::revoke_client_permission),
         )
-        // 付与可能な権限コード（マスタ）と利用者検索・取得（管理コンソール支援 API）。
-        // idp.permissions:read / idp.users:* 必須（ADR-0037）。
+        // Grantable permission codes (master) and user search / lookup (admin console support API).
+        // Requires idp.permissions:read / idp.users:* (ADR-0037).
         .route(
             "/admin/permissions",
             get(admin_permissions::list_available_permissions),
@@ -560,14 +560,14 @@ pub fn build(state: AppState) -> Router {
             "/admin/users",
             post(admin_users::create_user).get(admin_users::search_user),
         )
-        // 利用者の取得・状態変更（有効化・無効化）・削除。idp.users:read / idp.users:write 必須。
+        // User lookup, state change (enable / disable) and deletion. Requires idp.users:read / idp.users:write.
         .route(
             "/admin/users/{user_id}",
             get(admin_users::get_user)
                 .patch(admin_users::update_user_status)
                 .delete(admin_users::delete_user),
         )
-        // 利用者のパスワード再発行（must_change_password 付き自動生成）。idp.users:write 必須。
+        // Reissues a user's password (auto-generated with must_change_password). Requires idp.users:write.
         .route(
             "/admin/users/{user_id}/profile",
             patch(admin_users::update_user_profile),
@@ -576,27 +576,27 @@ pub fn build(state: AppState) -> Router {
             "/admin/users/{user_id}/password-reset",
             post(admin_users::reset_user_password),
         )
-        // 利用者の MFA（TOTP・Passkey）解除（端末紛失時の復旧。MT21）。idp.users:write 必須。
+        // Resets a user's MFA (TOTP, Passkey) (recovery after losing a device; MT21). Requires idp.users:write.
         .route(
             "/admin/users/{user_id}/mfa-reset",
             post(admin_users::reset_user_mfa),
         )
-        // 発行済み refresh token の一括失効（管理者。ADR-0047）。idp.users:write 必須。
+        // Bulk revocation of issued refresh tokens (by an admin; ADR-0047). Requires idp.users:write.
         .route(
             "/admin/users/{user_id}/token-reissue",
             post(admin_users::reissue_user_tokens),
         )
-        // いま有効な refresh token の本数（再発行の前に見せる。task #83）。idp.users:read 必須。
+        // Number of currently valid refresh tokens (shown before reissuing; task #83). Requires idp.users:read.
         .route(
             "/admin/users/{user_id}/active-tokens",
             get(admin_users::count_user_active_tokens),
         )
-        // アカウントロックの即時解除（AP6。仕様 §17.1・§24.6）。idp.users:write 必須。
+        // Immediate account unlock (AP6; spec §17.1, §24.6). Requires idp.users:write.
         .route(
             "/admin/users/{user_id}/unlock",
             post(admin_users::unlock_user),
         )
-        // ログイン識別子の割り当て（AP8。仕様 §4）。idp.users:read / idp.users:write 必須。
+        // Login identifier assignment (AP8; spec §4). Requires idp.users:read / idp.users:write.
         .route(
             "/admin/users/{user_id}/login-identifiers",
             get(admin_login_identifiers::list_login_identifiers)
@@ -607,12 +607,12 @@ pub fn build(state: AppState) -> Router {
             patch(admin_login_identifiers::update_login_identifier)
                 .delete(admin_login_identifiers::delete_login_identifier),
         )
-        // 別名のメールを主メールへ昇格させる（ADR-0052）。入れ替えなので項目の更新ではない。
+        // Promotes an alias email to the primary email (ADR-0052). It is a swap, not a field update.
         .route(
             "/admin/users/{user_id}/login-identifiers/{identifier_id}/primary-email",
             post(admin_login_identifiers::promote_primary_email),
         )
-        // 利用者権限の付与・剥奪・参照（A2、ADR-0006）。idp.permissions:read / :write 必須。
+        // Grants, revokes and reads user permissions (A2, ADR-0006). Requires idp.permissions:read / :write.
         .route(
             "/admin/users/{user_id}/permissions",
             get(admin_permissions::list_permissions).post(admin_permissions::grant_permission),
@@ -621,9 +621,9 @@ pub fn build(state: AppState) -> Router {
             "/admin/users/{user_id}/permissions/{permission_code}",
             axum::routing::delete(admin_permissions::revoke_permission),
         )
-        // アプリ（ADR-0054 / ADR-0059）。名乗り（ログイン用・SAML・サービスアカウント・宛名）と
-        // 利用者の割り当ては、この段にぶら下がる。
-        // idp.applications:* 必須。
+        // Apps (ADR-0054 / ADR-0059). Identities (login, SAML, service account, audience) and
+        // user assignments hang off this level.
+        // Requires idp.applications:*.
         .route(
             "/admin/applications",
             get(admin_applications::list_applications).post(admin_applications::create_application),
@@ -646,7 +646,7 @@ pub fn build(state: AppState) -> Router {
             "/admin/applications/{application_id}/assignments",
             axum::routing::post(admin_applications::assign_user),
         )
-        // 割り当ては人とサービスアカウントの 2 種類（ADR-0059）。外すときは種類ごとの鍵で指す。
+        // Assignments are of two kinds, people and service accounts (ADR-0059). Removal is addressed by a per-kind key.
         .route(
             "/admin/applications/{application_id}/assignments/users/{user_id}",
             axum::routing::delete(admin_applications::unassign_user),
@@ -655,26 +655,26 @@ pub fn build(state: AppState) -> Router {
             "/admin/applications/{application_id}/assignments/service-accounts/{client_id}",
             axum::routing::delete(admin_applications::unassign_service_account),
         )
-        // 名乗りの候補（ADR-0067）。相手を ID の手入力ではなく一覧から選ばせる。
+        // Identity candidates (ADR-0067). Lets the admin pick the counterpart from a list rather than typing an ID.
         .route(
             "/admin/applications/{application_id}/binding-candidates",
             get(admin_applications::binding_candidates),
         )
-        // 「全員」を「個別」へ倒す前に、いま入れている人を写すための一覧。
+        // List used to copy the people currently included before switching "Everyone" to "Individual".
         .route(
             "/admin/applications/{application_id}/current-users",
             get(admin_applications::current_users),
         )
-        // RP の定期照合が読む名簿（ADR-0057 / ADR-0059）。⚠ **宛先は RP に言わせない**
-        // ——呼んできたサービスアカウントが名乗りとして結び付いたアプリの名簿を返す。権限コードは
-        // 要求しない（`ManagementPrincipal`。結び付きが無ければ 403）。
+        // The roster the RP's periodic reconciliation reads (ADR-0057 / ADR-0059). ⚠ **The RP does not name the target**
+        // — returns the roster of the app the calling service account is bound to as an identity. No permission code
+        // is required (`ManagementPrincipal`; 403 if there is no binding).
         .route(
             "/admin/applications/self/users",
             get(admin_applications::own_application_users),
         )
-        // 配る機械が読む SSH の鍵の一覧（task #885）。idp.ssh-keys:read 必須・機械クライアントだけ。
+        // List of SSH keys read by the distributing machine (task #885). Requires idp.ssh-keys:read; machine clients only.
         .route("/admin/ssh-keys", get(admin_ssh_keys::list_ssh_keys))
-        // 保護リソース（`aud` に入る宛名）の登録・停止・削除（ADR-0042）。idp.resources:* 必須。
+        // Registers, suspends and deletes protected resources (audiences put in `aud`; ADR-0042). Requires idp.resources:*.
         .route(
             "/admin/resources",
             get(admin_resources::list_resources).post(admin_resources::register_resource),
@@ -683,7 +683,7 @@ pub fn build(state: AppState) -> Router {
             "/admin/resources/{resource_id}",
             patch(admin_resources::update_resource_status).delete(admin_resources::delete_resource),
         )
-        // 認証ポリシーの管理（ユーザー認証・認証ポリシー仕様書 §7）。idp.authentication-policies:* 必須。
+        // Authentication policy management (user authentication / auth policy spec §7). Requires idp.authentication-policies:*.
         .route(
             "/admin/authentication-policies",
             get(admin_authentication_policies::list_authentication_policies)
@@ -694,19 +694,19 @@ pub fn build(state: AppState) -> Router {
             put(admin_authentication_policies::update_authentication_policy)
                 .delete(admin_authentication_policies::delete_authentication_policy),
         )
-        // 外部 IdP 設定（AP10）。idp.external-idps:read / :write 必須。クライアントシークレットは書き込み専用。
+        // External IdP settings (AP10). Requires idp.external-idps:read / :write. The client secret is write-only.
         .route(
             "/admin/external-idps",
             get(admin_external_idps::list_external_idps)
                 .post(admin_external_idps::register_external_idp),
         )
-        // 外部 IdP メタデータ取り込み（解析のみ・非永続。AP12）。`{id}` より先に置く——
-        // `import-metadata` を id として解釈されると 404 になる。
+        // External IdP metadata import (parse only, not persisted; AP12). Placed before `{id}` —
+        // otherwise `import-metadata` would be parsed as an id and return 404.
         .route(
             "/admin/external-idps/import-metadata",
             post(admin_external_idps::import_external_idp_metadata),
         )
-        // OIDC discovery ドキュメントの取り込み（取得と検証のみ・非永続。task #77）。同じく `{id}` より先。
+        // OIDC discovery document import (fetch and validate only, not persisted; task #77). Also before `{id}`.
         .route(
             "/admin/external-idps/import-discovery",
             post(admin_external_idps::import_external_idp_discovery),
@@ -716,29 +716,29 @@ pub fn build(state: AppState) -> Router {
             patch(admin_external_idps::update_external_idp)
                 .delete(admin_external_idps::delete_external_idp),
         )
-        // 監査ログ参照（A3、設計仕様 §7）。idp.audit:read 必須。
+        // Audit log access (A3, design spec §7). Requires idp.audit:read.
         .route("/admin/audit-logs", get(admin_audit::list_audit_logs))
-        // エラー・警告ログ参照（`log` テーブル）。テナント横断の運用情報のため idp.system.admin 必須。
+        // Error / warning log access (`log` table). Cross-tenant operational data, so requires idp.system.admin.
         .route(
             "/admin/logs",
             get(admin_application_logs::list_application_logs),
         )
-        // SAML SP（クライアント）登録。idp.saml-service-providers:read / :write 必須。
+        // SAML SP (client) registration. Requires idp.saml-service-providers:read / :write.
         .route(
             "/admin/saml-service-providers",
             get(admin_saml_service_providers::list).post(admin_saml_service_providers::register),
         )
-        // SP メタデータ取り込み（解析のみ・非永続）。idp.saml-service-providers:write 必須。
+        // SP metadata import (parse only, not persisted). Requires idp.saml-service-providers:write.
         .route(
             "/admin/saml-service-providers/import-metadata",
             post(admin_saml_service_providers::import_metadata),
         )
-        // SP の更新・削除。idp.saml-service-providers:write 必須。
+        // SP update and deletion. Requires idp.saml-service-providers:write.
         .route(
             "/admin/saml-service-providers/{id}",
             put(admin_saml_service_providers::update).delete(admin_saml_service_providers::delete),
         )
-        // 署名鍵管理 API（K1）。idp.keys:read / idp.keys:write 必須。
+        // Signing key management API (K1). Requires idp.keys:read / idp.keys:write.
         .route(
             "/admin/signing-keys",
             get(admin_signing_keys::list_keys).post(admin_signing_keys::generate_key),
@@ -756,7 +756,7 @@ pub fn build(state: AppState) -> Router {
             get(discovery::openid_configuration),
         )
         .route("/.well-known/jwks.json", get(discovery::jwks))
-        // 認証アプリが呼ぶ口（task #892・ADR-0077）。アプリはトークンを持たず、操作のたびに鍵で署名する。
+        // Endpoints called by the authenticator app (task #892, ADR-0077). The app holds no token and signs each operation with its key.
         .route(
             "/app-approver/enrollments",
             post(app_approver::start_enrollment),
@@ -783,23 +783,23 @@ pub fn build(state: AppState) -> Router {
             "/app-approver/keys/{key_id}/revoke",
             post(app_approver::revoke),
         )
-        // SAML IdP メタデータ出力（公開。SP が assay を信頼するために取り込むメタデータ）。
+        // SAML IdP metadata output (public; the metadata an SP imports to trust assay).
         .route("/saml/metadata", get(discovery::saml_idp_metadata))
-        // SAML SSO エンドポイント（メタデータが広告する SingleSignOnService。Redirect / POST 両対応）。
+        // SAML SSO endpoint (the SingleSignOnService the metadata advertises; supports both Redirect and POST).
         .route(
             "/saml/sso",
             get(saml_sso::sso_redirect).post(saml_sso::sso_post),
         )
-        // テナント解決（UUID 検証・存在/ACTIVE 確認）を全テナントルートへ付与する（ADR-0009 §7）。
+        // Attaches tenant resolution (UUID validation, existence / ACTIVE check) to all tenant routes (ADR-0009 §7).
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             resolve_tenant,
         ));
 
-    // テナント外パス（プレフィクスなし。ADR-0009 §6）: ヘルスチェック・内部 API・API ドキュメント。
+    // Paths outside tenants (no prefix; ADR-0009 §6): health checks, internal API, API docs.
     Router::new()
         .route("/healthz", get(health::liveness))
-        // 認証アプリの App Link（task #892）。assetlinks.json と、ブラウザで開かれたときの案内。
+        // App Link for the authenticator app (task #892). assetlinks.json and the guide shown when opened in a browser.
         .route(
             "/.well-known/assetlinks.json",
             get(app_approver::asset_links),
@@ -809,9 +809,9 @@ pub fn build(state: AppState) -> Router {
         .route("/readyz", get(health::readiness))
         .nest("/{tenant_id}", tenant_scoped)
         .merge(internal)
-        // Swagger UI と OpenAPI 文書（SEC12）。api 面は公開されるため既定では配信しない
-        // （管理 API を含む全エンドポイントの仕様が無認証で読めてしまう）。開発・検証環境では
-        // `API_DOCS_ENABLED=true` で有効化する。
+        // Swagger UI and OpenAPI document (SEC12). The api surface is public, so they are not served by default
+        // (the spec of every endpoint, admin API included, would be readable without auth). Enable them in
+        // dev / test environments with `API_DOCS_ENABLED=true`.
         .merge(if api_docs_enabled {
             SwaggerUi::new("/api/docs")
                 .url("/api/openapi.json", ApiDoc::openapi())
@@ -819,20 +819,20 @@ pub fn build(state: AppState) -> Router {
         } else {
             Router::new()
         })
-        // CORS（G1）。`route_layer` ではなく `layer` で付けるのは、プリフライト（OPTIONS）が
-        // どのルートにもマッチせず 405 になるため——ここで受け止めて CORS ヘッダ付きで返す。
+        // CORS (G1). Attached with `layer`, not `route_layer`, because a preflight (OPTIONS) matches
+        // no route and would be 405 — it is caught here and returned with CORS headers.
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             cors::apply_cors,
         ))
         .layer(axum::middleware::from_fn(correlation::propagate))
-        // エンドポイント別の所要時間（G6）。`correlation::propagate` より外側に置き、
-        // 相関 ID 付与を含めた「入口から出口まで」を測る。
+        // Per-endpoint duration (G6). Placed outside `correlation::propagate` to measure
+        // "entry to exit" including the correlation ID assignment.
         .layer(axum::middleware::from_fn(
             crate::presentation::metrics::track_http_metrics,
         ))
-        // アクセススパンはパスのみを記録する（クエリ文字列に載る `code`・`code_challenge` を
-        // ログへ落とさない。SEC9）。組み立ては web と共有する。
+        // The access span records only the path (so `code` and `code_challenge` in the query string
+        // never reach the logs; SEC9). The builder is shared with web.
         .layer(TraceLayer::new_for_http().make_span_with(assay_contracts::http_trace::request_span))
         .layer(middleware::from_fn(move |req, next| {
             add_security_headers(req, next, hsts_max_age)

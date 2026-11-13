@@ -1,11 +1,11 @@
-//! 認証器の管理画面（web。`/{tenant_id}/settings/authenticators`。AP9）。
+//! Authenticator management screen (web. `/{tenant_id}/settings/authenticators`. AP9).
 //!
-//! 種別（TOTP・パスキー）を横断した登録簿を 1 画面で見せ、一時停止・再開・失効と、
-//! リカバリーコードの発行を提供する。判定と永続化は api（`/internal/account/authenticators*`）が
-//! 行い、web は CSRF・step-up ゲート・描画だけを担う。
+//! Shows the registry across kinds (TOTP, passkey) on one screen and provides suspend, resume, revoke,
+//! and issuing recovery codes. Decisions and persistence are done by the api (`/internal/account/authenticators*`);
+//! web only handles CSRF, the step-up gate and rendering.
 //!
-//! 認証器を触る操作はすべて step-up（AP5）の対象。盗まれたセッションで認証器を足されると、
-//! 以後は正規の資格情報として振る舞われてしまう。
+//! Every operation touching authenticators is subject to step-up (AP5). If a stolen session could add an authenticator,
+//! it would afterwards act as a legitimate credential.
 
 use super::{api_internal_error, internal_call_status};
 use crate::client_ip::ClientIp;
@@ -34,7 +34,7 @@ pub struct AuthenticatorsQuery {
     pub saved: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
-    /// `confirm` のとき、電話番号の確認コード入力欄を出す（AP13）。
+    /// On `confirm`, shows the phone number confirmation code field (AP13).
     #[serde(default)]
     pub phone: Option<String>,
 }
@@ -42,7 +42,7 @@ pub struct AuthenticatorsQuery {
 #[derive(Debug, Deserialize)]
 pub struct StatusForm {
     pub authenticator_id: String,
-    /// `suspended` / `active` / `revoked`。
+    /// `suspended` / `active` / `revoked`.
     pub status: String,
     pub csrf_token: String,
 }
@@ -52,7 +52,7 @@ pub struct RecoveryCodesForm {
     pub csrf_token: String,
 }
 
-/// 認証器一覧（`GET /{tenant_id}/settings/authenticators`）。
+/// Authenticator list (`GET /{tenant_id}/settings/authenticators`).
 pub async fn page(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -106,7 +106,7 @@ pub async fn page(
     let views: Vec<AuthenticatorView> = authenticators
         .into_iter()
         .map(|a| AuthenticatorView {
-            // 種別・状態は翻訳キーに写す（生の値を画面へ出すと英語のまま混ざる）。
+            // Map kind and status to translation keys (showing raw values would mix English into the screen).
             type_key: type_message_key(&a.authenticator_type),
             status_key: status_message_key(&a.status),
             suspendable: a.status == "active",
@@ -124,8 +124,8 @@ pub async fn page(
         csrf: &csrf,
         authenticators: &views,
         recovery_codes_remaining,
-        // SMS OTP（AP13）: ゲートウェイ未設定なら導線ごと出さない（登録できても送れない
-        // 画面を並べない）。確認待ちのときだけコード入力欄を出す。
+        // SMS OTP (AP13): if no gateway is configured, hide the whole entry point (do not show a screen that
+        // can register but cannot send). Show the code field only while awaiting confirmation.
         sms_available,
         phone_registered,
         awaiting_phone_code: query.phone.as_deref() == Some("confirm"),
@@ -135,7 +135,7 @@ pub async fn page(
     .into_response()
 }
 
-/// 認証器の状態変更（`POST /{tenant_id}/settings/authenticators/status`）。
+/// Changes an authenticator's status (`POST /{tenant_id}/settings/authenticators/status`).
 pub async fn set_status(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -199,10 +199,10 @@ pub async fn set_status(
     }
 }
 
-/// リカバリーコードの発行（`POST /{tenant_id}/settings/recovery-codes`）。
+/// Issues recovery codes (`POST /{tenant_id}/settings/recovery-codes`).
 ///
-/// 平文は**この応答でしか表示しない**。PRG にせず結果を直接描画するのは、リダイレクトすると
-/// コードを URL かサーバ側の一時領域に載せることになるため（どちらも残したくない）。
+/// The plaintext is **shown only in this response**. The result is rendered directly instead of PRG because a redirect
+/// would put the codes in the URL or in a server-side temporary store (neither should remain).
 pub async fn issue_recovery_codes(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -265,7 +265,7 @@ pub async fn issue_recovery_codes(
     .into_response()
 }
 
-/// 認証器の種別を翻訳キーへ写す（未知の値は「その他」へ倒す）。
+/// Maps an authenticator kind to a translation key (unknown values fall back to "other").
 fn type_message_key(value: &str) -> &'static str {
     match value {
         "totp" => "authenticator-type-totp",
@@ -291,9 +291,9 @@ fn saved_key_for(value: &str) -> Option<&'static str> {
     match value {
         "status" => Some("authenticator-saved-status"),
         "phone" => Some("authenticator-saved-phone"),
-        // TOTP の設定を終えた戻り（`mfa_totp::setup_confirm`）。
+        // Returning from finishing TOTP setup (`mfa_totp::setup_confirm`).
         "totp" => Some("authenticator-saved-totp"),
-        // TOTP を削除した戻り（`mfa_totp::setup_delete`）。
+        // Returning from deleting TOTP (`mfa_totp::setup_delete`).
         "totp-deleted" => Some("authenticator-saved-totp-deleted"),
         _ => None,
     }
@@ -315,8 +315,8 @@ fn error_key_for(value: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
 
-    /// api が返す種別・状態はそのまま画面へ出さず、必ず翻訳キーへ写す
-    /// （新しい値が増えたときに生の英語識別子が画面へ漏れないようにする）。
+    /// Kinds and statuses returned by the api are never shown as is but always mapped to translation keys
+    /// (so raw English identifiers do not leak to the screen when new values are added).
     #[test]
     fn unknown_types_and_statuses_fall_back_to_a_known_key() {
         assert_eq!(type_message_key("totp"), "authenticator-type-totp");
@@ -338,7 +338,7 @@ mod tests {
     }
 }
 
-// ── 電話番号の登録（AP13）─────────────────────────────────────────────────────
+// ── Phone number registration (AP13) ─────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 pub struct PhoneRegistrationForm {
@@ -352,10 +352,10 @@ pub struct PhoneConfirmationForm {
     pub csrf_token: String,
 }
 
-/// 電話番号の登録開始（`POST /{tenant_id}/settings/authenticators/phone`）。
+/// Starts phone number registration (`POST /{tenant_id}/settings/authenticators/phone`).
 ///
-/// 認証器の追加は機微操作なので、状態変更と同じく step-up（直前の本人確認）を要求する。
-/// ここを素通しにすると、放置された画面から第二要素の送信先を差し替えられる。
+/// Adding an authenticator is a sensitive operation, so like status changes it requires step-up (recent re-auth).
+/// Letting it through would allow swapping the second factor's destination from an unattended screen.
 pub async fn start_phone_registration(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -413,14 +413,14 @@ pub async fn start_phone_registration(
             api_internal_error("phone_registration")
         }
         Err(e) => {
-            // 電話番号は PII なので、失敗ログにも載せない（要求そのものを出さない）。
+            // A phone number is PII, so it is not logged even on failure (the request itself is not logged).
             tracing::error!(error = %e, "phone registration call to api failed");
             internal_call_status(&e).into_response()
         }
     }
 }
 
-/// 電話番号の登録確認（`POST /{tenant_id}/settings/authenticators/phone/confirm`）。
+/// Confirms phone number registration (`POST /{tenant_id}/settings/authenticators/phone/confirm`).
 pub async fn confirm_phone_registration(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -454,7 +454,7 @@ pub async fn confirm_phone_registration(
             see_other(&format!("{base}?saved=phone"))
         }
         Ok(assay_contracts::auth::InternalPhoneConfirmationResponse::InvalidCode) => {
-            // 確認待ちの画面へ戻す（別のコードを打ち直せるようにする）。
+            // Return to the awaiting-confirmation screen (so another code can be entered).
             see_other(&format!("{base}?phone=confirm&error=phone-code"))
         }
         Ok(assay_contracts::auth::InternalPhoneConfirmationResponse::Unauthenticated) => {

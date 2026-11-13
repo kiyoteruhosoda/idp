@@ -1,19 +1,19 @@
-//! HTTP エラーページ（全ステータスコード対応）の描画と、エラー応答の本文を補完するミドルウェア。
+//! Rendering of HTTP error pages (all status codes) and middleware that fills in error response bodies.
 //!
-//! **エラー応答の HTML 化はこのミドルウェアに集約する。** 個々のハンドラが
-//! `StatusCode::X.into_response()` のように本文なしで返した応答も、axum の extractor 拒否
-//! （`Form` のデシリアライズ失敗など）や未マッチ経路の 404・メソッド不一致の 405 も、すべて
-//! ここで共通のエラーページへ差し替える。ハンドラ側を 1 箇所ずつ書き換える方式は、新しい
-//! エラー経路が増えたときに漏れるため採らない。
+//! **Turning error responses into HTML is centralized in this middleware.** Responses that handlers return without
+//! a body like `StatusCode::X.into_response()`, axum extractor rejections
+//! (`Form` deserialization failures etc.), 404 for unmatched routes and 405 for method mismatches are all
+//! replaced here with the shared error page. Rewriting handlers one by one is not used because new
+//! error paths would be missed.
 //!
-//! 差し替える条件は「本文が空」または「本文が `text/plain`（axum 既定の拒否メッセージ）」のときだけ。
-//! ハンドラが文脈に応じた HTML（例: 管理コンソールの権限不足バナー・戻るリンク付き告知）を
-//! 描画済みならそれを尊重して素通しする。`text/plain` を差し替え対象に含めるのは、
-//! 「Failed to deserialize form body: ...」のような内部詳細をブラウザへ露出させないためでもある。
+//! Replacement happens only when "the body is empty" or "the body is `text/plain` (axum's default rejection message)".
+//! If a handler already rendered context-specific HTML (e.g. the admin console's insufficient permission banner, a
+//! notice with a back link), it is respected and passed through. `text/plain` is included in the replacement
+//! also so that internal details like "Failed to deserialize form body: ..." are not exposed to the browser.
 //!
-//! 文言は `error-<code>-title` / `error-<code>-message` を引き、専用文言を持たないコードは
-//! クラス既定（`error-4xx-*` / `error-5xx-*`）へフォールバックする。これにより標準外のコードでも
-//! 翻訳キーがそのまま画面に出ることがない。
+//! Wording uses `error-<code>-title` / `error-<code>-message`, and codes without dedicated wording
+//! fall back to the class defaults (`error-4xx-*` / `error-5xx-*`). This way even non-standard codes
+//! never show a raw translation key on screen.
 
 use crate::i18n::{Locale, Messages};
 use crate::templates::{render, ErrorPage};
@@ -25,20 +25,20 @@ use axum::http::{HeaderMap, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
 
-/// 専用の文言（`error-<code>-title` / `-message`）を用意しているステータスコード。
-/// IANA 登録済みの 4xx / 5xx を網羅する（418 I'm a teapot はジョークコードのため除く）。
-/// ここに無いコードはクラス既定（`error-4xx-*` / `error-5xx-*`）へフォールバックする。
+/// Status codes with dedicated wording (`error-<code>-title` / `-message`).
+/// Covers the IANA-registered 4xx / 5xx (418 I'm a teapot is excluded as a joke code).
+/// Codes not listed here fall back to the class defaults (`error-4xx-*` / `error-5xx-*`).
 const DEDICATED_STATUS_CODES: &[u16] = &[
     400, 401, 402, 403, 404, 405, 406, 407, 408, 409, 410, 411, 412, 413, 414, 415, 416, 417, 421,
     422, 423, 424, 425, 426, 428, 429, 431, 451, 500, 501, 502, 503, 504, 505, 506, 507, 508, 510,
     511,
 ];
 
-/// エラー応答の本文を差し替え判定のためにバッファする上限。エラー応答は小さいため十分な余裕がある。
-/// 上限を超える本文はハンドラが意図して描画したものとみなし、そのまま返す。
+/// Upper limit for buffering an error response body to decide on replacement. Error responses are small, so this is ample.
+/// Bodies over the limit are considered intentionally rendered by the handler and returned as is.
 const MAX_BUFFERED_ERROR_BODY: usize = 64 * 1024;
 
-/// ステータスコードに対応する翻訳キー（title / message）を返す。
+/// Returns the translation keys (title / message) for a status code.
 fn message_keys(status: StatusCode) -> (String, String) {
     let code = status.as_u16();
     if DEDICATED_STATUS_CODES.contains(&code) {
@@ -58,20 +58,20 @@ fn message_keys(status: StatusCode) -> (String, String) {
     )
 }
 
-/// エラー画面から戻れる先。
+/// Where the user can go back to from the error screen.
 ///
-/// **エラー画面には出口を置く。** 置かないと、リンクを踏んだ先で失敗した利用者は
-/// ブラウザの戻る以外に手が無くなる（左上の名乗りもリンクではない）。
+/// **Error screens get an exit.** Without one, a user who failed after following a link
+/// has nothing but the browser's back button (the name in the top left is not a link either).
 struct BackLink {
     href: String,
     label_key: &'static str,
 }
 
-/// 要求されたパスから戻り先を決める。
+/// Decides the return destination from the requested path.
 ///
-/// テナント接頭辞（UUID）が取れたときだけ出す。管理コンソール配下はコンソールのホームへ、
-/// それ以外はアカウント設定へ戻す。**今いる場所と同じなら出さない** —— 同じ場所へ戻しても
-/// また同じエラーになるだけで、出口には見えて実際は行き止まりになる。
+/// Shown only when a tenant prefix (UUID) can be extracted. Under the admin console it goes to the console home,
+/// otherwise to account settings. **Not shown if it is the current location** — returning to the same place
+/// would just produce the same error, looking like an exit but actually a dead end.
 fn back_link(path: &str) -> Option<BackLink> {
     let mut segments = path.split('/').skip(1);
     let tenant = segments.next()?;
@@ -87,7 +87,7 @@ fn back_link(path: &str) -> Option<BackLink> {
         .then_some(BackLink { href, label_key })
 }
 
-/// エラーページの HTML を描画する。
+/// Renders the error page HTML.
 fn render_page(status: StatusCode, locale: Locale, back: Option<BackLink>) -> String {
     let messages = Messages::new(locale);
     let (title_key, message_key) = message_keys(status);
@@ -105,10 +105,10 @@ fn render_page(status: StatusCode, locale: Locale, back: Option<BackLink>) -> St
     })
 }
 
-/// ハンドラから直接エラーページを返すための応答組み立て（表示言語はリクエストヘッダから決める）。
+/// Builds a response for returning an error page directly from a handler (display language from request headers).
 ///
-/// 戻り先は呼び出し側が渡す。パスから機械的に導かない —— 「そのテナントが存在しない」ような
-/// 404 では、導いた戻り先も同じ理由で開けない。
+/// The caller passes the return destination. It is not derived mechanically from the path — for a 404 like
+/// "the tenant does not exist", a derived destination cannot be opened for the same reason.
 pub(crate) fn page(status: StatusCode, headers: &HeaderMap, back: Option<&str>) -> Response {
     let back = back.map(|href| BackLink {
         href: href.to_string(),
@@ -118,7 +118,7 @@ pub(crate) fn page(status: StatusCode, headers: &HeaderMap, back: Option<&str>) 
     (status, Html(html)).into_response()
 }
 
-/// どのルートにも一致しなかったリクエストへ返す 404 ページ（`Router::fallback`）。
+/// 404 page returned for requests matching no route (`Router::fallback`).
 pub(crate) async fn fallback(uri: Uri, headers: HeaderMap) -> Response {
     let html = render_page(
         StatusCode::NOT_FOUND,
@@ -128,18 +128,18 @@ pub(crate) async fn fallback(uri: Uri, headers: HeaderMap) -> Response {
     (StatusCode::NOT_FOUND, Html(html)).into_response()
 }
 
-/// エラー応答（4xx / 5xx）の本文が空・またはプレーンテキストのとき、共通のエラーページへ差し替える。
+/// Replaces the body of an error response (4xx / 5xx) with the shared error page when it is empty or plain text.
 pub async fn render_error_pages(request: Request, next: Next) -> Response {
-    // JSON を送ってくるブラウザ JS 経路（passkey の登録・認証 API）は HTML を返さず素通しする。
-    // これらは JS 側で `response.ok` を見てエラー表示するため、本文の補完は不要。
+    // Browser JS paths sending JSON (passkey registration/authentication APIs) get no HTML and are passed through.
+    // Their JS checks `response.ok` and shows the error, so filling in the body is unnecessary.
     let is_json_request = request
         .headers()
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.starts_with("application/json"));
-    // HEAD には本文を付けられない。
+    // HEAD cannot have a body.
     let is_head = request.method() == Method::HEAD;
-    // `next.run` で request を消費するため、表示言語と戻り先の判定材料は先に取り出しておく。
+    // `next.run` consumes the request, so extract the display language and return-destination inputs first.
     let locale = crate::handlers::locale(request.headers());
     let back = back_link(request.uri().path());
 
@@ -152,8 +152,8 @@ pub async fn render_error_pages(request: Request, next: Next) -> Response {
     replace_placeholder_body(response, status, locale, back).await
 }
 
-/// 本文が「空」または `text/plain` のときだけエラーページへ差し替える。それ以外（ハンドラが描画した
-/// HTML・JSON）は本文をそのまま復元して返す。応答ヘッダ（Set-Cookie 等）は保持する。
+/// Replaces with the error page only when the body is "empty" or `text/plain`. Otherwise (HTML/JSON rendered by
+/// the handler) the body is restored and returned as is. Response headers (Set-Cookie etc.) are kept.
 async fn replace_placeholder_body(
     response: Response,
     status: StatusCode,
@@ -167,7 +167,7 @@ async fn replace_placeholder_body(
         .is_some_and(|value| value.starts_with("text/plain"));
 
     let (mut parts, body) = response.into_parts();
-    // 上限超過・読み取り失敗時は本文を復元できないため、エラーページを描画して返す（フェイルソフト）。
+    // On exceeding the limit or a read failure the body cannot be restored, so render the error page (fail-soft).
     let keep_body = match axum::body::to_bytes(body, MAX_BUFFERED_ERROR_BODY).await {
         Ok(bytes) if !bytes.is_empty() && !is_plain_text => Some(bytes),
         Ok(_) => None,
@@ -184,7 +184,7 @@ async fn replace_placeholder_body(
         CONTENT_TYPE,
         HeaderValue::from_static("text/html; charset=utf-8"),
     );
-    // 本文長が変わるため、元の Content-Length は捨てて再計算させる。
+    // The body length changes, so discard the original Content-Length and let it be recomputed.
     parts.headers.remove(CONTENT_LENGTH);
     Response::from_parts(parts, Body::from(render_page(status, locale, back)))
 }
@@ -199,9 +199,9 @@ mod tests {
     fn app() -> Router {
         Router::new()
             .route("/ok", get(|| async { "fine" }))
-            // 本文なしのエラー（既存ハンドラの `StatusCode::X.into_response()` 相当）。
+            // An error without a body (like an existing handler's `StatusCode::X.into_response()`).
             .route("/bare", get(|| async { StatusCode::BAD_GATEWAY }))
-            // ハンドラが文脈つき HTML を描画したエラー。
+            // An error for which the handler rendered context-specific HTML.
             .route(
                 "/rendered",
                 get(|| async {
@@ -211,12 +211,12 @@ mod tests {
                     )
                 }),
             )
-            // 標準外のステータスコード（クラス既定へフォールバックする）。
+            // A non-standard status code (falls back to the class default).
             .route(
                 "/nonstandard",
                 get(|| async { StatusCode::from_u16(499).expect("status") }),
             )
-            // extractor 拒否（本文なし POST への `Form` 抽出）で text/plain が返る経路。
+            // Path where an extractor rejection (`Form` extraction on a body-less POST) returns text/plain.
             .route(
                 "/form",
                 post(
@@ -261,7 +261,7 @@ mod tests {
                 "error-500-message".to_string()
             )
         );
-        // 専用文言を持たない 4xx / 5xx はクラス既定へ。
+        // 4xx / 5xx without dedicated wording go to the class default.
         assert_eq!(
             message_keys(StatusCode::from_u16(499).expect("status")),
             (
@@ -278,8 +278,8 @@ mod tests {
         );
     }
 
-    /// 専用文言を宣言したすべてのコードとクラス既定が、ja / en 両方で実際に翻訳されていること
-    /// （`Messages::get` は未定義キーをキー名のまま返すため、キー名が返ったら翻訳漏れ）。
+    /// Every code declared with dedicated wording and the class defaults are actually translated in both ja / en
+    /// (`Messages::get` returns undefined keys as the key name, so getting the key name back means a missing translation).
     #[test]
     fn every_declared_status_code_has_translations_in_both_locales() {
         for locale in [Locale::Ja, Locale::En] {
@@ -304,7 +304,7 @@ mod tests {
         }
     }
 
-    /// 本文なしのエラー応答は共通エラーページへ差し替える。
+    /// Body-less error responses are replaced with the shared error page.
     #[tokio::test]
     async fn fills_empty_error_bodies_with_the_common_page() {
         let (status, body) = request("GET", "/bare", None).await;
@@ -313,7 +313,7 @@ mod tests {
         assert!(body.contains("<!DOCTYPE html>"));
     }
 
-    /// ハンドラが描画した文脈つき HTML は上書きしない。
+    /// Context-specific HTML rendered by the handler is not overwritten.
     #[tokio::test]
     async fn keeps_handler_rendered_error_pages() {
         let (status, body) = request("GET", "/rendered", None).await;
@@ -321,7 +321,7 @@ mod tests {
         assert!(body.contains("context specific"));
     }
 
-    /// extractor 拒否のプレーンテキスト（内部詳細）はエラーページへ差し替えて露出させない。
+    /// Plain-text extractor rejections (internal details) are replaced with the error page and not exposed.
     #[tokio::test]
     async fn replaces_extractor_rejection_text_with_the_common_page() {
         let (status, body) = request("POST", "/form", None).await;
@@ -333,7 +333,7 @@ mod tests {
         assert!(body.contains("<!DOCTYPE html>"));
     }
 
-    /// 未マッチ経路（404）・メソッド不一致（405）もエラーページになる。
+    /// Unmatched routes (404) and method mismatches (405) also become error pages.
     #[tokio::test]
     async fn covers_unmatched_routes_and_method_mismatch() {
         let (status, body) = request("GET", "/no/such/path", None).await;
@@ -345,7 +345,7 @@ mod tests {
         assert!(body.contains("405"), "must show the status code: {body}");
     }
 
-    /// 標準外のコードでも翻訳キーを画面に出さず、クラス既定の文言を表示する。
+    /// Even non-standard codes show the class default wording instead of translation keys.
     #[tokio::test]
     async fn nonstandard_status_codes_use_class_defaults() {
         let (status, body) = request("GET", "/nonstandard", None).await;
@@ -357,7 +357,7 @@ mod tests {
         );
     }
 
-    /// JSON リクエスト（passkey の JS 経路）へは HTML を返さない。
+    /// JSON requests (passkey JS paths) get no HTML.
     #[tokio::test]
     async fn leaves_json_requests_untouched() {
         let (status, body) = request("GET", "/bare", Some("application/json")).await;
@@ -368,14 +368,14 @@ mod tests {
         );
     }
 
-    /// HEAD には本文を付けない。
+    /// HEAD gets no body.
     #[tokio::test]
     async fn does_not_add_a_body_to_head_responses() {
         let (_, body) = request("HEAD", "/bare", None).await;
         assert!(body.is_empty(), "HEAD must not carry a body: {body}");
     }
 
-    /// 正常応答（2xx）は素通しする。
+    /// Successful responses (2xx) are passed through.
     #[tokio::test]
     async fn leaves_successful_responses_untouched() {
         let (status, body) = request("GET", "/ok", None).await;
@@ -383,7 +383,7 @@ mod tests {
         assert_eq!(body, "fine");
     }
 
-    /// テナントが分かるときは戻り先を出す。分からないときは出さない（行き先が無い）。
+    /// When the tenant is known, a return destination is shown. When not, none is shown (nowhere to go).
     #[test]
     fn the_way_out_is_offered_only_when_the_tenant_is_known() {
         let t = "01a00dfe-bffb-7f23-88b5-8bbef50d23f0";
@@ -395,14 +395,14 @@ mod tests {
         assert_eq!(link.href, format!("/{t}/admin"));
         assert_eq!(link.label_key, "error-back-to-console");
 
-        // テナント接頭辞が無い経路（資産・ルート）には戻り先が無い。
+        // Paths without a tenant prefix (assets, root) have no return destination.
         assert!(back_link("/assets/app.css").is_none());
         assert!(back_link("/").is_none());
         assert!(back_link("/healthz").is_none());
     }
 
-    /// **今いる場所へは戻さない。** 設定画面自身が失敗したときに同じ URL を出すと、
-    /// 押してもまた同じエラーになるだけで、出口に見えて行き止まりになる。
+    /// **Never return to the current location.** If the settings screen itself fails and the same URL is shown,
+    /// pressing it just yields the same error, looking like an exit but a dead end.
     #[test]
     fn it_does_not_offer_a_link_back_to_the_failing_page_itself() {
         let t = "01a00dfe-bffb-7f23-88b5-8bbef50d23f0";
@@ -411,7 +411,7 @@ mod tests {
         assert!(back_link(&format!("/{t}/admin")).is_none());
     }
 
-    /// 本文の無い 500 を差し替えたページに、戻り先のリンクが載ること。
+    /// A page that replaced a body-less 500 carries the return link.
     #[tokio::test]
     async fn a_replaced_error_page_carries_the_way_out() {
         let t = "01a00dfe-bffb-7f23-88b5-8bbef50d23f0";
@@ -439,7 +439,7 @@ mod tests {
         .into_owned();
         assert!(
             body.contains(&format!(r#"href="/{t}/settings""#)),
-            "戻り先のリンクが無い: {body}"
+            "no return link: {body}"
         );
     }
 }

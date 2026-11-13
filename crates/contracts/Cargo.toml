@@ -2,7 +2,7 @@
 name = "assay-contracts"
 version = "0.1.0"
 edition = "2021"
-description = "OIDC IdP サービス間 DTO 契約（api サーバ ↔ web クライアントで共有）。DB 非依存。"
+description = "OIDC IdP inter-service DTO contracts (shared by the api server and the web client). DB-independent."
 license = "MIT"
 
 [lib]
@@ -16,10 +16,10 @@ workspace = true
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
-# アプリケーションログ取り込み層（api / web が同じ形でレコードを組み立てるための共有実装）。
+# Application log ingestion layer (shared implementation so api / web build records the same way).
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-# HTTP アクセススパンの単一定義（SEC9）。axum ではなく `http` の基本型にのみ依存する。
+# Single definition of the HTTP access span (SEC9). Depends only on `http` basic types, not axum.
 http = { workspace = true }
 sha2 = { workspace = true }
 hmac = { workspace = true }
@@ -28,5 +28,5 @@ url = { workspace = true }
 psl = { workspace = true }
 
 [dev-dependencies]
-# ライブラリの `log` 経由の呼び出しの後でも WARN が落ちないことの試験（task #801）。
+# Test that WARN is not dropped even after a library call through `log` (task #801).
 log = "0.4"

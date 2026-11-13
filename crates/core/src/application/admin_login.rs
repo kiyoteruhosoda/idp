@@ -1,20 +1,20 @@
-//! 管理コンソール（A2）へのログインのユースケース（ADR-0006 §6）。
+//! Use case: login to the admin console (A2) (ADR-0006 §6).
 //!
-//! 通常の OIDC ログイン（[`crate::application::login`]）は `/authorize` が発行する `auth_session_id` に
-//! 結合し、成功後は authorization code を発行して RP の `redirect_uri` へ戻す。管理コンソールは
-//! OIDC の RP ではなく IdP 自身の画面であり、初回デプロイ時はクライアントが 1 件も存在しないため、
-//! その導線は使えない（クライアント登録のためにコンソールへ入りたいのにログインにクライアントが要る、
-//! という鶏卵問題）。
+//! A normal OIDC login ([`crate::application::login`]) is tied to the `auth_session_id` issued by `/authorize`,
+//! and on success issues an authorization code and returns to the RP's `redirect_uri`. The admin console is
+//! not an OIDC RP but the IdP's own screen, and on first deployment there is not a single client,
+//! so that path cannot be used (a chicken-and-egg problem: you want into the console to register a client,
+//! but login needs a client).
 //!
-//! そこで本ユースケースは資格情報を検証し、テナント admin 権限（`idp.tenant.admin`／`idp.system.admin`）の保有を確認したうえで **SSO セッションを
-//! 直接発行する**（code 発行・redirect は行わない）。ロックアウト（設計仕様 §4.3）と IP レート制限は
-//! 通常ログインと同じ方針で適用する。
+//! So this use case verifies credentials, confirms the user holds tenant admin permission (`idp.tenant.admin` / `idp.system.admin`), and **issues an SSO session
+//! directly** (no code issuance or redirect). Lockout (design spec §4.3) and IP rate limits are
+//! applied with the same policy as normal login.
 //!
-//! 認証ポリシー（AP2。ユーザー認証・認証ポリシー仕様書 §7〜§9）も OIDC ログインと同じ規則で適用する。
-//! 管理コンソールはクライアント文脈を持たないため評価コンテキストの `client_id` は `None`（`client_ids`
-//! 条件を持つポリシーは一致しない）。管理コンソールこそ `deny` / `require_mfa` の対象から外せない
-//! （最も強い権限を持つ利用者が入る画面であり、ここが素通りするとポリシーは実質無効になる）。発行された SSO セッションは通常ログインのものと同一機構
-//! （`sso_session_id` Cookie ＝ 平文、DB は SHA-256）であり、`RequirePerms<IdpAdmin>` がそのまま検証する。
+//! Authentication policies (AP2; user authentication and authentication policy spec §7-§9) are also applied with the same rules as OIDC login.
+//! The admin console has no client context, so the evaluation context's `client_id` is `None` (policies with
+//! `client_ids` conditions do not match). The admin console in particular cannot be exempt from `deny` / `require_mfa`
+//! (it is the screen the most privileged users enter; if it passed straight through, policies would be effectively void). The issued SSO session uses the same mechanism as normal login
+//! (`sso_session_id` cookie = plain text, DB = SHA-256), and `RequirePerms<IdpAdmin>` verifies it as is.
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authentication_policy_gate::{
@@ -47,17 +47,17 @@ use crate::domain::user::User;
 use crate::domain::values::AuthenticationMethod;
 use std::sync::Arc;
 
-// 管理ログインフォームの CSRF 同期トークン導出（`admin_csrf_token`）は、ADR-0007 で管理コンソールを
-// web crate へ移設したのに伴い web 側（`assay-web` の `csrf` モジュール）へ移った。api（core）は保持しない。
+// Derivation of the admin login form's CSRF synchronizer token (`admin_csrf_token`) moved to the web side (`assay-web`'s
+// `csrf` module) when ADR-0007 moved the admin console into the web crate. api (core) does not hold it.
 
 pub struct AdminLoginCommand {
-    /// ログイン識別子（ユーザー名 = `preferred_username`。ADR-0009 §8）。
+    /// Login identifier (username = `preferred_username`; ADR-0009 §8).
     pub username: String,
     pub password: String,
 }
 
-/// ⚠ 秘密（`password`）を `Debug` に出さない（task #593）。`{:?}` でログへ
-/// 落としても値が漏れないよう、手書きで載せる項目を選ぶ。
+/// ⚠ Do not print the secret (`password`) in `Debug` (task #593). Fields are picked by hand so the value
+/// does not leak even if `{:?}` lands in a log.
 impl std::fmt::Debug for AdminLoginCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AdminLoginCommand")
@@ -66,27 +66,27 @@ impl std::fmt::Debug for AdminLoginCommand {
     }
 }
 
-/// パスキー（WebAuthn）による管理ログインのコマンド。ログイン識別子もパスワードも取らない
-/// （discoverable credential が持ち主を名乗る）。
+/// Command for admin login with a passkey (WebAuthn). Takes neither login identifier nor password
+/// (the discoverable credential names its owner).
 #[derive(Debug)]
 pub struct AdminPasskeyLoginCommand {
-    /// `POST /internal/passkey/login/begin` が返したチャレンジ ID。
+    /// Challenge ID returned by `POST /internal/passkey/login/begin`.
     pub challenge_id: uuid::Uuid,
-    /// ブラウザの `navigator.credentials.get()` が返したアサーション。
+    /// Assertion returned by the browser's `navigator.credentials.get()`.
     pub credential: serde_json::Value,
 }
 
-/// 強制パスワード変更を伴う管理ログイン（ADR-0009 §5）のコマンド。管理コンソールのログインは
-/// `auth_session_id` のような一時状態を持たないため、現行パスワードを含め毎回フルに再検証する。
+/// Command for admin login with a forced password change (ADR-0009 §5). Admin console login has no temporary
+/// state like `auth_session_id`, so everything, including the current password, is fully re-verified every time.
 pub struct AdminChangePasswordCommand {
-    /// ログイン識別子（ユーザー名 = `preferred_username`。ADR-0009 §8）。
+    /// Login identifier (username = `preferred_username`; ADR-0009 §8).
     pub username: String,
     pub current_password: String,
     pub new_password: String,
 }
 
-/// ⚠ 秘密（`current_password`, `new_password`）を `Debug` に出さない（task #593）。`{:?}` でログへ
-/// 落としても値が漏れないよう、手書きで載せる項目を選ぶ。
+/// ⚠ Do not print the secrets (`current_password`, `new_password`) in `Debug` (task #593). Fields are picked by hand
+/// so values do not leak even if `{:?}` lands in a log.
 impl std::fmt::Debug for AdminChangePasswordCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AdminChangePasswordCommand")
@@ -95,43 +95,43 @@ impl std::fmt::Debug for AdminChangePasswordCommand {
     }
 }
 
-/// 管理ログインの結果。Presentation は画面（HTML）に写す。
+/// Result of admin login. Presentation maps it to the screen (HTML).
 pub enum AdminLoginOutcome {
-    /// 認証成功かつ `idp.tenant.admin` 保有。SSO Cookie を発行して管理コンソールへ 302 する。
+    /// Authenticated and holds `idp.tenant.admin`. Issues the SSO cookie and 302s to the admin console.
     Success {
         sso_session_id: String,
-        /// SSO Cookie の `Max-Age`（確立したセッションの絶対期限までの秒数。ADR-0058）。
+        /// `Max-Age` of the SSO cookie (seconds until the established session's absolute expiry; ADR-0058).
         sso_absolute_ttl_secs: u64,
     },
-    /// 認証成功・管理権限保有だが `must_change_password`（ADR-0009 §5）。パスワード変更画面へ誘導する。
-    /// SSO はまだ発行しない（変更完了までは他の操作を許可しない）。
+    /// Authenticated and holds admin permission, but `must_change_password` (ADR-0009 §5). Leads to the password change screen.
+    /// SSO is not issued yet (no other operation is allowed until the change completes).
     PasswordChangeRequired {
         username: String,
     },
-    /// IP 単位のレート制限超過。
+    /// Per-IP rate limit exceeded.
     RateLimited,
-    /// 資格情報不正（ユーザー不存在・パスワード不一致・無効アカウントを区別しない）。
+    /// Invalid credentials (missing user, password mismatch and disabled account are not distinguished).
     InvalidCredentials,
-    /// アカウントロック中。
+    /// Account is locked.
     Locked,
-    /// 資格情報は正しいが テナント admin 権限を保有しない。
+    /// Credentials are correct but no tenant admin permission is held.
     Forbidden,
-    /// 新パスワードが強度要件を満たさない（`change_password` のみ）。
-    /// 新パスワードがポリシーを満たさない（長さ・漏えい済み・再利用。AP7）。
+    /// The new password does not meet strength requirements (`change_password` only).
+    /// The new password does not satisfy the policy (length, breached, reused; AP7).
     WeakPassword(PasswordRejection),
-    /// 認証ポリシーにより拒否（AP2。仕様 §7.4 `deny`）。
+    /// Refused by an authentication policy (AP2; spec §7.4 `deny`).
     PolicyDenied,
-    /// パスキーのチャレンジが見つからない・期限切れ・用途違い（パスキー経路のみ）。やり直しを促す。
+    /// The passkey challenge is missing, expired, or for another purpose (passkey path only). Prompts a retry.
     PasskeyChallengeNotFound,
-    /// 認証ポリシーが MFA を必須としたが、使用可能な認証器（確認済み TOTP）が無い（AP2）。
-    /// 管理コンソールは TOTP 入力ステップを持たないため、MFA 必須の管理者はポータル経由で
-    /// 認証器を登録するか、ポータルログインで第二要素を通す必要がある。
+    /// An authentication policy required MFA, but there is no usable authenticator (confirmed TOTP) (AP2).
+    /// The admin console has no TOTP input step, so admins required to use MFA must register an
+    /// authenticator via the portal, or pass the second factor via portal login.
     MfaEnrollmentRequired,
-    /// 認証ポリシーが MFA を必須とし、利用者は認証器を持っている（AP2）。管理コンソールのログインは
-    /// 第二要素の入力ステップを持たないため、ポータルログイン（`/{tenant_id}/login`）で MFA まで
-    /// 通してから管理コンソールへ入るよう案内する。
+    /// An authentication policy required MFA and the user has an authenticator (AP2). Admin console login
+    /// has no second-factor input step, so it guides the user to go through MFA via portal login (`/{tenant_id}/login`)
+    /// before entering the admin console.
     MfaRequired,
-    /// 認証は通ったが、登録した端末に限る組織で登録していない端末だった（task #916）。SSO は作っていない。
+    /// Authenticated, but on an unregistered device in an organization limited to registered devices (task #916). No SSO was created.
     DeviceEnrollmentRequired {
         ticket: String,
     },
@@ -140,32 +140,32 @@ pub enum AdminLoginOutcome {
 
 pub struct AdminLoginService {
     users: Arc<dyn UserRepository>,
-    /// WebAuthn セレモニー（パスキーログイン用）。OIDC 認可フローのログインと同じものを共有する。
+    /// WebAuthn ceremony (for passkey login). Shared with login in the OIDC authorization flow.
     passkey_assertion: Arc<PasskeyAssertionService>,
-    /// テナントへ割り当てたドメイン（ADR-0029）。ログイン欄の入力が `local@domain` の形のとき、
-    /// 所属元テナントを 1 つに決めるために引く（`login_user_resolution`）。
+    /// Domains assigned to tenants (ADR-0029). When the login field input has the form `local@domain`,
+    /// it is looked up to narrow down the home tenant to one (`login_user_resolution`).
     tenant_domains: Arc<dyn TenantDomainRepository>,
     sso_sessions: Arc<dyn SsoSessionRepository>,
     permissions: Arc<dyn UserPermissionRepository>,
     totp_secrets: Arc<dyn TotpSecretRepository>,
-    /// 認証ポリシーの評価（材料の引き当てと評価。`authentication_policy_gate`）。
+    /// Authentication policy evaluation (fetching inputs and evaluating; `authentication_policy_gate`).
     policy_gate: Arc<AuthenticationPolicyGate>,
     hasher: Arc<dyn PasswordHasher>,
     password_policy: Arc<PasswordPolicyService>,
     rate_limiter: Arc<dyn LoginRateLimiter>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
-    /// テナントが上書きできる設定（ADR-0058）。参照のたびに引く。一致するポリシーが無い場合の
-    /// 既定動作（AP2・§4）もここから引く。
+    /// Settings tenants can override (ADR-0058). Looked up on every use. The default effect when no policy matches
+    /// (AP2, §4) also comes from here.
     settings: Arc<dyn EffectiveTenantSettings>,
-    /// 登録した端末の関門（task #916）。`None` は関門なし（試験だけ。api は必ず付ける）。
+    /// The registered device gate (task #916). `None` means no gate (tests only; api always attaches it).
     device_gate: Option<Arc<DeviceGate>>,
 }
 
-/// 管理コンソールで SSO を作ろうとした結論。
+/// Conclusion of trying to create SSO in the admin console.
 enum AdminSso {
     Issued(String, u64),
-    /// 登録していない端末だった（task #916）。
+    /// It was an unregistered device (task #916).
     EnrollmentRequired(String),
 }
 
@@ -204,21 +204,21 @@ impl AdminLoginService {
         }
     }
 
-    /// 登録した端末の関門を付ける（task #916。⚠ api の組み立てでは必ず呼ぶ）。
+    /// Attaches the registered device gate (task #916. ⚠ Always call it when assembling api).
     pub fn with_device_gate(mut self, gate: Arc<DeviceGate>) -> Self {
         self.device_gate = Some(gate);
         self
     }
 
-    /// 認証ポリシーを評価し、SSO を発行してよいかを判定する（AP2）。
+    /// Evaluates authentication policies and decides whether SSO may be issued (AP2).
     ///
-    /// `Ok(())` なら発行可。`Err(outcome)` はそのまま呼び出し側の戻り値になる。
+    /// `Ok(())` means it may be issued. `Err(outcome)` becomes the caller's return value as is.
     ///
-    /// `used` / `user_verified` は**この経路が実際に通した認証方式**である。パスワードログインは
-    /// 単一要素（`[Password]`・UV なし）なので、管理コンソールが第二要素の入力ステップを持たない以上
-    /// `require_mfa` は認証器の有無で案内を出し分けて **いずれにせよ SSO を発行しない**。パスキー
-    /// ログインは `[WebAuthn]`・UV 済みで、所有 + User Verification の多要素・フィッシング耐性認証
-    /// として `require_mfa` を満たす（ADR-0020 §3・パスキー経路と同じ規則）。
+    /// `used` / `user_verified` are **the authentication methods this path actually passed**. Password login is
+    /// single-factor (`[Password]`, no UV), and since the admin console has no second-factor input step,
+    /// `require_mfa` varies its guidance by whether an authenticator exists and **issues no SSO either way**. Passkey
+    /// login is `[WebAuthn]` with UV, which satisfies `require_mfa` as multi-factor (possession + User Verification),
+    /// phishing-resistant authentication (ADR-0020 §3; same rule as the passkey path).
     async fn check_policy(
         &self,
         tenant_id: TenantId,
@@ -234,7 +234,7 @@ impl AdminLoginService {
                 audience: PolicyAudience::Unaddressed,
                 user_id,
                 ip_address: ctx.ip_address.as_deref(),
-                // 管理コンソールのログインは OIDC 認可要求ではないため `acr_values` は無い。
+                // Admin console login is not an OIDC authorization request, so there are no `acr_values`.
                 requested_acr: &[],
                 now: self.clock.now(),
             })
@@ -253,7 +253,7 @@ impl AdminLoginService {
                 Err(AdminLoginOutcome::PolicyDenied)
             }
             PolicyDecision::RequireMfa { policy_code } => {
-                // パスキーは単独で複数要素を満たすため、第二要素の入力ステップを要さない。
+                // A passkey alone satisfies multiple factors, so no second-factor input step is needed.
                 if used.contains(&AuthenticationMethod::WebAuthn) {
                     return Ok(());
                 }
@@ -279,14 +279,14 @@ impl AdminLoginService {
                     AdminLoginOutcome::MfaEnrollmentRequired
                 })
             }
-            // `require_specific_method`（AP3）。管理コンソールのログインはパスワード（+ TOTP）か
-            // パスキーしか通らないため、それで満たせない要求は拒否する。
+            // `require_specific_method` (AP3). Admin console login only passes password (+ TOTP) or
+            // passkey, so requirements those cannot satisfy are refused.
             PolicyDecision::RequireMethods { .. } => {
                 let Some(unmet) = decision.unmet_method_requirement(used, user_verified) else {
                     return Ok(());
                 };
-                // パスキーはこの経路で足せる要素がもう無い（TOTP 入力ステップは無く、パスキーで
-                // 満たせない方式指定は他の経路でも満たせない）。案内を分けずに拒否する。
+                // A passkey has no further factor to add on this path (there is no TOTP input step, and a method
+                // requirement a passkey cannot satisfy cannot be satisfied on other paths either). Refuse without separate guidance.
                 if used.contains(&AuthenticationMethod::WebAuthn) {
                     let reason = format!(
                         "policy={} reason=method_required required={}",
@@ -297,8 +297,8 @@ impl AdminLoginService {
                         .await;
                     return Err(AdminLoginOutcome::PolicyDenied);
                 }
-                // TOTP を足せば満たせる利用者は MFA ステップへ送る（`require_mfa` と同じ扱い）。
-                // 最終判定はこのメソッドが TOTP 検証後にもう一度呼ばれる経路で行われる。
+                // Users who could satisfy it by adding TOTP are sent to the MFA step (same as `require_mfa`).
+                // The final decision is made on the path where this method is called again after TOTP verification.
                 let has_totp = match crate::application::mfa_login::user_has_confirmed_totp(
                     self.totp_secrets.as_ref(),
                     user_id,
@@ -326,7 +326,7 @@ impl AdminLoginService {
         }
     }
 
-    /// ポリシー拒否を監査へ記録する（AP2。OIDC ログインと同じイベント種別・理由形式）。
+    /// Records a policy refusal in the audit (AP2; same event type and reason format as OIDC login).
     async fn record_policy_denied(
         &self,
         tenant_id: TenantId,
@@ -356,7 +356,7 @@ impl AdminLoginService {
         let now = self.clock.now();
         let tenant_id = tenant.tenant_id();
 
-        // 1. IP 単位のレート制限（CSRF 検証後・資格情報検証前。通常ログインと同順）。
+        // 1. Per-IP rate limit (after CSRF verification, before credential verification; same order as normal login).
         if let Some(ip) = &ctx.ip_address {
             if !self.rate_limiter.check_and_record(ip, now) {
                 self.audit
@@ -374,10 +374,10 @@ impl AdminLoginService {
             }
         }
 
-        // 2. ユーザー検索（ログイン識別子。AP8 の登録簿で解決する）。対象はこのテナントの ACTIVE な
-        //    メンバー（HOME / GUEST。ADR-0009 §8。解決の規則は `login_user_resolution`）。
-        //    ゲスト管理者はここで解決される —— テナント作成者は作成先の ACTIVE GUEST になるため
-        //    （§4）、これが無いと自分が作ったテナントの管理コンソールへ直接ログインできない。
+        // 2. User lookup (login identifier, resolved via the AP8 registry). Targets are ACTIVE members of this tenant
+        //    (HOME / GUEST; ADR-0009 §8; resolution rules in `login_user_resolution`).
+        //    Guest admins are resolved here: a tenant creator becomes an ACTIVE GUEST of the created tenant
+        //    (§4), so without this they could not log in directly to the admin console of the tenant they created.
         let user = match resolve_login_user(
             self.users.as_ref(),
             self.tenant_domains.as_ref(),
@@ -387,10 +387,10 @@ impl AdminLoginService {
         .await
         {
             Ok(LoginIdentifierMatch::Resolved(u)) => u,
-            // 不在と曖昧で応答は変えない（存在の露呈を避ける）。監査に残す理由だけを分ける。
+            // The response is the same for missing and ambiguous (avoids revealing existence). Only the audited reason differs.
             Ok(LoginIdentifierMatch::Unresolved(reason)) => {
-                // 実在利用者と同じ argon2 検証を 1 回消費し、応答時間で利用者の有無を
-                // 推し量れないようにする（列挙対策）。
+                // Spend one argon2 verification like a real user so that response time does not reveal
+                // whether the user exists (anti-enumeration).
                 crate::domain::password::verify_against_dummy(self.hasher.as_ref(), &cmd.password);
                 self.audit
                     .record(
@@ -408,9 +408,9 @@ impl AdminLoginService {
             Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
         };
 
-        // 3. ロック状態の確認。
+        // 3. Check lock state.
         if user.is_locked_at(now) {
-            // 不在のときと同じだけ argon2 の検証を消費する（応答時間で状態を推し量らせない。task #590）。
+            // Spend as much argon2 verification as in the missing case (response time must not reveal state; task #590).
             crate::domain::password::verify_against_dummy(self.hasher.as_ref(), &cmd.password);
             self.audit
                 .record(
@@ -426,9 +426,9 @@ impl AdminLoginService {
             return AdminLoginOutcome::Locked;
         }
 
-        // 4. アカウント状態の確認（存在の露呈を避けるため資格情報エラーと同じ応答にする）。
+        // 4. Check account state (same response as a credential error to avoid revealing existence).
         if !user.is_active() {
-            // 不在のときと同じだけ argon2 の検証を消費する（応答時間で状態を推し量らせない。task #590）。
+            // Spend as much argon2 verification as in the missing case (response time must not reveal state; task #590).
             crate::domain::password::verify_against_dummy(self.hasher.as_ref(), &cmd.password);
             self.audit
                 .record(
@@ -444,7 +444,7 @@ impl AdminLoginService {
             return AdminLoginOutcome::InvalidCredentials;
         }
 
-        // 5. パスワード検証。
+        // 5. Verify the password.
         let verified = match self.hasher.verify(&cmd.password, &user.password_hash) {
             Ok(v) => v,
             Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
@@ -455,10 +455,10 @@ impl AdminLoginService {
                 .await;
         }
 
-        // 6. 権限確認（資格情報は正しいが管理権限を持たない利用者を締め出す）。
-        //    ログインしたテナントを scope に持つ admin 権限の完全一致で判定する（ADR-0009 §4。
-        //    idp.system.admin は root scope のみ存在し root 自身の管理を含むため代替として許可）。
-        //    パスワードは正しいので失敗カウンタは増やさない（ロックの対象にしない）。
+        // 6. Permission check (lock out users with correct credentials but no admin permission).
+        //    Decided by exact match of admin permission scoped to the logged-in tenant (ADR-0009 §4;
+        //    idp.system.admin exists only in root scope and includes managing root itself, so it is allowed as an alternative).
+        //    The password is correct, so the failure counter is not incremented (not subject to lockout).
         let has_admin = match self
             .permissions
             .has_any_permission(
@@ -486,7 +486,7 @@ impl AdminLoginService {
             return AdminLoginOutcome::Forbidden;
         }
 
-        // 6.4. 認証ポリシー評価（AP2）。資格情報・権限の確認後、SSO 発行前にゲートする。
+        // 6.4. Authentication policy evaluation (AP2). Gates after credential and permission checks, before issuing SSO.
         if let Err(outcome) = self
             .check_policy(
                 tenant_id,
@@ -500,8 +500,8 @@ impl AdminLoginService {
             return outcome;
         }
 
-        // 6.5. 強制パスワード変更（ADR-0009 §5）。SSO はまだ発行せず変更画面へ誘導する。
-        //      有効期限は利用者の所属元テナントのポリシーで測る（ADR-0058）。
+        // 6.5. Forced password change (ADR-0009 §5). SSO is not issued yet; lead to the change screen.
+        //      Expiry is measured by the policy of the user's home tenant (ADR-0058).
         let password_policy = match self.password_policy.policy(user.tenant_id).await {
             Ok(policy) => policy,
             Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
@@ -512,14 +512,14 @@ impl AdminLoginService {
             };
         }
 
-        // 7. 成功: 失敗カウンタとロックをリセットする。
+        // 7. Success: reset the failure counter and lock.
         if user.failed_login_count > 0 || user.locked_until.is_some() {
             if let Err(e) = self.users.update_login_state(user.id, 0, None).await {
                 return AdminLoginOutcome::Internal(e.to_string());
             }
         }
 
-        // 8. SSO セッション発行（Cookie には session_id、DB には SHA-256 ハッシュ。login.rs と同一機構）。
+        // 8. Issue the SSO session (session_id in the cookie, SHA-256 hash in the DB; same mechanism as login.rs).
         match self
             .issue_sso(
                 tenant_id,
@@ -544,19 +544,19 @@ impl AdminLoginService {
         }
     }
 
-    /// パスキー（WebAuthn）による管理コンソールのログイン。
+    /// Admin console login with a passkey (WebAuthn).
     ///
-    /// パスワード経路（[`Self::login`]）との違いは 3 点で、いずれも OIDC 認可フローのパスキー
-    /// ログイン（[`crate::application::passkey_authentication`]）と同じ規則である:
+    /// It differs from the password path ([`Self::login`]) in three points, all the same rules as passkey login
+    /// in the OIDC authorization flow ([`crate::application::passkey_authentication`]):
     ///
-    /// 1. ログイン識別子の解決もロックアウトの加算も無い。持ち主を名乗るのは discoverable credential
-    ///    自身であり、総当たりの的になる秘密が無い。
-    /// 2. `require_mfa` を満たす（所有 + User Verification の多要素・フィッシング耐性認証）。
-    ///    **パスワード経路では入れない `require_mfa` 下の管理者が、この経路でだけ入れる。**
-    /// 3. 強制パスワード変更（`must_change_password`）を見ない。パスワードを使わない経路で、
-    ///    変更を強制する意味が無いため。
+    /// 1. No login identifier resolution and no lockout increment. The discoverable credential itself names
+    ///    the owner, and there is no secret to brute-force.
+    /// 2. Satisfies `require_mfa` (multi-factor, phishing-resistant: possession + User Verification).
+    ///    **Admins under `require_mfa` who cannot enter via the password path can enter only via this path.**
+    /// 3. Ignores forced password change (`must_change_password`). This path does not use passwords,
+    ///    so forcing a change is meaningless.
     ///
-    /// admin 権限の確認・認証ポリシー評価・SSO 発行はパスワード経路とまったく同じものを通す。
+    /// Admin permission check, authentication policy evaluation and SSO issuance go through exactly the same steps as the password path.
     pub async fn login_with_passkey(
         &self,
         tenant: TenantContext,
@@ -566,7 +566,7 @@ impl AdminLoginService {
         let now = self.clock.now();
         let tenant_id = tenant.tenant_id();
 
-        // 1. IP 単位のレート制限（パスワード経路と同じ順序・同じ制限）。
+        // 1. Per-IP rate limit (same order and limit as the password path).
         if let Some(ip) = &ctx.ip_address {
             if !self.rate_limiter.check_and_record(ip, now) {
                 self.audit
@@ -584,8 +584,8 @@ impl AdminLoginService {
             }
         }
 
-        // 2. WebAuthn アサーションの検証。アカウントの有効性とテナント境界（ADR-0009 §8）は
-        //    ここで確認済みになる。`Direct` は認可フロー外のチャレンジであることの要求である。
+        // 2. Verify the WebAuthn assertion. Account validity and the tenant boundary (ADR-0009 §8) are
+        //    confirmed here. `Direct` requires the challenge to be outside the authorization flow.
         let verified = match self
             .passkey_assertion
             .verify(
@@ -602,7 +602,7 @@ impl AdminLoginService {
         };
         let user_id = verified.user_id;
 
-        // 3. 権限確認（パスワード経路の 6. と同一判定。ADR-0009 §4）。
+        // 3. Permission check (same decision as step 6 of the password path; ADR-0009 §4).
         let has_admin = match self
             .permissions
             .has_any_permission(
@@ -630,7 +630,7 @@ impl AdminLoginService {
             return AdminLoginOutcome::Forbidden;
         }
 
-        // 4. 認証ポリシー評価（AP2）。使った方式はパスキー 1 本・User Verification 済み。
+        // 4. Authentication policy evaluation (AP2). The method used is a single passkey, with User Verification.
         if let Err(outcome) = self
             .check_policy(
                 tenant_id,
@@ -644,7 +644,7 @@ impl AdminLoginService {
             return outcome;
         }
 
-        // 5. SSO セッション発行（パスワード経路と同一機構。方式だけが WebAuthn）。
+        // 5. Issue the SSO session (same mechanism as the password path; only the method is WebAuthn).
         match self
             .issue_sso(
                 tenant_id,
@@ -669,11 +669,11 @@ impl AdminLoginService {
         }
     }
 
-    /// SSO セッションを発行して監査へ記録する（Cookie には session_id、DB には SHA-256 ハッシュ。
-    /// `login.rs` と同一機構）。パスワード・強制パスワード変更・パスキーの 3 経路で共有する。
+    /// Issues the SSO session and records it in the audit (session_id in the cookie, SHA-256 hash in the DB;
+    /// same mechanism as `login.rs`). Shared by the three paths: password, forced password change, passkey.
     ///
-    /// 寿命は利用者の**所属元**テナント（`home_tenant_id`）の値で決める。SSO セッションは全テナントで
-    /// 共有されるので、ログインした画面のテナントでは決めない（ADR-0058）。
+    /// The lifetime is decided by the user's **home** tenant (`home_tenant_id`). The SSO session is shared across
+    /// tenants, so it is not decided by the tenant of the screen logged in from (ADR-0058).
     async fn issue_sso(
         &self,
         tenant_id: TenantId,
@@ -747,9 +747,9 @@ impl AdminLoginService {
         Ok(AdminSso::Issued(sso_session_id, sso.absolute_ttl_secs()))
     }
 
-    /// 強制パスワード変更（ADR-0009 §5）。管理ログインを現行パスワードを含めフルに再検証し、成功時に
-    /// 新パスワードを保存して SSO セッションを発行する（`login` と同じ検証を毎回やり直す。管理ログインは
-    /// `auth_session_id` のような一時状態を持たないため）。
+    /// Forced password change (ADR-0009 §5). Fully re-verifies admin login including the current password, and on success
+    /// saves the new password and issues the SSO session (the same verification as `login` is redone every time, because
+    /// admin login has no temporary state like `auth_session_id`).
     pub async fn change_password(
         &self,
         tenant: TenantContext,
@@ -775,8 +775,8 @@ impl AdminLoginService {
         {
             Ok(LoginIdentifierMatch::Resolved(u)) => u,
             Ok(LoginIdentifierMatch::Unresolved(_)) => {
-                // 実在利用者と同じ argon2 検証を 1 回消費し、応答時間で利用者の有無を
-                // 推し量れないようにする（列挙対策）。
+                // Spend one argon2 verification like a real user so that response time does not reveal
+                // whether the user exists (anti-enumeration).
                 crate::domain::password::verify_against_dummy(
                     self.hasher.as_ref(),
                     &cmd.current_password,
@@ -792,12 +792,12 @@ impl AdminLoginService {
         if !user.is_active() {
             return AdminLoginOutcome::InvalidCredentials;
         }
-        // 多重送信の検出（冪等化）: 直前の送信で変更が成功して `must_change_password` が下りた直後の
-        // 再送では、旧 current_password が新ハッシュに一致せず「現在のパスワードが違う」と誤表示される。
-        // `new_password` が現行ハッシュに一致する場合は同じ変更の再送とみなし、保存をスキップして
-        // 成功時と同じ後続（admin 権限確認 → SSO 発行）へ進める（照合は現行パスワードの完全な検証で、
-        // 認証強度は通常ログインと等価）。
-        // 変更を要求されている状態か（強制フラグ、または有効期限切れ。AP7）。
+        // Detecting duplicate submission (idempotency): a resend right after the previous submission succeeded and cleared
+        // `must_change_password` would fail to match the old current_password against the new hash and wrongly show "current password is wrong".
+        // If `new_password` matches the current hash, treat it as a resend of the same change, skip saving, and
+        // proceed to the same follow-up as on success (admin permission check -> SSO issuance) (the match is a full verification
+        // of the current password, so authentication strength equals normal login).
+        // Whether a change is required (forced flag, or expired; AP7).
         let password_policy = match self.password_policy.policy(user.tenant_id).await {
             Ok(policy) => policy,
             Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
@@ -812,10 +812,10 @@ impl AdminLoginService {
             }
         };
         if !change_required && !duplicate_submit {
-            // 変更不要な状態でこのエンドポイントに来るのは想定外。fail-closed
-            //（利用者列挙を避けるため資格情報エラーと同じ応答にする）。上の `new_password` 照合が
-            // パスワードの正誤オラクルになるため、通常ログインと同じ失敗カウント・ロック判定に載せて
-            // 本経路がロックアウトを迂回する推測口にならないようにする。
+            // Reaching this endpoint when no change is needed is unexpected. Fail closed
+            // (same response as a credential error to avoid user enumeration). The `new_password` match above acts as
+            // a password correctness oracle, so it is put under the same failure count and lock decision as normal login,
+            // so this path does not become a guessing route bypassing lockout.
             return self
                 .handle_password_failure(tenant_id, &user, "password_change_not_required", ctx)
                 .await;
@@ -852,7 +852,7 @@ impl AdminLoginService {
             return AdminLoginOutcome::Forbidden;
         }
 
-        // 認証ポリシー評価（AP2）。本経路も SSO を発行する側なので `login` と同じ規則を適用する。
+        // Authentication policy evaluation (AP2). This path also issues SSO, so the same rules as `login` apply.
         if let Err(outcome) = self
             .check_policy(
                 tenant_id,
@@ -866,7 +866,7 @@ impl AdminLoginService {
             return outcome;
         }
 
-        // 多重送信（変更適用済み）の場合は保存・監査をスキップし、成功時と同じ後続へ進める。
+        // For duplicate submissions (change already applied), skip saving and auditing and proceed to the same follow-up as on success.
         if !duplicate_submit {
             match self
                 .password_policy
@@ -886,8 +886,8 @@ impl AdminLoginService {
                 Ok(h) => h,
                 Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
             };
-            // 現行ハッシュを条件にした置き換え（AP7）。失敗カウンタは増やさない
-            // （資格情報は正しく、負けたのは競合であって推測ではない）。
+            // Replacement conditioned on the current hash (AP7). The failure counter is not incremented
+            // (credentials are correct; what lost was a race, not a guess).
             match self
                 .users
                 .update_password(user.id, &user.password_hash, &new_hash)
@@ -948,14 +948,14 @@ impl AdminLoginService {
         }
     }
 
-    /// 管理コンソールからのログアウト。SSO セッションを DB から削除して監査へ記録する。
-    /// Cookie の失効は Presentation（ハンドラ）が行う。不明・不正なセッションは何もしない（冪等）。
+    /// Logout from the admin console. Deletes the SSO session from the DB and records it in the audit.
+    /// Cookie expiry is done by Presentation (the handler). Unknown or invalid sessions do nothing (idempotent).
     pub async fn logout(&self, tenant: TenantContext, sso_session_id: &str, ctx: &RequestContext) {
         if sso_session_id.is_empty() {
             return;
         }
         let session_hash = crypto::sha256_hex(sso_session_id);
-        // 監査に user_id を残すため、削除前にセッションを引く（best-effort）。
+        // Fetch the session before deletion to keep user_id in the audit (best-effort).
         let user_id = match self.sso_sessions.find_by_hash(&session_hash).await {
             Ok(Some(session)) => Some(session.user_id),
             _ => None,
@@ -977,7 +977,7 @@ impl AdminLoginService {
             .await;
     }
 
-    /// パスワード不一致時の失敗カウント更新とロック判定（login.rs と同ポリシー）。
+    /// Updates the failure count on password mismatch and decides lockout (same policy as login.rs).
     async fn handle_password_failure(
         &self,
         tenant_id: TenantId,
@@ -986,12 +986,12 @@ impl AdminLoginService {
         ctx: &RequestContext,
     ) -> AdminLoginOutcome {
         let now = self.clock.now();
-        // 閾値は利用者の所属元テナントの値（ロックの状態は利用者の行にある。ADR-0058）。
+        // The threshold is the user's home tenant's value (lock state is on the user row; ADR-0058).
         let lockout = match self.settings.login_lockout(user.tenant_id).await {
             Ok(lockout) => lockout,
             Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
         };
-        // 加算とロック判定は 1 文の UPDATE に閉じる（SEC13）。
+        // Increment and lock decision are enclosed in one UPDATE statement (SEC13).
         let failure = match self.users.record_login_failure(user.id, lockout, now).await {
             Ok(f) => f,
             Err(e) => return AdminLoginOutcome::Internal(e.to_string()),
@@ -1030,12 +1030,12 @@ impl AdminLoginService {
 impl From<PasskeyAssertionError> for AdminLoginOutcome {
     fn from(e: PasskeyAssertionError) -> Self {
         match e {
-            // 用途違いのチャレンジ（認可フロー用を管理ログインで完了しようとした）は、利用者から見れば
-            // 「やり直してください」でしかないため、期限切れと同じ扱いにする。
+            // A challenge for another purpose (trying to complete an authorization-flow one in admin login) is, to the user,
+            // just "please try again", so it is treated the same as expired.
             PasskeyAssertionError::ChallengeNotFound | PasskeyAssertionError::WrongFlow => {
                 AdminLoginOutcome::PasskeyChallengeNotFound
             }
-            // 停止中・失効・テナント非所属・アカウント無効も同じ応答にする（列挙防止）。
+            // Suspended, revoked, not in the tenant and disabled account also get the same response (anti-enumeration).
             PasskeyAssertionError::InvalidCredential => AdminLoginOutcome::InvalidCredentials,
             PasskeyAssertionError::Internal(msg) => AdminLoginOutcome::Internal(msg),
         }
@@ -1046,7 +1046,7 @@ impl From<PasskeyAssertionError> for AdminLoginOutcome {
 mod debug_redaction_tests {
     use super::*;
 
-    /// パスワードを `Debug` に出さない（task #593）。
+    /// Do not print the password in `Debug` (task #593).
     #[test]
     fn commands_do_not_print_passwords() {
         let login = AdminLoginCommand {

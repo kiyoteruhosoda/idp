@@ -1,17 +1,17 @@
-//! サービス間の内部呼び出し（`/internal/*`）の認証（ADR-0007 §5）。
+//! Authentication of internal inter-service calls (`/internal/*`) (ADR-0007 §5).
 //!
-//! ヘッダ名と照合のしかたを api（検証側）と web（提示側・および自身の `/internal/*` の検証側）で
-//! 共有する。片方だけ変えると内部経路が丸ごと通らなくなる値であり、照合を各サービスで書き直すと
-//! **片方だけ定数時間でなくなる**危険もあるため、contracts に単一定義する。
+//! Shares the header name and the comparison between api (verifier) and web (presenter, and verifier
+//! of its own `/internal/*`). Changing it on one side alone breaks every internal route, and rewriting
+//! the comparison per service risks **one side no longer being constant-time**, so it lives in contracts.
 
-/// 内部サービス認証トークンを載せるヘッダ名（小文字。`HeaderMap` は大小無視で引ける）。
+/// Header name carrying the internal service auth token (lowercase; `HeaderMap` lookups ignore case).
 pub const SERVICE_TOKEN_HEADER: &str = "x-internal-auth-token";
 
-/// 提示されたトークンが期待値と一致するか、**定数時間**で判定する。
+/// Decides in **constant time** whether the presented token matches the expected value.
 ///
-/// 素朴な `==` は先頭から一致した長さで所要時間が変わるため、繰り返し試行から 1 バイトずつ
-/// 正解を絞り込める。長さの違いは早期に返してよい（長さ自体は秘密ではなく、隠しても
-/// 応答サイズ等から推し量れる）。
+/// A naive `==` takes time proportional to the matching prefix length, so repeated attempts can narrow
+/// down the answer one byte at a time. A length mismatch may return early (the length itself is not
+/// secret and could be inferred from response sizes etc. even if hidden).
 pub fn service_token_matches(presented: &str, expected: &str) -> bool {
     let (a, b) = (presented.as_bytes(), expected.as_bytes());
     if a.len() != b.len() {

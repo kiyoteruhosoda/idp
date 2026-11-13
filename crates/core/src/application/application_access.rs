@@ -1,20 +1,20 @@
-//! 「この利用者はこのアプリを使ってよいか」の判定（ADR-0054）。
+//! Decides "may this user use this app" (ADR-0054).
 //!
-//! # 判定は認証の**あと**
+//! # The decision comes **after** authentication
 //!
-//! 認証するまで誰なのか分からないので、割り当ての判定は認証の後になる。これは実装の都合ではなく
-//! 順序の必然で、だからこそ拒否は RP へ戻さず assay の画面で伝える ——利用者から見れば
-//! 「入れたのに弾かれた」ので、黙って弾くと障害と区別が付かない。
+//! Who it is is unknown until authentication, so the assignment decision comes after it. This is not an
+//! implementation convenience but a necessity of order, which is why refusals are shown on assay's screen instead
+//! of returning to the RP: to the user it is "I got in and was then kicked out", and a silent rejection is indistinguishable from an outage.
 //!
-//! # 段階導入（`APPLICATION_ASSIGNMENT_ENFORCEMENT`）
+//! # Staged rollout (`APPLICATION_ASSIGNMENT_ENFORCEMENT`)
 //!
-//! いきなり断らない。まず `record_only` で本番へ出し、「割り当てが無いのに来た人」を監査ログへ
-//! 溜める（移行の漏れはここで全部出る）。ログが静かになってから `enforce` へ切り替える。
-//! ⚠ **切り替えはコードではなく設定で行う。** 入れ替えにすると、戻すのにデプロイが要る。
+//! Do not refuse right away. First ship to production with `record_only` and accumulate "people who came without an
+//! assignment" in the audit log (every migration gap shows up here). Switch to `enforce` once the log is quiet.
+//! ⚠ **Switch by setting, not by code.** Swapping code would need a deploy to roll back.
 //!
-//! 設定は**テナントが決める**（ADR-0058 §4）。名簿が整ったテナントから `enforce` へ倒せる。
-//! ⚠ 値は参照のたびにテナントについて引く（[`EffectiveTenantSettings`]）。起動時の `Config` を
-//! 読むと、全テナントが全体の値で動く。
+//! The setting is **decided by the tenant** (ADR-0058 §4). Tenants whose rosters are ready can move to `enforce`.
+//! ⚠ The value is looked up for the tenant on every use ([`EffectiveTenantSettings`]). Reading the startup `Config`
+//! would make every tenant run on the global value.
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::application::{Application, ApplicationAccess, BindingTarget};
@@ -27,12 +27,12 @@ use crate::domain::values::AssignmentEnforcement;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// 判定の結果。
+/// Decision result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApplicationGate {
-    /// 通してよい。
+    /// May pass.
     Allowed,
-    /// 断る（`enforce` のときだけ返る）。画面に出すためのアプリ名を持つ。
+    /// Refuse (returned only under `enforce`). Holds the app name for display on screen.
     Denied {
         application_name: String,
         access: ApplicationAccess,
@@ -64,10 +64,10 @@ impl ApplicationAccessService {
         }
     }
 
-    /// OIDC の `client_id` からアプリを解決する。
+    /// Resolves the app from the OIDC `client_id`.
     ///
-    /// 認証ポリシーの宛先（`conditions.application_ids`）と、下の [`Self::check`] の両方が使う。
-    /// binding がまだ無い client は `None` ——移行前・移行漏れであって「割り当てが無い」ではない。
+    /// Used both by authentication policy targets (`conditions.application_ids`) and by [`Self::check`] below.
+    /// A client without a binding yet is `None`: it is pre-migration or a migration gap, not "no assignment".
     pub async fn resolve_for_oidc_client(
         &self,
         tenant_id: TenantId,
@@ -78,10 +78,10 @@ impl ApplicationAccessService {
             .await
     }
 
-    /// 解決したアプリの id だけを返す（認証ポリシー評価用の薄い口）。
+    /// Returns only the resolved app's id (a thin route for authentication policy evaluation).
     ///
-    /// アプリを持たない client は `None`。`conditions.application_ids` を持つポリシーは
-    /// **一致しない**（評価材料が無い条件は「一致しない」に倒す、という既存の規則どおり）。
+    /// A client without an app is `None`. Policies with `conditions.application_ids` **do not match**
+    /// (per the existing rule that conditions without evaluation input fall to "no match").
     pub async fn policy_target_for_oidc_client(
         &self,
         tenant_id: TenantId,
@@ -93,11 +93,11 @@ impl ApplicationAccessService {
             .map(|application| application.id))
     }
 
-    /// SAML の SP からアプリを解決する（`application_bindings.kind = 'saml'`）。
+    /// Resolves the app from a SAML SP (`application_bindings.kind = 'saml'`).
     ///
-    /// entityID ではなく SP の**行 id** で引く。発行の直前に SP を id で引き直しているので
-    /// （`SamlSsoService::resume`）、同じ鍵で引けばフロー中に entityID が書き換わっても取り違えない。
-    /// binding が無い SP は OIDC と同じく `None`（移行前・移行漏れ）。
+    /// Looked up by the SP's **row id**, not the entityID. The SP is re-fetched by id right before issuance
+    /// (`SamlSsoService::resume`), so using the same key avoids mix-ups even if the entityID is rewritten mid-flow.
+    /// An SP without a binding is `None`, as with OIDC (pre-migration or a migration gap).
     pub async fn resolve_for_saml_service_provider(
         &self,
         tenant_id: TenantId,
@@ -113,7 +113,7 @@ impl ApplicationAccessService {
             .await
     }
 
-    /// OIDC の RP について判定して、必要なら監査ログへ 1 行残す（code の発行地点が呼ぶ）。
+    /// Decides for an OIDC RP and, if needed, leaves one audit log row (called where codes are issued).
     pub async fn check(
         &self,
         tenant_id: TenantId,
@@ -126,10 +126,10 @@ impl ApplicationAccessService {
             .await
     }
 
-    /// SAML の SP について判定する（アサーションの発行地点が呼ぶ。ADR-0054 の決定 6）。
+    /// Decides for a SAML SP (called where assertions are issued; decision 6 of ADR-0054).
     ///
-    /// 規則・監査・段階導入は OIDC と 1 つも変えない。監査行の相手欄には SP の entityID を入れる
-    /// （`saml_response.issued` と同じ値で、同じ問い合わせで突き合わせられる）。
+    /// Rules, audit and staged rollout are exactly as with OIDC. The audit row's counterparty column holds the SP's
+    /// entityID (the same value as `saml_response.issued`, so they can be matched with the same query).
     pub async fn check_saml(
         &self,
         tenant_id: TenantId,
@@ -145,15 +145,15 @@ impl ApplicationAccessService {
             .await
     }
 
-    /// 解決したアプリについて判定して、必要なら監査ログへ 1 行残す。
+    /// Decides for the resolved app and, if needed, leaves one audit log row.
     ///
-    /// `party` は監査行と構造化ログに出す相手の名前（OIDC は `client_id`、SAML は entityID）。
+    /// `party` is the counterparty name put in the audit row and structured log (`client_id` for OIDC, entityID for SAML).
     ///
-    /// **アプリが解決できないときは通す。** 移行前・移行漏れの client を「割り当てが無い」と同じに
-    /// 扱うと、取りこぼしが「正しく断った」ように見えてしまう（ADR-0054 の帰結）。
+    /// **If the app cannot be resolved, let it pass.** Treating pre-migration or migration-gap clients the same as
+    /// "no assignment" would make misses look like "correctly refused" (a consequence of ADR-0054).
     ///
-    /// 問い合わせの失敗（DB 障害）も通す。門番が落ちたときに**全員を締め出す**のは、この門が
-    /// 守っているものの重さに見合わない ——警告は構造化ログへ出す。
+    /// Query failures (DB outage) also pass. **Locking everyone out** when the gatekeeper fails is out of proportion to
+    /// what this gate protects; a warning goes to the structured log.
     async fn judge(
         &self,
         tenant_id: TenantId,
@@ -202,9 +202,9 @@ impl ApplicationAccessService {
             return ApplicationGate::Allowed;
         }
 
-        // 設定は断る場面になってから引く（素通りする大半の要求で問い合わせを増やさない）。
-        // 引けないときは「記録するだけ」に倒す ——上の問い合わせの失敗と同じく、門番が落ちたときに
-        // 全員を締め出さない。
+        // Fetch the setting only once it comes to refusing (no extra query for the majority that pass straight through).
+        // If it cannot be fetched, fall to "record only": like the query failure above, do not lock everyone out
+        // when the gatekeeper fails.
         let enforcement = match self.settings.assignment_enforcement(tenant_id).await {
             Ok(enforcement) => enforcement,
             Err(e) => {
@@ -216,8 +216,8 @@ impl ApplicationAccessService {
             }
         };
 
-        // `record_only` は成功（＝通した）として残す。切り替えの前後を同じ問い合わせで数えたいので、
-        // 種別は分けず `result` で分ける。
+        // `record_only` is recorded as success (= passed). To count before and after the switch with the same query,
+        // the kind is not split; `result` is.
         let enforced = enforcement == AssignmentEnforcement::Enforce;
         self.audit
             .record(
@@ -246,7 +246,7 @@ impl ApplicationAccessService {
                 access,
             }
         } else {
-            // 記録するだけの期間。ここを通った件数がそのまま「移行の漏れ」である。
+            // The record-only period. The number passing here is exactly "the migration gap".
             tracing::warn!(
                 application_id = %application.id,
                 reason = access.reason(),
@@ -259,11 +259,11 @@ impl ApplicationAccessService {
 
 #[cfg(test)]
 pub mod test_support {
-    //! 判定の入り口を持たないテスト用の実装。
+    //! A test implementation without the decision entry point.
     //!
-    //! `CodeIssuanceService` は判定器を必ず 1 つ持つが、code 発行の周りを試すテストの多くは
-    //! アプリの割り当てに関心が無い。そこで「アプリが 1 件も無い」＝**判定が素通しになる**
-    //! 実装をここに 1 つだけ置き、各テストが自前の空実装を書き写さないようにする。
+    //! `CodeIssuanceService` always holds a decider, but many tests around code issuance do not care about
+    //! app assignment. So a single implementation where "there are no apps" = **the decision passes through**
+    //! lives here, so each test does not copy its own empty implementation.
 
     use super::*;
     use crate::domain::account::AccountRef;
@@ -276,7 +276,7 @@ pub mod test_support {
     use async_trait::async_trait;
     use chrono::{DateTime, Utc};
 
-    /// 1 件もアプリを持たないリポジトリ（すべての問い合わせが空を返す）。
+    /// A repository with no apps (every query returns empty).
     pub struct NoApplications;
 
     #[async_trait]
@@ -386,7 +386,7 @@ pub mod test_support {
         }
     }
 
-    /// アプリを持たない（＝判定が素通しになる）判定器。
+    /// A decider without apps (= the decision passes through).
     pub fn allow_everything(audit: Arc<AuditService>) -> Arc<ApplicationAccessService> {
         Arc::new(ApplicationAccessService::new(
             Arc::new(NoApplications),
@@ -441,7 +441,7 @@ mod tests {
         }
     }
 
-    /// 割り当てが 1 件も無い「個別」のアプリを 1 つだけ持つリポジトリ。
+    /// A repository holding a single "individual" app with no assignments.
     struct OneIndividualApplication {
         application: Application,
         assigned: bool,
@@ -579,10 +579,10 @@ mod tests {
         )
     }
 
-    /// 本物の解決（テナントの行 > 組み込み既定）を、指定したテナントの行だけで組み立てる。
+    /// Builds the real resolution (tenant row > built-in default) with only the given tenant rows.
     ///
-    /// ⚠ テナントごとに違う値を試すときはこちらを使う。全体の値だけを入れた解決器では「全体の値を
-    /// 読んでいても通ってしまう」試験になる。
+    /// ⚠ Use this when testing different values per tenant. A resolver with only the global value makes a test
+    /// that "passes even when reading the global value".
     fn tenant_settings(
         rows: &[(TenantId, &str, &str)],
     ) -> Arc<crate::application::tenant_settings::TenantSettingsService> {
@@ -610,8 +610,8 @@ mod tests {
         }
     }
 
-    /// 移行前・移行漏れの client（binding が無い）は通す。ここで断ると、取りこぼしが
-    /// 「正しく断った」ように見えてしまう。
+    /// Pre-migration or migration-gap clients (no binding) pass. Refusing here would make misses look like
+    /// "correctly refused".
     #[tokio::test]
     async fn a_client_without_an_application_is_let_through() {
         let (svc, sink) = service(Arc::new(NoApplications), AssignmentEnforcement::Enforce);
@@ -624,12 +624,12 @@ mod tests {
             )
             .await;
         assert_eq!(gate, ApplicationGate::Allowed);
-        // 断っていないので監査行も出さない（移行の漏れを数える行に混ぜない）。
+        // Not refused, so no audit row either (do not mix it into the rows counting migration gaps).
         assert!(sink.events.lock().unwrap().is_empty());
     }
 
-    /// 「記録するだけ」の期間は、割り当てが無くても通す。ただし監査には残す
-    /// ——ここに溜まった件数がそのまま移行の漏れである。
+    /// During the "record only" period, it passes even without an assignment, but is still audited:
+    /// the count accumulated here is exactly the migration gap.
     #[tokio::test]
     async fn record_only_lets_the_user_through_but_leaves_a_row() {
         let repo = Arc::new(OneIndividualApplication {
@@ -652,7 +652,7 @@ mod tests {
             events[0].event_type,
             AuditEventType::ApplicationAccessDenied
         );
-        // 通した側は success。切り替えの前後を同じ問い合わせで数えられるようにしている。
+        // The passing side is success, so before and after the switch can be counted with the same query.
         assert_eq!(events[0].result, AuditResult::Success);
     }
 
@@ -701,7 +701,7 @@ mod tests {
         assert!(sink.events.lock().unwrap().is_empty());
     }
 
-    /// 「全員」のアプリは割り当てを引かずに通す。
+    /// An "everyone" app passes without looking up assignments.
     #[tokio::test]
     async fn everyone_passes_without_a_row() {
         let repo = Arc::new(OneIndividualApplication {
@@ -720,9 +720,9 @@ mod tests {
         assert_eq!(gate, ApplicationGate::Allowed);
     }
 
-    /// 断るかどうかはテナントが決める（ADR-0058 §4）。2 テナントで違う値を入れ、同じ「割り当ての
-    /// 無い人」がそれぞれのテナントの値で扱われること ——1 テナントだけだと、全体の値を読んでいても
-    /// 通ってしまう。
+    /// Whether to refuse is decided by the tenant (ADR-0058 §4). Put different values in 2 tenants and check the same
+    /// "person without an assignment" is handled by each tenant's value; with only 1 tenant it would pass even when
+    /// reading the global value.
     #[tokio::test]
     async fn each_tenant_decides_whether_to_enforce() {
         let enforcing = TenantId::from(Uuid::from_u128(10));
@@ -753,7 +753,7 @@ mod tests {
         assert_eq!(events[1].result, AuditResult::Success);
     }
 
-    /// 行の無いテナントは既定の「記録するだけ」。⚠ 名簿の無いまま断る側へ倒れると全員が締め出される。
+    /// A tenant without rows defaults to "record only". ⚠ Falling to refusing without a roster would lock everyone out.
     #[tokio::test]
     async fn a_tenant_without_a_row_only_records() {
         let repo = Arc::new(OneIndividualApplication {
@@ -773,7 +773,7 @@ mod tests {
         assert_eq!(sink.events.lock().unwrap()[0].result, AuditResult::Success);
     }
 
-    /// 設定が引けない（保存値が壊れている）ときも締め出さない。記録だけ残して通す。
+    /// Even when the setting cannot be fetched (stored value corrupted), nobody is locked out. It passes with only a record.
     #[tokio::test]
     async fn an_unreadable_setting_records_instead_of_locking_everyone_out() {
         let t = TenantId::from(Uuid::from_u128(2));
@@ -790,7 +790,7 @@ mod tests {
         assert_eq!(sink.events.lock().unwrap()[0].result, AuditResult::Success);
     }
 
-    /// 止めたアプリは、割り当てのモードに関わらず通さない。
+    /// A stopped app is refused regardless of assignment mode.
     #[tokio::test]
     async fn a_disabled_application_denies_even_in_everyone_mode() {
         let repo = Arc::new(OneIndividualApplication {

@@ -1,9 +1,9 @@
-//! 利用者向け画面の `<html lang>`（ADR-0048 のやり残し。task #81）。
+//! `<html lang>` of user-facing screens (leftover from ADR-0048; task #81).
 //!
-//! 画面の日時は `assets/local-time.js` が `<html lang>` の言語で整形し直す。属性が無いと
-//! ブラウザの言語で出るため、利用者が `?lang=` や設定で選んだ言語と日付の表記が食い違う。
-//! 言語は web が決める（`CLAUDE.md`「国際化」）ので、決めた言語がそのまま属性に出ることを、
-//! 主要な画面（ログイン・同意・メッセージ・エラー）の入口ごとに確かめる。
+//! `assets/local-time.js` reformats on-screen dates in the language of `<html lang>`. Without the attribute
+//! they use the browser's language, so date notation disagrees with the language the user chose via `?lang=` or settings.
+//! web decides the language (`CLAUDE.md` "Internationalization"), so check per entry point of the main screens
+//! (login, consent, message, error) that the decided language appears in the attribute as is.
 
 mod support;
 
@@ -16,7 +16,7 @@ use support::{body_text, get, get_with_cookies, send, setup};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
-/// `Accept-Language` 付きの GET（Cookie も任意で載せる）。
+/// GET with `Accept-Language` (optionally with a Cookie).
 fn get_with_language(uri: &str, accept_language: &str, cookies: Option<&str>) -> Request<Body> {
     let mut builder = Request::builder()
         .method(Method::GET)
@@ -28,7 +28,7 @@ fn get_with_language(uri: &str, accept_language: &str, cookies: Option<&str>) ->
     builder.body(Body::empty()).unwrap()
 }
 
-/// 本文の `<html>` 開きタグに `lang="<expected>"` が付いていること。
+/// The body's opening `<html>` tag has `lang="<expected>"`.
 fn assert_html_lang(html: &str, expected: &str) {
     let open = html
         .find("<html")
@@ -123,12 +123,12 @@ async fn the_consent_page_declares_the_resolved_language() {
     assert_html_lang(&html, "en");
 }
 
-/// `MessagePage`（翻訳済みの文字列だけで描く画面）も、決めた言語を出す。
+/// `MessagePage` (screens rendered from translated strings only) also outputs the decided language.
 #[tokio::test]
 async fn a_message_page_declares_the_resolved_language() {
     let env = setup().await;
 
-    // 同意画面を Cookie 無しで開くと「セッション切れ」の MessagePage になる。
+    // Opening the consent screen without a Cookie yields the "session expired" MessagePage.
     let response = send(
         &env.app,
         get_with_language(&format!("{}/consent", env.prefix()), "en", None),
@@ -137,12 +137,12 @@ async fn a_message_page_declares_the_resolved_language() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_html_lang(&body_text(response).await, "en");
 
-    // テナントを持たないルートの案内も同じ。
+    // Same for guidance on routes without a tenant.
     let response = send(&env.app, get_with_language("/", "ja", None)).await;
     assert_html_lang(&body_text(response).await, "ja");
 }
 
-/// `ErrorPage`（未マッチ経路の 404 のようにテナント文脈を持たない画面）も、決めた言語を出す。
+/// `ErrorPage` (screens without tenant context, like 404 on unmatched routes) also outputs the decided language.
 #[tokio::test]
 async fn an_error_page_declares_the_resolved_language() {
     let env = setup().await;
@@ -164,7 +164,7 @@ async fn an_error_page_declares_the_resolved_language() {
     assert_html_lang(&body_text(response).await, "ja");
 }
 
-/// 「このアプリの利用は許可されていません」の画面（翻訳済みの文字列だけで描く 3 つ目）。
+/// The "use of this app is not permitted" screen (the third rendered from translated strings only).
 #[tokio::test]
 async fn the_application_not_permitted_page_declares_the_language() {
     use assay_web::i18n::{Locale, Messages};

@@ -1,10 +1,10 @@
-//! 同時に送っても 1 回しか通らないこと（task #586。脆弱性確認 2026-10-20 の低-1・低-2）。
+//! Sending concurrently still succeeds only once (task #586; low-1 and low-2 of the 2026-10-20 vulnerability review).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test single_use_races
 //!
-//! 以前は「消せたか（失効させられたか）」の件数を見ていなかったので、同じパスキーのチャレンジ・
-//! 同じリフレッシュトークンを同時に 2 本送ると、どちらも確認を通って両方が成功していた。
+//! Previously the count of "was it deleted (revoked)?" was not checked, so sending the same passkey
+//! challenge or the same refresh token twice concurrently passed the check on both and both succeeded.
 
 mod support;
 
@@ -19,7 +19,7 @@ use chrono::{Duration, Utc};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use support::{create_plain_user, send};
 
-/// チャレンジの消費は 1 回だけ成功する。2 回目（同時に来たもう一方）は「消せなかった」と分かる。
+/// Consuming a challenge succeeds only once. The second (the other concurrent one) learns it "could not delete".
 #[tokio::test]
 async fn a_passkey_challenge_can_be_consumed_only_once() {
     let Some(env) = support::setup("single use passkey challenge").await else {
@@ -48,7 +48,7 @@ async fn a_passkey_challenge_can_be_consumed_only_once() {
     assert!(!repo.delete(challenge.id).await.expect("delete again"));
 }
 
-/// 同じリフレッシュトークンを同時に何本送っても、新しいトークンが出るのは 1 本だけ。
+/// However many times the same refresh token is sent concurrently, only one new token is issued.
 #[tokio::test]
 async fn concurrent_refreshes_with_one_token_issue_at_most_once() {
     let Some(env) = support::setup("single use refresh").await else {

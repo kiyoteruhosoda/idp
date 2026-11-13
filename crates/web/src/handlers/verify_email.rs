@@ -1,9 +1,9 @@
-//! メール検証画面（web。`/{tenant_id}/verify-email`。SEC6b）。
+//! Email verification screen (web. `/{tenant_id}/verify-email`. SEC6b).
 //!
-//! 自己登録の確認メールのリンク（`?token=...`）から開く。GET は確認ボタン（POST でトークンを消費）を
-//! 表示し、メールクライアントのリンクプリフェッチで単回トークンを消費しないようにする。POST の実体は
-//! api の `POST /{tenant_id}/auth/verify-email` へ委ねる。未ログイン経路（SSO 不要。トークン所持が
-//! 本人性の根拠）。
+//! Opened from the link (`?token=...`) in the self-registration confirmation email. GET shows a confirm
+//! button (POST consumes the token) so that an email client's link prefetch does not consume the single-use
+//! token. The actual POST is delegated to the api's `POST /{tenant_id}/auth/verify-email`. Unauthenticated
+//! path (no SSO needed; possessing the token is the proof of identity).
 
 use crate::api_client::VerifyEmailResult;
 use crate::cookies;
@@ -28,7 +28,7 @@ pub struct VerifyForm {
     pub token: String,
 }
 
-/// 検証ページ（`GET /{tenant_id}/verify-email?token=...`）。確認ボタンを表示する。
+/// Verification page (`GET /{tenant_id}/verify-email?token=...`). Shows the confirm button.
 pub async fn page(headers: HeaderMap, Query(query): Query<VerifyQuery>) -> Response {
     let messages = Messages::new(locale(&headers));
     let token = query.token.unwrap_or_default();
@@ -55,7 +55,7 @@ pub async fn page(headers: HeaderMap, Query(query): Query<VerifyQuery>) -> Respo
     .into_response()
 }
 
-/// 検証の実行（`POST /{tenant_id}/verify-email`）。
+/// Performs the verification (`POST /{tenant_id}/verify-email`).
 pub async fn submit(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,

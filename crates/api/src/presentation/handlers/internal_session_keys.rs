@@ -1,7 +1,7 @@
-//! SSO セッションの端末の鍵への結び付け（DBSC。`/internal/sso/key-binding*`。task #887・ADR-0074）。
+//! Binding SSO sessions to a device key (DBSC, `/internal/sso/key-binding*`, task #887, ADR-0074).
 //!
-//! どれも web だけが呼ぶ内部の口（サービストークンの内側）。判定は Application 層
-//! （`SessionKeyBindingService`）にあり、ここは DTO の詰め替えだけを行う。
+//! All are internal endpoints called only by web (behind the service token). Decisions are in the application layer
+//! (`SessionKeyBindingService`); this only repacks DTOs.
 
 use crate::application::audit::RequestContext;
 use crate::application::session_key_binding::SessionKeyOutcome;
@@ -36,7 +36,7 @@ fn response(
     }
 }
 
-/// 登録（`POST /internal/sso/key-binding/register`）。
+/// Registration (`POST /internal/sso/key-binding/register`).
 pub async fn register(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -55,7 +55,7 @@ pub async fn register(
     ))
 }
 
-/// 更新（`POST /internal/sso/key-binding/refresh`）。
+/// Refresh (`POST /internal/sso/key-binding/refresh`).
 pub async fn refresh(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -79,7 +79,7 @@ pub async fn refresh(
     ))
 }
 
-/// 結び付いているか（`POST /internal/sso/key-binding`）。web の入口の確かめが使う。
+/// Whether it is bound (`POST /internal/sso/key-binding`). Used by web's entry check.
 pub async fn binding(
     State(state): State<AppState>,
     Json(req): Json<InternalSessionKeyBindingRequest>,

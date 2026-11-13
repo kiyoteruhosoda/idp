@@ -1,10 +1,10 @@
-//! OIDC IdP のサービス間 DTO 契約（`assay-contracts`）。
+//! Inter-service DTO contracts of the OIDC IdP (`assay-contracts`).
 //!
-//! ADR-0007（API/Web サービス分割）§6。api（サーバ）が返す JSON DTO と、web（クライアント）が
-//! 用いる型を **同一の serde 構造体**で共有し、コンパイル時に契約整合を保証する。DB・axum・sqlx へは
-//! 依存しない（HTTP は `http` の基本型のみ。[`http_trace`] 参照）。OpenAPI からのコード生成は採らず、
-//! 型は Rust で単一定義する。
-//! utoipa による OpenAPI は api 側で継続する（外部公開 API の DTO は api の presentation に置く）。
+//! ADR-0007 (API/Web service split) §6. The JSON DTOs returned by api (server) and the types used by
+//! web (client) are shared as **the same serde structs**, guaranteeing contract consistency at compile
+//! time. No dependency on DB, axum or sqlx (HTTP uses only `http` basic types; see [`http_trace`]).
+//! No code generation from OpenAPI; types are defined once in Rust.
+//! OpenAPI via utoipa stays on the api side (DTOs of the publicly exposed API live in api's presentation).
 
 pub mod admin;
 pub mod application_log;

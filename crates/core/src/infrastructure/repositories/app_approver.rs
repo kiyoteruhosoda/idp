@@ -1,4 +1,4 @@
-//! 認証アプリの鍵・登録の受付・「アプリで続ける」の依頼の sqlx 実装（task #892。ADR-0077）。
+//! sqlx implementation of authenticator-app keys, registration intake and "continue with the app" requests (task #892, ADR-0077).
 
 use crate::domain::app_approver::{
     ApprovalRequest, ApprovalState, ApproverEnrollment, ApproverKey, EnrollmentStage,
@@ -32,7 +32,7 @@ fn level_of(raw: &str) -> Result<KeySecurityLevel> {
         .ok_or_else(|| DomainError::Repository(format!("unknown security level `{raw}`")))
 }
 
-// ─── 鍵 ──────────────────────────────────────────────────────────────
+// ─── Keys ─────────────────────────────────────────────────────────────
 
 pub struct SqlxApproverKeyRepository {
     pool: Db,
@@ -172,7 +172,7 @@ impl ApproverKeyRepository for SqlxApproverKeyRepository {
     }
 }
 
-// ─── 登録の受付 ────────────────────────────────────────────────────────
+// ─── Registration intake ──────────────────────────────────────────────
 
 pub struct SqlxApproverEnrollmentRepository {
     pool: Db,
@@ -188,7 +188,7 @@ impl SqlxApproverEnrollmentRepository {
     }
 }
 
-/// 段階の名前（DB の値）。
+/// Stage name (the DB value).
 pub fn stage_name(stage: &EnrollmentStage) -> &'static str {
     match stage {
         EnrollmentStage::AwaitingKey => "awaiting_key",
@@ -335,7 +335,7 @@ impl ApproverEnrollmentRepository for SqlxApproverEnrollmentRepository {
     }
 }
 
-// ─── 「アプリで続ける」の依頼 ───────────────────────────────────────────
+// ─── "Continue with the app" requests ──────────────────────────────────
 
 pub struct SqlxApprovalRequestRepository {
     pool: Db,

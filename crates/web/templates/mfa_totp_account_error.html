@@ -1,10 +1,10 @@
 {% extends "page.html" %}
 {% block title %}{{ messages.get("mfa-title") }}{% endblock %}
-{#- アカウント設定から来た TOTP の設定が失敗したときの画面（task #119）。失敗を告げるだけの
-    最小のページ（`message_page.html`）では出口が無く、行き止まりになっていた。設定画面
-    （`mfa_totp_setup.html`）と同じ形で、左上の名乗りと本文の先頭の「戻る」を置く。
-    ⚠ セッションが切れているならアカウント設定は開けない（開いてもサインインへ回される）ので、
-    本文の導線はサインインへ向ける。 -#}
+{#- Screen for a failed TOTP setup started from account settings (task #119). The minimal page that only reports
+    the failure (`message_page.html`) had no exit, a dead end. Same shape as the setup screen
+    (`mfa_totp_setup.html`): the top-left label and a "Back" at the top of the body.
+    ⚠ If the session expired, account settings cannot be opened (it would redirect to sign-in), so
+    the body link points to sign-in. -#}
 {% block brand %}<a class="navbar-brand mb-0 h1 text-decoration-none" href="{{ tenant_prefix }}/settings" title="{{ messages.get("nav-home") }}">assay</a>{% endblock %}
 {% block content %}
 <div class="mb-3">

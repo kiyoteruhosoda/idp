@@ -1,23 +1,23 @@
-//! テナント解決 middleware（ADR-0009 §7）。
+//! Tenant resolution middleware (ADR-0009 §7).
 //!
-//! `/{tenant_id}/...` 配下のリクエストで、パスの `:tenant_id`（UUID）を解決し、処理対象のテナントを
-//! [`ResolvedTenant`] として `Extension` 注入する。ハンドラ・ユースケースはこの Extension から
-//! `TenantContext` を取り出してリポジトリ呼び出しに渡す（テナント分離の防御線。§8）。
+//! For requests under `/{tenant_id}/...`, resolves the path's `:tenant_id` (UUID) and injects the target
+//! tenant as [`ResolvedTenant`] via `Extension`. Handlers and use cases take `TenantContext` from this
+//! Extension and pass it to repository calls (the tenant isolation line of defence; §8).
 //!
-//! 解決規則（§7）:
-//! - `:tenant_id` が UUID 形式でない → 404（未知のテナントと同じ扱い。パス衝突回避の第 2 段。§6）。
-//! - `tenants` に存在しない / `DISABLED` → 404。
-//! - `ACTIVE` → [`ResolvedTenant`] を注入して後続へ委譲する。
+//! Resolution rules (§7):
+//! - `:tenant_id` is not a UUID → 404 (same as an unknown tenant; second stage of path collision avoidance; §6).
+//! - not in `tenants` / `DISABLED` → 404.
+//! - `ACTIVE` → injects [`ResolvedTenant`] and delegates onward.
 //!
-//! id → tenant はホットパスのため、解決は TTL キャッシュ + 更新時 invalidation 付きの
-//! [`TenantResolutionService`] が担う。root も同一経路で UUID として解決し、特別分岐は設けない（§1）。
+//! id → tenant is a hot path, so resolution is done by [`TenantResolutionService`] with a TTL cache +
+//! invalidation on update. root is resolved the same way as a UUID, with no special branch (§1).
 //!
-//! # ルーターへの mount（MT9）
+//! # Mounting on the router (MT9)
 //!
-//! 実際の `/{tenant_id}/...` ルーティングは MT9 で導入する。本 middleware はそこで
-//! `route_layer(from_fn_with_state(state, resolve_tenant))` として テナントルート群へ付与する。
-//! MT9 までは `AppState::default_tenant`（起動時に解決した root）を全リクエストへ適用する過渡運用のため、
-//! 本 middleware はルーターへ mount されない（`state.tenant_resolution` は MT9 のための配線）。
+//! The actual `/{tenant_id}/...` routing is introduced in MT9. There this middleware is attached to the
+//! tenant routes as `route_layer(from_fn_with_state(state, resolve_tenant))`.
+//! Until MT9, as a transitional mode applying `AppState::default_tenant` (root resolved at startup) to every request,
+//! this middleware is not mounted on the router (`state.tenant_resolution` is wiring for MT9).
 
 use crate::application::tenant_resolution::TenantResolutionService;
 use crate::domain::tenant::{Tenant, TenantId};
@@ -33,10 +33,10 @@ use axum::Json;
 use serde_json::json;
 use std::collections::HashMap;
 
-/// `TenantResolver` が解決した処理対象テナント（`Extension` として注入される）。
+/// The target tenant resolved by `TenantResolver` (injected as an `Extension`).
 ///
-/// 抽出できた時点で「テナントが実在し `ACTIVE`」が保証される。ハンドラは [`Self::context`] で
-/// ユースケースへ渡す `TenantContext` を得る。
+/// Once extracted, "the tenant exists and is `ACTIVE`" is guaranteed. Handlers get the `TenantContext`
+/// to pass to use cases via [`Self::context`].
 #[derive(Debug, Clone)]
 pub struct ResolvedTenant(Tenant);
 
@@ -53,15 +53,15 @@ impl ResolvedTenant {
         self.0.id
     }
 
-    /// ユースケースへ渡すテナント境界。
+    /// The tenant boundary passed to use cases.
     pub fn context(&self) -> TenantContext {
         TenantContext::new(self.0.id)
     }
 }
 
-/// テナント解決 middleware 本体（`from_fn_with_state` で使う）。`/{tenant_id}/...` 配下の
-/// テナントルート群へ `route_layer` で付与する。ネストしたルートは複数のパスパラメータ
-/// （例: `{tenant_id}` と `{client_id}`）を持ちうるため、`tenant_id` を名前で取り出す。
+/// The tenant resolution middleware itself (used with `from_fn_with_state`). Attached with `route_layer`
+/// to the tenant routes under `/{tenant_id}/...`. Nested routes can have several path parameters
+/// (e.g. `{tenant_id}` and `{client_id}`), so `tenant_id` is extracted by name.
 pub async fn resolve_tenant(
     State(state): State<AppState>,
     Path(params): Path<HashMap<String, String>>,
@@ -69,7 +69,7 @@ pub async fn resolve_tenant(
     next: axum::middleware::Next,
 ) -> Response {
     let Some(raw_tenant_id) = params.get("tenant_id") else {
-        // ルート定義に `{tenant_id}` セグメントが無い（配線ミス）。500 に倒す。
+        // The route definition has no `{tenant_id}` segment (wiring mistake). Falls back to 500.
         tracing::error!("resolve_tenant mounted on a route without a {{tenant_id}} segment");
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -85,10 +85,10 @@ pub async fn resolve_tenant(
     next.run(request).await
 }
 
-/// パス片 → [`ResolvedTenant`] の中核ロジック（middleware 本体から分離してテスト可能にする）。
+/// Core logic of path segment → [`ResolvedTenant`] (separated from the middleware so it can be tested).
 ///
-/// UUID 形式でない・未知・`DISABLED` はいずれも 404 に倒す（内部理由は漏らさない。§6・§7）。
-/// リポジトリ障害のみ 503（一時障害）に倒す。
+/// Non-UUID, unknown and `DISABLED` all become 404 (internal reasons are not leaked; §6, §7).
+/// Only repository failures become 503 (temporary failure).
 async fn resolve(
     service: &TenantResolutionService,
     raw_tenant_id: &str,
@@ -111,23 +111,23 @@ async fn resolve(
     }
 }
 
-/// 内部 API（`/internal/*`。テナントプレフィクス無し。ADR-0009 §8）のテナントを、web が DTO で送る
-/// `tenant_id` から解決する。**未指定・UUID 不正・実在しない・`DISABLED` はすべて 400 で拒否する
-/// （fail-closed）**。
+/// Resolves the tenant of the internal API (`/internal/*`; no tenant prefix; ADR-0009 §8) from the
+/// `tenant_id` web sends in the DTO. **Missing, invalid UUID, nonexistent and `DISABLED` are all rejected
+/// with 400 (fail-closed)**.
 ///
-/// かつては過渡措置として既定テナント（root）へフォールバックしていたが、web のテナント経路化
-/// （MT13）完了に伴い撤去した（SEC4）。フォールバックを残すと、web が `tenant_id` を落とした場合に
-/// 別テナントのログイン画面から root テナントに対する認証が成立してしまう（テナント混同）。
+/// It used to fall back to the default tenant (root) as a transitional measure, but that was removed (SEC4)
+/// once web moved to tenant routes (MT13). Keeping the fallback would let a login screen of another tenant
+/// authenticate against the root tenant whenever web dropped `tenant_id` (tenant confusion).
 ///
-/// **実在と `ACTIVE` も確かめる。** テナント経路（`/{tenant_id}/...`）は [`resolve_tenant`]
-/// middleware が `DISABLED` を 404 で止めるが、内部 API はプレフィクスを持たないためその
-/// middleware を通らない。UUID の書式だけを見ていた頃は、**無効化したテナントの利用者が
-/// `/internal/authenticate*` 経由でログインできた**（web は DB を持たず実在確認を api に委ねる
-/// 設計なので、web 側にも止める手立てが無い）。テナントの無効化はその組織の利用を止める操作で
-/// あり、内部 API はその抜け道であってはならない。
+/// **Existence and `ACTIVE` are checked too.** Tenant routes (`/{tenant_id}/...`) are stopped with 404 for
+/// `DISABLED` by the [`resolve_tenant`] middleware, but the internal API has no prefix and does not go
+/// through it. Back when only the UUID format was checked, **users of a disabled tenant could sign in via
+/// `/internal/authenticate*`** (web has no DB and leaves existence checks to api by design, so web had
+/// no way to stop it either). Disabling a tenant stops that organization's use, and the internal API
+/// must not be a loophole around it.
 ///
-/// 解決は [`TenantResolutionService`]（TTL キャッシュ + 更新時 invalidate）を通すため、
-/// 認証のホットパスで毎回 DB を引くことにはならない。
+/// Resolution goes through [`TenantResolutionService`] (TTL cache + invalidation on update), so the
+/// auth hot path does not hit the DB every time.
 pub async fn require_internal_tenant(
     tenants: &TenantResolutionService,
     raw_tenant_id: Option<&str>,
@@ -146,8 +146,8 @@ pub async fn require_internal_tenant(
     match tenants.resolve(id.into()).await {
         Ok(Some(tenant)) => Ok(TenantContext::new(tenant.id)),
         Ok(None) => {
-            // 不存在と `DISABLED` を区別しない（内部 API の利用者は web だけで、区別しても
-            // できることが増えない。区別しなければテナントの存在も漏れない）。
+            // Nonexistent and `DISABLED` are not distinguished (the only internal API caller is web and
+            // distinguishing enables nothing more; not distinguishing also hides whether the tenant exists).
             tracing::warn!(
                 tenant_id = raw,
                 "internal request for an unknown or disabled tenant"
@@ -165,11 +165,11 @@ pub async fn require_internal_tenant(
     }
 }
 
-/// 実在しない・`DISABLED` なテナントを名指した内部要求 —— テナントを解決できなかった。
+/// An internal request naming a nonexistent or `DISABLED` tenant — the tenant could not be resolved.
 ///
-/// **他の 400 と区別できるコードを載せる**（`contracts` の [`UNKNOWN_TENANT_ERROR_CODE`]）。
-/// web はこれを 404 の画面へ倒し、それ以外の非 2xx は「web の実装/構成エラー」として 502 に
-/// 倒す（MT28）。説明文で判別させると、文言を直した瞬間に静かに壊れる。
+/// **Carries a code distinguishable from other 400s** ([`UNKNOWN_TENANT_ERROR_CODE`] in `contracts`).
+/// web maps it to the 404 screen and other non-2xx to 502 as "web implementation / configuration error"
+/// (MT28). Telling them apart by the description would break silently the moment the wording changes.
 fn unavailable_tenant() -> Response {
     error_response(
         StatusCode::BAD_REQUEST,
@@ -194,14 +194,14 @@ fn error_response(status: StatusCode, code: &str, message: &str) -> Response {
     (status, Json(json!({ "error": code, "message": message }))).into_response()
 }
 
-/// 要求テナントが root であることを課す（ADR-0051。ADR-0058 §8 でも維持）。
+/// Requires the requested tenant to be root (ADR-0051; kept in ADR-0058 §8).
 ///
-/// 全テナント共通の資源（全体の SMTP 経路・署名鍵）を扱う口が使う。
+/// Used by endpoints handling resources shared by all tenants (the global SMTP route, signing keys).
 ///
-/// ⚠ **この口の守りはここだけである。** ADR-0058 §8 で `idp.smtp:*` はどのテナントでも配れる
-/// ようになった（テナント自身の経路は `/admin/settings/smtp`）。したがって権限の判定だけでは、
-/// テナントの中で配られた `idp.smtp:write` が**全体の経路**へ届いてしまう。`system_settings` が
-/// テナント横断の表である以上、使う側で root を課す。
+/// ⚠ **This is the only guard for these endpoints.** Since ADR-0058 §8, `idp.smtp:*` can be granted in any
+/// tenant (the tenant's own route is `/admin/settings/smtp`). So the permission check alone would let an
+/// `idp.smtp:write` granted inside a tenant reach **the global route**. As long as `system_settings` is a
+/// cross-tenant table, the caller imposes root.
 pub fn require_root_tenant(tenant: &ResolvedTenant, locale: ApiLocale) -> Result<(), ApiError> {
     if tenant.tenant().is_root() {
         return Ok(());
@@ -225,7 +225,7 @@ mod tests {
     use chrono::{TimeZone, Utc};
     use std::sync::{Arc, Mutex};
 
-    /// テスト用の常に空なキャッシュ（解決経路のテストでは DB 直読で十分）。
+    /// An always-empty cache for tests (reading the DB directly is enough for resolution path tests).
     struct NoopCache;
     impl Cache<TenantId, Tenant> for NoopCache {
         fn get(&self, _key: &TenantId) -> Option<Tenant> {
@@ -311,7 +311,7 @@ mod tests {
 
     #[tokio::test]
     async fn not_found_body_does_not_leak_internal_reason() {
-        // UUID 不正・未知・DISABLED は同一の 404 本文にする（識別不能）。
+        // Invalid UUID, unknown and DISABLED get the same 404 body (indistinguishable).
         let body = to_bytes(not_found().into_body(), usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"], "not_found");

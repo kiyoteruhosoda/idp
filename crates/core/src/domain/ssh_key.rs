@@ -1,18 +1,23 @@
-//! 利用者が自分で登録する SSH の公開鍵（task #885。ADR-0072）。
+//! SSH public keys users register themselves (task #885; ADR-0072).
 //!
-//! 持ち主の PC がウイルスに乗っ取られても SSH の鍵を持ち出せないよう、登録できるのは **sk 型**
-//! （`sk-ssh-ed25519@openssh.com`・`sk-ecdsa-sha2-nistp256@openssh.com`）だけにする。sk 型の秘密鍵は
-//! セキュリティキー・TPM（Windows Hello）・スマホのパスキーの中にあり、PC のファイルには「鍵の持ち手」しか
-//! 残らない。使うたびに機器での確認（触れる・指紋・PIN）が要る。
+//! So SSH keys cannot be stolen even if the owner's PC is taken over by malware, only **sk-type**
+//! keys can be registered (`sk-ssh-ed25519@openssh.com`, `sk-ecdsa-sha2-nistp256@openssh.com`). The
+//! private key of an sk-type key lives inside a security key, TPM (Windows Hello), or a phone
+//! passkey; the PC's file holds only a "key handle". Each use requires confirmation on the device
+//! (touch, fingerprint, PIN).
 //!
-//! # ここで確かめること
+//! # What is checked here
 //!
-//! - authorized_keys の 1 行の形（`型 本体 [コメント]`。前にオプションを付けた行は受け付けない）
-//! - 本体（base64）を開き、OpenSSH の公開鍵の並び（RFC 4253 §6.6 の string の連なり）として読めること、
-//!   中に書かれた型が 1 つ目の欄と一致すること、鍵の長さが型どおりであること、後ろに余りが無いこと
-//! - 秘密鍵らしきもの（`-----BEGIN … PRIVATE KEY-----`）は**中身を読まずに**断る
+//! - The shape of one authorized_keys line (`type blob [comment]`; lines with leading options are
+//!   not accepted)
+//! - The blob (base64) opens and reads as an OpenSSH public key sequence (a series of strings per
+//!   RFC 4253 §6.6), the type written inside matches the first field, key lengths match the type,
+//!   and nothing is left over
+//! - Anything that looks like a private key (`-----BEGIN … PRIVATE KEY-----`) is refused **without
+//!   reading its content**
 //!
-//! 指紋は `ssh-keygen -l` と同じ `SHA256:` ＋ 本体の SHA-256 の base64（パディング無し）。
+//! The fingerprint is `SHA256:` + base64 (no padding) of the blob's SHA-256, same as
+//! `ssh-keygen -l`.
 
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
 use base64::Engine;
@@ -22,27 +27,28 @@ use uuid::Uuid;
 
 use crate::domain::tenant::TenantId;
 
-/// 鍵の名前の長さの上限（文字数）。
+/// Upper bound on key name length (characters).
 pub const MAX_SSH_KEY_NAME_CHARS: usize = 100;
 
-/// 1 人が 1 つの組織に登録できる鍵の数の上限（配る先の authorized_keys を膨らませない）。
+/// Upper bound on keys one person can register in one organization (keeps the distributed
+/// authorized_keys small).
 pub const MAX_SSH_KEYS_PER_USER: usize = 10;
 
-/// 貼り付けた文字列の長さの上限（バイト）。sk 型の公開鍵は 1 行 300 バイトに満たない。
+/// Upper bound on the pasted string length (bytes). An sk-type public key line is under 300 bytes.
 const MAX_INPUT_BYTES: usize = 4096;
 
-/// 本体を開いた長さの上限（バイト）。
+/// Upper bound on the decoded blob length (bytes).
 const MAX_BLOB_BYTES: usize = 300;
 
-/// sk 型の `application`（FIDO の rp id。既定は `ssh:`）の長さの上限（バイト）。
+/// Upper bound on the length (bytes) of an sk-type `application` (FIDO rp id; default `ssh:`).
 const MAX_APPLICATION_BYTES: usize = 128;
 
-/// 受け付ける鍵の型。
+/// Accepted key types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SshKeyType {
-    /// `ssh-keygen -t ed25519-sk`（セキュリティキー）。
+    /// `ssh-keygen -t ed25519-sk` (security key).
     SkEd25519,
-    /// `ssh-keygen -t ecdsa-sk`（Windows Hello・スマホのパスキー・多くのセキュリティキー）。
+    /// `ssh-keygen -t ecdsa-sk` (Windows Hello, phone passkeys, many security keys).
     SkEcdsaP256,
 }
 
@@ -63,28 +69,29 @@ impl SshKeyType {
     }
 }
 
-/// 公開鍵を断った理由。
+/// Why a public key was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SshKeyRejection {
-    /// 秘密鍵らしきものが貼られた（中身は読まず、保存もしない）。
+    /// Something that looks like a private key was pasted (its content is neither read nor stored).
     LooksLikePrivateKey,
-    /// sk 型ではない（`ssh-ed25519`・`ssh-rsa`・`ecdsa-sha2-nistp256` など、ファイルに秘密鍵がある型）。
+    /// Not sk-type (`ssh-ed25519`, `ssh-rsa`, `ecdsa-sha2-nistp256`, etc., types with the private
+    /// key in a file).
     NotSecurityKeyType,
-    /// 形が壊れている（base64 でない・並びが読めない・型が食い違う・長さが違う・空）。
+    /// Malformed (not base64, unreadable sequence, mismatched type, wrong length, empty).
     Malformed,
 }
 
-/// 確かめ終えた公開鍵。
+/// A verified public key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SshPublicKey {
     key_type: SshKeyType,
-    /// 本体（base64。パディング付きの標準形へ揃えた値）。
+    /// Blob (base64, normalized to the standard padded form).
     blob: String,
     fingerprint: String,
 }
 
 impl SshPublicKey {
-    /// 貼り付けられた authorized_keys の 1 行を確かめる。コメントは捨てる。
+    /// Checks one pasted authorized_keys line. The comment is dropped.
     pub fn parse(raw: &str) -> Result<Self, SshKeyRejection> {
         if raw.contains("PRIVATE KEY") {
             return Err(SshKeyRejection::LooksLikePrivateKey);
@@ -92,7 +99,8 @@ impl SshPublicKey {
         if raw.len() > MAX_INPUT_BYTES {
             return Err(SshKeyRejection::Malformed);
         }
-        // 1 行だけ（前後の空白・改行は落とす。2 行以上は断る）。
+        // Exactly one line (surrounding whitespace / newlines are dropped; two or more lines are
+        // refused).
         let line = raw.trim();
         if line.is_empty() || line.contains('\n') || line.contains('\r') {
             return Err(SshKeyRejection::Malformed);
@@ -122,7 +130,7 @@ impl SshPublicKey {
         })
     }
 
-    /// DB から読んだ値を包む（保存したときに確かめてある）。
+    /// Wraps a value read from the DB (it was checked when stored).
     pub fn from_stored(key_type: SshKeyType, blob: String, fingerprint: String) -> Self {
         Self {
             key_type,
@@ -139,18 +147,19 @@ impl SshPublicKey {
         &self.blob
     }
 
-    /// `SHA256:…`（`ssh-keygen -l -E sha256` と同じ）。
+    /// `SHA256:…` (same as `ssh-keygen -l -E sha256`).
     pub fn fingerprint(&self) -> &str {
         &self.fingerprint
     }
 
-    /// authorized_keys に書く形（`型 本体`。コメント・オプションは付けない）。
+    /// The form written to authorized_keys (`type blob`; no comment or options).
     pub fn authorized_key(&self) -> String {
         format!("{} {}", self.key_type.as_str(), self.blob)
     }
 }
 
-/// ファイルに秘密鍵を置く型の名前か（「sk 型ではない」と「壊れている」を言い分けるため）。
+/// Whether it is the name of a type that keeps the private key in a file (to tell "not sk-type"
+/// from "malformed").
 fn looks_like_key_type(field: &str) -> bool {
     field.starts_with("ssh-")
         || field.starts_with("ecdsa-sha2-")
@@ -158,16 +167,16 @@ fn looks_like_key_type(field: &str) -> bool {
         || field.starts_with("rsa-sha2-")
 }
 
-/// 指紋（`SHA256:` ＋ base64、パディング無し）。
+/// Fingerprint (`SHA256:` + base64, no padding).
 pub fn fingerprint_of(blob: &[u8]) -> String {
     format!("SHA256:{}", STANDARD_NO_PAD.encode(Sha256::digest(blob)))
 }
 
-/// 本体の並びを読む（RFC 4253 §6.6・OpenSSH PROTOCOL.u2f）。
+/// Reads the blob's sequence (RFC 4253 §6.6, OpenSSH PROTOCOL.u2f).
 ///
-/// - `sk-ssh-ed25519@openssh.com`: string 型・string 公開鍵（32 バイト）・string application
-/// - `sk-ecdsa-sha2-nistp256@openssh.com`: string 型・string `nistp256`・string 点（非圧縮 65 バイト）・
-///   string application
+/// - `sk-ssh-ed25519@openssh.com`: string type, string public key (32 bytes), string application
+/// - `sk-ecdsa-sha2-nistp256@openssh.com`: string type, string `nistp256`, string point
+///   (uncompressed 65 bytes), string application
 fn check_blob(key_type: SshKeyType, bytes: &[u8]) -> Result<(), SshKeyRejection> {
     let mut reader = WireReader(bytes);
     if reader.string()? != key_type.as_str().as_bytes() {
@@ -202,7 +211,7 @@ fn check_blob(key_type: SshKeyType, bytes: &[u8]) -> Result<(), SshKeyRejection>
     Ok(())
 }
 
-/// SSH の wire 形式の string（4 バイトの長さ＋中身）を前から読む。
+/// Reads an SSH wire-format string (4-byte length + content) from the front.
 struct WireReader<'a>(&'a [u8]);
 
 impl<'a> WireReader<'a> {
@@ -221,7 +230,8 @@ impl<'a> WireReader<'a> {
     }
 }
 
-/// 名前を整える。前後の空白を落とし、空・長すぎ・制御文字入りは `None`。
+/// Tidies a name. Trims surrounding whitespace; empty, too long, or containing control characters
+/// gives `None`.
 pub fn normalize_ssh_key_name(raw: &str) -> Option<String> {
     let name = raw.trim();
     if name.is_empty()
@@ -233,7 +243,7 @@ pub fn normalize_ssh_key_name(raw: &str) -> Option<String> {
     Some(name.to_string())
 }
 
-/// 登録済みの SSH の鍵。
+/// A registered SSH key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserSshKey {
     pub id: Uuid,
@@ -244,10 +254,10 @@ pub struct UserSshKey {
     pub created_at: DateTime<Utc>,
 }
 
-/// 配る機械へ渡す 1 行（利用者名つき）。
+/// One line handed to distributing machines (with the user name).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DistributedSshKey {
-    /// assay の利用者名（`preferred_username`）。
+    /// assay's user name (`preferred_username`).
     pub username: String,
     pub name: String,
     pub key: SshPublicKey,
@@ -256,7 +266,7 @@ pub struct DistributedSshKey {
 
 #[cfg(test)]
 pub(crate) mod testing {
-    //! 試験用の鍵を組み立てる（本物の `ssh-keygen` の出力と同じ並び）。
+    //! Builds test keys (in the same sequence as real `ssh-keygen` output).
     use super::*;
 
     fn put(out: &mut Vec<u8>, value: &[u8]) {
@@ -264,7 +274,7 @@ pub(crate) mod testing {
         out.extend_from_slice(value);
     }
 
-    /// `sk-ssh-ed25519@openssh.com` の 1 行（`seed` で鍵を変える）。
+    /// One `sk-ssh-ed25519@openssh.com` line (`seed` varies the key).
     pub fn ed25519_sk_line(seed: u8) -> String {
         let mut blob = Vec::new();
         put(&mut blob, b"sk-ssh-ed25519@openssh.com");
@@ -276,7 +286,7 @@ pub(crate) mod testing {
         )
     }
 
-    /// `sk-ecdsa-sha2-nistp256@openssh.com` の 1 行。
+    /// One `sk-ecdsa-sha2-nistp256@openssh.com` line.
     pub fn ecdsa_sk_line(seed: u8) -> String {
         let mut point = vec![0x04];
         point.extend_from_slice(&[seed; 64]);
@@ -291,7 +301,7 @@ pub(crate) mod testing {
         )
     }
 
-    /// `ssh-ed25519`（ファイルの鍵）の 1 行。
+    /// One `ssh-ed25519` (file key) line.
     pub fn ed25519_file_line() -> String {
         let mut blob = Vec::new();
         put(&mut blob, b"ssh-ed25519");
@@ -321,7 +331,7 @@ mod tests {
 
     #[test]
     fn fingerprint_matches_ssh_keygen() {
-        // ssh-keygen -l は SHA-256 の base64（パディング無し）に `SHA256:` を付ける。
+        // ssh-keygen -l prefixes the base64 (no padding) of the SHA-256 with `SHA256:`.
         let key = SshPublicKey::parse(&ed25519_sk_line(1)).unwrap();
         let blob = STANDARD.decode(key.blob()).unwrap();
         let expected = format!("SHA256:{}", STANDARD_NO_PAD.encode(Sha256::digest(&blob)));
@@ -335,8 +345,8 @@ mod tests {
         );
     }
 
-    /// `ssh-keygen -l -E sha256` が同じ行に出した指紋（OpenSSH 10 で実測。公開鍵の並びは
-    /// [`ed25519_sk_line`] の `seed = 1` と同じ）。
+    /// Fingerprint `ssh-keygen -l -E sha256` printed for the same line (measured with OpenSSH 10;
+    /// the public key sequence is the same as [`ed25519_sk_line`] with `seed = 1`).
     #[test]
     fn fingerprint_is_the_one_ssh_keygen_prints() {
         let line = "sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAAAABHNzaDo= test";
@@ -387,19 +397,19 @@ mod tests {
             "   ".to_string(),
             "sk-ssh-ed25519@openssh.com".to_string(),
             "sk-ssh-ed25519@openssh.com !!!notbase64".to_string(),
-            // 1 つ目の欄と中の型が食い違う
+            // The first field and the inner type disagree
             format!("sk-ecdsa-sha2-nistp256@openssh.com {blob}"),
-            // 切り詰めた本体
+            // Truncated blob
             format!("sk-ssh-ed25519@openssh.com {}", &blob[..blob.len() - 8]),
-            // 2 行
+            // Two lines
             format!("{good}\n{good}"),
-            // オプション付きの行
+            // Line with options
             format!("from=\"10.0.0.0/8\" {good}"),
             "hello world".to_string(),
         ] {
             assert!(SshPublicKey::parse(&bad).is_err(), "{bad:?}");
         }
-        // 後ろに余りのある本体
+        // Blob with trailing leftover bytes
         let mut bytes = STANDARD.decode(blob).unwrap();
         bytes.push(0);
         assert_eq!(

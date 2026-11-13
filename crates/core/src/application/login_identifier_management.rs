@@ -1,21 +1,21 @@
-//! ログイン識別子の管理ユースケース（AP8。仕様 §4）。
+//! Login identifier management use case (AP8. spec §4).
 //!
-//! テナント管理者（`idp.tenant.admin`）が、利用者に**複数のログイン識別子**を割り当てる。
-//! 電話番号・社員番号のように組織がすでに配っている値でログインさせたり、旧いユーザー名を
-//! 残したまま新しい名前を配ったりするための操作である。
+//! A tenant admin (`idp.tenant.admin`) assigns **multiple login identifiers** to a user.
+//! This lets users log in with values the organization already hands out, such as phone numbers or employee
+//! numbers, or hands out a new name while keeping an old user name.
 //!
-//! # 一意性の判定は「解決してみる」で行う
+//! # Uniqueness is decided by "trying to resolve it"
 //!
-//! 追加する値が使えるかは、DB の一意制約（登録簿の中の重複）だけでは決まらない。
-//! 主たるログイン識別子は expand フェーズの間 `users.preferred_username` 側にもあり、
-//! そちらと衝突した識別子は「登録はできたが、ログインすると別人が返る（あるいは返らない）」
-//! という壊れ方をする。そこで**実際の解決経路と同じ引き方**
-//! （[`UserRepository::find_by_login_identifier`]）を通し、他人に解決される値を拒否する。
-//! 判定と本番の経路が同じである限り、両者がずれることはない。
+//! Whether a value can be added is not decided by the DB unique constraint (duplicates within the registry) alone.
+//! During the expand phase the primary login identifier also lives in `users.preferred_username`, and an
+//! identifier colliding with it breaks as "it registered, but login returns someone else (or nobody)".
+//! So it goes through **the same lookup as the actual resolution path**
+//! ([`UserRepository::find_by_login_identifier`]) and rejects values that resolve to someone else.
+//! As long as the check and the production path are the same, they can't drift apart.
 //!
-//! メールアドレスを識別子にする場合、その所有確認（検証メール）は行わない。管理者が割り当てる
-//! 操作であり、管理者によるメール変更（MT25）が検証済みを維持するのと同じ扱いにする。
-//! 利用者本人が自分で足せる導線は用意しない。
+//! When an email address is used as an identifier, its ownership is not verified (no verification mail). It is an
+//! admin assignment, treated the same as an admin email change (MT25) keeping the verified state.
+//! No path is offered for users to add one themselves.
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::admin_actor::AdminActor;
@@ -38,18 +38,18 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct AddLoginIdentifierCommand {
     pub identifier_type: LoginIdentifierType,
-    /// 利用者が入力するままの値（正規化前）。
+    /// The value as the user types it (before normalization).
     pub value: String,
-    /// 追加直後に有効にするか（既定 true）。
+    /// Whether it is active right after being added (default true).
     pub is_active: bool,
 }
 
-/// 一覧の 1 件。
+/// One item of the list.
 ///
-/// `id` は `Option` のままにしてある。AP15b で主識別子も登録簿の行になり、合成行は無くなった
-/// ので現状は常に `Some` だが、**契約（API の応答）としては `null` を返し得る形**を保つ。
-/// 型を狭めると api・web・その先の利用者に同時配布を強いる変更になり、得られるのは
-/// 「`None` を書けない」だけである。
+/// `id` is kept as `Option`. Since AP15b the primary identifier is also a registry row and synthesized rows are gone,
+/// so it is currently always `Some`, but **the contract (API response) keeps a shape that may return `null`**.
+/// Narrowing the type would force a simultaneous rollout to api, web and their consumers, and all it would gain is
+/// "can't write `None`".
 #[derive(Debug, Clone)]
 pub struct LoginIdentifierEntry {
     pub id: Option<Uuid>,
@@ -57,10 +57,10 @@ pub struct LoginIdentifierEntry {
     pub display_value: String,
     pub normalized_value: String,
     pub is_active: bool,
-    /// 主たるログイン識別子か（登録簿の `primary_of_user` 行）。主識別子は識別子単位の
-    /// 有効/無効・削除の対象にならない（変えるならプロフィール編集、止めるならアカウントの無効化）。
+    /// Whether this is the primary login identifier (the registry's `primary_of_user` row). The primary identifier is
+    /// not subject to per-identifier enable/disable or deletion (edit the profile to change it, disable the account to stop it).
     pub is_primary: bool,
-    /// 主メールアドレスの行か（ADR-0050）。主識別子と同じく個別の操作の対象にならない。
+    /// Whether this is the primary email row (ADR-0050). Like the primary identifier, it is not subject to individual operations.
     pub is_primary_email: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
@@ -101,7 +101,7 @@ fn internal(e: DomainError) -> LoginIdentifierManagementError {
 pub struct LoginIdentifierManagementService {
     identifiers: Arc<dyn UserLoginIdentifierRepository>,
     users: Arc<dyn UserRepository>,
-    /// テナントへ割り当てたドメイン（ADR-0029）。空き判定をログインの解決と同じ範囲にするために引く。
+    /// Domains assigned to tenants (ADR-0029). Looked up so the availability check covers the same scope as login resolution.
     tenant_domains: Arc<dyn TenantDomainRepository>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
@@ -127,11 +127,11 @@ impl LoginIdentifierManagementService {
         }
     }
 
-    /// 利用者のログイン識別子を一覧する（無効な行も含む）。
+    /// Lists the user's login identifiers (including inactive rows).
     ///
-    /// **登録簿の行がすべてである**（AP15b）。主識別子も行として在るので、expand フェーズで
-    /// 足していた「`users.preferred_username` から読み出し時に合成する行」は無くなった。
-    /// ここに出る値と、ログイン欄で実際に解決される値が、同じ 1 つの表から来る。
+    /// **The registry rows are everything** (AP15b). The primary identifier exists as a row too, so the rows
+    /// "synthesized from `users.preferred_username` on read" added during the expand phase are gone.
+    /// The values shown here and the values actually resolved at the login field come from the same single table.
     pub async fn list(
         &self,
         tenant: TenantContext,
@@ -145,13 +145,13 @@ impl LoginIdentifierManagementService {
             .map_err(internal)?;
         let mut entries: Vec<LoginIdentifierEntry> =
             stored.into_iter().map(LoginIdentifierEntry::from).collect();
-        // 主識別子・主メールを先頭に固定する（登録簿の行は追加順に並ぶため、格上げされた行は
-        // 途中に来る）。個別に操作できない 2 行を上に集めることで、下の行だけが操作対象になる。
+        // Pin the primary identifier and primary email to the top (registry rows are in insertion order, so a promoted
+        // row lands in the middle). Gathering the two rows that can't be operated on at the top leaves only the rows below actionable.
         entries.sort_by_key(|e| (!e.is_primary, !e.is_primary_email));
         Ok(entries)
     }
 
-    /// ログイン識別子を追加する。
+    /// Adds a login identifier.
     pub async fn add(
         &self,
         tenant: TenantContext,
@@ -180,7 +180,7 @@ impl LoginIdentifierManagementService {
             display_value: raw,
             normalized_value: normalized,
             is_active: cmd.is_active,
-            // 管理画面から足すのは**追加の**識別子（主識別子はプロフィール編集が持つ）。
+            // What the admin UI adds are **additional** identifiers (the primary identifier belongs to profile editing).
             is_primary: false,
             is_primary_email: false,
             created_at: now,
@@ -207,10 +207,10 @@ impl LoginIdentifierManagementService {
         Ok(identifier)
     }
 
-    /// 識別子単位の有効/無効を切り替える（仕様 §4）。
+    /// Toggles enable/disable per identifier (spec §4).
     ///
-    /// 行を消さずに止められることが要点で、止めた値は他の利用者が登録できないままになる
-    /// （登録簿の一意制約は `is_active` を見ない）。止めた識別子の宛先が黙って別人に移るのを防ぐ。
+    /// The point is being able to stop it without deleting the row; a stopped value stays unregistrable by other users
+    /// (the registry's unique constraint ignores `is_active`). Prevents a stopped identifier from silently moving to someone else.
     pub async fn set_active(
         &self,
         tenant: TenantContext,
@@ -249,10 +249,10 @@ impl LoginIdentifierManagementService {
         })
     }
 
-    /// 識別子を削除する。
+    /// Deletes an identifier.
     ///
-    /// 主たるログイン識別子（`users.preferred_username`）は登録簿に無いため対象にならない
-    /// （一覧では `id` が `null` の合成行として出る）。変えたいならプロフィール編集（MT25）を使う。
+    /// The primary login identifier (`users.preferred_username`) is not in the registry, so it is not a target
+    /// (in the list it appears as a synthesized row with `id` = `null`). To change it, use profile editing (MT25).
     pub async fn remove(
         &self,
         tenant: TenantContext,
@@ -282,16 +282,16 @@ impl LoginIdentifierManagementService {
         Ok(())
     }
 
-    /// 別名のメールアドレスを主メールへ昇格させる（ADR-0052）。
+    /// Promotes an alias email address to the primary email (ADR-0052).
     ///
-    /// 昇格は**入れ替え**である。いまの主メール行が降格して普通の別名になり、選んだ行が
-    /// `users.email` の写し ——すなわち通知の宛先（ADR-0050 決定 4）—— になる。
+    /// Promotion is **a swap**. The current primary email row is demoted to an ordinary alias, and the chosen row becomes
+    /// the copy in `users.email` ——that is, the notification destination (ADR-0050 decision 4).
     ///
-    /// 対象はメール種別の行だけである。電話番号や社員番号を主メールにできてしまうと、
-    /// `users.email` にメールでない文字列が入り、パスワードリセットの宛先がそこになる。
+    /// Only email-kind rows are targets. If a phone number or employee number could become the primary email,
+    /// `users.email` would hold a non-email string and password resets would go there.
     ///
-    /// 押した行がすでに主メールでも拒まない。画面を開いたまま二度押すのはありふれた操作で、
-    /// 結果（その行が主メール）は同じである。
+    /// Not refused even if the clicked row is already the primary email. Clicking twice with the screen open is common,
+    /// and the result (that row is the primary email) is the same.
     pub async fn promote_email(
         &self,
         tenant: TenantContext,
@@ -336,15 +336,15 @@ impl LoginIdentifierManagementService {
         })
     }
 
-    /// 追加しようとしている値が、まだ誰のログインにも使われていないことを確かめる。
+    /// Confirms that the value being added isn't yet used for anyone's login.
     ///
-    /// 判定はログインの解決（`login_user_resolution`）と**同じ範囲**を見る。ずれると「登録できたのに
-    /// 別人に解決される値」「登録できないのに誰にも当たらない値」が生まれる。
+    /// The check looks at **the same scope** as login resolution (`login_user_resolution`). If they drift,
+    /// "values that registered but resolve to someone else" and "values that can't register but hit nobody" appear.
     ///
-    /// **自分自身に解決される値も拒む。** 他人に解決される値が危ないのは自明だが、自分の
-    /// `users.preferred_username` と同じ値を登録簿にも足せてしまうと、その行を無効化しても
-    /// `preferred_username` へのフォールバックで認証が通る ——「止めたのに使える」識別子が
-    /// できる。重複させないことがその状態を作らせない一番簡単な方法である。
+    /// **Values that resolve to yourself are also refused.** Values resolving to others are obviously dangerous, but if
+    /// the same value as your own `users.preferred_username` could also be added to the registry, disabling that row
+    /// would still let authentication pass via the fallback to `preferred_username` ——creating an identifier that
+    /// "is stopped yet still works". Not allowing duplicates is the simplest way to prevent that state.
     async fn ensure_available(
         &self,
         tenant_id: TenantId,
@@ -352,7 +352,7 @@ impl LoginIdentifierManagementService {
         identifier_type: LoginIdentifierType,
         raw: &str,
     ) -> Result<(), LoginIdentifierManagementError> {
-        // 1. 入力そのままで、ログインの 1 段目と同じ引き方をする。
+        // 1. Look up the input as-is, the same way as the first step of login.
         if self
             .users
             .find_by_login_identifier(tenant_id, raw)
@@ -364,13 +364,13 @@ impl LoginIdentifierManagementService {
                 "api-login-identifier-conflict",
             )));
         }
-        // 2. ドメイン修飾された値は、そのドメインが**このテナントのもの**なら「ローカル部の利用者」
-        //    を指す綴りでもある（ADR-0029 の UPN 解釈）。1 は入力そのままでしか引かないので、
-        //    `alice@corp.example` を他人へ足すと、`alice` の人がその綴りで入れなくなる —— 参加先
-        //    テナントの画面ではそれが唯一の入り口になり得るので、横取りさせない。
+        // 2. A domain-qualified value whose domain **belongs to this tenant** is also a spelling pointing to "the user
+        //    of the local part" (ADR-0029's UPN interpretation). Step 1 only looks up the input as-is, so adding
+        //    `alice@corp.example` to someone else would lock `alice` out of that spelling —— on a host tenant's screen
+        //    that may be the only way in, so don't let it be taken.
         //
-        //    自分自身のローカル部に当たる場合も拒む（1 と同じ理由。同じ人が同じ綴りを 2 通りで
-        //    持つと、片方を無効化しても他方で認証が通る）。
+        //    Also refused when it hits your own local part (same reason as 1: if the same person has the same spelling
+        //    in two forms, disabling one still lets authentication pass via the other).
         if let Some((local_part, domain)) = split_qualified_identifier(raw) {
             let owner = self
                 .tenant_domains
@@ -390,11 +390,11 @@ impl LoginIdentifierManagementService {
                 )));
             }
         }
-        // 3. `users.email` は現状ログインの入り口ではないため 1 では当たらない。しかし他人の
-        //    メールアドレスを自分のログイン識別子にできると、その人の連絡先で本人になりすませる。
-        //    メール種別のときだけ、利用者表の側も見る。
-        // 本人のメールアドレスを本人の識別子にするのは正当な使い方（「メールでログインしたい」）
-        // なので、他人のものだけを拒む。
+        // 3. `users.email` is not currently a login entry point, so step 1 doesn't hit it. But if someone else's
+        //    email address could become your login identifier, you could impersonate them with their contact info.
+        //    Only for the email kind, also check the users table.
+        // Making your own email address your own identifier is legitimate ("I want to log in with email"),
+        // so only other people's are refused.
         if identifier_type == LoginIdentifierType::Email {
             if let Some(found) = self
                 .users
@@ -439,7 +439,7 @@ impl LoginIdentifierManagementService {
         }
     }
 
-    /// 監査記録。**識別子の値は残さない**（電話番号・メールは PII。`CLAUDE.md`「ログ」）。
+    /// Audit record. **The identifier value is not kept** (phone numbers and emails are PII. `CLAUDE.md` "Logging").
     async fn record(
         &self,
         event_type: AuditEventType,
@@ -481,7 +481,7 @@ mod tests {
         }
     }
 
-    /// ドメインを持たないテナント（既定実装のまま）。既存のテストは UPN 解釈の判定を通らない。
+    /// A tenant without domains (default implementation). Existing tests don't go through the UPN interpretation check.
     struct NoTenantDomains;
 
     #[async_trait]
@@ -506,9 +506,9 @@ mod tests {
 
     struct Users {
         rows: Vec<User>,
-        /// `promote_primary_email` に渡った `(利用者, 識別子)`。入れ替えそのものは DB の
-        /// トランザクション（`SqlxUserRepository`）が持つので、ここでは**正しい行で呼ばれたか**
-        /// だけを見る。
+        /// `(user, identifier)` passed to `promote_primary_email`. The swap itself is owned by the DB
+        /// transaction (`SqlxUserRepository`), so this only checks **that it was called with the
+        /// right row**.
         promoted: Mutex<Vec<(Uuid, Uuid)>>,
     }
 
@@ -605,11 +605,11 @@ mod tests {
     impl UserLoginIdentifierRepository for Identifiers {
         async fn create(&self, identifier: &UserLoginIdentifier) -> DomainResult<()> {
             let mut rows = self.rows.lock().unwrap();
-            // DB の一意キーと同じ判定にする（migration 0041 で**種別を含めない**形になった。
-            // 種別は正規化のしかたを決めるためのもので、値の持ち主を決めるものではない）。
-            // 値の比較も大小を無視する —— 列の照合順序が `utf8mb4_unicode_ci` であり、種別ごとに
-            // 正規化の向きが違う（ユーザー名は小文字化、社員番号は大文字化）ため、`==` で見ると
-            // `alice` と `ALICE` の衝突を DB は弾くのにフェイクは通してしまう。
+            // Same check as the DB unique key (migration 0041 made it **not include the kind**;
+            // the kind decides how to normalize, not who owns the value).
+            // The comparison also ignores case —— the column collation is `utf8mb4_unicode_ci`, and the normalization
+            // direction differs per kind (user names lowercased, employee numbers uppercased), so comparing with `==`
+            // would let the fake pass an `alice` vs `ALICE` collision that the DB rejects.
             if rows.iter().any(|r| {
                 r.tenant_id == identifier.tenant_id
                     && r.normalized_value
@@ -737,14 +737,14 @@ mod tests {
             )
             .await
             .unwrap();
-        // 表示は登録どおり、照合は正規化した値。
+        // Displayed as registered, compared by the normalized value.
         assert_eq!(added.display_value, "090-1234-5678");
         assert_eq!(added.normalized_value, "09012345678");
     }
 
     #[tokio::test]
     async fn rejects_a_value_that_resolves_to_another_user() {
-        // bob の `preferred_username` を alice の識別子にはできない（ログイン時に別人が返る）。
+        // bob's `preferred_username` can't become alice's identifier (login would return someone else).
         let (service, _, _) = service(vec![
             user(2, "alice", "alice@example.com"),
             user(3, "bob", "bob@example.com"),
@@ -823,8 +823,8 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_a_value_that_already_resolves_to_the_user_themselves() {
-        // 自分の `preferred_username` を登録簿にも足せてしまうと、その行を無効化しても
-        // `users` へのフォールバックで認証が通る（「止めたのに使える」識別子）。
+        // If your own `preferred_username` could also be added to the registry, disabling that row would still
+        // let authentication pass via the fallback to `users` (an identifier that "is stopped yet still works").
         let (service, _, _) = service(vec![user(2, "alice", "alice@example.com")]);
         let err = service
             .add(
@@ -843,11 +843,11 @@ mod tests {
         assert!(matches!(err, LoginIdentifierManagementError::Conflict(_)));
     }
 
-    /// 一覧は登録簿の行だけを出す（AP15b で合成行は無くなった）。主識別子は先頭に来る。
+    /// The list shows only registry rows (AP15b removed synthesized rows). The primary identifier comes first.
     #[tokio::test]
     async fn the_list_shows_registry_rows_with_the_primary_first() {
         let (service, identifiers, _) = service(vec![user(2, "alice", "alice@example.com")]);
-        // 主識別子は登録簿の行として在る（`UserRepository` が作る。ここでは直接置く）。
+        // The primary identifier exists as a registry row (`UserRepository` creates it; placed directly here).
         let now = chrono::Utc::now();
         identifiers
             .create(&UserLoginIdentifier {
@@ -884,15 +884,15 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert!(entries[0].is_primary);
         assert_eq!(entries[0].normalized_value, "alice");
-        // 主識別子も保存された行なので id を持つ。識別子単位で操作できないのは
-        // リポジトリ側が弾くからであって、宛先が無いからではない。
+        // The primary identifier is also a stored row, so it has an id. It can't be operated on per identifier
+        // because the repository rejects it, not because there's no target.
         assert!(entries[0].id.is_some());
         assert!(!entries[1].is_primary);
         assert!(entries[1].id.is_some());
     }
 
-    /// 昇格はメール種別の行にだけ効く。電話番号を主メールにできてしまうと、`users.email` に
-    /// メールでない文字列が入り、パスワードリセットの宛先がそこになる。
+    /// Promotion only works on email-kind rows. If a phone number could become the primary email, `users.email` would
+    /// hold a non-email string and password resets would go there.
     #[tokio::test]
     async fn only_an_email_identifier_can_become_the_primary_email() {
         let (service, _, users) = service(vec![user(2, "alice", "alice@example.com")]);
@@ -921,12 +921,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, LoginIdentifierManagementError::Validation(_)));
-        // 拒否したのだから、入れ替えは 1 度も呼ばれていない。
+        // It was refused, so the swap was never called.
         assert!(users.promoted.lock().unwrap().is_empty());
     }
 
-    /// 昇格した行は**有効**で返る。主メール行は識別子単位で有効化できない（リポジトリが弾く）ので、
-    /// 無効なまま昇格させると二度と有効にできない行が通知の宛先になる。
+    /// The promoted row is returned **active**. A primary email row can't be activated per identifier (the repository
+    /// rejects it), so promoting it while inactive would make a row that can never be activated the notification destination.
     #[tokio::test]
     async fn promoting_an_alias_email_returns_it_as_the_active_primary_email() {
         let (service, _, users) = service(vec![user(2, "alice", "alice@example.com")]);
@@ -965,7 +965,7 @@ mod tests {
         );
     }
 
-    /// 他人の行は昇格できない（`find_owned` が所有者を見る）。
+    /// Someone else's row can't be promoted (`find_owned` checks the owner).
     #[tokio::test]
     async fn cannot_promote_an_identifier_that_belongs_to_someone_else() {
         let (service, _, users) = service(vec![

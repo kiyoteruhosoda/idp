@@ -1,16 +1,16 @@
-//! テナント作成・管理 API の E2E 統合テスト（MT11、ADR-0009 §4・§5・§6）。
+//! E2E integration tests for the tenant creation and management API (MT11, ADR-0009 §4, §5, §6).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test admin_tenants
 //!
-//! 検証する保証（ADR-0009）:
-//! - テナント作成は `idp.system.admin`（seed で root へ付与済み）のみ可能（§4）。権限が無ければ 403。
-//! - 作成時に**作成者自身**が新テナントのブートストラップ管理者になる: 新テナント scope の
-//!   ACTIVE な GUEST メンバーシップと `idp.tenant.admin` を保有する（§4）。初期管理者ユーザーは
-//!   自動生成されず、平文パスワードも返らない。
-//! - 作成者は新テナントの管理 API を操作できる（自身の SSO セッションのまま）。
-//! - 新テナント scope に `idp.system.admin` は存在しないため、作成者でもそこからは子テナントを
-//!   作成できない（§4。system.admin は root scope でしか存在できない）。
+//! Guarantees checked (ADR-0009):
+//! - Only `idp.system.admin` (granted to root by seed) can create tenants (§4). Without the permission, 403.
+//! - On creation **the creator** becomes the new tenant's bootstrap admin: holds an ACTIVE GUEST membership
+//!   scoped to the new tenant and `idp.tenant.admin` (§4). No initial admin user is
+//!   generated automatically, and no plaintext password is returned.
+//! - The creator can operate the new tenant's admin API (with their own SSO session).
+//! - `idp.system.admin` does not exist in the new tenant's scope, so even the creator cannot create child tenants
+//!   from there (§4; system.admin can exist only in root scope).
 
 mod support;
 
@@ -28,13 +28,13 @@ async fn root_system_admin_creates_tenant_and_becomes_bootstrap_admin() {
     let Some(env) = support::setup("admin tenants").await else {
         return;
     };
-    // 管理トークンはテナント毎（`iss`/`aud` が per-tenant issuer。ADR-0037）。同じ SSO
-    // セッションから、操作するテナントごとに交換する。
+    // Admin tokens are per tenant (`iss`/`aud` are the per-tenant issuer; ADR-0037). Exchange the same SSO
+    // session for each tenant being operated on.
     let admin_sso = create_sso_session(&env.pool, &env.root_admin_id).await;
     let admin_tok = exchange_admin_token(&env.app, &env.root_tenant_id, &admin_sso).await;
     let tenants_uri = format!("/{}/admin/tenants", env.root_tenant_id);
 
-    // 未認証（トークン無し）→ 401。
+    // Unauthenticated (no token) → 401.
     let res = send(
         &env.app,
         Request::builder()
@@ -47,7 +47,7 @@ async fn root_system_admin_creates_tenant_and_becomes_bootstrap_admin() {
     .await;
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "no cookie -> 401");
 
-    // system.admin による作成 → 201・作成したテナントを返す（平文パスワードは返さない）。
+    // Creation by system.admin → 201, returns the created tenant (no plaintext password).
     let res = send(
         &env.app,
         admin_post(&admin_tok, &tenants_uri, json!({ "name": "Acme Inc" })),
@@ -69,7 +69,7 @@ async fn root_system_admin_creates_tenant_and_becomes_bootstrap_admin() {
         Some(env.root_tenant_id.as_str())
     );
 
-    // 新テナントは root の子として実在し ACTIVE。
+    // The new tenant exists as a child of root and is ACTIVE.
     let (parent, status): (Option<String>, String) =
         sqlx::query_as("SELECT parent_tenant_id, status FROM tenants WHERE id = ?")
             .bind(&new_tenant_id)
@@ -79,7 +79,7 @@ async fn root_system_admin_creates_tenant_and_becomes_bootstrap_admin() {
     assert_eq!(parent.as_deref(), Some(env.root_tenant_id.as_str()));
     assert_eq!(status, "ACTIVE");
 
-    // 作成者（root 管理者）が新テナントの ACTIVE な GUEST メンバーシップを持つ。
+    // The creator (root admin) has an ACTIVE GUEST membership in the new tenant.
     let (mtype, mstatus): (String, String) = sqlx::query_as(
         "SELECT membership_type, status FROM tenant_memberships WHERE tenant_id = ? AND user_id = ?",
     )
@@ -90,7 +90,7 @@ async fn root_system_admin_creates_tenant_and_becomes_bootstrap_admin() {
     .expect("bootstrap membership row");
     assert_eq!((mtype.as_str(), mstatus.as_str()), ("GUEST", "ACTIVE"));
 
-    // 作成者が新テナント scope の idp.tenant.admin を保有する。
+    // The creator holds idp.tenant.admin scoped to the new tenant.
     let perm_count: i64 = sqlx::query(
         "SELECT COUNT(*) AS c FROM user_permissions \
          WHERE user_id = ? AND permission_code = 'idp.tenant.admin' AND tenant_id = ?",
@@ -106,7 +106,7 @@ async fn root_system_admin_creates_tenant_and_becomes_bootstrap_admin() {
         "creator holds idp.tenant.admin for the new tenant"
     );
 
-    // 監査に tenant.created が記録される。
+    // tenant.created is recorded in the audit log.
     let created_events: i64 = sqlx::query(
         "SELECT COUNT(*) AS c FROM audit_log WHERE event_type = 'tenant.created' AND tenant_id = ?",
     )
@@ -117,8 +117,8 @@ async fn root_system_admin_creates_tenant_and_becomes_bootstrap_admin() {
     .get::<i64, _>("c");
     assert_eq!(created_events, 1, "tenant.created audit recorded");
 
-    // 作成者は新テナントの管理 API を操作できる（ブートストラップ管理者。同じ SSO セッションを
-    // 新テナント向けの管理トークンへ交換し直す）。
+    // The creator can operate the new tenant's admin API (bootstrap admin; re-exchange the same SSO session
+    // for an admin token for the new tenant).
     let new_tenant_tok = exchange_admin_token(&env.app, &new_tenant_id, &admin_sso).await;
     let res = send(
         &env.app,
@@ -131,8 +131,8 @@ async fn root_system_admin_creates_tenant_and_becomes_bootstrap_admin() {
         "creator can operate the new tenant as bootstrap admin"
     );
 
-    // ただし新テナント scope に idp.system.admin は存在しないため、そこからは子テナントを作れない
-    // （§4。system.admin は root scope でしか存在できない）。
+    // But idp.system.admin does not exist in the new tenant's scope, so child tenants cannot be created from there
+    // (§4; system.admin can exist only in root scope).
     let res = send(
         &env.app,
         admin_post(
@@ -149,9 +149,9 @@ async fn root_system_admin_creates_tenant_and_becomes_bootstrap_admin() {
     );
 }
 
-/// テナント開通 unit of work（REF2）: 途中で失敗した場合、テナント・メンバーシップの
-/// **どの行も残らない**（単一トランザクションで全ロールバック）。最終ステップの権限付与を
-/// `permissions` マスタに無いコードで失敗させ、先行 2 INSERT が巻き戻ることを実 DB で検証する。
+/// Tenant provisioning unit of work (REF2): if it fails midway, **no tenant or membership row
+/// remains** (everything rolled back in a single transaction). Makes the final permission grant step fail with a
+/// code not in the `permissions` master and checks against a real DB that the two earlier INSERTs are rolled back.
 #[tokio::test]
 async fn provisioning_rolls_back_all_rows_when_a_step_fails() {
     use assay_api::domain::repositories::TenantProvisioningRepository;
@@ -175,7 +175,7 @@ async fn provisioning_rolls_back_all_rows_when_a_step_fails() {
         created_at: now,
         updated_at: now,
     };
-    // 作成者（既存の root 管理者）を新テナントのブートストラップ管理者にする想定のメンバーシップ。
+    // Membership making the creator (an existing root admin) the new tenant's bootstrap admin.
     let creator = uuid::Uuid::parse_str(&env.root_admin_id).unwrap();
     let membership = TenantMembership::new_active_guest(tenant.id, creator, now);
 
@@ -184,13 +184,13 @@ async fn provisioning_rolls_back_all_rows_when_a_step_fails() {
         .provision(
             &tenant,
             &membership,
-            "idp.no.such.permission", // permissions マスタに無いコード → FK 違反で最終 INSERT が失敗
+            "idp.no.such.permission", // code not in the permissions master → FK violation fails the final INSERT
             now,
         )
         .await;
     assert!(result.is_err(), "unknown permission code must fail");
 
-    // 先行して INSERT したテナント・メンバーシップも一切残らない（全ロールバック）。
+    // Neither the tenant nor the membership inserted earlier remains (full rollback).
     let tenant_rows: i64 = sqlx::query("SELECT COUNT(*) AS c FROM tenants WHERE id = ?")
         .bind(tenant.id.as_uuid().to_string())
         .fetch_one(&env.pool)

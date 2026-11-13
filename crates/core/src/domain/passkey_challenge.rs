@@ -1,25 +1,27 @@
-//! Passkey チャレンジ一時エンティティ。
+//! Temporary passkey challenge entity.
 //!
-//! WebAuthn の begin → complete 二段階ハンドシェイクの間、`webauthn-rs` が返す
-//! チャレンジ中間状態（`PasskeyRegistration` / `DiscoverableAuthentication`）を DB に保持する。
-//! `expires_at` を過ぎたレコードはアプリケーション層が削除する。
+//! Between the begin → complete steps of the WebAuthn handshake, keeps in the DB the intermediate
+//! challenge state returned by `webauthn-rs` (`PasskeyRegistration` /
+//! `DiscoverableAuthentication`). The application layer deletes records past `expires_at`.
 
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-/// チャレンジの用途。**完了側は自分の用途と違うチャレンジを受け付けない。**
+/// Purpose of the challenge. **The completing side does not accept a challenge for a different
+/// purpose.**
 ///
-/// セッションを作る（[`Self::Authenticate`]）ことと、既にあるセッションを引き上げる
-/// （[`Self::StepUp`]。AP5）ことは別の操作である。分けないと、本人確認のために出した
-/// チャレンジでログインが成立し、その逆も通る。
+/// Creating a session ([`Self::Authenticate`]) and elevating an existing one ([`Self::StepUp`];
+/// AP5) are different operations. Without separating them, a challenge issued for re-verification
+/// would complete a login, and vice versa.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PasskeyChallengeType {
-    /// パスキーの登録（`navigator.credentials.create`）。
+    /// Passkey registration (`navigator.credentials.create`).
     Register,
-    /// ログイン（`navigator.credentials.get`）。OIDC 認可フローか直接ログインかは
-    /// `auth_session_id_hash` の有無で分かれる（ADR-0040 決定 4）。
+    /// Login (`navigator.credentials.get`). Whether it is an OIDC authorization flow or a direct
+    /// login depends on whether `auth_session_id_hash` is present (ADR-0040 decision 4).
     Authenticate,
-    /// 重要操作の直前の本人確認（AP5）。ログインと違い、新しいセッションは作らない。
+    /// Re-verification right before a sensitive operation (AP5). Unlike login, no new session is
+    /// created.
     StepUp,
 }
 
@@ -54,13 +56,15 @@ impl std::str::FromStr for PasskeyChallengeType {
 #[derive(Debug, Clone)]
 pub struct PasskeyChallenge {
     pub id: Uuid,
-    /// 登録チャレンジ: SSO 済みユーザーの UUID。認証チャレンジ: discoverable のため `None`。
+    /// Registration challenge: UUID of the SSO'd user. Authentication challenge: `None`
+    /// (discoverable).
     pub user_id: Option<Uuid>,
     pub challenge_type: PasskeyChallengeType,
-    /// `webauthn_rs::prelude::PasskeyRegistration` または `DiscoverableAuthentication` の JSON。
+    /// JSON of `webauthn_rs::prelude::PasskeyRegistration` or `DiscoverableAuthentication`.
     pub state_json: String,
-    /// 認証チャレンジ: OIDC フローの `auth_sessions.id_hash`（登録・本人確認チャレンジでは `None`）。
-    /// auth_session_id は bearer credential なので、写しもハッシュで持つ（SEC6）。
+    /// Authentication challenge: the OIDC flow's `auth_sessions.id_hash` (`None` for registration /
+    /// re-verification). auth_session_id is a bearer credential, so the copy is also kept as a hash
+    /// (SEC6).
     pub auth_session_id_hash: Option<String>,
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,

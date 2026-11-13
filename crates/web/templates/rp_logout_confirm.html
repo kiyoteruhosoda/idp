@@ -1,8 +1,8 @@
 {% extends "page.html" %}
 {% block title %}{{ messages.get("logout-title") }}{% endblock %}
 {% block content %}
-{#- `id_token_hint` の無いサインアウト要求の確認（task #588。OIDC RP-Initiated Logout 1.0 §2）。
-    ⚠ 確認なしで終えると、リンクを踏ませるだけで他人をサインアウトさせられる。 -#}
+{#- Confirmation of sign-out requests without `id_token_hint` (task #588; OIDC RP-Initiated Logout 1.0 §2).
+    ⚠ Finishing without confirmation would let anyone sign others out just by making them follow a link. -#}
 <div class="card border-0 bg-transparent">
   <div class="card-header text-center py-3 border-0 bg-transparent">
     <h1 class="h4 mb-0">{{ messages.get("logout-title") }}</h1>

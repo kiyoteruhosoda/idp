@@ -1,10 +1,10 @@
-//! 保護リソース（`aud` に入る宛名）の管理コンソール画面（`/{tenant_id}/admin/resources`。ADR-0042）。
+//! Admin console screen for protected resources (names that go into `aud`) (`/{tenant_id}/admin/resources`. ADR-0042).
 //!
-//! 一覧・登録・停止／再開・削除を提供する。操作の実体は api の `/admin/resources/*` に
-//! SSO Cookie 転送で委譲する（web は sqlx に触らない。ADR-0007）。
+//! Provides list, registration, disable/enable and deletion. The actual operations are delegated to the api's
+//! `/admin/resources/*` by forwarding the SSO cookie (web does not touch sqlx; ADR-0007).
 //!
-//! 貸し出し（どのクライアントにその宛先を許すか）は**クライアント詳細**に置いてある。
-//! 「誰に何を許すか」はクライアントの設定であって、宛名そのものの設定ではないためである。
+//! Lending (which clients may use that audience) lives in the **client details**,
+//! because "who is allowed what" is a client setting, not a setting of the name itself.
 
 use super::locale;
 use crate::admin_dto::ResourceView;
@@ -36,7 +36,7 @@ macro_rules! admin_or_return {
     };
 }
 
-/// 宛名の一覧（`GET /{tenant_id}/admin/resources`）。
+/// List of resource names (`GET /{tenant_id}/admin/resources`).
 pub async fn list(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -72,7 +72,7 @@ pub struct RegisterResourceForm {
     pub csrf_token: String,
 }
 
-/// 宛名を登録する（`POST /{tenant_id}/admin/resources/register`）。
+/// Registers a resource name (`POST /{tenant_id}/admin/resources/register`).
 pub async fn register(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -109,8 +109,8 @@ pub async fn register(
         .await;
     match result {
         Ok(_) => redirect(&tenant),
-        // 入力の誤り（絶対 URI でない・予約済み＝400、既に登録済み＝409）は api の文言をそのまま
-        // 出す。web 側で判定を書き写すと、規則が 2 か所に分かれて必ず片方が古くなる。
+        // Input errors (not an absolute URI / reserved = 400, already registered = 409) show the api's message
+        // as is. Copying the checks into web would split the rules into two places and one would go stale.
         Err(AdminApiError::Validation(m) | AdminApiError::Conflict(m)) => {
             reload_with_error(&state, &correlation, &tenant, &admin, &headers, &sso, &m).await
         }
@@ -130,12 +130,12 @@ pub struct ResourceIdForm {
 #[derive(Deserialize)]
 pub struct ResourceStatusForm {
     pub resource_id: String,
-    /// `ACTIVE` / `DISABLED`。押したボタンが送る。
+    /// `ACTIVE` / `DISABLED`. Sent by the pressed button.
     pub status: String,
     pub csrf_token: String,
 }
 
-/// 宛名の状態を変える（`POST /{tenant_id}/admin/resources/status`）。
+/// Changes the state of a resource name (`POST /{tenant_id}/admin/resources/status`).
 pub async fn set_status(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -182,7 +182,7 @@ pub async fn set_status(
     .await
 }
 
-/// 宛名を削除する（`POST /{tenant_id}/admin/resources/delete`）。
+/// Deletes a resource name (`POST /{tenant_id}/admin/resources/delete`).
 pub async fn delete(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -223,7 +223,7 @@ pub async fn delete(
     .await
 }
 
-// ── ヘルパー ─────────────────────────────────────────────────────────────────
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
 async fn finish(
     state: &WebState,
@@ -250,7 +250,7 @@ async fn finish(
     }
 }
 
-/// 一覧を引き直してエラー付きで描き直す（PRG に倒さないのは、入力値を保ったまま理由を出すため）。
+/// Re-fetches the list and re-renders with an error (not PRG, so the reason is shown while keeping the input).
 async fn reload_with_error(
     state: &WebState,
     correlation: &CorrelationId,
@@ -266,7 +266,7 @@ async fn reload_with_error(
         .await
         .map(|list| list.resources)
         .unwrap_or_default();
-    // Messages は await の後に作る（non-Send のため await をまたがない）。
+    // Build Messages after the await (it is non-Send, so it must not live across an await).
     let messages = Messages::new(locale(headers));
     let csrf = console_csrf_from(headers, state.config.csrf_secret());
     (

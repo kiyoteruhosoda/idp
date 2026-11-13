@@ -1,21 +1,21 @@
-//! アプリケーション設定。
+//! Application settings.
 //!
-//! 設定値の取得は **必ず本モジュール経由**で行う。生の環境変数・DSN を各所で直接参照しない。
+//! Settings must **always be read through this module**. Raw environment variables and DSNs are not referenced directly elsewhere.
 //!
-//! 優先順位: **組み込み既定値 < 環境変数（ENV）< DB（system_settings テーブル）**。
-//! 「あとから DB で上書きできる」という思想で、より運用に近い層（DB）を優先する。
-//! ただし DB 上書きを受け付けるのは `DbManaged` のキーだけ。`EnvLocked`（DB を読む前や DB 内 secret の
-//! 復号に必要な bootstrap 系、api/web で値を一致させたいキー）は DB を参照せず ENV > 既定値 で解決する
-//! （ADR-0010）。`Builtin` は常に既定値。
+//! Precedence: **built-in default < environment variable (ENV) < DB (system_settings table)**.
+//! Following the idea that "it can later be overridden in the DB", the layer closer to operations (DB) wins.
+//! However, only `DbManaged` keys accept DB overrides. `EnvLocked` (bootstrap keys needed before reading the DB or to
+//! decrypt secrets in the DB, and keys whose values must match between api/web) do not consult the DB and resolve as ENV > default
+//! (ADR-0010). `Builtin` is always the default.
 //!
-//! ⚠ **テナントが上書きできるキー（ADR-0058）は `Config` に持たない。** 値はテナントごとに違い、
-//! 起動時に 1 つ解決して配る形では表せないので、消費側は
-//! [`crate::application::tenant_settings::TenantSettingsService`] から参照のたびに引く。
-//! ここで行うのは、起動時に型の合わない値で止めること（[`Self::from_env_and_db_settings`]）と、
-//! 解決の最後の層（環境変数 → 組み込み既定）を渡すこと（[`Self::value_without_db`]）だけである。
+//! ⚠ **Keys tenants can override (ADR-0058) are not held in `Config`.** Their values differ per tenant and
+//! cannot be expressed by resolving one at startup and handing it out, so consumers look them up from
+//! [`crate::application::tenant_settings::TenantSettingsService`] on every reference.
+//! All that is done here is stopping at startup on values of the wrong type ([`Self::from_env_and_db_settings`]) and
+//! providing the last layer of resolution (environment variable -> built-in default) ([`Self::value_without_db`]).
 //!
-//! 一部の getter（各種 TTL・クロックスキュー）は後続フェーズ（T2〜）で使用するため、
-//! 現時点では未使用でも保持する。
+//! Some getters (various TTLs, clock skew) are kept even though unused for now,
+//! since they are used in later phases (T2 and on).
 #![allow(dead_code)]
 
 use crate::domain::authentication_policy::DefaultPolicyEffect;
@@ -32,19 +32,19 @@ use std::collections::HashMap;
 use std::env;
 use std::time::Duration;
 
-/// 秘密鍵暗号化キーの開発用デフォルト（ちょうど 32 バイト）。本番では必ず `KEY_ENCRYPTION_KEY`
-/// を設定する。運用では DB 外の鍵管理（KMS 等）へ移行する。
+/// Development default of the private-key encryption key (exactly 32 bytes). In production always set `KEY_ENCRYPTION_KEY`.
+/// In operation, migrate to key management outside the DB (KMS, etc.).
 ///
-/// `DEV_CSRF_SECRET` と同じく公開する（統合テストが「既定値と同じバイト列」を明示注入するのに使う。
-/// 共有テスト DB 上の署名鍵を全テストバイナリで相互に復号できる状態を保つため）。
+/// Public like `DEV_CSRF_SECRET` (integration tests use it to explicitly inject "the same bytes as the default",
+/// so that signing keys in the shared test DB stay mutually decryptable by all test binaries).
 pub const DEV_KEY_ENCRYPTION_KEY: &[u8; 32] = b"idp-dev-insecure-key-0123456789!";
 
-/// サービス間内部認証トークンの開発用デフォルト（ADR-0007 §5）。本番では必ず
-/// `INTERNAL_SERVICE_TOKEN` を設定する。web→api の `/internal/*` 呼び出しを保護する共有シークレット。
+/// Development default of the inter-service internal auth token (ADR-0007 §5). In production always
+/// set `INTERNAL_SERVICE_TOKEN`. A shared secret protecting web->api `/internal/*` calls.
 const DEV_INTERNAL_SERVICE_TOKEN: &str = "idp-dev-insecure-internal-service-token";
 
-/// CSRF トークン HMAC 鍵の開発用デフォルト（ちょうど 32 バイト）。本番では必ず
-/// `CSRF_SECRET` を web と api で同じ値に設定する（SEC7）。
+/// Development default of the CSRF token HMAC key (exactly 32 bytes). In production always
+/// set `CSRF_SECRET` to the same value in web and api (SEC7).
 pub const DEV_CSRF_SECRET: &[u8; 32] = b"idp-dev-insecure-csrf-secret-xxx";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,49 +68,49 @@ pub struct ResolvedSetting {
     pub secret: bool,
     pub restart_required: bool,
     pub default_risk: DefaultRisk,
-    /// 画面表示用の安全判定（値や fingerprint は含めない）。
+    /// Safety assessment for screen display (does not include values or fingerprints).
     pub status: SettingSafetyStatus,
-    /// 危険/安全判定の根拠。secret の平文・fingerprint は含めない。
+    /// The basis of the danger/safety assessment. Does not include secret plaintext or fingerprints.
     pub reason: String,
-    /// 起動時に解決された有効値（表示用）。secret のときは常に `None`（平文を外へ出さない）。
+    /// The effective value resolved at startup (for display). Always `None` for secrets (plaintext is never exposed).
     pub value: Option<String>,
-    /// 組み込み既定値（表示用）。secret のときは `None`。
+    /// The built-in default (for display). `None` for secrets.
     pub default_value: Option<String>,
-    /// この設定が何に使われるかの説明（運用者向け。設定画面に表示する）。
+    /// Description of what this setting is used for (for operators. Shown on the settings screen).
     pub description: String,
 }
 
 impl ResolvedSetting {
-    /// **保存済みだが実行中のプロセスへ未反映**か（MT27）。
+    /// Whether it is **saved but not yet applied to the running process** (MT27).
     ///
-    /// `resolved_settings` は起動時のスナップショットで、`db_current` は現在 `system_settings` に
-    /// 保存されている上書き値（未設定は `None`）である。この 2 つがずれていれば、設定画面で保存した
-    /// 値はまだ効いていない。
+    /// `resolved_settings` is the startup snapshot, and `db_current` is the override value currently stored in
+    /// `system_settings` (`None` if unset). If the two differ, the value saved on the settings screen
+    /// has not taken effect yet.
     ///
-    /// 保存しても挙動が変わらないことは画面から見えず、運用者は「保存したのに直らない」という
-    /// 誤った結論に至る。判定をここに置くのは、比較のルール（とくに**上書きの解除**も未反映で
-    /// ある点）を表示側で再現させないためである。
+    /// That saving does not change behavior is invisible on screen, and operators arrive at the wrong conclusion
+    /// "I saved it but it is not fixed". The decision is placed here so the display side does not have to reproduce the comparison rules
+    /// (especially that **removing an override** is also unapplied).
     ///
-    /// 判定するのは `DbManaged` かつ非 secret かつ `restart_required` のキーだけである。
+    /// Only keys that are `DbManaged`, non-secret and `restart_required` are judged.
     ///
-    /// - `restart_required` が false のキーは参照のたびに DB を読むため常に反映済み。
-    /// - secret は起動時スナップショットに平文を残さない（`value` が常に `None`）ため比較できない。
-    /// - **`DbManaged` 以外は DB 行があっても比較しない。** `EnvLocked` / `Builtin` のキーは解決時に
-    ///   DB を一切参照しないため `source` が `Db` になり得ず、残存行と突き合わせると永遠に未反映と
-    ///   出続ける。しかも `editable` が false なので画面から消せず、警告が消せないまま居座る。
-    ///   出所区分が `DbManaged` から変わったキー（`PUBLIC_WEB_BASE_URL`・`COOKIE_DOMAIN` は
-    ///   ADR-0012 で `EnvLocked` へ移した）の `system_settings` 行が残っている環境で実際に起きる。
-    ///   これらの行はそもそも設定の解決に影響しない（無視される）ので、未反映ではない。
+    /// - Keys with `restart_required` false read the DB on every reference, so they are always applied.
+    /// - Secrets leave no plaintext in the startup snapshot (`value` is always `None`), so they cannot be compared.
+    /// - **Keys other than `DbManaged` are not compared even if a DB row exists.** `EnvLocked` / `Builtin` keys do not
+    ///   consult the DB at all when resolving, so `source` can never be `Db`, and matching against leftover rows would show them
+    ///   as unapplied forever. Moreover `editable` is false, so they cannot be removed from the screen and the warning would stay.
+    ///   This actually happens in environments that still have `system_settings` rows for keys whose owner changed from `DbManaged`
+    ///   (`PUBLIC_WEB_BASE_URL` and `COOKIE_DOMAIN` were moved to `EnvLocked` in ADR-0012).
+    ///   Those rows do not affect resolution at all (they are ignored), so they are not unapplied.
     pub fn is_pending_restart(&self, db_current: Option<&str>) -> bool {
         if !self.restart_required || self.secret || self.owner != SettingOwner::DbManaged {
             return false;
         }
         match db_current {
-            // DB に上書きがある: 起動時にも同じ値を DB から採っていれば反映済み。
+            // There is a DB override: applied if the same value was also taken from the DB at startup.
             Some(value) => {
                 !(self.source == SettingSource::Db && self.value.as_deref() == Some(value))
             }
-            // DB に上書きが無い: 起動時に DB から採っていたなら、解除がまだ効いていない。
+            // There is no DB override: if it was taken from the DB at startup, the removal has not taken effect yet.
             None => self.source == SettingSource::Db,
         }
     }
@@ -136,84 +136,84 @@ pub struct Config {
     id_token_ttl: Duration,
     refresh_token_ttl: Duration,
     clock_skew: Duration,
-    /// 認証ポリシーが 1 件も一致しないときの既定動作（同仕様 §9.4）。
+    /// Default behavior when no authentication policy matches (same spec §9.4).
     auth_policy_default_effect: DefaultPolicyEffect,
     application_assignment_enforcement: AssignmentEnforcement,
-    /// 漏えい済みパスワード照合の接続先（k-匿名性のレンジ API）。
+    /// Endpoint for breached password checks (k-anonymity range API).
     password_breach_api_base_url: String,
-    /// 名前を引いた結果が内部の住所でも外へ送ってよい名前（`OUTBOUND_TRUSTED_HOSTS`。task #585）。
+    /// Names allowed to be sent to even if they resolve to internal addresses (`OUTBOUND_TRUSTED_HOSTS`. task #585).
     outbound_trusted_hosts: String,
-    /// セキュリティの知らせの送り先（`SECURITY_ALERT_WEBHOOK_URL`。task #872。環境変数だけ）。
+    /// Destination of security notifications (`SECURITY_ALERT_WEBHOOK_URL`. task #872. Environment variable only).
     security_alert_webhook_url: String,
-    /// その鍵を読むファイル（`SECURITY_ALERT_WEBHOOK_TOKEN_FILE`）。
+    /// The file from which its key is read (`SECURITY_ALERT_WEBHOOK_TOKEN_FILE`).
     security_alert_webhook_token_file: String,
-    /// 画面を出さずに試す往復を枠に入れてよい親（`SILENT_AUTH_FRAME_ANCESTORS`。task #888。環境変数だけ）。
+    /// Parents allowed to frame the round trip tried without showing a screen (`SILENT_AUTH_FRAME_ANCESTORS`. task #888. Environment variable only).
     silent_auth_frame_ancestors: assay_contracts::frame_ancestors::FrameAncestors,
-    /// 認証アプリ（task #892。ADR-0077。環境変数だけ）。
+    /// Authenticator app (task #892. ADR-0077. Environment variable only).
     app_approver_package_name: String,
     app_approver_signing_cert_sha256: String,
     app_approver_extra_attestation_roots_file: String,
     app_approver_allow_software_attestation: bool,
-    /// 漏えい済みパスワード照合の 1 リクエストの上限時間。
+    /// Timeout of one request of the breached password check.
     password_breach_check_timeout: Duration,
-    /// テナント解決キャッシュの TTL（ADR-0009 §7。id → tenant のホットパス）。
+    /// TTL of the tenant resolution cache (ADR-0009 §7. The id -> tenant hot path).
     tenant_cache_ttl: Duration,
-    /// scope→権限解決キャッシュの TTL（ADR-0009 §7。付与・剥奪時は即時 invalidate される）。
+    /// TTL of the scope->permission resolution cache (ADR-0009 §7. Invalidated immediately on grant/revoke).
     permission_cache_ttl: Duration,
-    /// Cookie の属性方針（`Secure` と旧 `Domain` Cookie の掃除。ADR-0018 決定 2・4）。web と同じ値を設定する。
+    /// Cookie attribute policy (`Secure` and cleanup of old `Domain` Cookies. ADR-0018 decisions 2, 4). Set the same value as web.
     cookie_policy: CookiePolicy,
     key_encryption_key: [u8; 32],
     key_encryption_key_is_dev: bool,
-    /// 署名鍵ローテーション: `not_after` のこの日数前に新鍵を生成して旧鍵を退役させる（K2）。
+    /// Signing key rotation: generate a new key and retire the old one this many days before `not_after` (K2).
     key_rotation_lead_days: u32,
     key_rotation_publish_lead_hours: u32,
-    /// エラー・警告ログ（`log` テーブル）の保持日数。`0` は削除しない。
+    /// Retention days of error/warning logs (`log` table). `0` means never delete.
     app_log_retention_days: u32,
-    /// 監査ログ（`audit_log` テーブル）の保持日数。`0`（既定）は削除しない（G8）。
+    /// Retention days of audit logs (`audit_log` table). `0` (default) means never delete (G8).
     audit_log_retention_days: u32,
-    /// トークン系エンドポイント（`/token`・`/introspect`・`/revoke`）の同時実行上限（SEC10）。
-    /// `0` は無制限。Argon2 照合のピークメモリ・CPU を「上限 × 19 MiB」に抑える。
+    /// Concurrency limit of token endpoints (`/token`, `/introspect`, `/revoke`) (SEC10).
+    /// `0` is unlimited. Keeps Argon2 verification's peak memory and CPU to "limit x 19 MiB".
     token_endpoint_max_concurrency: u32,
-    /// トークン系エンドポイントの接続元 IP 単位のレート制限（SEC10）。`0` は無効。
+    /// Per-source-IP rate limit of token endpoints (SEC10). `0` disables it.
     token_endpoint_rate_limit_max_requests: u32,
-    /// 上記レート制限のウィンドウ（秒）。
+    /// Window (seconds) of the rate limit above.
     token_endpoint_rate_limit_window_secs: u64,
-    /// Swagger UI・OpenAPI 文書を配信するか（SEC12。既定 false）。
+    /// Whether to serve Swagger UI and the OpenAPI document (SEC12. Default false).
     api_docs_enabled: bool,
-    /// CORS で追加許可するオリジン（カンマ区切りの生値。G1）。
+    /// Additional origins allowed by CORS (raw comma-separated value. G1).
     cors_allowed_origins: String,
-    /// 期限切れレコードの一括 GC（G2）の実行間隔（秒）。`0` は掃除しない。
+    /// Interval (seconds) of the bulk GC of expired records (G2). `0` means no cleanup.
     expired_record_purge_interval_secs: u64,
-    /// Back-channel logout 通知の再送上限回数（G5）。
+    /// Max resend count of back-channel logout notifications (G5).
     backchannel_logout_max_attempts: u32,
-    /// Back-channel logout 送信ワーカーのポーリング間隔（秒。G5）。
+    /// Polling interval (seconds) of the back-channel logout delivery worker (G5).
     backchannel_logout_poll_interval_secs: u64,
-    /// Back-channel logout 送信キューの決着済み行の保持日数（`0` は削除しない。G5）。
+    /// Retention days of settled rows in the back-channel logout delivery queue (`0` means never delete. G5).
     backchannel_logout_retention_days: u32,
-    /// リバースプロキシが付与する `X-Forwarded-For` / `X-Forwarded-Proto` を信頼するか（S1）。
+    /// Whether to trust `X-Forwarded-For` / `X-Forwarded-Proto` added by a reverse proxy (S1).
     trust_forwarded_headers: bool,
-    /// HSTS `max-age`（秒）。0 = HSTS ヘッダを付与しない（S1）。
+    /// HSTS `max-age` (seconds). 0 = no HSTS header (S1).
     hsts_max_age: u64,
     internal_service_token: String,
     internal_service_token_is_dev: bool,
-    /// CSRF トークン HMAC 鍵（`CSRF_SECRET`）。web と api で同じ値を設定する（SEC7）。
+    /// CSRF token HMAC key (`CSRF_SECRET`). Set the same value in web and api (SEC7).
     csrf_secret: [u8; 32],
     csrf_secret_is_dev: bool,
-    /// 利用者がブラウザで開く web 画面の公開ベース URL（招待メールの承諾リンク等。MT17）。
-    /// api/web で同一値必須のため EnvLocked（ADR-0012 §2）。
+    /// Public base URL of the web screens users open in the browser (e.g. the accept link in invitation emails. MT17).
+    /// EnvLocked because api/web require the same value (ADR-0012 §2).
     public_web_base_url: String,
-    /// **明示設定された** `PUBLIC_WEB_BASE_URL`（`None` = issuer へ追従）。
+    /// **Explicitly set** `PUBLIC_WEB_BASE_URL` (`None` = follows the issuer).
     ///
-    /// 解決後の値（`public_web_base_url`）からは「issuer に追従しているのか、たまたま同値を明示
-    /// したのか」を区別できない。`ISSUER` の DB 上書きを保存してよいかの判定（ADR-0017）は
-    /// この区別を要する — 追従なら issuer を変えてもスキームはずれないが、明示設定なら
-    /// `COOKIE_DOMAIN` 配置でスキーム不一致になり起動しなくなる。
+    /// From the resolved value (`public_web_base_url`) one cannot tell "following the issuer" from "explicitly set
+    /// to the same value by chance". Deciding whether a DB override of `ISSUER` may be saved (ADR-0017)
+    /// needs this distinction: when following, changing the issuer does not misalign the scheme, but when explicitly set,
+    /// a `COOKIE_DOMAIN` deployment gets a scheme mismatch and fails to start.
     public_web_base_url_override: Option<String>,
     resolved_settings: Vec<ResolvedSetting>,
 }
 
-/// ⚠ 秘密（DB の接続文字列・鍵・サービス間トークン・CSRF の鍵）を `Debug` に出さない（task #593）。
-/// `{:?}` でログへ落としても値が漏れないよう、手書きで載せる項目を選ぶ（足すときは秘密でないものだけ）。
+/// ⚠ Do not show secrets (DB connection string, keys, inter-service token, CSRF key) in `Debug` (task #593).
+/// Fields are chosen by hand so values do not leak even if dropped into a log with `{:?}` (when adding, only non-secrets).
 impl std::fmt::Debug for Config {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Config")
@@ -240,35 +240,35 @@ impl Config {
         let resolver = ConfigResolver::new(db_settings);
         let (key_encryption_key, key_encryption_key_is_dev) = load_key_encryption_key()?;
         let issuer = normalize_issuer(resolver.string("ISSUER", "http://localhost:8080"));
-        // Cookie の Secure 属性。既定は issuer のスキームに従う（https なら有効）。
+        // The Cookie Secure attribute. By default follows the issuer's scheme (enabled for https).
         let cookie_secure = resolver.parse("COOKIE_SECURE", issuer.starts_with("https://"))?;
-        // web→api の /internal/* 呼び出しを保護する共有シークレット（ADR-0007 §5）。
+        // Shared secret protecting web->api /internal/* calls (ADR-0007 §5).
         let (internal_service_token, internal_service_token_is_dev) =
             match env_lookup("INTERNAL_SERVICE_TOKEN") {
                 Some(v) => (validate_internal_service_token(v)?, false),
                 None => (DEV_INTERNAL_SERVICE_TOKEN.to_string(), true),
             };
-        // CSRF トークン HMAC 鍵（SEC7）。web と api で同じ値を設定する。
+        // CSRF token HMAC key (SEC7). Set the same value in web and api.
         let (csrf_secret, csrf_secret_is_dev) = load_csrf_secret()?;
-        // 本番相当（ループバック以外の公開オリジン）では開発用デフォルトのシークレットで
-        // 起動しない（fail-fast。SEC11）。
+        // In production-like setups (public origins other than loopback), do not start with the development default
+        // secrets (fail-fast. SEC11).
         ensure_production_secrets(
             &issuer,
             key_encryption_key_is_dev,
             internal_service_token_is_dev,
             csrf_secret_is_dev,
         )?;
-        // 招待メール等の承諾リンクの土台。単一オリジン構成（ADR-0007）では issuer と同一オリジンに
-        // web 画面が同居するため既定は issuer。web を別オリジンへ置く構成でのみ明示設定する。
+        // The base of accept links in invitation emails etc. In the single-origin setup (ADR-0007) the web screens live on the same
+        // origin as the issuer, so the default is the issuer. Set explicitly only when placing the web on a different origin.
         let public_web_base_url_override = resolver
             .optional_string("PUBLIC_WEB_BASE_URL")
             .map(normalize_issuer);
         let public_web_base_url = public_web_base_url_override
             .clone()
             .unwrap_or_else(|| issuer.clone());
-        // 旧 ADR-0012 構成の Domain 付き Cookie を掃除するための COOKIE_DOMAIN（ADR-0018 決定 4）。
-        // 設定時は issuer / public_web_base_url 双方の親ドメインであり public suffix でないことを
-        // 起動時に検証する（削除 Cookie がブラウザに受理されない値を弾く fail-fast）。
+        // COOKIE_DOMAIN for cleaning up Domain-scoped Cookies of the old ADR-0012 setup (ADR-0018 decision 4).
+        // When set, it is validated at startup to be a parent domain of both issuer / public_web_base_url and not a public suffix
+        // (fail-fast rejecting values for which deletion Cookies would not be accepted by browsers).
         let cookie_domain = match resolver.optional_string("COOKIE_DOMAIN") {
             Some(raw) => Some(
                 assay_contracts::cookie_domain::validate_cookie_domain(
@@ -280,9 +280,9 @@ impl Config {
             None => None,
         };
         let cookie_policy = CookiePolicy::new(cookie_secure, cookie_domain.as_deref());
-        // テナントが上書きできるキーは `Config` に持たない（ADR-0058）が、型の合わない全体の値
-        // （環境変数・`system_settings`）での起動は今までどおりここで止める。止めないと、壊れた値が
-        // 最初に参照された要求で初めて失敗し、しかもテナントに行が無い全員が同時に落ちる。
+        // Keys tenants can override are not held in `Config` (ADR-0058), but starting with global values of the wrong type
+        // (environment variables, `system_settings`) is still stopped here as before. Otherwise a broken value would
+        // first fail on the first request that references it, and everyone in tenants without rows would fail at once.
         for key in tenant_overridable_setting_keys() {
             if let (Some(def), Some(value)) = (
                 runtime_setting_definition(key),
@@ -311,7 +311,7 @@ impl Config {
             access_token_ttl: secs(resolver.parse("ACCESS_TOKEN_TTL_SECS", 900)?),
             management_token_ttl: secs(resolver.parse("MANAGEMENT_TOKEN_TTL_SECS", 300)?),
             id_token_ttl: secs(resolver.parse("ID_TOKEN_TTL_SECS", 3_600)?),
-            // Refresh Token は既定 30 日（offline_access scope で発行。rotation あり）。
+            // Refresh Tokens default to 30 days (issued with the offline_access scope. With rotation).
             refresh_token_ttl: secs(resolver.parse("REFRESH_TOKEN_TTL_SECS", 2_592_000)?),
             clock_skew: secs(resolver.parse("CLOCK_SKEW_SECS", 60)?),
             password_breach_api_base_url: resolver
@@ -320,7 +320,7 @@ impl Config {
             security_alert_webhook_url: resolver.string("SECURITY_ALERT_WEBHOOK_URL", ""),
             security_alert_webhook_token_file: resolver
                 .string("SECURITY_ALERT_WEBHOOK_TOKEN_FILE", ""),
-            // 書けない値では起動しない（fail-fast。web も同じ検査を通す）
+            // Do not start with values that cannot be written (fail-fast. The web goes through the same check)
             silent_auth_frame_ancestors: assay_contracts::frame_ancestors::parse_frame_ancestors(
                 &resolver.string("SILENT_AUTH_FRAME_ANCESTORS", ""),
             )
@@ -383,7 +383,7 @@ impl Config {
         })
     }
 
-    /// OIDC issuer（末尾スラッシュ無し。ID Token の `iss` と完全一致させる）。
+    /// OIDC issuer (no trailing slash. Must exactly match the ID Token's `iss`).
     pub fn issuer(&self) -> &str {
         &self.issuer
     }
@@ -408,9 +408,9 @@ impl Config {
     pub fn access_token_ttl(&self) -> Duration {
         self.access_token_ttl
     }
-    /// 管理 API のアクセストークンの有効期限（ADR-0037）。通常のアクセストークンより短く保つ:
-    /// 管理コンソールはリクエストの度に SSO セッションから交換するため寿命が要らず、システム用
-    /// クライアントにとっては「無効化してから実際に止まるまで」の上限になる。
+    /// Lifetime of admin API access tokens (ADR-0037). Kept shorter than normal access tokens:
+    /// the admin console exchanges from the SSO session on every request so it needs no lifetime, and for system
+    /// clients it is the upper bound of "from disabling until it actually stops".
     pub fn management_token_ttl(&self) -> Duration {
         self.management_token_ttl
     }
@@ -424,110 +424,110 @@ impl Config {
         self.clock_skew
     }
 
-    /// 漏えい済みパスワード照合の接続先（k-匿名性のレンジ API）。
+    /// Endpoint for breached password checks (k-anonymity range API).
     pub fn password_breach_api_base_url(&self) -> &str {
         &self.password_breach_api_base_url
     }
-    /// セキュリティの知らせの送り先 URL（空なら送らない。task #872）。
+    /// URL to send security notifications to (not sent if empty. task #872).
     pub fn security_alert_webhook_url(&self) -> Option<&str> {
         Some(self.security_alert_webhook_url.trim()).filter(|v| !v.is_empty())
     }
-    /// 画面を出さずに試す往復（`prompt=none`）を枠に入れてよい親（空なら許さない。task #888・ADR-0076）。
+    /// Parents allowed to frame the round trip tried without showing a screen (`prompt=none`) (not allowed if empty. task #888, ADR-0076).
     pub fn silent_auth_frame_ancestors(&self) -> &assay_contracts::frame_ancestors::FrameAncestors {
         &self.silent_auth_frame_ancestors
     }
-    /// セキュリティの知らせの鍵を読むファイル（空なら未設定。task #872）。
+    /// The file from which the security notification key is read (unset if empty. task #872).
     pub fn security_alert_webhook_token_file(&self) -> Option<&str> {
         Some(self.security_alert_webhook_token_file.trim()).filter(|v| !v.is_empty())
     }
-    /// 認証アプリのパッケージ名（空なら認証アプリの口を閉じる。task #892）。
+    /// Package name of the authenticator app (closes the authenticator app endpoints if empty. task #892).
     pub fn app_approver_package_name(&self) -> Option<&str> {
         Some(self.app_approver_package_name.trim()).filter(|v| !v.is_empty())
     }
-    /// 認証アプリの署名の証明書の SHA-256（`AB:CD:…`・カンマ区切り。形の確かめは使う側）。
+    /// SHA-256 of the authenticator app's signing certificate (`AB:CD:…`, comma-separated. Shape is checked by the consumer).
     pub fn app_approver_signing_cert_sha256(&self) -> &str {
         &self.app_approver_signing_cert_sha256
     }
-    /// Google の根に加えて信じる根のファイル（stg の確かめ用）。
+    /// File of roots trusted in addition to Google's roots (for checks on stg).
     pub fn app_approver_extra_attestation_roots_file(&self) -> Option<&str> {
         Some(self.app_approver_extra_attestation_roots_file.trim()).filter(|v| !v.is_empty())
     }
-    /// ソフトウェアの鍵も受けるか（stg の確かめ用）。
+    /// Whether software keys are also accepted (for checks on stg).
     pub fn app_approver_allow_software_attestation(&self) -> bool {
         self.app_approver_allow_software_attestation
     }
-    /// 名前を引いた結果が内部の住所でも外へ送ってよい名前（task #585）。
+    /// Names allowed to be sent to even if they resolve to internal addresses (task #585).
     pub fn outbound_trust(&self) -> crate::domain::outbound_uri::OutboundTrust {
         crate::domain::outbound_uri::OutboundTrust::parse(&self.outbound_trusted_hosts)
     }
-    /// 漏えい済みパスワード照合の 1 リクエストの上限時間。
+    /// Timeout of one request of the breached password check.
     pub fn password_breach_check_timeout(&self) -> Duration {
         self.password_breach_check_timeout
     }
-    /// 認証ポリシーが 1 件も一致しないときの既定動作（`allow` / `deny`）の**全体の値**。
+    /// **The global value** of the default behavior when no authentication policy matches (`allow` / `deny`).
     ///
-    /// ⚠ **判定に使わない。** テナントが決めるキーで（ADR-0058 §4）、判定する側は
-    /// `EffectiveTenantSettings` からテナントの値を引く。ここを読むと、その経路だけ全体の値で動く。
-    /// 残してあるのは、起動時に値の形を検証するためと、既定値の突き合わせの試験のためである。
+    /// ⚠ **Not used for decisions.** It is a key tenants decide (ADR-0058 §4), and deciders look up
+    /// the tenant's value from `EffectiveTenantSettings`. Reading this would make only that path run on the global value.
+    /// It is kept for validating the value's shape at startup and for tests comparing defaults.
     pub fn auth_policy_default_effect(&self) -> DefaultPolicyEffect {
         self.auth_policy_default_effect
     }
-    /// アプリの割り当て判定をどこまでやるか（ADR-0054。既定は「記録するだけ」）の**全体の値**。
+    /// **The global value** of how far app assignment checks go (ADR-0054. Default is "record only").
     ///
-    /// ⚠ **判定に使わない**（`auth_policy_default_effect` と同じ理由。ADR-0058 §4）。
+    /// ⚠ **Not used for decisions** (same reason as `auth_policy_default_effect`. ADR-0058 §4).
     pub fn application_assignment_enforcement(&self) -> AssignmentEnforcement {
         self.application_assignment_enforcement
     }
-    /// テナント解決キャッシュ（id → tenant）の TTL（ADR-0009 §7）。
+    /// TTL of the tenant resolution cache (id -> tenant) (ADR-0009 §7).
     pub fn tenant_cache_ttl(&self) -> Duration {
         self.tenant_cache_ttl
     }
-    /// scope→権限解決キャッシュ（`has_permission`）の TTL（ADR-0009 §7）。
+    /// TTL of the scope->permission resolution cache (`has_permission`) (ADR-0009 §7).
     pub fn permission_cache_ttl(&self) -> Duration {
         self.permission_cache_ttl
     }
-    /// Cookie に `Secure` 属性を付けるか（設計仕様 §2.4。開発時の http issuer では無効化できる）。
+    /// Whether to add the `Secure` attribute to Cookies (design spec §2.4. Can be disabled with an http issuer during development).
     pub fn cookie_secure(&self) -> bool {
         self.cookie_policy.secure()
     }
-    /// Cookie の属性方針。api はブラウザ Cookie を発行しない（ADR-0018 決定 2）ため現在は
-    /// `cookie_secure` / `cookie_domain` の解決結果の入れ物としてのみ使う。
+    /// Cookie attribute policy. The api does not issue browser Cookies (ADR-0018 decision 2), so currently it is
+    /// used only as a holder for the resolved `cookie_secure` / `cookie_domain`.
     pub fn cookie_policy(&self) -> &CookiePolicy {
         &self.cookie_policy
     }
-    /// 秘密鍵（SigningKeys.private_key_encrypted）の暗号化に使う 32 バイト鍵。
+    /// The 32-byte key used to encrypt private keys (SigningKeys.private_key_encrypted).
     pub fn key_encryption_key(&self) -> &[u8; 32] {
         &self.key_encryption_key
     }
-    /// 開発用デフォルトの暗号化鍵を使っているか（本番では警告対象）。
+    /// Whether the development default encryption key is used (a warning target in production).
     pub fn key_encryption_key_is_dev(&self) -> bool {
         self.key_encryption_key_is_dev
     }
-    /// 署名鍵ローテーション: `not_after` のこの日数前に次期鍵を生成して旧鍵を退役させる（K2）。
+    /// Signing key rotation: generate the next key and retire the old one this many days before `not_after` (K2).
     pub fn key_rotation_lead_days(&self) -> u32 {
         self.key_rotation_lead_days
     }
 
-    /// 後継鍵を JWKS へ公開してから署名に使い始めるまでの時間。
+    /// Time from publishing the successor key in JWKS until starting to sign with it.
     pub fn key_rotation_publish_lead_hours(&self) -> u32 {
         self.key_rotation_publish_lead_hours
     }
-    /// エラー・警告ログの保持日数（`0` = 削除しない）。
+    /// Retention days of error/warning logs (`0` = never delete).
     pub fn app_log_retention_days(&self) -> u32 {
         self.app_log_retention_days
     }
-    /// 監査ログの保持日数（`0` = 削除しない。G8）。既定で削除しないのは、監査ログの
-    /// 保存期間が法令・契約で決まる運用側の判断であり、既定値で消し始めてよいものではないため。
+    /// Retention days of audit logs (`0` = never delete. G8). Not deleting by default because the
+    /// retention period of audit logs is an operational decision set by law/contract, not something a default should start deleting.
     pub fn audit_log_retention_days(&self) -> u32 {
         self.audit_log_retention_days
     }
-    /// トークン系エンドポイントの同時実行上限（SEC10）。`None` は無制限。
+    /// Concurrency limit of token endpoints (SEC10). `None` is unlimited.
     pub fn token_endpoint_max_concurrency(&self) -> Option<usize> {
         (self.token_endpoint_max_concurrency > 0)
             .then_some(self.token_endpoint_max_concurrency as usize)
     }
-    /// トークン系エンドポイントの IP 単位レート制限（SEC10）。`None` は無効。
-    /// 返すのは `(最大回数, ウィンドウ)`。
+    /// Per-IP rate limit of token endpoints (SEC10). `None` disables it.
+    /// Returns `(max count, window)`.
     pub fn token_endpoint_rate_limit(&self) -> Option<(usize, Duration)> {
         (self.token_endpoint_rate_limit_max_requests > 0).then(|| {
             (
@@ -536,62 +536,62 @@ impl Config {
             )
         })
     }
-    /// Swagger UI・OpenAPI 文書を配信するか（SEC12）。
+    /// Whether to serve Swagger UI and the OpenAPI document (SEC12).
     pub fn api_docs_enabled(&self) -> bool {
         self.api_docs_enabled
     }
-    /// CORS で追加許可するオリジン（G1）。テナント内 public クライアント由来のオリジンに足される。
+    /// Additional origins allowed by CORS (G1). Added to origins derived from public clients in the tenant.
     pub fn cors_allowed_origins(&self) -> Vec<String> {
         crate::application::cors_policy::parse_configured_origins(&self.cors_allowed_origins)
     }
-    /// 期限切れレコードの一括 GC（G2）の実行間隔。`None` は掃除しない（`0` 指定）。
+    /// Interval of the bulk GC of expired records (G2). `None` means no cleanup (`0` specified).
     pub fn expired_record_purge_interval(&self) -> Option<std::time::Duration> {
         (self.expired_record_purge_interval_secs > 0)
             .then(|| std::time::Duration::from_secs(self.expired_record_purge_interval_secs))
     }
-    /// Back-channel logout 通知の再送上限回数（G5）。
+    /// Max resend count of back-channel logout notifications (G5).
     pub fn backchannel_logout_max_attempts(&self) -> u32 {
         self.backchannel_logout_max_attempts
     }
-    /// Back-channel logout 送信ワーカーのポーリング間隔（G5）。
+    /// Polling interval of the back-channel logout delivery worker (G5).
     pub fn backchannel_logout_poll_interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.backchannel_logout_poll_interval_secs)
     }
-    /// Back-channel logout 送信キューの決着済み行の保持日数（`0` = 削除しない。G5）。
+    /// Retention days of settled rows in the back-channel logout delivery queue (`0` = never delete. G5).
     pub fn backchannel_logout_retention_days(&self) -> u32 {
         self.backchannel_logout_retention_days
     }
-    /// リバースプロキシが付与する `X-Forwarded-For` / `X-Forwarded-Proto` を信頼するか（S1）。
+    /// Whether to trust `X-Forwarded-For` / `X-Forwarded-Proto` added by a reverse proxy (S1).
     pub fn trust_forwarded_headers(&self) -> bool {
         self.trust_forwarded_headers
     }
-    /// HSTS `max-age`（秒）。0 = HSTS ヘッダを付与しない（S1）。
+    /// HSTS `max-age` (seconds). 0 = no HSTS header (S1).
     pub fn hsts_max_age(&self) -> u64 {
         self.hsts_max_age
     }
-    /// web→api の `/internal/*` 呼び出しを保護するサービス認証トークン（ADR-0007 §5）。
+    /// Service auth token protecting web->api `/internal/*` calls (ADR-0007 §5).
     pub fn internal_service_token(&self) -> &str {
         &self.internal_service_token
     }
-    /// 開発用デフォルトの内部サービストークンを使っているか（本番では警告対象）。
+    /// Whether the development default internal service token is used (a warning target in production).
     pub fn internal_service_token_is_dev(&self) -> bool {
         self.internal_service_token_is_dev
     }
-    /// CSRF トークン HMAC 鍵（SEC7）。ログイン・同意フォームの CSRF トークン導出に使う。
-    /// web と api で同じ値（`CSRF_SECRET` 環境変数）を設定する。
+    /// CSRF token HMAC key (SEC7). Used to derive CSRF tokens for the sign-in and consent forms.
+    /// Set the same value (`CSRF_SECRET` environment variable) in web and api.
     pub fn csrf_secret(&self) -> &[u8; 32] {
         &self.csrf_secret
     }
-    /// 開発用デフォルトの CSRF シークレットを使っているか（本番では起動を拒否する）。
+    /// Whether the development default CSRF secret is used (startup is refused in production).
     pub fn csrf_secret_is_dev(&self) -> bool {
         self.csrf_secret_is_dev
     }
 
-    /// ランタイム設定の DB 上書きを保存する前の「その値で次回起動できるか」判定へ渡す、
-    /// 実行中プロセスの配置状態（ADR-0017）。
+    /// The deployment state of the running process (ADR-0017), passed to the "can the next startup succeed with that value"
+    /// check before saving a DB override of a runtime setting.
     ///
-    /// 起動時 fail-fast の条件のうち `ISSUER` の値で成否が変わるもの（開発用既定 secret の使用状況・
-    /// `COOKIE_DOMAIN` / 明示設定された `PUBLIC_WEB_BASE_URL`）をまとめて渡す。
+    /// Bundles the startup fail-fast conditions whose outcome depends on the value of `ISSUER` (use of development default secrets,
+    /// `COOKIE_DOMAIN` / an explicitly set `PUBLIC_WEB_BASE_URL`).
     pub fn deployment_state(&self) -> DeploymentState {
         DeploymentState {
             development_secrets: DevelopmentSecrets {
@@ -603,13 +603,13 @@ impl Config {
             public_web_base_url_override: self.public_web_base_url_override.clone(),
         }
     }
-    /// 利用者がブラウザで開く web 画面の公開ベース URL（末尾スラッシュ無し。招待メールの
-    /// 承諾リンク等に使う。既定は issuer と同一オリジン。MT17）。
+    /// Public base URL of the web screens users open in the browser (no trailing slash. Used for accept links in
+    /// invitation emails, etc. Defaults to the same origin as the issuer. MT17).
     pub fn public_web_base_url(&self) -> &str {
         &self.public_web_base_url
     }
-    /// 旧 ADR-0012 構成の `Domain` 付き Cookie を掃除するための `COOKIE_DOMAIN`（ADR-0018 決定 4）。
-    /// `None` = 掃除なし（既定）。セッション Cookie は常に host-only で発行される（web 側）。
+    /// `COOKIE_DOMAIN` for cleaning up `Domain`-scoped Cookies of the old ADR-0012 setup (ADR-0018 decision 4).
+    /// `None` = no cleanup (default). Session Cookies are always issued host-only (web side).
     pub fn cookie_domain(&self) -> Option<&str> {
         self.cookie_policy.legacy_cleanup_domain()
     }
@@ -618,15 +618,15 @@ impl Config {
         &self.resolved_settings
     }
 
-    /// 全体の値のうち **DB の層を除いたもの**（環境変数 → 組み込み既定）を返す（ADR-0058）。
+    /// Returns the global value **without the DB layer** (environment variable -> built-in default) (ADR-0058).
     ///
-    /// テナント設定の解決は「テナントの行 → `system_settings` の行 → ここ」の順に落ちる。
-    /// ⚠ **DB の層を起動時のスナップショット（[`Self::resolved_settings`]）から採らない。**
-    /// スナップショットは DB 由来の値と環境変数由来の値を区別せずに持つので、全体の上書きを消した
-    /// とき、再起動するまで消したはずの値へ落ち続ける。テナントへ降ろしたキーは参照のたびに引く
-    /// （ADR-0058 §9）ので、全体の層も同じ速さで追随させる。
+    /// Tenant setting resolution falls through "tenant row -> `system_settings` row -> here".
+    /// ⚠ **The DB layer is not taken from the startup snapshot ([`Self::resolved_settings`]).**
+    /// The snapshot holds DB-derived and environment-derived values without distinction, so after a global override is cleared
+    /// it would keep falling back to the supposedly cleared value until restart. Keys moved down to tenants are looked up on every reference
+    /// (ADR-0058 §9), so the global layer follows at the same speed.
     ///
-    /// 定義に無いキーと secret のキーは `None`（平文を外へ出さない）。
+    /// Keys not in the definitions and secret keys give `None` (plaintext is never exposed).
     pub fn value_without_db(&self, key: &str) -> Option<String> {
         let def = runtime_setting_definition(key)?;
         if def.secret {
@@ -645,16 +645,16 @@ impl<'a> ConfigResolver<'a> {
         Self { db_settings }
     }
 
-    /// 有効値を解決する。優先順位は「既定値 < ENV < DB」。
+    /// Resolves the effective value. Precedence is "default < ENV < DB".
     ///
-    /// DB を優先するのは `DbManaged` のキーだけ（あとから DB で上書きできるという思想）。
-    /// それ以外（`EnvLocked` / 未定義キー）は DB を参照せず ENV のみを見る。DB・ENV とも無ければ
-    /// `None`（呼び出し側が既定値へフォールバック）。
+    /// Only `DbManaged` keys prefer the DB (the idea that it can later be overridden in the DB).
+    /// Others (`EnvLocked` / undefined keys) look only at ENV without consulting the DB. If neither DB nor ENV has it,
+    /// `None` (the caller falls back to the default).
     fn optional_string(&self, key: &str) -> Option<String> {
         let db_allowed = runtime_setting_definition(key)
             .map(|def| def.owner == SettingOwner::DbManaged)
             .unwrap_or(false);
-        // DB 管理キーは DB 値を最優先（ENV を上書きする）。
+        // For DB-managed keys the DB value takes top priority (overrides ENV).
         if db_allowed {
             if let Some(v) = self.db_settings.get(key).filter(|v| !v.is_empty()) {
                 return Some(v.clone());
@@ -681,12 +681,12 @@ impl<'a> ConfigResolver<'a> {
         }
     }
 
-    /// 有効値の出所を返す（[`optional_string`] と同じ優先順位: 既定値 < ENV < DB）。
+    /// Returns the source of the effective value (same precedence as [`optional_string`]: default < ENV < DB).
     fn source(&self, key: &str) -> SettingSource {
         let db_allowed = runtime_setting_definition(key)
             .map(|def| def.owner == SettingOwner::DbManaged)
             .unwrap_or(false);
-        // DB 管理キーで DB 値があれば DB が有効（ENV より優先）。
+        // For DB-managed keys, a DB value, if present, is effective (takes precedence over ENV).
         if db_allowed
             && self
                 .db_settings
@@ -780,12 +780,12 @@ impl<'a> ConfigResolver<'a> {
     }
 }
 
-/// 公開ベース URL を正規化する: 末尾スラッシュを落とし、**スキームを小文字化**する。
+/// Normalizes a public base URL: drops the trailing slash and **lowercases the scheme**.
 ///
-/// URI のスキームは大小を区別しない（RFC 3986 §3.1）。`HTTPS://idp.example.com` のような表記でも
-/// https と判定できないと、Cookie の `Secure` 判定と本番シークレットの fail-fast（どちらもスキームを
-/// 見る）がすり抜ける。ホスト・パスはそのまま残す（issuer は ID Token の `iss` と完全一致させる
-/// 必要があるため、こちらで勝手に変えない）。
+/// URI schemes are case-insensitive (RFC 3986 §3.1). If notation like `HTTPS://idp.example.com` were not
+/// recognized as https, the Cookie `Secure` decision and the production secret fail-fast (both look at the scheme)
+/// would slip through. Host and path are kept as is (the issuer must exactly match the ID Token's `iss`,
+/// so it is not altered here).
 fn normalize_issuer(raw: String) -> String {
     let trimmed = raw.trim_end_matches('/');
     match trimmed.split_once("://") {
@@ -794,19 +794,19 @@ fn normalize_issuer(raw: String) -> String {
     }
 }
 
-/// 本番相当の配置で開発用デフォルトのシークレットが使われていたら起動を失敗させる。
+/// Fails startup if development default secrets are used in a production-like deployment.
 ///
-/// 開発用デフォルト（`DEV_KEY_ENCRYPTION_KEY`・`DEV_INTERNAL_SERVICE_TOKEN`・`DEV_CSRF_SECRET`）は
-/// ソースに埋め込まれた既知値であり、本番で使うと署名鍵の暗号化・`/internal/*` の保護・CSRF 防御が
-/// 実質無効になる。warning での見逃しを防ぐため、ローカルループバック以外の配置では設定漏れを
-/// 構成エラーとする（SEC11。前段で TLS を終端して `ISSUER` を http にした配置も本番扱いになる）。
+/// The development defaults (`DEV_KEY_ENCRYPTION_KEY`, `DEV_INTERNAL_SERVICE_TOKEN`, `DEV_CSRF_SECRET`) are
+/// known values embedded in the source; using them in production effectively disables signing key encryption, `/internal/*` protection and
+/// CSRF defense. To avoid them being overlooked as warnings, a missing setting is a configuration error in any deployment
+/// other than local loopback (SEC11. Deployments terminating TLS in front and setting `ISSUER` to http are also treated as production).
 fn ensure_production_secrets(
     issuer: &str,
     key_encryption_key_is_dev: bool,
     internal_service_token_is_dev: bool,
     csrf_secret_is_dev: bool,
 ) -> anyhow::Result<()> {
-    // 判定規則は domain に単一化する（保存前の起動可否検査と同じ述語を使うため。ADR-0017）。
+    // The decision rule is unified in the domain (to use the same predicate as the pre-save startup check. ADR-0017).
     if !requires_production_secrets(issuer) {
         return Ok(());
     }
@@ -834,7 +834,7 @@ fn ensure_production_secrets(
     Ok(())
 }
 
-/// `KEY_ENCRYPTION_KEY`（base64、32 バイト）を読み込む。未設定なら開発用デフォルトを使う。
+/// Reads `KEY_ENCRYPTION_KEY` (base64, 32 bytes). Uses the development default if unset.
 fn load_key_encryption_key() -> anyhow::Result<([u8; 32], bool)> {
     match env_lookup("KEY_ENCRYPTION_KEY") {
         Some(v) => Ok((decode_secret_32("KEY_ENCRYPTION_KEY", &v)?, false)),
@@ -842,16 +842,16 @@ fn load_key_encryption_key() -> anyhow::Result<([u8; 32], bool)> {
     }
 }
 
-/// 包み直し（`assay-rewrap-secrets`）の行き先の鍵 `NEW_KEY_ENCRYPTION_KEY`（base64、32 バイト）を読む。
+/// Reads `NEW_KEY_ENCRYPTION_KEY` (base64, 32 bytes), the destination key of re-wrapping (`assay-rewrap-secrets`).
 ///
-/// 包み直すときだけ与える値で、api の起動では読まない。未設定なら `None`（開発用既定へは落とさない）。
+/// A value given only when re-wrapping; not read at api startup. `None` if unset (does not fall back to the development default).
 pub fn load_new_key_encryption_key() -> anyhow::Result<Option<[u8; 32]>> {
     env_lookup("NEW_KEY_ENCRYPTION_KEY")
         .map(|v| decode_secret_32("NEW_KEY_ENCRYPTION_KEY", &v))
         .transpose()
 }
 
-/// `CSRF_SECRET`（base64、32 バイト）を読み込む。未設定なら開発用デフォルトを使う。
+/// Reads `CSRF_SECRET` (base64, 32 bytes). Uses the development default if unset.
 fn load_csrf_secret() -> anyhow::Result<([u8; 32], bool)> {
     match env_lookup("CSRF_SECRET") {
         Some(v) => Ok((decode_secret_32("CSRF_SECRET", &v)?, false)),
@@ -859,17 +859,17 @@ fn load_csrf_secret() -> anyhow::Result<([u8; 32], bool)> {
     }
 }
 
-/// `INTERNAL_SERVICE_TOKEN` の最低要件を検査する（SEC11）。判定は web と共有の契約に置く。
+/// Checks the minimum requirements of `INTERNAL_SERVICE_TOKEN` (SEC11). The rule lives in the contract shared with web.
 fn validate_internal_service_token(value: String) -> anyhow::Result<String> {
     assay_contracts::deployment::validate_internal_service_token(&value)
         .map_err(|e| anyhow::anyhow!(e))
 }
 
-/// base64 の 32 バイトシークレット（`KEY_ENCRYPTION_KEY`・`CSRF_SECRET`）を復号する。
+/// Decodes a base64 32-byte secret (`KEY_ENCRYPTION_KEY`, `CSRF_SECRET`).
 ///
-/// `.env.*.example` のプレースホルダ `CHANGE-ME` が残ったまま起動されるケースが実際に多い
-/// （素の base64 エラーは `Invalid symbol 45, offset 6` としか出ず原因に辿り着けない）ため、
-/// プレースホルダは base64 復号より先に検出し、対処（`openssl rand -base64 32`）まで案内する。
+/// Starting with the `.env.*.example` placeholder `CHANGE-ME` left in place actually happens a lot
+/// (a plain base64 error only says `Invalid symbol 45, offset 6`, which does not lead to the cause), so
+/// the placeholder is detected before base64 decoding, with guidance on the fix (`openssl rand -base64 32`).
 fn decode_secret_32(name: &str, value: &str) -> anyhow::Result<[u8; 32]> {
     let value = value.trim();
     if value.contains("CHANGE-ME") {
@@ -890,10 +890,10 @@ fn secs(v: u64) -> Duration {
     Duration::from_secs(v)
 }
 
-/// 環境変数を引く。**空文字列は「未設定」として扱う**。
+/// Reads an environment variable. **An empty string is treated as "unset"**.
 ///
-/// Docker Compose の `${VAR:-}` は未指定でもキーを空文字列で注入するため、空を未設定と
-/// みなさないと数値・bool パースが失敗して起動できなくなる（例: `COOKIE_SECURE=""`）。
+/// Docker Compose's `${VAR:-}` injects the key as an empty string even when unspecified, so unless empty is treated as
+/// unset, number/bool parsing fails and startup is impossible (e.g. `COOKIE_SECURE=""`).
 fn env_lookup(key: &str) -> Option<String> {
     match env::var(key) {
         Ok(v) if !v.is_empty() => Some(v),
@@ -901,14 +901,14 @@ fn env_lookup(key: &str) -> Option<String> {
     }
 }
 
-/// 環境変数を文字列で引く（未設定・空は既定値）。設定解決は [`ConfigResolver`] へ移行済みで、
-/// 現在はフォールバック挙動を検証するテストからのみ使う。
+/// Reads an environment variable as a string (default if unset or empty). Settings resolution has moved to [`ConfigResolver`],
+/// and this is now used only by tests verifying fallback behavior.
 #[cfg(test)]
 fn env_or(key: &str, default: &str) -> String {
     env_lookup(key).unwrap_or_else(|| default.to_string())
 }
 
-/// 環境変数をパースして引く（未設定・空は既定値）。[`env_or`] と同じくテスト専用の補助。
+/// Reads and parses an environment variable (default if unset or empty). Test-only helper like [`env_or`].
 #[cfg(test)]
 fn env_parse<T>(key: &str, default: T) -> anyhow::Result<T>
 where
@@ -928,25 +928,25 @@ mod tests {
     use super::*;
     use std::sync::{Mutex, MutexGuard};
 
-    /// プロセス共有の環境変数を触るテストを直列化するためのロック。
+    /// Lock for serializing tests that touch process-wide environment variables.
     ///
-    /// `cargo test` は 1 プロセス内の複数スレッドでテストを並列実行し、`std::env` は
-    /// プロセス全体で共有される。環境変数を設定/削除しつつ `Config` を組み立てるテストが
-    /// 並行すると、あるテストが設定した値を別テストが読んでしまい非決定的に失敗する
-    /// （例: `KEY_ROTATION_LEAD_DAYS` の 14 と 7 の取り違え）。該当テストはこのロックを
-    /// 取得して直列化する。
+    /// `cargo test` runs tests in parallel on multiple threads in one process, and `std::env` is
+    /// shared across the whole process. If tests that set/remove environment variables while building `Config`
+    /// run concurrently, one test can read a value set by another and fail nondeterministically
+    /// (e.g. mixing up 14 and 7 for `KEY_ROTATION_LEAD_DAYS`). Such tests acquire this lock
+    /// to serialize.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    /// `ENV_LOCK` を取得する。ロック保持中に別テストが panic して poison しても、
-    /// 排他自体は保たれているため内側の値を取り出して継続する。
+    /// Acquires `ENV_LOCK`. Even if another test panics while holding the lock and poisons it,
+    /// mutual exclusion itself is preserved, so the inner value is taken out and execution continues.
     fn env_guard() -> MutexGuard<'static, ()> {
         ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// ループバック以外の公開オリジンを使うテストは本番相当と判定される（SEC11）ため、開発用
-    /// 既定 secret のままでは `Config` を組み立てられない。テスト用の値を注入する。
+    /// Tests using public origins other than loopback are judged production-like (SEC11), so `Config` cannot be built
+    /// with the development default secrets. Inject test values.
     fn set_production_secrets() {
         std::env::set_var("KEY_ENCRYPTION_KEY", STANDARD.encode([1u8; 32]));
         std::env::set_var("CSRF_SECRET", STANDARD.encode([2u8; 32]));
@@ -959,7 +959,7 @@ mod tests {
         std::env::remove_var("INTERNAL_SERVICE_TOKEN");
     }
 
-    /// MT27: 起動時スナップショットと現在の DB 上書き値がずれていれば「保存済み・未反映」。
+    /// MT27: if the startup snapshot and the current DB override value differ, it is "saved but not applied".
     #[test]
     fn pending_restart_compares_the_startup_snapshot_with_the_stored_override() {
         let setting = |source: SettingSource, value: Option<&str>| ResolvedSetting {
@@ -976,31 +976,31 @@ mod tests {
             description: String::new(),
         };
 
-        // 起動時に DB から採った値と保存値が一致 → 反映済み。
+        // The value taken from the DB at startup matches the stored value -> applied.
         assert!(!setting(SettingSource::Db, Some("true")).is_pending_restart(Some("true")));
-        // 保存値が変わった → 未反映。
+        // The stored value changed -> not applied.
         assert!(setting(SettingSource::Db, Some("true")).is_pending_restart(Some("false")));
-        // 起動時は ENV/既定値で、あとから DB 上書きを保存した → 未反映。
+        // ENV/default at startup, and a DB override was saved later -> not applied.
         assert!(setting(SettingSource::Env, Some("false")).is_pending_restart(Some("true")));
-        // **上書きの解除も未反映**（起動時は DB から採っていた）。ここを取りこぼすと、
-        // 「解除したのに元の値に戻らない」が画面から見えない。
+        // **Removing an override is also not applied** (it was taken from the DB at startup). Missing this would make
+        // "removed it but it does not go back to the original value" invisible on screen.
         assert!(setting(SettingSource::Db, Some("true")).is_pending_restart(None));
-        // 起動時も現在も DB 上書きが無い → 反映済み。
+        // No DB override either at startup or now -> applied.
         assert!(!setting(SettingSource::Env, Some("false")).is_pending_restart(None));
     }
 
-    /// 出所区分が `DbManaged` から `EnvLocked` へ変わったキー（ADR-0012 の
-    /// `PUBLIC_WEB_BASE_URL`・`COOKIE_DOMAIN`）の `system_settings` 行が残っていても未反映にしない。
+    /// Leftover `system_settings` rows for keys whose owner changed from `DbManaged` to `EnvLocked` (ADR-0012's
+    /// `PUBLIC_WEB_BASE_URL`, `COOKIE_DOMAIN`) are not reported as unapplied.
     ///
-    /// `EnvLocked` は解決時に DB を見ないので `source` が `Db` になり得ず、突き合わせると永遠に
-    /// 未反映と出る。しかも `editable` が false で画面から消せないため、再起動しても消えない警告が
-    /// 居座ることになる。残存行は設定の解決に影響しない（無視される）ので未反映ではない。
+    /// `EnvLocked` does not look at the DB when resolving, so `source` can never be `Db`, and comparing would show
+    /// unapplied forever. Moreover `editable` is false so it cannot be removed from the screen, leaving a warning that does not go away
+    /// even after restart. Leftover rows do not affect resolution (they are ignored), so they are not unapplied.
     #[test]
     fn stale_rows_for_env_locked_keys_are_not_reported_as_pending() {
         let env_locked = ResolvedSetting {
             key: "PUBLIC_WEB_BASE_URL".to_string(),
             owner: SettingOwner::EnvLocked,
-            // EnvLocked は DB を参照しないため、DB 行があっても source は Env / Builtin にしかならない。
+            // EnvLocked does not consult the DB, so even with a DB row the source can only be Env / Builtin.
             source: SettingSource::Env,
             secret: false,
             restart_required: true,
@@ -1014,7 +1014,7 @@ mod tests {
         assert!(!env_locked.is_pending_restart(Some("https://old.example.com")));
         assert!(!env_locked.is_pending_restart(None));
 
-        // Builtin（常に既定値）も同じ理由で対象外。
+        // Builtin (always the default) is excluded for the same reason.
         let builtin = ResolvedSetting {
             key: "BIND_ADDR".to_string(),
             owner: SettingOwner::Builtin,
@@ -1024,8 +1024,8 @@ mod tests {
         assert!(!builtin.is_pending_restart(Some("0.0.0.0:9999")));
     }
 
-    /// 再起動不要のキーは参照のたびに DB を読むため常に反映済み。secret は平文をスナップショットに
-    /// 残さない（比較できない）ため未反映とは判定しない。
+    /// Keys that need no restart read the DB on every reference, so they are always applied. Secrets leave no plaintext in the
+    /// snapshot (cannot be compared), so they are not judged unapplied.
     #[test]
     fn pending_restart_is_never_reported_for_live_or_secret_settings() {
         let base = ResolvedSetting {
@@ -1062,9 +1062,9 @@ mod tests {
             normalize_issuer("https://idp.example.com".to_string()),
             "https://idp.example.com"
         );
-        // スキームは大小を区別しない（RFC 3986 §3.1）ため小文字化する。これが無いと
-        // `HTTPS://` 表記で Cookie の Secure 判定・本番シークレットの fail-fast がすり抜ける。
-        // ホストは ID Token の `iss` と完全一致させる必要があるためそのまま残す。
+        // Schemes are case-insensitive (RFC 3986 §3.1), so lowercase it. Without this,
+        // `HTTPS://` notation would slip past the Cookie Secure decision and the production secret fail-fast.
+        // The host must exactly match the ID Token's `iss`, so it is kept as is.
         assert_eq!(
             normalize_issuer("HTTPS://IdP.example.com/".to_string()),
             "https://IdP.example.com"
@@ -1073,19 +1073,19 @@ mod tests {
 
     #[test]
     fn production_secrets_are_required_when_issuer_is_https() {
-        // https issuer + 開発用デフォルト → 構成エラー（fail-fast）。
+        // https issuer + development defaults -> configuration error (fail-fast).
         assert!(ensure_production_secrets("https://idp.example.com", true, false, false).is_err());
         assert!(ensure_production_secrets("https://idp.example.com", false, true, false).is_err());
         assert!(ensure_production_secrets("https://idp.example.com", false, false, true).is_err());
-        // 全部明示設定されていれば https でも起動できる。
+        // With everything set explicitly, it can start even on https.
         assert!(ensure_production_secrets("https://idp.example.com", false, false, false).is_ok());
-        // http（ローカル開発）は開発用デフォルトを許容する（起動時 warning のみ）。
+        // http (local development) allows development defaults (only a warning at startup).
         assert!(ensure_production_secrets("http://localhost:8080", true, true, true).is_ok());
     }
 
     #[test]
     fn secret_decode_rejects_template_placeholder_with_guidance() {
-        // `.env.*.example` の CHANGE-ME 残りは base64 エラーではなく原因と対処を明示する。
+        // A leftover CHANGE-ME from `.env.*.example` gets an explicit cause and fix rather than a base64 error.
         let err = decode_secret_32("KEY_ENCRYPTION_KEY", "CHANGE-ME").unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("CHANGE-ME"), "message was: {msg}");
@@ -1102,7 +1102,7 @@ mod tests {
             decode_secret_32("KEY_ENCRYPTION_KEY", &encoded).unwrap(),
             [7u8; 32]
         );
-        // 前後空白は許容する（.env の手編集で紛れ込みやすい）。
+        // Leading/trailing whitespace is tolerated (easily slips in when hand-editing .env).
         assert_eq!(
             decode_secret_32("KEY_ENCRYPTION_KEY", &format!(" {encoded}\n")).unwrap(),
             [7u8; 32]
@@ -1131,7 +1131,7 @@ mod tests {
 
     #[test]
     fn db_managed_settings_override_env() {
-        // 「あとから DB で上書きできる」思想: DB_MANAGED キーは DB 値が ENV を上書きする。
+        // The "can later be overridden in the DB" idea: for DB_MANAGED keys the DB value overrides ENV.
         let _env = env_guard();
         std::env::set_var("KEY_ROTATION_LEAD_DAYS", "14");
         let db = HashMap::from([("KEY_ROTATION_LEAD_DAYS".to_string(), "7".to_string())]);
@@ -1143,7 +1143,7 @@ mod tests {
             .find(|setting| setting.key == "KEY_ROTATION_LEAD_DAYS")
             .unwrap();
         assert_eq!(rotation.source, SettingSource::Db);
-        // ENV しか無ければ ENV が有効（既定値 < ENV）。
+        // With only ENV, ENV is effective (default < ENV).
         std::env::set_var("KEY_ROTATION_LEAD_DAYS", "21");
         let config = Config::from_env_and_db_settings(&HashMap::new()).unwrap();
         assert_eq!(config.key_rotation_lead_days(), 21);
@@ -1156,8 +1156,8 @@ mod tests {
         std::env::remove_var("KEY_ROTATION_LEAD_DAYS");
     }
 
-    /// MT26 / ADR-0013: api と web が共有するランタイム設定も DB 上書きを受け付ける
-    /// （web は起動時に api の `/internal/runtime-settings` から同じ値を受け取る）。
+    /// MT26 / ADR-0013: runtime settings shared by api and web also accept DB overrides
+    /// (the web receives the same values from the api's `/internal/runtime-settings` at startup).
     #[test]
     fn shared_web_runtime_settings_are_db_managed() {
         let _env = env_guard();
@@ -1254,18 +1254,18 @@ mod tests {
         std::env::set_var("ISSUER", "http://api.example.com");
         std::env::set_var("PUBLIC_WEB_BASE_URL", "http://id.example.com");
 
-        // 両オリジンの親ドメインなら受理し、正規化した値を保持する。
+        // Accepted if it is a parent domain of both origins, and the normalized value is kept.
         std::env::set_var("COOKIE_DOMAIN", ".Example.com");
         let config = Config::from_env_and_db_settings(&HashMap::new()).unwrap();
         assert_eq!(config.cookie_domain(), Some("example.com"));
 
-        // 片方の親でない・public suffix は起動を失敗させる（fail-fast）。
+        // Not a parent of one of them, or a public suffix, fails startup (fail-fast).
         std::env::set_var("COOKIE_DOMAIN", "other.com");
         assert!(Config::from_env_and_db_settings(&HashMap::new()).is_err());
         std::env::set_var("COOKIE_DOMAIN", "com");
         assert!(Config::from_env_and_db_settings(&HashMap::new()).is_err());
 
-        // 未設定 = host-only（従来挙動）。
+        // Unset = host-only (conventional behavior).
         std::env::remove_var("COOKIE_DOMAIN");
         let config = Config::from_env_and_db_settings(&HashMap::new()).unwrap();
         assert_eq!(config.cookie_domain(), None);
@@ -1275,12 +1275,12 @@ mod tests {
         clear_production_secrets();
     }
 
-    /// ADR-0017: ISSUER は DB 上書きを受ける（ディスカバリ文書と `iss` が `http://localhost:8080`
-    /// のまま直せない、という状態を無くすため）。ENV より DB が優先される。
+    /// ADR-0017: ISSUER accepts DB overrides (to eliminate the state where the discovery document and `iss` stay
+    /// `http://localhost:8080` and cannot be fixed). DB takes precedence over ENV.
     #[test]
     fn issuer_is_overridden_by_db_settings() {
         let _env = env_guard();
-        // DB 上書き後の issuer はループバック以外なので本番相当になる（SEC11）。
+        // The issuer after the DB override is not loopback, so it is production-like (SEC11).
         set_production_secrets();
         std::env::set_var("ISSUER", "http://localhost:8080");
         std::env::remove_var("PUBLIC_WEB_BASE_URL");
@@ -1288,9 +1288,9 @@ mod tests {
 
         let db = HashMap::from([("ISSUER".to_string(), "http://idp.example.test/".to_string())]);
         let config = Config::from_env_and_db_settings(&db).unwrap();
-        // 末尾スラッシュは正規化される（`iss` と完全一致させるため）。
+        // The trailing slash is normalized (to exactly match `iss`).
         assert_eq!(config.issuer(), "http://idp.example.test");
-        // PUBLIC_WEB_BASE_URL 未設定なら issuer と同一オリジン。DB 上書きがそこまで届く。
+        // If PUBLIC_WEB_BASE_URL is unset, it is the same origin as the issuer. The DB override reaches there.
         assert_eq!(config.public_web_base_url(), "http://idp.example.test");
 
         let setting = config
@@ -1303,7 +1303,7 @@ mod tests {
         assert_eq!(setting.source, SettingSource::Db);
         assert_eq!(setting.value.as_deref(), Some("http://idp.example.test/"));
 
-        // DB 上書きが無ければ ENV へ戻る。
+        // Without a DB override it goes back to ENV.
         let config = Config::from_env_and_db_settings(&HashMap::new()).unwrap();
         assert_eq!(config.issuer(), "http://localhost:8080");
 
@@ -1313,7 +1313,7 @@ mod tests {
 
     #[test]
     fn public_web_base_url_is_env_locked_and_ignores_db() {
-        // ADR-0012 §2: api/web で同一値必須のため DbManaged → EnvLocked へ変更。DB 値は無視される。
+        // ADR-0012 §2: changed from DbManaged to EnvLocked because api/web require the same value. DB values are ignored.
         let _env = env_guard();
         std::env::remove_var("PUBLIC_WEB_BASE_URL");
         std::env::remove_var("ISSUER");
@@ -1322,7 +1322,7 @@ mod tests {
             "http://db-managed.example.com".to_string(),
         )]);
         let config = Config::from_env_and_db_settings(&db).unwrap();
-        // DB 値ではなく既定（issuer と同一オリジン）へフォールバックする。
+        // Falls back to the default (same origin as the issuer), not the DB value.
         assert_eq!(config.public_web_base_url(), config.issuer());
         let setting = config
             .resolved_settings()
@@ -1335,14 +1335,14 @@ mod tests {
 
     #[test]
     fn env_parse_falls_back_to_default_when_unset() {
-        // 未設定キーは既定値を返す。
+        // Unset keys return the default.
         let v: u64 = env_parse("IDP_TEST_DEFINITELY_UNSET_KEY", 42).unwrap();
         assert_eq!(v, 42);
     }
 
     #[test]
     fn empty_env_var_is_treated_as_unset() {
-        // Compose の `${VAR:-}` 由来の空文字列は「未設定」として既定値へフォールバックする。
+        // Empty strings from Compose's `${VAR:-}` are treated as "unset" and fall back to the default.
         let key = "IDP_TEST_EMPTY_ENV_VAR";
         std::env::set_var(key, "");
         assert_eq!(env_or(key, "fallback"), "fallback");
@@ -1351,8 +1351,8 @@ mod tests {
         std::env::remove_var(key);
     }
 
-    /// テナントへ降ろしたキーの組み込み既定は定義の `default_value` **1 か所だけ**にある（`Config` は
-    /// もう持たない）。⚠ 欠けていると、行の無いテナントの参照が空文字列の変換で失敗する。
+    /// The built-in defaults of keys moved down to tenants live **in only one place**, the definition's `default_value` (`Config`
+    /// no longer holds them). ⚠ If missing, references from tenants without rows fail converting an empty string.
     #[test]
     fn every_tenant_overridable_key_has_a_builtin_default() {
         let _env = env_guard();
@@ -1367,8 +1367,8 @@ mod tests {
         }
     }
 
-    /// 組み込み既定は降ろす前の `Config` と同じ値である（⚠ ずれると、行の無い全テナントの挙動が
-    /// 黙って変わる。ADR-0058 §12「挙動は 1 つも変わらない」）。
+    /// The built-in defaults are the same values as `Config` had before moving them down (⚠ if they drift, the behavior of all tenants
+    /// without rows silently changes. ADR-0058 §12 "not a single behavior changes").
     #[test]
     fn tenant_overridable_defaults_are_the_values_config_used_to_have() {
         let _env = env_guard();
@@ -1391,13 +1391,13 @@ mod tests {
             ("PASSWORD_RESET_CONSOLE_LINK_ENABLED", "true"),
             ("AUTH_POLICY_DEFAULT_EFFECT", "allow"),
             ("APPLICATION_ASSIGNMENT_ENFORCEMENT", "record_only"),
-            // task #872 で足した（足す前の `Config` には無い。既定は「知らせない」）。
+            // Added in task #872 (not in `Config` before it was added. Default is "do not notify").
             ("UNREGISTERED_DEVICE_ALERTS_ENABLED", "false"),
-            // task #885 で足した（既定は「使わない」）。
+            // Added in task #885 (default is "do not use").
             ("SSH_KEYS_ENABLED", "false"),
-            // task #887 で足した（端末の鍵に結び付いたログイン状態の長さ）。
+            // Added in task #887 (lifetime of signed-in states bound to a device key).
             ("SSO_BOUND_TTL_SECS", "2592000"),
-            // task #916 で足した（既定は「登録していない端末でも入れる」）。
+            // Added in task #916 (default is "unregistered devices can also get in").
             ("REGISTERED_DEVICE_REQUIRED", "false"),
         ];
         assert_eq!(
@@ -1415,7 +1415,7 @@ mod tests {
         }
     }
 
-    /// 型の合わない全体の値では今までどおり起動しない（`Config` に持たなくなっても fail-fast は残す）。
+    /// Startup still fails with global values of the wrong type, as before (fail-fast remains even though `Config` no longer holds them).
     #[test]
     fn an_unparsable_global_value_for_a_tenant_key_still_fails_startup() {
         let _env = env_guard();
@@ -1424,7 +1424,7 @@ mod tests {
         assert!(Config::from_env_and_db_settings(&db).is_err());
     }
 
-    /// 秘密を `Debug` に出さない（task #593）。`{:?}` でログへ落としても値が漏れない。
+    /// Secrets are not shown in `Debug` (task #593). Values do not leak even if dropped into a log with `{:?}`.
     #[test]
     fn debug_output_does_not_carry_the_secrets() {
         let _env = env_guard();

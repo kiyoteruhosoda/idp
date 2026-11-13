@@ -1,6 +1,6 @@
-//! `UserDeviceRepository` の sqlx 実装（task #872。ADR-0071）。
+//! sqlx implementation of `UserDeviceRepository` (task #872, ADR-0071).
 //!
-//! DB に置くのは端末の印の SHA-256 だけ（[`DeviceRef`]）。印の平文は持たない。
+//! Only the SHA-256 of the device mark ([`DeviceRef`]) is stored in the DB. The mark's plaintext is not kept.
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::UserDeviceRepository;
@@ -54,7 +54,7 @@ fn map_row(row: &MySqlRow) -> Result<UserDevice> {
     })
 }
 
-/// ブラウザの名乗りは列の長さに切り詰める（長い値で INSERT を落とさない）。
+/// The browser's self-description is truncated to the column length (a long value must not fail the INSERT).
 fn clip(value: Option<&str>, max_chars: usize) -> Option<String> {
     value.map(|v| v.chars().take(max_chars).collect())
 }
@@ -206,8 +206,8 @@ impl UserDeviceRepository for SqlxUserDeviceRepository {
         country: Option<&CountryCode>,
         observed_at: DateTime<Utc>,
     ) -> Result<bool> {
-        // 行が無ければ作り、あっても端末が未設定のときだけ書く（パスキーの時刻の行が先にできていることがある）。
-        // ⚠ 既に端末が結び付いた行は上書きしない（他人のセッション id を知った者が自分の印で塗り替えない）。
+        // Create the row if absent; if present, write only when no device is set yet (the passkey-time row may already exist).
+        // ⚠ Rows already bound to a device are not overwritten (someone who learned another's session id can't repaint it with their own mark).
         let inserted = sqlx::query(
             "INSERT IGNORE INTO sso_session_contexts \
              (session_hash, device_hash, country, observed_at) VALUES (?, ?, ?, ?)",

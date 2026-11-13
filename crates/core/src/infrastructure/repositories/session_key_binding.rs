@@ -1,4 +1,4 @@
-//! `SessionKeyBindingRepository` の sqlx 実装（task #887。ADR-0074）。置き場は `sso_session_contexts`。
+//! sqlx implementation of `SessionKeyBindingRepository` (task #887, ADR-0074). Stored in `sso_session_contexts`.
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::SessionKeyBindingRepository;
@@ -54,13 +54,13 @@ impl SessionKeyBindingRepository for SqlxSessionKeyBindingRepository {
     }
 
     async fn bind(&self, session_hash: &str, binding: &SessionKeyBinding) -> Result<bool> {
-        // 行が無ければ作る（端末の印の無いブラウザでは、ログインのときに行ができていない）。
+        // Create the row if missing (for a browser without a device mark, no row is created at login).
         sqlx::query("INSERT IGNORE INTO sso_session_contexts (session_hash) VALUES (?)")
             .bind(session_hash)
             .execute(&self.pool)
             .await
             .map_err(repo_err)?;
-        // ⚠ 既に結び付いた行は書き換えない（盗んだ Cookie で別の鍵へ結び直させない）。
+        // ⚠ Do not rewrite a row that is already bound (don't let a stolen cookie rebind it to another key).
         let updated = sqlx::query(
             "UPDATE sso_session_contexts SET key_session_identifier = ?, key_algorithm = ?, \
              key_public_jwk = ?, key_thumbprint = ?, key_bound_at = ?, key_refreshed_at = ? \

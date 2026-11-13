@@ -3,8 +3,8 @@
 <h2 class="h4 mb-3">{{ messages.get("admin-applications-title") }}</h2>
 <p class="text-muted">{{ messages.get("admin-applications-intro") }}</p>
 {% if record_only %}
-{#- ⚠ 判定がまだ断るところまで来ていない。これを出さないと、名簿を整えた人が
-    「もう効いている」と思い込んだまま切り替えの日を迎える。 -#}
+{#- ⚠ The check has not reached the point of refusing yet. Without showing this, whoever curated the roster
+    reaches the switch-over day believing "it is already in effect". -#}
 <div class="alert alert-info" role="alert">
   <i class="fa-solid fa-circle-info me-2" aria-hidden="true"></i>{{ messages.get("admin-applications-record-only") }}
 </div>
@@ -55,7 +55,7 @@
           {%- else -%}
           <span class="badge bg-secondary-subtle text-secondary-emphasis">{{ messages.get("admin-applications-state-disabled") }}</span>
           {%- endif -%}
-          {#- ⚠ 「個別」で名簿が空は「全員」ではなく「誰も入れない」。取り違えると全断になる。 -#}
+          {#- ⚠ An empty roster under "individual" means "nobody can sign in", not "everyone". Confusing them blocks everyone. -#}
           {%- if application.admits_nobody() %}
           <span class="badge text-bg-warning ms-1" title="{{ messages.get("admin-applications-nobody-hint") }}">{{ messages.get("admin-applications-nobody") }}</span>
           {%- endif -%}
@@ -83,7 +83,7 @@
         </div>
         <div class="col-md-6">
           <label class="form-label" for="application-assignment-mode">{{ messages.get("admin-applications-who-label") }}</label>
-          {#- ⚠ 既定は「個別」。「全員」を既定にすると、絞り忘れたアプリが全員に開いたままになる。 -#}
+          {#- ⚠ The default is "individual". Defaulting to "everyone" would leave apps someone forgot to restrict open to all. -#}
           <select class="form-select" id="application-assignment-mode" name="assignment_mode">
             <option value="INDIVIDUAL" selected>{{ messages.get("admin-applications-who-individual") }}</option>
             <option value="EVERYONE">{{ messages.get("admin-applications-who-everyone") }}</option>
@@ -91,8 +91,8 @@
           <div class="form-text">{{ messages.get("admin-applications-who-hint") }}</div>
         </div>
       </div>
-      {#- ⚠ 初めからチェックしておく。「個別」で作った直後は誰も入れないので、
-          作った本人が締め出される形にしない。 -#}
+      {#- ⚠ Checked from the start. Right after creating with "individual" nobody can sign in, so
+          the creator must not be locked out. -#}
       <div class="form-check mt-3">
         <input class="form-check-input" type="checkbox" value="1" id="assign-creator" name="assign_creator" checked>
         <label class="form-check-label" for="assign-creator">{{ messages.get("admin-applications-assign-self") }}</label>

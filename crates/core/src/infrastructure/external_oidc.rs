@@ -1,18 +1,18 @@
-//! `ExternalOidcClient` の実装（reqwest + jsonwebtoken。AP10）。
+//! Implementation of `ExternalOidcClient` (reqwest + jsonwebtoken; AP10).
 //!
-//! 外部 IdP の `/token` へ認可コードを出し、返ってきた ID Token を **JWKS で署名検証してから**
-//! クレームを返す。検証の中身:
+//! Sends the authorization code to the external IdP's `/token` and returns the claims **after verifying the returned
+//! ID Token's signature with JWKS**. What is verified:
 //!
-//! 1. 署名（`kid` で JWKS から鍵を選ぶ。RS256 / ES256）
-//! 2. `iss` が設定した issuer と完全一致
-//! 3. `aud` に自分の `client_id` を含む
-//! 4. `exp`（jsonwebtoken の既定検証。leeway は既定 60 秒）
-//! 5. `nonce` が発行時に保存した値と一致（リプレイ検出）
+//! 1. Signature (key chosen from JWKS by `kid`; RS256 / ES256)
+//! 2. `iss` exactly matches the configured issuer
+//! 3. `aud` contains our `client_id`
+//! 4. `exp` (jsonwebtoken's default validation; default leeway 60 seconds)
+//! 5. `nonce` matches the value saved at issuance (replay detection)
 //!
-//! どれか 1 つでも欠けると「外部 IdP が言ったことにできる」ので、すべてこの 1 箇所で行う。
+//! Missing any one of these would let anything pass as "what the external IdP said", so all are done in this one place.
 //!
-//! 同じ HTTP クライアント（タイムアウト・リダイレクトを追わない）で、登録前の discovery ドキュメントの
-//! 取得（`OidcDiscoveryClient`。task #77）も受け持つ。
+//! The same HTTP client (timeouts, no redirect following) also handles fetching the discovery document
+//! before registration (`OidcDiscoveryClient`; task #77).
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::external_idp::ExternalClaims;
@@ -26,15 +26,15 @@ use async_trait::async_trait;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 
-/// 外部 IdP への 1 リクエストの上限。応答しない IdP でログインを待たせ続けない。
+/// Upper bound for one request to an external IdP. Login isn't kept waiting on an unresponsive IdP.
 const REQUEST_TIMEOUT_SECS: u64 = 10;
 
-/// discovery ドキュメントの大きさの上限。実物は数 KB（Entra ID・Google・Keycloak とも 10 KB 未満）で、
-/// これを超えるものは discovery ドキュメントではない。管理者の入れた先が巨大な応答を返しても、
-/// api のメモリへ丸ごと読み込まない。
+/// Size limit for the discovery document. Real ones are a few KB (under 10 KB for Entra ID, Google and Keycloak);
+/// anything larger is not a discovery document. Even if the admin-entered destination returns a huge response,
+/// it is not read wholesale into the api's memory.
 const MAX_DISCOVERY_BYTES: usize = 256 * 1024;
 
-/// discovery ドキュメントのうち、登録に使う項目だけを読む（他の項目は無視する）。
+/// Reads only the discovery document items used for registration (other items are ignored).
 #[derive(Debug, Deserialize)]
 struct DiscoveryDocumentBody {
     #[serde(default)]
@@ -47,13 +47,13 @@ struct DiscoveryDocumentBody {
     jwks_uri: Option<String>,
 }
 
-/// `/token` の応答（必要なのは `id_token` だけ）。
+/// `/token` response (only `id_token` is needed).
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
     id_token: Option<String>,
 }
 
-/// JWKS の 1 鍵（RSA / EC のうち、署名検証に必要な値だけを読む）。
+/// One JWKS key (reads only the values needed for signature verification, RSA / EC).
 #[derive(Debug, Deserialize)]
 struct Jwk {
     kty: String,
@@ -80,7 +80,7 @@ struct JwkSet {
     keys: Vec<Jwk>,
 }
 
-/// ID Token のクレームのうち、連携に使うもの。
+/// ID Token claims used for federation.
 #[derive(Debug, Deserialize)]
 struct IdTokenClaims {
     iss: String,
@@ -104,14 +104,14 @@ impl ReqwestExternalOidcClient {
         Self::with_trust(OutboundTrust::none())
     }
 
-    /// 名前を引いた結果が内部の住所でも送ってよい名前を指定して作る（task #585）。
+    /// Builds it with names that may be sent to even if they resolve to internal addresses (task #585).
     pub fn with_trust(trust: OutboundTrust) -> Self {
         Self {
-            // 繋ぐ直前に引いた住所を確かめる（内部なら繋がない。`outbound_http`）。
+            // Check the addresses resolved right before connecting (don't connect if internal; `outbound_http`).
             http: guarded_client_builder(trust)
                 .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
-                // リダイレクトは追わない。追うと、設定した token/jwks エンドポイントとは別の
-                // ホストへ資格情報や検証要求が飛びうる（設定の意味が失われる）。
+                // Don't follow redirects. Following them could send credentials or verification requests to a host other than
+                // the configured token/jwks endpoints (the settings would lose their meaning).
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap_or_default(),
@@ -144,7 +144,7 @@ impl Default for ReqwestExternalOidcClient {
     }
 }
 
-/// JWK を `jsonwebtoken` の検証鍵へ変換する。
+/// Converts a JWK into a `jsonwebtoken` verification key.
 fn decoding_key(jwk: &Jwk) -> Result<(DecodingKey, Algorithm)> {
     match jwk.kty.as_str() {
         "RSA" => {
@@ -156,7 +156,7 @@ fn decoding_key(jwk: &Jwk) -> Result<(DecodingKey, Algorithm)> {
             };
             let key = DecodingKey::from_rsa_components(n, e)
                 .map_err(|e| DomainError::Repository(format!("invalid RSA JWK: {e}")))?;
-            // `alg` を明示していない JWKS もあるため、RSA の既定は RS256 とする。
+            // Some JWKS don't specify `alg`, so RSA defaults to RS256.
             let alg = match jwk.alg.as_deref() {
                 Some("RS384") => Algorithm::RS384,
                 Some("RS512") => Algorithm::RS512,
@@ -188,8 +188,8 @@ fn decoding_key(jwk: &Jwk) -> Result<(DecodingKey, Algorithm)> {
 #[async_trait]
 impl ExternalOidcClient for ReqwestExternalOidcClient {
     async fn exchange_code(&self, request: ExternalTokenRequest<'_>) -> Result<ExternalClaims> {
-        // 1. 認可コードを交換する。client_secret を持つなら POST body で送る
-        //    （`client_secret_post`。Basic のみの IdP もあるが、まずは広く受け入れられる方を使う）。
+        // 1. Exchange the authorization code. If we hold a client_secret, send it in the POST body
+        //    (`client_secret_post`; some IdPs only accept Basic, but use the more widely accepted one first).
         let mut form: Vec<(&str, &str)> = vec![
             ("grant_type", "authorization_code"),
             ("code", request.code),
@@ -208,8 +208,8 @@ impl ExternalOidcClient for ReqwestExternalOidcClient {
             .await
             .map_err(|e| DomainError::Repository(format!("token request failed: {e}")))?;
         if !response.status().is_success() {
-            // 応答本文には外部 IdP のエラー詳細が入るが、そのまま利用者へは返さない
-            //（呼び出し側が汎用の失敗として扱う）。運用ログのために状態コードだけ残す。
+            // The response body has the external IdP's error details, but it is not returned to users as is
+            // (callers treat it as a generic failure). Only the status code is kept for operational logs.
             return Err(DomainError::Repository(format!(
                 "external token endpoint returned {}",
                 response.status()
@@ -225,8 +225,8 @@ impl ExternalOidcClient for ReqwestExternalOidcClient {
             ));
         };
 
-        // 2. `kid` で検証鍵を選ぶ。`kid` が無い IdP もあるので、その場合は唯一の鍵を使う
-        //    （複数あって `kid` が無いのは選びようがないため失敗させる）。
+        // 2. Choose the verification key by `kid`. Some IdPs omit `kid`; in that case use the only key
+        //    (multiple keys without `kid` can't be chosen from, so fail).
         let header = jsonwebtoken::decode_header(&id_token)
             .map_err(|e| DomainError::Repository(format!("invalid id_token header: {e}")))?;
         let jwks = self.fetch_jwks(request.jwks_uri).await?;
@@ -247,7 +247,7 @@ impl ExternalOidcClient for ReqwestExternalOidcClient {
         };
         let (key, algorithm) = decoding_key(jwk)?;
 
-        // 3. 署名・`iss`・`aud`・`exp` を検証する。
+        // 3. Verify the signature, `iss`, `aud` and `exp`.
         let mut validation = Validation::new(algorithm);
         validation.set_issuer(&[request.expected_issuer]);
         validation.set_audience(&[request.client_id]);
@@ -255,8 +255,8 @@ impl ExternalOidcClient for ReqwestExternalOidcClient {
             .map_err(|e| DomainError::Repository(format!("id_token verification failed: {e}")))?
             .claims;
 
-        // 4. `nonce` を照合する（リプレイ検出）。`iss`/`aud`/`exp` と違い jsonwebtoken は見ないため、
-        //    ここで必ず自分で確かめる。欠落も不一致として扱う（fail-closed）。
+        // 4. Check `nonce` (replay detection). Unlike `iss`/`aud`/`exp`, jsonwebtoken doesn't check it,
+        //    so always verify it ourselves here. Missing is treated as a mismatch (fail-closed).
         if claims.nonce.as_deref() != Some(request.expected_nonce) {
             return Err(DomainError::Repository(
                 "id_token nonce does not match the authorization request".to_string(),
@@ -284,13 +284,13 @@ impl OidcDiscoveryClient for ReqwestExternalOidcClient {
             .send()
             .await
             .map_err(|e| {
-                // 届かない理由（接続拒否・名前解決の失敗など）は運用ログにだけ残す。管理 API の応答に
-                // 載せると、管理 API が「その先に何があるか」を探る道具になる。
+                // The reason it is unreachable (connection refused, name resolution failure, etc.) goes only to the operational log.
+                // Putting it in the admin API response would make the admin API a tool for probing "what is behind that address".
                 tracing::warn!(url = %url.as_str(), error = %e, "failed to fetch an OIDC discovery document");
                 DomainError::Repository("the discovery document could not be fetched".to_string())
             })?;
-        // リダイレクトは追わない（クライアントの設定）ので、3xx はここで失敗になる。追うと、
-        // 検査を通した issuer とは別のホスト——内部宛先を含む——へ要求が飛びうる。
+        // Redirects are not followed (client setting), so 3xx fails here. Following them could send the request
+        // to a host other than the checked issuer -- including internal destinations.
         if !response.status().is_success() {
             return Err(DomainError::Repository(format!(
                 "discovery endpoint returned {}",
@@ -302,7 +302,7 @@ impl OidcDiscoveryClient for ReqwestExternalOidcClient {
                 "the discovery document exceeds {MAX_DISCOVERY_BYTES} bytes"
             ))
         };
-        // 宣言された長さで先に断る。宣言が無い・偽る相手には、読みながら数えて断る。
+        // Refuse early based on the declared length. For peers that don't declare or lie, count while reading and refuse.
         if response
             .content_length()
             .is_some_and(|len| len > MAX_DISCOVERY_BYTES as u64)
@@ -335,11 +335,11 @@ impl OidcDiscoveryClient for ReqwestExternalOidcClient {
 mod tests {
     use super::*;
 
-    /// RSA JWK に `alg` が無ければ RS256 とみなす（多くの IdP が `alg` を省く）。
+    /// An RSA JWK without `alg` is treated as RS256 (many IdPs omit `alg`).
     #[test]
     fn rsa_jwk_without_alg_defaults_to_rs256() {
-        // RFC 7515 A.2 のテスト鍵（modulus は途中で切っても構文検証には十分ではないため、
-        // ここでは変換の失敗系だけを確認する）。
+        // RFC 7515 A.2 test key (a truncated modulus isn't enough for syntax validation,
+        // so only the conversion's failure cases are checked here).
         let jwk = Jwk {
             kty: "RSA".to_string(),
             kid: None,
@@ -350,7 +350,7 @@ mod tests {
             x: None,
             y: None,
         };
-        // `n`/`e` が無ければ鍵を作れない（黙って通さない）。
+        // Without `n`/`e` no key can be built (not silently let through).
         assert!(decoding_key(&jwk).is_err());
     }
 
@@ -366,13 +366,13 @@ mod tests {
             x: None,
             y: None,
         };
-        // 共有鍵（`oct`）を受け入れると、JWKS を差し替えられる立場の相手が任意の ID Token を
-        // 作れてしまう。非対称鍵に限る。
+        // Accepting shared keys (`oct`) would let anyone able to replace the JWKS forge arbitrary ID Tokens.
+        // Limited to asymmetric keys.
         assert!(decoding_key(&jwk).is_err());
     }
 
-    /// discovery の取得は外部への HTTP を wiremock で模す。宛先の検査（https・内部宛先の拒否）は
-    /// `DiscoveryUrl::for_issuer` の担当で、ここでは検査を通さずに作った URL で取得の作法だけを見る。
+    /// Discovery fetches mock the outbound HTTP with wiremock. Destination checks (https, rejecting internal destinations) are
+    /// `DiscoveryUrl::for_issuer`'s job; here only the fetch behavior is examined, with a URL built without the checks.
     mod discovery {
         use super::*;
         use wiremock::matchers::{method, path};
@@ -411,8 +411,8 @@ mod tests {
             );
         }
 
-        /// **リダイレクトを追わない。** 追うと、検査を通した issuer とは別の先（内部宛先を含む）へ
-        /// 要求が飛ぶ。転送先には 1 件も届かないことまで確かめる。
+        /// **Redirects are not followed.** Following them would send the request somewhere other than the checked issuer
+        /// (including internal destinations). It also checks that not a single request reaches the redirect target.
         #[tokio::test]
         async fn redirects_are_not_followed() {
             let server = MockServer::start().await;
@@ -440,7 +440,7 @@ mod tests {
             server.verify().await;
         }
 
-        /// 大きすぎる応答は読み切らずに断る（宣言された長さでも、読んだ長さでも）。
+        /// Overly large responses are refused without reading them fully (by declared length and by read length).
         #[tokio::test]
         async fn an_oversized_document_is_rejected() {
             let server = MockServer::start().await;

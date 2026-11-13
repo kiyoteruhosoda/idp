@@ -1,18 +1,18 @@
-//! ログイン識別子の管理コンソール画面（`/{tenant_id}/admin/users/{user_id}/login-identifiers`。AP16）。
+//! Admin console screen for login identifiers (`/{tenant_id}/admin/users/{user_id}/login-identifiers`. AP16).
 //!
-//! AP8 で「1 人の利用者が複数のログイン識別子（別名のユーザー名・メール・電話番号・社員番号）を
-//! 持てる」登録簿を入れたが、画面が無く curl でしか触れなかった。ここは**その利用者がどの値で
-//! ログインできるか**を決める設定で、ヘルプデスクが日常的に触る面である。
+//! AP8 added a registry letting "one user have multiple login identifiers (alias username, email, phone number,
+//! employee number)", but there was no screen and it could only be touched with curl. This setting decides
+//! **which values the user can sign in with**, a surface the help desk touches routinely.
 //!
-//! データ操作は api の `/admin/users/{user_id}/login-identifiers` へ SSO Cookie 転送で委譲する。
-//! HTML フォームは PATCH/DELETE を送れないため、専用の POST パス（`/{id}/active`・`/{id}/delete`）を
-//! 経由して api の PATCH/DELETE へ変換する。
+//! Data operations are delegated to the api's `/admin/users/{user_id}/login-identifiers` by forwarding the SSO cookie.
+//! HTML forms cannot send PATCH/DELETE, so they go through dedicated POST paths (`/{id}/active`, `/{id}/delete`)
+//! and are converted to the api's PATCH/DELETE.
 //!
-//! # 登録値と照合キーを両方出す
+//! # Show both the registered value and the matching key
 //!
-//! api は `display_value`（登録どおり）と `normalized_value`（実際に一致する値）を返す。画面は
-//! 両方を出す。片方しか見えないと、電話番号のように書き方が揺れる識別子の設定ミス
-//! （`03-1234-5678` を登録したつもりが別の正規化になっている）に気づけない。
+//! The api returns `display_value` (as registered) and `normalized_value` (the value actually matched). The screen
+//! shows both. Seeing only one hides misconfigurations of identifiers whose notation varies, like phone numbers
+//! (registering `03-1234-5678` but ending up with a different normalization).
 
 use super::locale;
 use crate::api_client::AdminApiError;
@@ -51,8 +51,8 @@ pub struct AddForm {
 
 #[derive(Debug, Deserialize)]
 pub struct ActiveForm {
-    /// `"true"` / `"false"`。切り替え先の状態をフォームが持つ（画面の表示と一致させるため、
-    /// 現在値を api から読み直してから反転する形にしない）。
+    /// `"true"` / `"false"`. The form carries the target state (to match what the screen shows, rather than
+    /// re-reading the current value from the api and flipping it).
     pub is_active: String,
     pub csrf_token: String,
 }
@@ -62,7 +62,7 @@ pub struct DeleteForm {
     pub csrf_token: String,
 }
 
-/// 昇格は対象の行 id だけで決まるので、CSRF トークン以外に運ぶ値が無い。
+/// Promotion is decided by the target row id alone, so nothing but the CSRF token needs to be carried.
 #[derive(Debug, Deserialize)]
 pub struct PromotePrimaryEmailForm {
     pub csrf_token: String,
@@ -98,8 +98,8 @@ pub async fn list(
     error_key = error_key.or(query.error.as_deref().and_then(error_key_for));
 
     let messages = Messages::new(locale(&headers));
-    // 種別の訳文は Rust 側で解決する（テンプレートで翻訳キーを組み立てると、キーの存在を
-    // コンパイル時にも検索でも確かめられなくなる）。
+    // Resolve the kind's translation in Rust (building translation keys in the template would make it
+    // impossible to verify the key exists at compile time or by search).
     let type_options: Vec<LoginIdentifierTypeOption> = LOGIN_IDENTIFIER_TYPE_CODES
         .iter()
         .map(|code| LoginIdentifierTypeOption {
@@ -203,10 +203,10 @@ pub async fn set_active(
     }
 }
 
-/// 別名のメールを主メールへ昇格させる（ADR-0052）。
+/// Promotes an alias email to the primary email (ADR-0052).
 ///
-/// 押せるのはメール種別で、まだ主メールでない行だけ（テンプレート側で出し分ける）。api も同じ
-/// 条件を持っているので、古い画面から押されても入れ替わらない。
+/// Only email rows that are not yet primary can be pressed (the template decides). The api has the same
+/// condition, so pressing from a stale screen does not swap anything.
 pub async fn promote_primary_email(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -268,8 +268,8 @@ fn base_path(tenant: &WebTenant, user_id: &str) -> String {
     )
 }
 
-/// 種別コードの訳文。未知のコードは（api が新しい種別を増やした直後などに）コードのまま出す
-/// ——訳が無いことを空欄で隠すと、画面から種別が消えたように見える。
+/// Translation of a kind code. Unknown codes (e.g. right after the api adds a new kind) are shown as the code
+/// — hiding a missing translation as a blank would make the kind look like it vanished from the screen.
 fn type_label(messages: &Messages, code: &str) -> String {
     let key = match code {
         "username" => "admin-login-identifier-type-username",
@@ -323,8 +323,8 @@ mod tests {
     use super::*;
     use crate::i18n::Locale;
 
-    /// 種別プルダウンの選択肢は contracts の語彙（＝ api の保存値）そのものを使い、
-    /// すべてに訳がある。訳が無いとコードがそのまま画面に出る。
+    /// The kind dropdown options use the contracts vocabulary (= the api's stored values) as is,
+    /// and all have translations. Without a translation the code would show on screen as is.
     #[test]
     fn every_identifier_type_code_has_a_label_in_both_locales() {
         for locale in [Locale::Ja, Locale::En] {
@@ -341,7 +341,7 @@ mod tests {
         }
     }
 
-    /// 未知のコードはコードのまま出す（訳が無いことを空欄で隠さない）。
+    /// Unknown codes are shown as the code (a missing translation is not hidden as a blank).
     #[test]
     fn an_unknown_identifier_type_falls_back_to_its_code() {
         let messages = Messages::new(Locale::Ja);

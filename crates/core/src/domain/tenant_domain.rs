@@ -1,57 +1,60 @@
-//! テナントへ排他的に割り当てたドメイン（MT25。ADR-0029）。
+//! Domains exclusively assigned to a tenant (MT25; ADR-0029).
 //!
-//! 1 行が「このドメインを名乗る利用者は、このテナントの利用者である」を表す。ログイン欄に
-//! `local@domain` の形で入力されたとき、ドメインから**所属元テナントを 1 つに決める**ために使う
-//! （home realm discovery）。所属元が決まれば引くのは 1 テナントの登録簿だけになり、参加中の
-//! ゲストを横断走査せずに済む —— その走査こそが「同名のゲストが 2 人参加すると双方が締め出される」
-//! 原因だった（`crate::application::login_user_resolution`）。
+//! One row means "users who claim this domain are users of this tenant". When the login field gets
+//! input in the form `local@domain`, it is used to **determine the single home tenant** from the
+//! domain (home realm discovery). Once the home tenant is known, only that tenant's registry is
+//! searched, avoiding a cross scan of participating guests — that scan was exactly the cause of
+//! "two guests with the same name joining locks both out"
+//! (`crate::application::login_user_resolution`).
 //!
-//! # なぜドメインなのか
+//! # Why domains
 //!
-//! 識別子の一意性をクロステナントへ広げれば解決の範囲と一致するが、ADR-0009 §1 のテナント独立が
-//! 壊れる（あるテナントが `admin` を取ると他のどのテナントでも使えなくなる）。ドメインなら
-//! 取り合いの対象が所有関係で決まるので、テナント同士が名前の在庫を共有せずに済む。Entra ID の
-//! UPN がグローバル一意なのも同じ理屈で、一意なのは全体空間ではなく
-//! 「ドメイン × その中のローカル部」である。
+//! Extending identifier uniqueness across tenants would match the resolution scope, but would break
+//! ADR-0009 §1's tenant independence (once one tenant took `admin`, no other tenant could use it).
+//! With domains, what is contested is decided by ownership, so tenants do not share an inventory of
+//! names. Entra ID's UPN is globally unique for the same reason: what is unique is not a global
+//! space but "domain × local part within it".
 
 use crate::domain::message::MessageKey;
 use crate::domain::tenant::TenantId;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-/// `tenant_domains.domain` の格納先カラム上限（DNS 名の上限と同じ 253）。
+/// Column limit for `tenant_domains.domain` (253, same as the DNS name limit).
 pub const DOMAIN_MAX_LEN: usize = 253;
-/// DNS のラベル長上限。
+/// DNS label length limit.
 const LABEL_MAX_LEN: usize = 63;
 
 #[derive(Debug, Clone)]
 pub struct TenantDomain {
     pub id: Uuid,
-    /// このドメインを所有するテナント。
+    /// The tenant owning this domain.
     pub tenant_id: TenantId,
-    /// 正規化済みのドメイン（[`normalize_domain`]）。
+    /// Normalized domain ([`normalize_domain`]).
     pub domain: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
-/// ドメインを照合キーへ正規化する（小文字化・前後空白と末尾ドットの除去）。
+/// Normalizes a domain into a match key (lowercase, trim whitespace and trailing dot).
 ///
-/// 末尾ドットを落とすのは、`corp.example.` と `corp.example` が DNS では同じ名前を指すため。
-/// 残すと同じドメインを 2 つのテナントが別々に押さえられてしまい、一意制約が意味を失う。
+/// The trailing dot is dropped because `corp.example.` and `corp.example` name the same thing in
+/// DNS. Keeping it would let two tenants claim the same domain separately, making the unique
+/// constraint meaningless.
 pub fn normalize_domain(raw: &str) -> String {
     raw.trim().trim_end_matches('.').to_ascii_lowercase()
 }
 
-/// 登録できるドメインかを検証し、正規化した値を返す。
+/// Validates that a domain can be registered and returns the normalized value.
 ///
-/// **A ラベル（punycode）だけを受け付ける。** Unicode のドメインをそのまま許すと、同じ名前が
-/// U ラベルと A ラベルの 2 通りで登録でき、一意制約をすり抜ける。入力側の `local@domain` も
-/// ここと同じ正規化で照合するため、U ラベルで打たれた入力はドメイン経路に掛からない
-/// （従来のゲスト走査へ落ちるだけで、入れなくなるわけではない）。
+/// **Accepts only A-labels (punycode).** Allowing Unicode domains as is would let the same name be
+/// registered two ways, as a U-label and an A-label, slipping past the unique constraint. Input
+/// `local@domain` is matched with the same normalization, so input typed as U-labels does not take
+/// the domain path (it just falls back to the old guest scan; it does not become unable to sign
+/// in).
 ///
-/// エラーは利用者ではなく管理者へ返るが、他の管理 API と揃えて翻訳キーで返す（訳出は
-/// Presentation 層）。
+/// Errors go back to admins, not users, but use translation keys like the other admin APIs
+/// (translation is in the Presentation layer).
 pub fn validate_domain(raw: &str) -> Result<String, MessageKey> {
     let normalized = normalize_domain(raw);
     if normalized.is_empty() {
@@ -63,7 +66,7 @@ pub fn validate_domain(raw: &str) -> Result<String, MessageKey> {
             DOMAIN_MAX_LEN.to_string(),
         ));
     }
-    // 単一ラベル（`corp`）も許す。AD の内部ドメインのように、ドットの無い接尾辞は実在する。
+    // Single labels (`corp`) are allowed too. Dotless suffixes exist, like AD internal domains.
     let labels_are_valid = normalized.split('.').all(|label| {
         !label.is_empty()
             && label.len() <= LABEL_MAX_LEN
@@ -77,14 +80,16 @@ pub fn validate_domain(raw: &str) -> Result<String, MessageKey> {
     Ok(normalized)
 }
 
-/// ログイン欄の入力を「ローカル部 + 正規化済みドメイン」へ分解する。
+/// Splits login field input into "local part + normalized domain".
 ///
-/// ドメイン修飾された入力（`alice@corp.example`）だけが分解でき、裸のユーザー名は `None` になる。
-/// `@` が複数ある入力も `None` —— どこがドメインか一意に決まらない値でテナントを選ばせない。
+/// Only domain-qualified input (`alice@corp.example`) can be split; a bare user name gives `None`.
+/// Input with multiple `@` also gives `None` — a tenant is never chosen by a value whose domain
+/// part is ambiguous.
 ///
-/// 判定は [`crate::domain::login_identifier::LoginIdentifierType::Email`] の `accepts` と同じ
-/// 「`@` を挟んで両側に文字がある」で、そこにドメインの書式検証を重ねる。書式が通らない入力は
-/// ドメイン経路に掛からず、従来の解決へ落ちる。
+/// The check is the same "characters on both sides of `@`" as `accepts` of
+/// [`crate::domain::login_identifier::LoginIdentifierType::Email`], with domain format validation
+/// layered on. Input failing the format does not take the domain path and falls back to the old
+/// resolution.
 pub fn split_qualified_identifier(input: &str) -> Option<(&str, String)> {
     let trimmed = input.trim();
     let (local, domain) = trimmed.split_once('@')?;
@@ -105,11 +110,12 @@ mod tests {
         assert_eq!(validate_domain("CORP.EXAMPLE").unwrap(), "corp.example");
     }
 
-    /// 単一ラベルは許し、空ラベル・ハイフン始まり終わり・非 ASCII は弾く。
+    /// Single labels are allowed; empty labels, leading/trailing hyphens, and non-ASCII are
+    /// rejected.
     #[test]
     fn accepts_plausible_domains_and_rejects_malformed_ones() {
         for ok in ["corp", "corp.example", "a-b.c-d.example", "xn--wgv71a.jp"] {
-            assert!(validate_domain(ok).is_ok(), "{ok} は登録できるべき");
+            assert!(validate_domain(ok).is_ok(), "{ok} should be registrable");
         }
         for bad in [
             "",
@@ -119,11 +125,11 @@ mod tests {
             "corp-.example",
             "日本語.jp",
         ] {
-            assert!(validate_domain(bad).is_err(), "{bad} は弾くべき");
+            assert!(validate_domain(bad).is_err(), "{bad} should be rejected");
         }
     }
 
-    /// 長さの上限は列に合わせる（ラベル 63・全体 253）。
+    /// Length limits match the column (label 63, total 253).
     #[test]
     fn rejects_values_that_do_not_fit_the_column() {
         assert!(validate_domain(&"a".repeat(LABEL_MAX_LEN)).is_ok());
@@ -135,7 +141,8 @@ mod tests {
         assert!(validate_domain(&long).is_err());
     }
 
-    /// ドメイン修飾された入力だけが分解でき、ローカル部はそのまま（正規化は種別側が行う）。
+    /// Only domain-qualified input can be split; the local part is kept as is (normalization is
+    /// done by the type side).
     #[test]
     fn splits_only_domain_qualified_input() {
         assert_eq!(
@@ -145,9 +152,10 @@ mod tests {
         assert_eq!(split_qualified_identifier("alice"), None);
         assert_eq!(split_qualified_identifier("@corp.example"), None);
         assert_eq!(split_qualified_identifier("alice@"), None);
-        // `@` が複数ある入力でテナントを選ばせない。
+        // Input with multiple `@` must not choose a tenant.
         assert_eq!(split_qualified_identifier("a@b@corp.example"), None);
-        // ドメインとして読めない値は経路に掛けない（従来の解決へ落ちる）。
+        // Values unreadable as a domain do not take this path (they fall back to the old
+        // resolution).
         assert_eq!(split_qualified_identifier("alice@-corp.example"), None);
     }
 }

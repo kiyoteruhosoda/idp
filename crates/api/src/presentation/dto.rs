@@ -1,5 +1,5 @@
-//! presentation 全体で使う共通 DTO（`〇〇Request` / `〇〇Response`）。
-//! OpenAPI スキーマは `utoipa::ToSchema` から自動生成する（手書きしない）。
+//! Common DTOs used across presentation (`XxxRequest` / `XxxResponse`).
+//! The OpenAPI schema is generated from `utoipa::ToSchema` (not hand-written).
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -18,18 +18,18 @@ pub struct RegisterRequest {
 pub struct RegisterResponse {
     pub sub: String,
     pub status: String,
-    /// 検証メールを送出したか（SEC6b）。`true` の場合、確認リンクを踏むまでログインできない。
-    /// SMTP 未設定時は `false`（アカウントは作成済みだが検証は後追い）。
+    /// Whether a verification email was sent (SEC6b). If `true`, sign-in is not possible until the link is followed.
+    /// `false` when SMTP is not configured (the account exists but verification comes later).
     pub email_verification_required: bool,
 }
 
-/// メール検証リンクの消費（SEC6b）。平文トークンを受け取り `email_verified` を立てる。
+/// Consumes an email verification link (SEC6b). Receives the plaintext token and sets `email_verified`.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct VerifyEmailRequest {
     pub token: String,
 }
 
-/// `GET /authorize` のクエリパラメータ（設計仕様 §4.2）。
+/// Query parameters of `GET /authorize` (design spec §4.2).
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct AuthorizeParams {
     pub response_type: Option<String>,
@@ -40,25 +40,25 @@ pub struct AuthorizeParams {
     pub nonce: Option<String>,
     pub code_challenge: Option<String>,
     pub code_challenge_method: Option<String>,
-    /// `prompt` パラメータ（OIDC Core §3.1.2.1）: `none` / `login` / `consent` / `select_account`。
+    /// `prompt` parameter (OIDC Core §3.1.2.1): `none` / `login` / `consent` / `select_account`.
     pub prompt: Option<String>,
-    /// `max_age` パラメータ（OIDC Core §3.1.2.1）: SSO セッションの auth_time からの最大経過秒数。
+    /// `max_age` parameter (OIDC Core §3.1.2.1): max seconds elapsed since the SSO session's auth_time.
     pub max_age: Option<u64>,
-    /// `acr_values` パラメータ（OIDC Core §3.1.2.1）: RP が要求する認証コンテキストクラス
-    /// （空白区切り。G12）。**要求は保証ではない** —— 認証ポリシーの `requested_acr` 条件（AP3）が
-    /// 参照するだけで、満たせない要求でエラーにはしない（同 §3.1.2.1 の voluntary な扱い）。
+    /// `acr_values` parameter (OIDC Core §3.1.2.1): authentication context classes requested by the RP
+    /// (space-separated, G12). **A request is not a guarantee** -- it is only referenced by authentication policies'
+    /// `requested_acr` condition (AP3), and unsatisfiable requests are not an error (voluntary per §3.1.2.1).
     pub acr_values: Option<String>,
-    /// `login_hint` パラメータ（OIDC Core §3.1.2.1）: ログイン画面へ事前入力する識別子（G12）。
+    /// `login_hint` parameter (OIDC Core §3.1.2.1): identifier prefilled on the login screen (G12).
     pub login_hint: Option<String>,
-    /// `ui_locales` パラメータ（OIDC Core §3.1.2.1）: RP が要求する表示言語（空白区切りの
-    /// BCP47 タグ。G12）。
+    /// `ui_locales` parameter (OIDC Core §3.1.2.1): display languages requested by the RP (space-separated
+    /// BCP47 tags, G12).
     pub ui_locales: Option<String>,
-    /// `response_mode` パラメータ（OAuth 2.0 Multiple Response Type Encoding Practices）:
-    /// `query`（既定）または `form_post`（G12）。未知の値は `invalid_request`。
+    /// `response_mode` parameter (OAuth 2.0 Multiple Response Type Encoding Practices):
+    /// `query` (default) or `form_post` (G12). Unknown values are `invalid_request`.
     pub response_mode: Option<String>,
 }
 
-/// `POST /login` のフォームパラメータ（設計仕様 §4.3）。
+/// Form parameters of `POST /login` (design spec §4.3).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct LoginForm {
     pub username: String,
@@ -66,10 +66,10 @@ pub struct LoginForm {
     pub csrf_token: String,
 }
 
-// 内部認証 API（`/internal/authenticate*`）の DTO は api サーバと web クライアントで共有するため
-// `assay-contracts` crate に定義する（ADR-0007 §6）。handler は `assay_contracts::auth::*` を用いる。
+// DTOs of the internal auth API (`/internal/authenticate*`) are shared by the api server and the web client, so they are
+// defined in the `assay-contracts` crate (ADR-0007 §6). Handlers use `assay_contracts::auth::*`.
 
-/// `POST /token` のフォームパラメータ（設計仕様 §4.4・§9.1）。
+/// Form parameters of `POST /token` (design spec §4.4, §9.1).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct TokenRequest {
     pub grant_type: Option<String>,
@@ -77,19 +77,19 @@ pub struct TokenRequest {
     pub redirect_uri: Option<String>,
     pub code_verifier: Option<String>,
     pub client_id: Option<String>,
-    /// `client_secret_post` のクライアント secret（RFC 6749 §2.3.1。G3）。`Authorization: Basic`
-    /// との併用は `invalid_request`。
+    /// Client secret for `client_secret_post` (RFC 6749 §2.3.1, G3). Combining it with `Authorization: Basic`
+    /// is `invalid_request`.
     pub client_secret: Option<String>,
-    /// `refresh_token` grant 専用。
+    /// For the `refresh_token` grant only.
     pub refresh_token: Option<String>,
-    /// `client_credentials` grant で要求する scope（空白区切り。G4）。
+    /// Scopes requested with the `client_credentials` grant (space-separated, G4).
     pub scope: Option<String>,
-    /// 要求するリソース指標（RFC 8707 `resource`。ADR-0037）。assay 自身の管理 API を呼ぶ
-    /// システム用クライアントは `{issuer}/admin` を指定して管理トークンを受け取る。
+    /// Requested resource indicator (RFC 8707 `resource`, ADR-0037). System clients calling assay's own
+    /// admin API specify `{issuer}/admin` to receive an admin token.
     pub resource: Option<String>,
-    /// `private_key_jwt` の署名済み assertion（RFC 7523 §2.2。ADR-0030）。
+    /// Signed `private_key_jwt` assertion (RFC 7523 §2.2, ADR-0030).
     pub client_assertion: Option<String>,
-    /// `client_assertion` の種別。`urn:ietf:params:oauth:client-assertion-type:jwt-bearer` のみ。
+    /// Type of `client_assertion`. Only `urn:ietf:params:oauth:client-assertion-type:jwt-bearer`.
     pub client_assertion_type: Option<String>,
 }
 
@@ -98,16 +98,16 @@ pub struct TokenResponse {
     pub access_token: String,
     pub token_type: String,
     pub expires_in: u64,
-    /// 利用者を認証した grant でのみ返却する（`client_credentials` は利用者が居ないため省略。G4）。
+    /// Returned only for grants that authenticated a user (omitted for `client_credentials`, which has no user, G4).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id_token: Option<String>,
     pub scope: String,
-    /// `offline_access` scope を要求した場合のみ返却する。
+    /// Returned only when the `offline_access` scope was requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refresh_token: Option<String>,
 }
 
-/// OAuth 2.0 のエラーレスポンス（RFC 6749 §5.2）。
+/// OAuth 2.0 error response (RFC 6749 §5.2).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct OAuthErrorResponse {
     pub error: String,
@@ -115,44 +115,44 @@ pub struct OAuthErrorResponse {
     pub error_description: Option<String>,
 }
 
-/// クライアント（RP）登録リクエスト（管理 API、設計仕様 §9.3）。
-/// `client_id` は自動採番、`client_secret` は confidential のとき発行される（リクエストには含めない）。
+/// Client (RP) registration request (admin API, design spec §9.3).
+/// `client_id` is auto-assigned; `client_secret` is issued for confidential clients (not included in the request).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ClientRegisterRequest {
     pub app_name: String,
-    /// `public` または `confidential`。
+    /// `public` or `confidential`.
     pub client_type: String,
     pub redirect_uris: Vec<String>,
     pub scopes: Vec<String>,
-    /// サーバ間（M2M）連携で `client_credentials` grant を許可するか（G4。既定 false）。
-    /// confidential クライアントのみ有効。
+    /// Whether to allow the `client_credentials` grant for server-to-server (M2M) integration (G4; default false).
+    /// Effective only for confidential clients.
     #[serde(default)]
     pub allow_client_credentials: Option<bool>,
-    /// クライアント認証方式（G3）。`private_key_jwt`（既定。ADR-0030 / ADR-0036）・
-    /// `client_secret_basic`・`client_secret_post`。confidential クライアントのみ指定できる。
-    /// 省略した場合は `private_key_jwt` として扱うため `jwks` が要る。
+    /// Client authentication method (G3): `private_key_jwt` (default, ADR-0030 / ADR-0036),
+    /// `client_secret_basic`, `client_secret_post`. Only confidential clients can specify it.
+    /// When omitted it is treated as `private_key_jwt`, so `jwks` is required.
     #[serde(default)]
     pub token_endpoint_auth_method: Option<String>,
-    /// RP-initiated logout のリダイレクト先（登録済みのもののみ許可）。
+    /// Redirect targets for RP-initiated logout (only registered ones are allowed).
     #[serde(default)]
     pub post_logout_redirect_uris: Option<Vec<String>>,
-    /// front-channel logout URI（OIDC front-channel logout 1.0）。
+    /// Front-channel logout URI (OIDC Front-Channel Logout 1.0).
     #[serde(default)]
     pub frontchannel_logout_uri: Option<String>,
-    /// back-channel logout URI（OIDC back-channel logout 1.0）。
+    /// Back-channel logout URI (OIDC Back-Channel Logout 1.0).
     #[serde(default)]
     pub backchannel_logout_uri: Option<String>,
-    /// `private_key_jwt` の検証鍵（JWK Set の JSON 文字列。ADR-0030）。同方式では必須、
-    /// それ以外の方式では指定できない。鍵ローテーションはこの集合へ新旧を並べて行う。
+    /// Verification keys for `private_key_jwt` (a JWK Set JSON string, ADR-0030). Required for that method,
+    /// not allowed for other methods. Key rotation is done by listing old and new in this set.
     #[serde(default)]
     pub jwks: Option<String>,
-    /// 管理者メモ（任意。2000 文字まで。ADR-0065）。⚠ **サービスアカウント**
-    /// （`allow_client_credentials` で redirect_uri を持たない client）にだけ書ける。連携先に送ると 400。
+    /// Admin note (optional, up to 2000 characters, ADR-0065). ⚠ Writable only for **service accounts**
+    /// (clients with `allow_client_credentials` and no redirect_uri). Sending it for a connected app gives 400.
     #[serde(default)]
     pub note: Option<String>,
 }
 
-/// クライアント部分更新リクエスト。指定した項目のみ更新する。
+/// Partial client update request. Only the given fields are updated.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ClientUpdateRequest {
     #[serde(default)]
@@ -161,18 +161,18 @@ pub struct ClientUpdateRequest {
     pub redirect_uris: Option<Vec<String>>,
     #[serde(default)]
     pub scopes: Option<Vec<String>>,
-    /// `client_credentials` grant の許可（G4）。confidential クライアントのみ有効。
+    /// Allowing the `client_credentials` grant (G4). Effective only for confidential clients.
     #[serde(default)]
     pub allow_client_credentials: Option<bool>,
-    /// クライアント認証方式（G3）。`client_secret_basic`・`client_secret_post`・
-    /// `private_key_jwt`（ADR-0030）。confidential クライアントのみ変更できる。
+    /// Client authentication method (G3): `client_secret_basic`, `client_secret_post`,
+    /// `private_key_jwt` (ADR-0030). Only confidential clients can change it.
     #[serde(default)]
     pub token_endpoint_auth_method: Option<String>,
-    /// `private_key_jwt` の検証鍵の差し替え（JWK Set の JSON 文字列。ADR-0030）。
-    /// 鍵ローテーションはこの集合へ新旧を並べ、切り替え後に旧鍵を消すことで無停止に行う。
+    /// Replaces the `private_key_jwt` verification keys (a JWK Set JSON string, ADR-0030).
+    /// Key rotation is done without downtime by listing old and new in this set and removing the old key after switching.
     #[serde(default)]
     pub jwks: Option<String>,
-    /// `ACTIVE` または `DISABLED`。
+    /// `ACTIVE` or `DISABLED`.
     #[serde(default)]
     pub client_status: Option<String>,
     #[serde(default)]
@@ -183,13 +183,13 @@ pub struct ClientUpdateRequest {
     pub backchannel_logout_uri: Option<String>,
 }
 
-/// 監査ログ検索のクエリパラメータ（管理 API、A3・設計仕様 §7）。
-/// `from` / `to` は RFC3339（例 `2026-07-06T00:00:00Z`）。未指定の項目は絞り込まない。
+/// Query parameters for audit log search (admin API, A3, design spec §7).
+/// `from` / `to` are RFC3339 (e.g. `2026-07-06T00:00:00Z`). Unspecified fields don't filter.
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct AuditLogQueryParams {
     #[serde(default)]
     pub event_type: Option<String>,
-    /// `success` または `failure`。
+    /// `success` or `failure`.
     #[serde(default)]
     pub result: Option<String>,
     #[serde(default)]
@@ -206,7 +206,7 @@ pub struct AuditLogQueryParams {
     pub offset: Option<i64>,
 }
 
-/// 監査ログ 1 行のレスポンス（設計仕様 §7 のログ項目）。
+/// Response for one audit log row (the log fields of design spec §7).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct AuditLogEntryResponse {
     pub id: i64,
@@ -226,17 +226,17 @@ pub struct AuditLogEntryResponse {
     pub correlation_id: String,
 }
 
-/// エラー・警告ログ検索のクエリパラメータ（管理 API。`log` テーブル）。
-/// `from` / `to` は RFC3339（例 `2026-07-06T00:00:00Z`）。未指定の項目は絞り込まない。
+/// Query parameters for error/warning log search (admin API, `log` table).
+/// `from` / `to` are RFC3339 (e.g. `2026-07-06T00:00:00Z`). Unspecified fields don't filter.
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct ApplicationLogQueryString {
-    /// `ERROR` または `WARN`。
+    /// `ERROR` or `WARN`.
     #[serde(default)]
     pub level: Option<String>,
-    /// `api` または `web`。
+    /// `api` or `web`.
     #[serde(default)]
     pub service: Option<String>,
-    /// 出力元モジュールパスの前方一致（例 `assay_api::presentation`）。
+    /// Prefix match on the emitting module path (e.g. `assay_api::presentation`).
     #[serde(default)]
     pub target: Option<String>,
     #[serde(default)]
@@ -251,30 +251,30 @@ pub struct ApplicationLogQueryString {
     pub offset: Option<i64>,
 }
 
-/// クライアントへの管理権限付与の要求（`POST /admin/clients/{client_id}/permissions`。ADR-0037）。
+/// Request to grant an admin permission to a client (`POST /admin/clients/{client_id}/permissions`, ADR-0037).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct GrantClientPermissionRequest {
-    /// 付与する権限コード（細粒度コードのみ。`idp.tenant.admin` / `idp.system.admin` は不可）。
+    /// Permission code to grant (fine-grained codes only; `idp.tenant.admin` / `idp.system.admin` not allowed).
     pub permission_code: String,
 }
 
-/// 利用者への権限付与リクエスト（管理 API、A2・ADR-0006）。
+/// Request to grant a permission to a user (admin API, A2, ADR-0006).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct GrantPermissionRequest {
-    /// 付与する権限コード（例 `idp.tenant.admin`）。`permissions` マスタに存在すること。
+    /// Permission code to grant (e.g. `idp.tenant.admin`). Must exist in the `permissions` master.
     pub permission_code: String,
 }
 
-/// 利用者が保有する権限コードの一覧レスポンス（A2・ADR-0006）。
+/// Response listing the permission codes a user holds (A2, ADR-0006).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct UserPermissionsResponse {
-    /// 対象利用者の内部 ID（UUID）。
+    /// Internal ID (UUID) of the target user.
     pub user_id: String,
-    /// 保有する権限コード（順序は不定）。
+    /// Held permission codes (order unspecified).
     pub permission_codes: Vec<String>,
 }
 
-/// クライアントの公開表現（`client_secret_hash` は返さない）。
+/// Public representation of a client (`client_secret_hash` is not returned).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ClientResponse {
     pub id: String,
@@ -287,8 +287,8 @@ pub struct ClientResponse {
     pub response_types: Vec<String>,
     pub scopes: Vec<String>,
     pub token_endpoint_auth_method: String,
-    /// `private_key_jwt` の検証鍵（JWK Set の JSON 文字列。ADR-0030）。公開鍵のみを保存するため
-    /// そのまま返す —— ローテーション中に「今どの鍵が有効か」を管理者が確認できる必要がある。
+    /// Verification keys for `private_key_jwt` (a JWK Set JSON string, ADR-0030). Only public keys are stored, so they are
+    /// returned as is -- admins need to check "which key is active now" during rotation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub jwks: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -301,7 +301,7 @@ pub struct ClientResponse {
     pub updated_at: String,
 }
 
-/// 登録レスポンス。`client_secret` は confidential のときのみ、**この応答でのみ**平文で返る。
+/// Registration response. `client_secret` is returned in plaintext only for confidential clients, **only in this response**.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ClientCreatedResponse {
     #[serde(flatten)]
@@ -310,14 +310,14 @@ pub struct ClientCreatedResponse {
     pub client_secret: Option<String>,
 }
 
-/// シークレット再発行レスポンス。平文はこの応答でのみ返る。
+/// Secret reissue response. The plaintext is returned only in this response.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ClientSecretResponse {
     pub client_id: String,
     pub client_secret: String,
 }
 
-/// `GET /userinfo` のレスポンス（scope に応じてクレームを増減する、設計仕様 §4.7）。
+/// Response of `GET /userinfo` (claims vary by scope, design spec §4.7).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct UserInfoResponse {
     pub sub: String,
@@ -331,116 +331,116 @@ pub struct UserInfoResponse {
     pub name: Option<String>,
 }
 
-/// 署名鍵の公開表現（秘密鍵・暗号化鍵は含めない）。
+/// Public representation of a signing key (no private or encryption keys).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SigningKeyResponse {
     pub kid: String,
-    /// `RS256` または `ES256`。
+    /// `RS256` or `ES256`.
     pub algorithm: String,
-    /// `ACTIVE` または `RETIRED`。
+    /// `ACTIVE` or `RETIRED`.
     pub status: String,
-    /// RFC3339 文字列。
+    /// RFC3339 string.
     pub not_before: String,
-    /// RFC3339 文字列。
+    /// RFC3339 string.
     pub not_after: String,
-    /// RFC3339 文字列。
+    /// RFC3339 string.
     pub created_at: String,
-    /// **いま署名に使われている鍵か。** `status` だけでは分からない —— ACTIVE が複数あるとき
-    /// 署名するのは 1 本だけで、どれかは `not_before` が決める。
+    /// **Whether this key is currently used for signing.** `status` alone doesn't tell -- when there are several ACTIVE keys
+    /// only one signs, and `not_before` decides which.
     pub is_current_signer: bool,
-    /// **公開済みだが、まだ署名には使われていない鍵か**（`not_before` が未来）。入れ替えの途中で
-    /// この状態を通る。JWKS には載っているので、RP は先に取り込める。
+    /// **Whether the key is published but not yet used for signing** (`not_before` in the future). Rotation passes
+    /// through this state. It is in JWKS, so RPs can import it in advance.
     pub is_pending: bool,
 }
 
-/// 新規署名鍵の生成リクエスト（`POST /admin/signing-keys`）。
+/// Request to generate a new signing key (`POST /admin/signing-keys`).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct GenerateSigningKeyRequest {
-    /// `RS256` または `ES256`。
+    /// `RS256` or `ES256`.
     pub algorithm: String,
-    /// **いますぐ署名に使い始めるか。** 既定の `false` では、鍵は JWKS へ公開されるだけで、
-    /// 署名に使い始めるのは `KEY_ROTATION_PUBLISH_LEAD_HOURS` 後になる（JWKS をキャッシュして
-    /// いる RP が新しい kid を取り込む猶予）。`true` は鍵の危殆化のように猶予を置く余裕が
-    /// ないとき用で、キャッシュを持つ RP の検証が一時的に落ちうる。
+    /// **Whether to start signing with it right away.** With the default `false`, the key is only published to JWKS and
+    /// starts signing after `KEY_ROTATION_PUBLISH_LEAD_HOURS` (grace for RPs caching JWKS to pick up
+    /// the new kid). `true` is for when there is no room for a grace period, such as key compromise; verification at
+    /// RPs with a cache may fail temporarily.
     #[serde(default)]
     pub activate_immediately: bool,
 }
 
-// --- テナント管理（ADR-0009 §5・§6。`idp.system.admin` 必須） --------------------------------
+// --- Tenant management (ADR-0009 §5, §6; requires `idp.system.admin`) ---------------------------------
 
-/// 子テナント作成リクエスト（`POST /{tenant_id}/admin/tenants`）。`id`（UUID）はシステムが自動採番する。
-/// 作成者自身が新テナントのブートストラップ管理者（ACTIVE GUEST + `idp.tenant.admin`）になるため、
-/// 初期管理者メールは受け取らない（ADR-0009 §4）。
+/// Child tenant creation request (`POST /{tenant_id}/admin/tenants`). The `id` (UUID) is auto-assigned by the system.
+/// The creator becomes the new tenant's bootstrap admin (ACTIVE GUEST + `idp.tenant.admin`), so
+/// no initial admin email is accepted (ADR-0009 §4).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateTenantRequest {
-    /// テナント表示名。一意制約なし・URL には使わない。
+    /// Tenant display name. No uniqueness constraint; not used in URLs.
     pub name: String,
 }
 
-/// 子テナント部分更新リクエスト（`PATCH /{tenant_id}/admin/tenants/{child_id}`）。
+/// Partial child tenant update request (`PATCH /{tenant_id}/admin/tenants/{child_id}`).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateTenantRequest {
     #[serde(default)]
     pub name: Option<String>,
-    /// `ACTIVE` または `DISABLED`。
+    /// `ACTIVE` or `DISABLED`.
     #[serde(default)]
     pub status: Option<String>,
 }
 
-/// テナントの公開表現。
+/// Public representation of a tenant.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct TenantResponse {
     pub id: String,
-    /// 作成元テナント。root のみ `None`。
+    /// The creating tenant. `None` only for root.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_tenant_id: Option<String>,
     pub name: String,
-    /// `ACTIVE` または `DISABLED`。
+    /// `ACTIVE` or `DISABLED`.
     pub status: String,
-    /// 自己登録（`/auth/register`）を許可するか（SEC6。既定は無効）。
+    /// Whether self-registration (`/auth/register`) is allowed (SEC6; disabled by default).
     pub self_registration_enabled: bool,
-    /// メールアドレスでのログインを許可するか（ADR-0050。既定は無効）。
+    /// Whether sign-in by email address is allowed (ADR-0050; disabled by default).
     pub email_login_enabled: bool,
     pub created_at: String,
     pub updated_at: String,
 }
 
-/// テナントへ割り当てたドメイン（`/{tenant_id}/admin/tenants/{target_id}/domains`。ADR-0029）。
+/// Domains assigned to a tenant (`/{tenant_id}/admin/tenants/{target_id}/domains`, ADR-0029).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct TenantDomainResponse {
     pub id: String,
     pub tenant_id: String,
-    /// 正規化済みのドメイン（小文字・末尾ドットなし）。
+    /// Normalized domain (lowercase, no trailing dot).
     pub domain: String,
     pub created_at: String,
     pub updated_at: String,
 }
 
-/// ドメインの割り当てリクエスト。
+/// Domain assignment request.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct AddTenantDomainRequest {
-    /// 割り当てるドメイン。正規化（小文字化・末尾ドット除去）はサーバ側で行う。
+    /// The domain to assign. Normalization (lowercasing, removing a trailing dot) is done server-side.
     pub domain: String,
 }
 
-/// 設定画面の自テナント表示名更新リクエスト（`PATCH /{tenant_id}/admin/settings/tenant`。MT14）。
-/// `idp.tenant-settings:write` を持つ管理者が自テナントの表示名だけを変更する（`status`・`parent_tenant_id` は不変）。
+/// Request to update the own tenant's display name from the settings screen (`PATCH /{tenant_id}/admin/settings/tenant`, MT14).
+/// An admin holding `idp.tenant-settings:write` changes only the own tenant's display name (`status` and `parent_tenant_id` stay).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateTenantSettingsRequest {
     pub name: String,
-    /// 自己登録トグル（SEC6）。省略時は現状維持。
+    /// Self-registration toggle (SEC6). Unchanged when omitted.
     #[serde(default)]
     pub self_registration_enabled: Option<bool>,
-    /// メールアドレスでのログインのトグル（ADR-0050）。省略時は現状維持。
+    /// Toggle for sign-in by email address (ADR-0050). Unchanged when omitted.
     #[serde(default)]
     pub email_login_enabled: Option<bool>,
 }
 
-// --- システム設定（SMTP 等。root/idp.system.admin のみ。MT14） -----------------------------
+// --- System settings (SMTP, etc.; root/idp.system.admin only, MT14) -------------------------------
 
-/// ランタイム設定の解決結果。出所・安全属性に加え、非 secret キーは表示用に**起動時に解決された
-/// 有効値**（`value`）・組み込み既定値（`default_value`）・DB 上書き値（`db_value`）を返す。
-/// secret キーはいずれも `None`（平文を外へ出さない）。
+/// Runtime setting resolution result. Besides source and safety attributes, non-secret keys return for display the
+/// **effective value resolved at startup** (`value`), the built-in default (`default_value`) and the DB override (`db_value`).
+/// For secret keys all of these are `None` (plaintext is never exposed).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RuntimeSettingResponse {
     pub key: String,
@@ -449,55 +449,55 @@ pub struct RuntimeSettingResponse {
     pub secret: bool,
     pub restart_required: bool,
     pub default_risk: String,
-    /// `SAFE` または `NEEDS_ACTION`。secret の平文・fingerprint は含まない。
+    /// `SAFE` or `NEEDS_ACTION`. Contains no secret plaintext or fingerprint.
     pub status: String,
-    /// 判定理由。secret の平文・fingerprint は含まない。
+    /// Reason for the verdict. Contains no secret plaintext or fingerprint.
     pub reason: String,
-    /// この設定が何に使われるかの説明（運用者向け）。
+    /// Description of what this setting is used for (for operators).
     pub description: String,
-    /// 起動時に解決された有効値（非 secret のみ）。DB 更新後も再起動までは変わらない。
+    /// Effective value resolved at startup (non-secret only). Doesn't change after a DB update until restart.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
-    /// 組み込み既定値（非 secret のみ）。
+    /// Built-in default (non-secret only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_value: Option<String>,
-    /// 現在 DB に保存されている上書き値（非 secret のみ。未設定は `None`）。
+    /// Override value currently stored in the DB (non-secret only; `None` when unset).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub db_value: Option<String>,
-    /// この画面（DB）から上書きできるか（`owner == DB_MANAGED` かつ非 secret）。
+    /// Whether it can be overridden from this screen (DB) (`owner == DB_MANAGED` and non-secret).
     pub editable: bool,
-    /// **保存済みだが実行中の api へ未反映**か（MT27）。DB に保存された値と、api が起動時に
-    /// 解決した有効値がずれている状態を指す。上書きの**解除**が未反映の場合も `true`。
+    /// **Saved but not yet applied to the running api** (MT27). Means the value saved in the DB differs from the effective
+    /// value the api resolved at startup. Also `true` when **clearing** an override is not yet applied.
     pub pending_restart: bool,
-    /// web も消費するキーか（ADR-0013）。`true` のキーは反映に **api と web の両方**の再起動が要る。
+    /// Whether web also consumes the key (ADR-0013). Keys with `true` need restarting **both api and web** to apply.
     pub shared_with_web: bool,
-    /// テナントが上書きできるキーか（ADR-0058 §3）。
+    /// Whether tenants can override the key (ADR-0058 §3).
     pub tenant_overridable: bool,
-    /// 全体の値に従っているテナントの件数（テナントが上書きできるキーのみ）。
+    /// Number of tenants following the global value (tenant-overridable keys only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tenants_following: Option<u64>,
-    /// 既定から外れているテナント（テナントが上書きできるキーのみ。干渉はしないが見えなくはしない）。
+    /// Tenants deviating from the default (tenant-overridable keys only; not interfered with, but not hidden either).
     pub tenants_overriding: Vec<TenantOverrideResponse>,
 }
 
-/// システム設定の公開表現（`GET/PUT /{tenant_id}/admin/system-settings`）。SMTP パスワードは
-/// 平文を返さず、設定済みか否か（`smtp_password_set`）のみを返す。
+/// Public representation of system settings (`GET/PUT /{tenant_id}/admin/system-settings`). The SMTP password is
+/// never returned in plaintext; only whether it is set (`smtp_password_set`).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SystemSettingsResponse {
     pub smtp_host: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub smtp_port: Option<u16>,
     pub smtp_username: String,
-    /// SMTP パスワードが設定済みか（平文は返さない）。
+    /// Whether the SMTP password is set (plaintext is not returned).
     pub smtp_password_set: bool,
     pub smtp_from_address: String,
     pub smtp_use_tls: bool,
-    /// SMS ゲートウェイ（AP13）。送信要求を POST する URL。空 = SMS 送信は無効。
+    /// SMS gateway (AP13). URL to which send requests are POSTed. Empty = SMS sending disabled.
     #[serde(default)]
     pub sms_gateway_url: String,
     #[serde(default)]
     pub sms_auth_header: String,
-    /// SMS ゲートウェイの認証トークンが設定済みか（平文は返さない）。
+    /// Whether the SMS gateway auth token is set (plaintext is not returned).
     #[serde(default)]
     pub sms_auth_token_set: bool,
     #[serde(default)]
@@ -506,48 +506,48 @@ pub struct SystemSettingsResponse {
     pub runtime_settings: Vec<RuntimeSettingResponse>,
 }
 
-/// システム設定の更新リクエスト（`PUT /{tenant_id}/admin/system-settings`）。`smtp_password` は
-/// `None`（未指定）= 現行維持、`Some("")` = 消去、`Some(x)` = 設定（暗号化して保存する）。
-/// SMTP 設定だけの表現（`GET/PUT /{tenant_id}/admin/system-settings/smtp`。ADR-0051）。
+/// System settings update request (`PUT /{tenant_id}/admin/system-settings`). `smtp_password`:
+/// `None` (unspecified) = keep current, `Some("")` = clear, `Some(x)` = set (stored encrypted).
+/// Representation of SMTP settings only (`GET/PUT /{tenant_id}/admin/system-settings/smtp`, ADR-0051).
 ///
-/// システム設定全体（[`SystemSettingsResponse`]）と**別の型にする**。機械へ開ける範囲を
-/// 型で示すためで、SMS やランタイム設定が載った型を使い回すと「返さないことになっている」
-/// 項目が、将来その型へ足された拍子に一緒に出ていく。
+/// **A different type** from the whole system settings ([`SystemSettingsResponse`]), to express with the type
+/// the range opened to machines. Reusing a type carrying SMS and runtime settings would let fields that "are not supposed
+/// to be returned" go out along with it the moment they are added to that type in the future.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SmtpSettingsResponse {
     pub smtp_host: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub smtp_port: Option<u16>,
     pub smtp_username: String,
-    /// SMTP パスワードが設定済みか（**平文は返さない**）。
+    /// Whether the SMTP password is set (**plaintext is not returned**).
     pub smtp_password_set: bool,
     pub smtp_from_address: String,
     pub smtp_use_tls: bool,
 }
 
-/// テナントの SMTP 設定の表現（`GET/PUT/DELETE /{tenant_id}/admin/settings/smtp`。ADR-0058 §8）。
+/// Representation of a tenant's SMTP settings (`GET/PUT/DELETE /{tenant_id}/admin/settings/smtp`, ADR-0058 §8).
 ///
-/// 全体の SMTP（[`SmtpSettingsResponse`]）と同じ項目に、`inherited` を足す。⚠ **テナントが経路を
-/// 持っていないとき、全体の値は返さない**（項目は空）。テナントの管理者に全体の経路の宛先や
-/// 利用者名を見せる理由が無い。
+/// The same fields as global SMTP ([`SmtpSettingsResponse`]) plus `inherited`. ⚠ **When the tenant has no route,
+/// the global values are not returned** (fields are empty). There is no reason to show tenant admins the global route's host or
+/// username.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct TenantSmtpSettingsResponse {
-    /// `true` = このテナントは経路を持たず、全体の経路でメールを送る。
+    /// `true` = this tenant has no route and sends mail via the global route.
     pub inherited: bool,
     pub smtp_host: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub smtp_port: Option<u16>,
     pub smtp_username: String,
-    /// SMTP パスワードが設定済みか（**平文は返さない**）。
+    /// Whether the SMTP password is set (**plaintext is not returned**).
     pub smtp_password_set: bool,
     pub smtp_from_address: String,
     pub smtp_use_tls: bool,
 }
 
-/// SMTP 設定の更新要求。
+/// SMTP settings update request.
 ///
-/// `smtp_password` は 3 値で扱う（システム設定の画面と同じ規則）:
-/// `None` = 現行維持 / `Some("")` = 消去 / `Some(x)` = 設定。
+/// `smtp_password` is three-valued (same rule as the system settings screen):
+/// `None` = keep current / `Some("")` = clear / `Some(x)` = set.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateSmtpSettingsRequest {
     #[serde(default)]
@@ -578,8 +578,8 @@ pub struct UpdateSystemSettingsRequest {
     pub smtp_from_address: String,
     #[serde(default)]
     pub smtp_use_tls: bool,
-    /// SMS ゲートウェイ（AP13）。`sms_auth_token` は SMTP パスワードと同じ規則
-    /// （`None` = 現行維持、`Some("")` = 消去、`Some(x)` = 設定）。
+    /// SMS gateway (AP13). `sms_auth_token` follows the same rule as the SMTP password
+    /// (`None` = keep current, `Some("")` = clear, `Some(x)` = set).
     #[serde(default)]
     pub sms_gateway_url: String,
     #[serde(default)]
@@ -590,8 +590,8 @@ pub struct UpdateSystemSettingsRequest {
     pub sms_sender_id: String,
 }
 
-/// ランタイム設定の DB 上書き更新リクエスト（`PUT /{tenant_id}/admin/system-settings/runtime`）。
-/// `value` が `None` または空文字列のときは上書きを解除する（既定値・環境変数へ戻る）。
+/// Runtime setting DB override update request (`PUT /{tenant_id}/admin/system-settings/runtime`).
+/// When `value` is `None` or an empty string the override is cleared (falls back to the default / environment variable).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateRuntimeSettingRequest {
     pub key: String,
@@ -599,55 +599,55 @@ pub struct UpdateRuntimeSettingRequest {
     pub value: Option<String>,
 }
 
-// --- テナントの設定値（ADR-0058。`idp.tenant-settings:read` / `:write`） -------------------------
+// --- Tenant setting values (ADR-0058; `idp.tenant-settings:read` / `:write`) --------------------------
 
-/// テナントが上書きできる設定の一覧（`GET /{tenant_id}/admin/settings/tenant/keys`）。
+/// List of settings the tenant can override (`GET /{tenant_id}/admin/settings/tenant/keys`).
 ///
-/// 項目はキー定義（`scope = TenantOverridable`）から導く。⚠ **キーを足すたびにこの型へ項目を
-/// 書き足さない** ——画面は `kind` と `choices` を見て入力欄を選ぶ。
+/// Fields are derived from the key definitions (`scope = TenantOverridable`). ⚠ **Don't add fields to this type
+/// for every new key** -- the screen picks the input from `kind` and `choices`.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct TenantSettingsListResponse {
     pub settings: Vec<TenantSettingResponse>,
 }
 
-/// テナントの設定 1 項目。
+/// One tenant setting.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct TenantSettingResponse {
     pub key: String,
-    /// 何に使う設定か（運用者向けの一文。運用言語）。
+    /// What the setting is used for (one sentence for operators, in the ops language).
     pub description: String,
-    /// 値の型: `UNSIGNED_INTEGER` / `BOOLEAN` / `TEXT` / `PUBLIC_BASE_URL` / `CHOICE`。
+    /// Value type: `UNSIGNED_INTEGER` / `BOOLEAN` / `TEXT` / `PUBLIC_BASE_URL` / `CHOICE`.
     pub kind: String,
-    /// `kind = CHOICE` のときの選択肢（それ以外は空）。
+    /// Choices when `kind = CHOICE` (empty otherwise).
     pub choices: Vec<SettingChoiceResponse>,
-    /// このテナントで効いている値。
+    /// The value in effect for this tenant.
     pub value: String,
-    /// 値の出どころ: `TENANT_OVERRIDE`（このテナントで決めた）/ `INHERITED`（全体に従っている）。
+    /// Source of the value: `TENANT_OVERRIDE` (set by this tenant) / `INHERITED` (follows the global value).
     pub origin: String,
-    /// 全体の値。上書きを消すとこの値に戻る（上書きしている項目でも返す）。
+    /// The global value. Clearing the override reverts to it (returned even for overridden fields).
     pub whole_idp_value: String,
 }
 
-/// 選択肢 1 つ。
+/// One choice.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SettingChoiceResponse {
     pub value: String,
-    /// この値にすると利用者を締め出し得るか。`true` の値へ変えるには `confirmed: true` が要る。
+    /// Whether this value could lock users out. Changing to a `true` value needs `confirmed: true`.
     pub locks_out: bool,
 }
 
-/// テナントの設定値の更新（`PUT /{tenant_id}/admin/settings/tenant/keys/{key}`）。
+/// Updates a tenant setting value (`PUT /{tenant_id}/admin/settings/tenant/keys/{key}`).
 ///
-/// 全体に戻すのは `DELETE` で行う（空の値は受けない）。
+/// Reverting to the global value is done with `DELETE` (empty values are not accepted).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateTenantSettingRequest {
     pub value: String,
-    /// 締め出し得る値（選択肢の `locks_out`）へ変えることを確認済みか。無いと 409 を返す。
+    /// Whether changing to a value that could lock people out (a choice's `locks_out`) is confirmed. Without it, 409.
     #[serde(default)]
     pub confirmed: bool,
 }
 
-/// 全体の設定画面に出す「既定から外れているテナント」1 件（ADR-0058 §6）。
+/// One "tenant deviating from the default" shown on the global settings screen (ADR-0058 §6).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct TenantOverrideResponse {
     pub tenant_id: String,
@@ -655,78 +655,78 @@ pub struct TenantOverrideResponse {
     pub value: String,
 }
 
-/// 再起動要求の受理応答（`POST /{tenant_id}/admin/restart`。ADR-0017）。
+/// Acceptance response for a restart request (`POST /{tenant_id}/admin/restart`, ADR-0017).
 ///
-/// 応答を返した**あと**に停止するため、これは「受理した」であって「再起動が終わった」ではない。
+/// It stops **after** returning the response, so this means "accepted", not "restart finished".
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RestartServiceResponse {
-    /// 停止するサービス名（現状は常に `api`）。
+    /// Name of the service stopping (currently always `api`).
     pub service: String,
     pub restarting: bool,
 }
 
-// --- 管理コンソールの支援 API（身元・クライアント状況・権限マスタ・利用者の検索。task #146） -------
+// --- Admin console support APIs (identity, client status, permission master, user search; task #146) -------
 //
-// web（管理コンソール）は `assay_contracts::admin` の同名の型で受け取る。`assay_contracts` は
-// `utoipa` を持たない（ADR-0007）ので、OpenAPI に載せるためにここへ**同じ形**の型を置く。
-// 食い違うと web が応答を復号できず画面が開かなくなるため、形の一致は
-// `console_support_contract_tests` が JSON の往復で固定する。
+// web (the admin console) receives these with the same-named types in `assay_contracts::admin`. `assay_contracts`
+// has no `utoipa` (ADR-0007), so types of **the same shape** are placed here to appear in OpenAPI.
+// If they diverge, web can't decode the response and the screen won't open, so matching shapes are
+// pinned by `console_support_contract_tests` via JSON round trips.
 
-/// `GET /{tenant_id}/admin/whoami` の応答（`assay_contracts::admin::WhoamiResponse` と同じ形）。
+/// Response of `GET /{tenant_id}/admin/whoami` (same shape as `assay_contracts::admin::WhoamiResponse`).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WhoamiResponse {
-    /// 管理トークンの主体（利用者）の内部 ID（UUID）。
+    /// Internal ID (UUID) of the admin token's principal (user).
     pub user_id: String,
-    /// 表示名（未設定なら null）。
+    /// Display name (null if unset).
     pub name: Option<String>,
-    /// ログイン識別子（未設定なら null）。
+    /// Login identifier (null if unset).
     pub preferred_username: Option<String>,
-    /// 経路のテナント（`/{tenant_id}/...`）の表示名。
+    /// Display name of the route's tenant (`/{tenant_id}/...`).
     pub tenant_name: Option<String>,
-    /// 呼び出し元がこのテナントで**実際に行使できる**権限コード（含意を展開済み）。
+    /// Permission codes the caller **can actually exercise** in this tenant (implications expanded).
     pub permissions: Vec<String>,
 }
 
-/// `GET /{tenant_id}/admin/clients/status` の要素（`assay_contracts::admin::ClientStatusResponse`
-/// と同じ形）。
+/// Element of `GET /{tenant_id}/admin/clients/status` (same shape as
+/// `assay_contracts::admin::ClientStatusResponse`).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ClientStatusResponse {
     pub client_id: String,
     pub app_name: String,
-    /// `ACTIVE` / `DISABLED`。
+    /// `ACTIVE` / `DISABLED`.
     pub status: String,
     pub scopes: Vec<String>,
-    /// 最終利用時刻（RFC3339。成功した token / code 発行の最新時刻。未使用なら null）。
+    /// Last used time (RFC3339; latest successful token / code issuance; null if never used).
     pub last_used_at: Option<String>,
 }
 
-/// `GET /{tenant_id}/admin/permissions` の応答（`assay_contracts::admin::AvailablePermissionsResponse`
-/// と同じ形）。
+/// Response of `GET /{tenant_id}/admin/permissions` (same shape as
+/// `assay_contracts::admin::AvailablePermissionsResponse`).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct AvailablePermissionsResponse {
-    /// 要求テナントで付与し得る権限コード（`permissions` マスタ由来）。
+    /// Permission codes grantable in the requesting tenant (from the `permissions` master).
     pub codes: Vec<String>,
 }
 
-/// 利用者の要約（`GET /{tenant_id}/admin/users?q=`・`GET …/users/{user_id}`・状態とプロフィールの
-/// 更新の応答。`assay_contracts::admin::UserSummaryResponse` と同じ形）。パスワードハッシュ等の
-/// 機微情報は含めない。
+/// User summary (response of `GET /{tenant_id}/admin/users?q=`, `GET …/users/{user_id}` and status/profile
+/// updates; same shape as `assay_contracts::admin::UserSummaryResponse`). Sensitive information such as password hashes
+/// is not included.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct UserSummaryResponse {
-    /// 内部 ID（UUID）。
+    /// Internal ID (UUID).
     pub id: String,
     pub sub: String,
     pub email: String,
     pub email_verified: bool,
     pub preferred_username: Option<String>,
     pub name: Option<String>,
-    /// `ACTIVE` / `DISABLED` 等。
+    /// `ACTIVE` / `DISABLED`, etc.
     pub status: String,
 }
 
-// --- 利用者作成（ADR-0009 §5・§6。`idp.users:write` 必須） -------------------------------------
+// --- User creation (ADR-0009 §5, §6; requires `idp.users:write`) -------------------------------------
 
-/// 管理者による利用者作成リクエスト（`POST /{tenant_id}/admin/users`）。パスワードは自動生成する。
+/// User creation request by an admin (`POST /{tenant_id}/admin/users`). The password is auto-generated.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateUserRequest {
     pub email: String,
@@ -734,72 +734,72 @@ pub struct CreateUserRequest {
     pub preferred_username: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
-    /// 管理者メモ（任意・2000 文字まで。ADR-0063）。作った利用者の HOME メンバーシップに付く。
-    /// 空（空白だけ）は「メモ無し」として扱う。
+    /// Admin note (optional, up to 2000 characters, ADR-0063). Attached to the created user's HOME membership.
+    /// Empty (whitespace only) is treated as "no note".
     #[serde(default)]
     pub note: Option<String>,
 }
 
-/// 利用者作成レスポンス。`setup_url` は**この応答でのみ**返る（ログ・監査には出さない。ADR-0062）。
+/// User creation response. `setup_url` is returned **only in this response** (never in logs or audits, ADR-0062).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct UserCreatedResponse {
     pub user_id: String,
     pub sub: String,
-    /// 本人へ渡すアカウント設定リンク（絶対 URL・一度限り）。開いた先でパスキーを登録するか、
-    /// パスワードを設定する。⚠ **管理者は本人の資格情報を持たない** —— 作成時に入れたハッシュは
-    /// 誰も知らない値で、生成パスワードはもう返さない。
+    /// Account setup link to hand to the user (absolute URL, single use). There they register a passkey or
+    /// set a password. ⚠ **Admins don't hold the user's credentials** -- the hash stored at creation is
+    /// a value nobody knows, and the generated password is no longer returned.
     pub setup_url: String,
-    /// リンクの失効時刻（RFC3339）。既定は 24 時間後（`ACCOUNT_SETUP_TTL_SECS`）。
+    /// Expiry time of the link (RFC3339). Defaults to 24 hours later (`ACCOUNT_SETUP_TTL_SECS`).
     pub setup_expires_at: String,
 }
 
-/// アプリの登録リクエスト（`POST /{tenant_id}/admin/applications`。ADR-0054）。
+/// App registration request (`POST /{tenant_id}/admin/applications`, ADR-0054).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateApplicationRequest {
-    /// 画面と拒否メッセージに出す名前。
+    /// Name shown on screens and in rejection messages.
     pub display_name: String,
-    /// `EVERYONE`（テナントの利用者は誰でも）または `INDIVIDUAL`（割り当てられた利用者だけ）。
-    /// ⚠ **省略時は `INDIVIDUAL`。** 絞り忘れたアプリが全員に開いたままになるのを防ぐ。
+    /// `EVERYONE` (any user of the tenant) or `INDIVIDUAL` (only assigned users).
+    /// ⚠ **`INDIVIDUAL` when omitted.** Prevents an app someone forgot to restrict from staying open to all.
     #[serde(default)]
     pub assignment_mode: Option<String>,
-    /// 作った本人を同時に割り当てるか。⚠ **画面では初めからチェックしておく**
-    /// ——「個別」で作った直後は誰も入れないので、作った本人が締め出される形にしない。
-    /// 既定は `true`（機械が作るときは割り当てる相手が居ないので何も起きない）。
+    /// Whether to assign the creator at the same time. ⚠ **The screen checks it by default**
+    /// -- right after creating an "individual" app nobody can get in, so don't lock the creator out.
+    /// Default `true` (when a machine creates it there is nobody to assign, so nothing happens).
     #[serde(default = "default_enabled")]
     pub assign_creator: bool,
 }
 
-/// アプリの更新リクエスト（`PUT /{tenant_id}/admin/applications/{application_id}`）。
+/// App update request (`PUT /{tenant_id}/admin/applications/{application_id}`).
 ///
-/// **部分更新にしない。** 3 つの値はどれも「誰が入れるか」を決めるので、省略を「変えない」と
-/// 読むと、画面の古い表示のまま送った要求が意図せず片方だけを書き換える。
+/// **Not a partial update.** All three values decide "who can get in", so if omission meant "unchanged",
+/// a request sent from a stale screen would unintentionally rewrite only one of them.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateApplicationRequest {
     pub display_name: String,
-    /// `ACTIVE` または `DISABLED`。
+    /// `ACTIVE` or `DISABLED`.
     pub status: String,
-    /// `EVERYONE` または `INDIVIDUAL`。
+    /// `EVERYONE` or `INDIVIDUAL`.
     pub assignment_mode: String,
 }
 
-/// アプリに名乗りを足すリクエスト（`POST /{tenant_id}/admin/applications/{application_id}/bindings`。
-/// ADR-0059）。
+/// Request to add a binding to an app (`POST /{tenant_id}/admin/applications/{application_id}/bindings`,
+/// ADR-0059).
 ///
-/// `kind` で種類を決め、種類ごとに決まった 1 つの欄で相手を指す:
+/// `kind` decides the kind, and the target is given in the one field fixed per kind:
 ///
-/// | `kind` | 相手を指す欄 | 相手の条件 |
+/// | `kind` | Field naming the target | Target condition |
 /// |---|---|---|
-/// | `oidc` | `client_id` | ログイン用（`authorization_code`）の client |
-/// | `saml` | `service_provider_id` | SAML SP の内部 ID |
-/// | `service_account` | `client_id` | サービスアカウント（`client_credentials` だけの client） |
-/// | `resource` | `resource_uri` | 登録済みの宛名（`aud`） |
+/// | `oidc` | `client_id` | A sign-in (`authorization_code`) client |
+/// | `saml` | `service_provider_id` | Internal ID of a SAML SP |
+/// | `service_account` | `client_id` | A service account (a `client_credentials`-only client) |
+/// | `resource` | `resource_uri` | A registered audience (`aud`) |
 ///
-/// ⚠ 1 つの相手は 1 つのアプリにだけ属する。別のアプリの名乗りなら 409（そのアプリ名を返す）。
-/// そのアプリから**移す**ときは、`move_from_application_id` に今の持ち主のアプリ ID を入れる
-/// （外す＋結ぶを 1 回で行う。ADR-0067）。今の持ち主と違えば 409 のまま。
+/// ⚠ A target belongs to only one app. If it is another app's binding, 409 (returning that app's name).
+/// To **move** it from that app, put the current owner app's ID in `move_from_application_id`
+/// (unbind + bind in one go, ADR-0067). Still 409 if it differs from the current owner.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateApplicationBindingRequest {
-    /// `oidc` / `saml` / `service_account` / `resource`。⚠ 省略は 400（既定の種類を置かない）。
+    /// `oidc` / `saml` / `service_account` / `resource`. ⚠ Omission is 400 (no default kind).
     #[serde(default)]
     pub kind: String,
     #[serde(default)]
@@ -808,26 +808,26 @@ pub struct CreateApplicationBindingRequest {
     pub service_provider_id: Option<String>,
     #[serde(default)]
     pub resource_uri: Option<String>,
-    /// 相手が別のアプリの名乗りなら、そのアプリから移す（ADR-0067）。値は**今の持ち主のアプリ ID**。
-    /// ⚠ 名指しにするのは、確かめた時点と送った時点の間に持ち主が替わったとき、確かめていない
-    /// アプリから黙って奪わないため。相手がどこにも属していなければ、ただ結ぶ。
+    /// If the target is another app's binding, move it from that app (ADR-0067). The value is **the current owner app's ID**.
+    /// ⚠ It is named explicitly so that if the owner changed between checking and sending, we don't silently take it
+    /// from an app nobody checked. If the target belongs nowhere, it is simply bound.
     #[serde(default)]
     pub move_from_application_id: Option<String>,
 }
 
-/// アプリを使う主体を割り当てるリクエスト
-/// （`POST /{tenant_id}/admin/applications/{application_id}/assignments`。ADR-0059 の決定 5）。
+/// Request to assign a principal that uses the app
+/// (`POST /{tenant_id}/admin/applications/{application_id}/assignments`, ADR-0059 decision 5).
 ///
-/// | `kind` | 相手を指す欄 | 割り当ての意味 |
+/// | `kind` | Field naming the target | Meaning of the assignment |
 /// |---|---|---|
-/// | `user` | `user_id`（利用者の内部 ID。要求テナントのメンバー） | ログインしてよい |
-/// | `service_account` | `client_id`（`client_credentials` だけの client） | このアプリの宛名のトークンを取ってよい |
+/// | `user` | `user_id` (user's internal ID; a member of the requesting tenant) | May sign in |
+/// | `service_account` | `client_id` (a `client_credentials`-only client) | May get tokens for this app's audience |
 ///
-/// ⚠ **ロールは載らない**（ADR-0054 の決定 1）。載るのは「使ってよい」の 1 ビットだけである。
-/// ⚠ 「全員（`EVERYONE`）」に含まれるのは人だけで、サービスアカウントは必ず個別に割り当てる。
+/// ⚠ **No roles are carried** (ADR-0054 decision 1). Only the single bit "may use" is carried.
+/// ⚠ "Everyone" (`EVERYONE`) includes only people; service accounts are always assigned individually.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateApplicationAssignmentRequest {
-    /// `user` / `service_account`。⚠ 省略は 400（既定の種類を置かない）。
+    /// `user` / `service_account`. ⚠ Omission is 400 (no default kind).
     #[serde(default)]
     pub kind: String,
     #[serde(default)]
@@ -836,119 +836,119 @@ pub struct CreateApplicationAssignmentRequest {
     pub client_id: Option<String>,
 }
 
-/// アプリの公開表現。
+/// Public representation of an app.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ApplicationResponse {
     pub id: String,
     pub display_name: String,
     pub status: String,
     pub assignment_mode: String,
-    /// このアプリの名乗り（ログイン用 client・SAML SP・サービスアカウント・宛名）。
+    /// This app's bindings (sign-in clients, SAML SPs, service accounts, audiences).
     pub bindings: Vec<ApplicationBindingResponse>,
-    /// 人の割り当て人数（サービスアカウントは数えない）。`EVERYONE` のときは行が無いので 0。
+    /// Number of people assigned (service accounts not counted). 0 for `EVERYONE`, which has no rows.
     pub assigned_count: i64,
     pub created_at: String,
     pub updated_at: String,
 }
 
-/// 名乗り 1 本の公開表現。
+/// Public representation of one binding.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ApplicationBindingResponse {
     pub id: String,
-    /// `oidc` / `saml` / `service_account` / `resource`。
+    /// `oidc` / `saml` / `service_account` / `resource`.
     pub kind: String,
-    /// ログイン用・サービスアカウントなら `client_id`、SAML なら `entity_id`、宛名なら
-    /// `resource_uri`。相手が消えていれば `null`。
+    /// `client_id` for sign-in and service accounts, `entity_id` for SAML, `resource_uri` for
+    /// audiences. `null` if the target is gone.
     pub identifier: Option<String>,
-    /// 相手の登録名。
+    /// The target's registered name.
     pub display_name: Option<String>,
 }
 
-/// 名乗りの候補
-/// （`GET /{tenant_id}/admin/applications/{application_id}/binding-candidates`。ADR-0067）。
+/// Binding candidates
+/// (`GET /{tenant_id}/admin/applications/{application_id}/binding-candidates`, ADR-0067).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ApplicationBindingCandidateListResponse {
-    /// 種類（`oidc`・`saml`・`service_account`・`resource`）の順、その中は表示名の昇順。
-    /// このアプリの名乗りになっているものは載らない。
+    /// Ordered by kind (`oidc`, `saml`, `service_account`, `resource`), then by display name ascending.
+    /// Those already bound to this app are not listed.
     pub candidates: Vec<ApplicationBindingCandidateResponse>,
 }
 
-/// 名乗りの候補 1 件。
+/// One binding candidate.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ApplicationBindingCandidateResponse {
-    /// `oidc` / `saml` / `service_account` / `resource`。
+    /// `oidc` / `saml` / `service_account` / `resource`.
     pub kind: String,
-    /// 結び付けるときに送る値（`POST …/bindings` の相手の欄にそのまま入れる）。
-    /// `oidc`・`service_account` は `client_id`、`saml` は SP の内部 ID、`resource` は宛名の URI。
+    /// The value to send when binding (put as is in the target field of `POST …/bindings`).
+    /// `client_id` for `oidc` and `service_account`, the SP's internal ID for `saml`, the audience URI for `resource`.
     pub reference: String,
-    /// 人が見分ける値（`client_id`・`entity_id`・宛名の URI）。
+    /// The value people use to tell them apart (`client_id`, `entity_id`, audience URI).
     pub identifier: String,
-    /// 相手の登録名。
+    /// The target's registered name.
     pub display_name: String,
-    /// いまこの相手を名乗りに持っているアプリ（どこにも属していなければ `null`）。
+    /// The app that currently has this target as a binding (`null` if it belongs nowhere).
     pub application_id: Option<String>,
-    /// そのアプリの表示名。
+    /// That app's display name.
     pub application_name: Option<String>,
 }
 
-/// アプリの一覧（`GET /{tenant_id}/admin/applications`）。
+/// App list (`GET /{tenant_id}/admin/applications`).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ApplicationListResponse {
     pub applications: Vec<ApplicationResponse>,
-    /// いま判定が断るところまで来ているか（`record_only` / `enforce`）。
-    /// ⚠ 画面は「記録するだけ」の間、割り当てがまだ効いていないことを示すために読む。
+    /// How far the decision currently goes in rejecting (`record_only` / `enforce`).
+    /// ⚠ The screen reads it to show that assignments are not yet in effect while "only recording".
     pub enforcement: String,
 }
 
-/// アプリの詳細（`GET /{tenant_id}/admin/applications/{application_id}`）。
+/// App detail (`GET /{tenant_id}/admin/applications/{application_id}`).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ApplicationDetailResponse {
     #[serde(flatten)]
     pub application: ApplicationResponse,
-    /// 割り当てられた人。
+    /// Assigned people.
     pub assigned: Vec<ApplicationAssignmentResponse>,
-    /// 割り当てられたサービスアカウント（このアプリの宛名のトークンを取ってよい。ADR-0059）。
+    /// Assigned service accounts (may get tokens for this app's audience, ADR-0059).
     pub assigned_service_accounts: Vec<ApplicationServiceAccountAssignmentResponse>,
-    /// いま判定が断るところまで来ているか（`record_only` / `enforce`）。
-    /// 一覧と同じものを添えるのは、**画面が「効いていない」を出すためだけに一覧を引き直さない**
-    /// ようにするためである。
+    /// How far the decision currently goes in rejecting (`record_only` / `enforce`).
+    /// The same value as the list is attached so that **the screen does not re-fetch the list
+    /// just to show "not in effect"**.
     pub enforcement: String,
 }
 
-/// 割り当てられた利用者 1 行。
+/// One assigned user row.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ApplicationAssignmentResponse {
     pub user_id: String,
-    /// トークンの主体識別子。RP 側の名簿と突き合わせるときの鍵。
+    /// The token's subject identifier. The key for matching against the RP-side roster.
     pub sub: String,
     pub email: String,
     pub name: Option<String>,
-    /// 利用者アカウント自体の状態（`ACTIVE` / `DISABLED` / `LOCKED`）。
+    /// Status of the user account itself (`ACTIVE` / `DISABLED` / `LOCKED`).
     pub status: String,
     pub assigned_at: String,
 }
 
-/// 割り当てられたサービスアカウント 1 行。
+/// One assigned service account row.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ApplicationServiceAccountAssignmentResponse {
     pub client_id: String,
-    /// クライアントの登録名。
+    /// The client's registered name.
     pub app_name: String,
-    /// クライアントの状態（`ACTIVE` / `DISABLED` / `DELETED`）。
+    /// The client's status (`ACTIVE` / `DISABLED` / `DELETED`).
     pub status: String,
     pub assigned_at: String,
 }
 
-/// 「いま入れている人」
-/// （`GET /{tenant_id}/admin/applications/{application_id}/current-users`）。
+/// "The people who can get in now"
+/// (`GET /{tenant_id}/admin/applications/{application_id}/current-users`).
 ///
-/// 「全員」から「個別」へ倒す前に、そのまま名簿へ写すための一覧である。
+/// A list for copying straight into the roster before switching from "everyone" to "individual".
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ApplicationCurrentUsersResponse {
     pub users: Vec<ApplicationCurrentUserResponse>,
-    /// 全体の人数（上限で切る前）。
+    /// Total number of people (before truncating at the limit).
     pub total: i64,
-    /// 上限で打ち切ったか。⚠ **真なら「全員は出せていない」ことを画面が言うこと。**
+    /// Whether it was truncated at the limit. ⚠ **If true, the screen must say "not everyone could be listed".**
     pub truncated: bool,
 }
 
@@ -959,65 +959,65 @@ pub struct ApplicationCurrentUserResponse {
     pub name: Option<String>,
 }
 
-/// 名簿の照会クエリ（`GET /{tenant_id}/admin/applications/self/users`。ADR-0057 / ADR-0059）。
+/// Roster query (`GET /{tenant_id}/admin/applications/self/users`, ADR-0057 / ADR-0059).
 #[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct ApplicationUserQueryParams {
-    /// 1 ページの件数。未指定は 50、上限 200（超過分は上限へ丸める）。
+    /// Entries per page. 50 if unspecified, max 200 (larger values are clamped to the max).
     #[serde(default)]
     pub limit: Option<i64>,
-    /// 読み飛ばす件数。未指定は 0。
+    /// Number of entries to skip. 0 if unspecified.
     #[serde(default)]
     pub offset: Option<i64>,
-    /// 消息を聞きたい `sub`（カンマ区切り。⚠ 一度に 100 件まで）。
+    /// `sub`s to ask about (comma-separated; ⚠ up to 100 at a time).
     ///
-    /// ⚠ **`unknown`（＝消えた）が返るのは、これを指定したときだけ**である ——消えた人は、
-    /// いない以上、候補の一覧には現れない。未指定なら、このアプリの候補を 1 ページ分返す。
+    /// ⚠ **`unknown` (= gone) is returned only when this is given** -- people who are gone,
+    /// being absent, don't appear in the candidate list. If unspecified, one page of this app's candidates is returned.
     #[serde(default)]
     pub subs: Option<String>,
 }
 
-/// 名簿の 1 行（ADR-0057）。
+/// One roster row (ADR-0057).
 ///
-/// ⚠ **載るのは `sub` と状態だけである。** 属性の写しはログインのたびに渡っているので、ここは
-/// 棚卸しの口であって属性を配る口ではない。
+/// ⚠ **Only `sub` and status are carried.** Copies of attributes are handed over at every sign-in, so this is
+/// an inventory endpoint, not one that distributes attributes.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ApplicationUserResponse {
-    /// トークンの主体識別子。RP の名簿（`federated_identities`）と突き合わせる鍵。
+    /// The token's subject identifier. The key for matching against the RP's roster (`federated_identities`).
     pub sub: String,
-    /// `allowed` = いま使ってよい / `blocked` = assay に居るが使えない（⚠ **結び付きは残す**） /
-    /// `unknown` = このテナントの利用者ではない（＝消えた。結び付きごと落としてよい）。
+    /// `allowed` = may use now / `blocked` = exists in assay but cannot use (⚠ **keep the link**) /
+    /// `unknown` = not a user of this tenant (= gone; the link may be dropped too).
     pub state: String,
 }
 
-/// 名簿の照会結果（`GET /{tenant_id}/admin/applications/self/users`）。
+/// Roster query result (`GET /{tenant_id}/admin/applications/self/users`).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ApplicationUserListResponse {
     pub users: Vec<ApplicationUserResponse>,
-    /// `limit` / `offset` を無視した該当総数。
+    /// Total matches ignoring `limit` / `offset`.
     pub total: i64,
-    /// 実際に適用された値（クランプ後）。
+    /// The values actually applied (after clamping).
     pub limit: i64,
     pub offset: i64,
 }
 
-/// 保護リソース（`aud` に入る宛名）の登録リクエスト（`POST /{tenant_id}/admin/resources`。ADR-0042）。
+/// Registration request for a protected resource (audience name put in `aud`) (`POST /{tenant_id}/admin/resources`, ADR-0042).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct RegisterResourceRequest {
-    /// `aud` に入る値。絶対 URI・fragment 不可。**叩く先ではなく宛名**なので、解決できなくてよい
-    /// （`api://blobshare` のような形も登録できる）。
+    /// The value put in `aud`. Absolute URI, no fragment. **An audience name, not an address to call**, so it needn't resolve
+    /// (forms like `api://blobshare` can be registered too).
     pub resource_uri: String,
-    /// 画面に出す名前。
+    /// Name shown on screens.
     pub display_name: String,
 }
 
-/// 保護リソースの状態更新リクエスト（`PATCH /{tenant_id}/admin/resources/{resource_id}`）。
+/// Status update request for a protected resource (`PATCH /{tenant_id}/admin/resources/{resource_id}`).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateResourceStatusRequest {
-    /// `ACTIVE` または `DISABLED`。
+    /// `ACTIVE` or `DISABLED`.
     pub status: String,
 }
 
-/// 保護リソースの公開表現。
+/// Public representation of a protected resource.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ResourceResponse {
     pub id: String,
@@ -1028,44 +1028,44 @@ pub struct ResourceResponse {
     pub updated_at: String,
 }
 
-/// 保護リソースの一覧（`GET /{tenant_id}/admin/resources`）。
+/// List of protected resources (`GET /{tenant_id}/admin/resources`).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ResourceListResponse {
     pub resources: Vec<ResourceResponse>,
 }
 
-/// 配る機械へ渡す SSH の鍵の 1 行（`GET /{tenant_id}/admin/ssh-keys`。task #885）。
+/// One SSH key row handed to the distributing machine (`GET /{tenant_id}/admin/ssh-keys`, task #885).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SshKeyResponse {
-    /// assay の利用者名（preferred_username）。配る側が機器の利用者へ対応付ける。
+    /// assay username (preferred_username). The distributor maps it to the device's user.
     pub username: String,
-    /// 利用者が付けた鍵の名前。
+    /// Key name given by the user.
     pub name: String,
-    /// authorized_keys の 1 行の「型 本体」（コメント・オプション無し）。
+    /// "type body" of an authorized_keys line (no comment or options).
     pub public_key: String,
-    /// `SHA256:…`（`ssh-keygen -l` と同じ）。
+    /// `SHA256:…` (same as `ssh-keygen -l`).
     pub fingerprint: String,
-    /// 登録した時刻（RFC 3339・UTC）。
+    /// Registration time (RFC 3339, UTC).
     pub created_at: String,
 }
 
-/// 組織の有効な SSH の鍵の一覧（`GET /{tenant_id}/admin/ssh-keys`）。
+/// List of the organization's active SSH keys (`GET /{tenant_id}/admin/ssh-keys`).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SshKeyListResponse {
     pub keys: Vec<SshKeyResponse>,
 }
 
-/// 利用者の状態更新リクエスト（`PATCH /{tenant_id}/admin/users/{user_id}`）。
+/// User status update request (`PATCH /{tenant_id}/admin/users/{user_id}`).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateUserStatusRequest {
-    /// `ACTIVE` または `DISABLED`（`LOCKED` は管理操作では設定できない）。
+    /// `ACTIVE` or `DISABLED` (`LOCKED` cannot be set by admin operations).
     pub status: String,
 }
 
-/// 管理者による利用者プロフィール更新リクエスト（`PATCH /{tenant_id}/admin/users/{user_id}/profile`。
-/// MT25）。省略したフィールドは変更しない（部分更新）。`preferred_username` はログイン識別子であり、
-/// 変更するとその利用者のログイン名が変わる（空文字での解除は 400）。`name` に空文字を渡すと
-/// 表示名を解除する。
+/// User profile update request by an admin (`PATCH /{tenant_id}/admin/users/{user_id}/profile`,
+/// MT25). Omitted fields are unchanged (partial update). `preferred_username` is the login identifier;
+/// changing it changes that user's login name (clearing with an empty string is 400). Passing an empty string for `name`
+/// clears the display name.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateUserProfileRequest {
     #[serde(default)]
@@ -1076,284 +1076,284 @@ pub struct UpdateUserProfileRequest {
     pub name: Option<String>,
 }
 
-/// 管理者によるパスワード再発行レスポンス。いずれも**この応答でのみ**返る（ログ・監査には出さない）。
+/// Password reissue response by an admin. Everything is returned **only in this response** (never in logs or audits).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct UserPasswordResetResponse {
     pub user_id: String,
-    /// 本人へ渡すアカウント設定リンク（絶対 URL・一度限り。ADR-0062）。
+    /// Account setup link to hand to the user (absolute URL, single use, ADR-0062).
     pub setup_url: String,
-    /// リンクの失効時刻（RFC3339）。
+    /// Expiry time of the link (RFC3339).
     pub setup_expires_at: String,
 }
 
-/// ゲストメンバーシップの状態更新リクエスト（`PATCH /{tenant_id}/admin/members/{user_id}`。MT24）。
-/// 受け付けるのは `SUSPENDED`（一時停止）と `ACTIVE`（再開）のみ。`INVITED` は招待フローが管理する
-/// 状態のため、ここからは設定できない。
+/// Guest membership status update request (`PATCH /{tenant_id}/admin/members/{user_id}`, MT24).
+/// Only `SUSPENDED` (suspend) and `ACTIVE` (resume) are accepted. `INVITED` is a state managed by the invitation flow,
+/// so it can't be set from here.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateMemberStatusRequest {
-    /// `SUSPENDED` = 一時停止 / `ACTIVE` = 再開。
+    /// `SUSPENDED` = suspend / `ACTIVE` = resume.
     pub status: String,
 }
 
-/// 管理者によるアカウントロック解除レスポンス（AP6）。
+/// Account unlock response by an admin (AP6).
 ///
-/// `was_locked` は「解除前にロックが掛かっていたか」。冪等な操作のため、元からロックされて
-/// いなくても成功する。画面はこの値で「解除しました」と「元からロックされていません」を
-/// 出し分ける。
+/// `was_locked` is "whether it was locked before unlocking". The operation is idempotent, so it succeeds even if it
+/// wasn't locked to begin with. The screen uses this value to choose between
+/// "Unlocked" and "It wasn't locked".
 #[derive(Debug, Serialize, ToSchema)]
 pub struct UserUnlockResponse {
     pub user_id: String,
     pub was_locked: bool,
 }
 
-/// 管理者による MFA 解除レスポンス（MT21）。何を外したかだけを返し、シークレット・
-/// クレデンシャルの内容は含めない。未設定でも成功（すべて `false` / `0`）になる。
+/// MFA reset response by an admin (MT21). Returns only what was removed, not the contents of secrets or
+/// credentials. Succeeds even when nothing is configured (all `false` / `0`).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct UserMfaResetResponse {
     pub user_id: String,
-    /// TOTP 設定が存在して削除されたか。
+    /// Whether a TOTP configuration existed and was deleted.
     pub totp_removed: bool,
-    /// 削除した Passkey（WebAuthn クレデンシャル）の件数。
+    /// Number of passkeys (WebAuthn credentials) deleted.
     pub passkeys_removed: u64,
 }
 
-/// 管理者によるトークン再発行レスポンス（ADR-0047）。落とした本数だけを返し、トークンの値も
-/// ハッシュも含めない。生きているトークンが無くても成功（`revoked = 0`）で、画面はこれを
-/// 「対象がありませんでした」と出し分ける。
+/// Token reissue response by an admin (ADR-0047). Returns only the number dropped, neither token values nor
+/// hashes. Succeeds even with no live tokens (`revoked = 0`), and the screen uses this to show
+/// "there was nothing to revoke".
 #[derive(Debug, Serialize, ToSchema)]
 pub struct UserTokenReissueResponse {
     pub user_id: String,
-    /// 失効させた refresh token の本数。
+    /// Number of refresh tokens revoked.
     pub revoked: u64,
 }
 
-/// 利用者のいま有効なトークンの本数（`GET /{tenant_id}/admin/users/{user_id}/active-tokens`。
-/// task #83）。再発行（ADR-0047）を押す前に対象の有無を見せるための読み取り。
+/// Number of the user's currently active tokens (`GET /{tenant_id}/admin/users/{user_id}/active-tokens`,
+/// task #83). A read to show whether there is anything to target before pressing reissue (ADR-0047).
 ///
-/// ⚠ **数えているのは refresh token だけ。** アクセストークンは自己完結型 JWT で DB に行が
-/// 無く、数えられない（寿命まで有効なまま）。フィールド名に種類を入れて取り違えを防ぐ。
+/// ⚠ **Only refresh tokens are counted.** Access tokens are self-contained JWTs with no DB rows,
+/// so they can't be counted (they stay valid until expiry). The field name includes the kind to prevent mix-ups.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct UserActiveTokensResponse {
     pub user_id: String,
-    /// 未失効かつ期限内の refresh token の本数。テナントを問わず数える（再発行が落とす範囲と同じ）。
+    /// Number of unrevoked, unexpired refresh tokens. Counted across tenants (same range as what reissue drops).
     pub active_refresh_tokens: u64,
 }
 
-/// 子テナント管理者のパスワード再発行リクエスト
-/// （`POST /{tenant_id}/admin/tenants/{child_id}/admin-password-reset`）。
+/// Password reissue request for a child tenant admin
+/// (`POST /{tenant_id}/admin/tenants/{child_id}/admin-password-reset`).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct TenantAdminPasswordResetRequest {
-    /// 対象利用者（子テナント所属）のメールアドレス。
+    /// Email address of the target user (belonging to the child tenant).
     pub email: String,
 }
 
-// --- メンバー・招待（ADR-0009 §3・§6） --------------------------------------------------------
+// --- Members and invitations (ADR-0009 §3, §6) --------------------------------------------------------
 
-/// メンバー一覧の 1 件（`GET /{tenant_id}/admin/members`）。HOME / GUEST を問わない。
+/// One entry of the member list (`GET /{tenant_id}/admin/members`). Both HOME and GUEST.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct MemberResponse {
     pub user_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
-    /// 主たるログイン識別子（ユーザー名）。付けずに作られたアカウントは省略される。
+    /// Primary login identifier (username). Omitted for accounts created without one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preferred_username: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// `HOME` または `GUEST`。
+    /// `HOME` or `GUEST`.
     pub membership_type: String,
-    /// `INVITED` または `ACTIVE`。
+    /// `INVITED` or `ACTIVE`.
     pub status: String,
-    /// 利用者アカウント自体の状態（`ACTIVE` / `DISABLED` / `LOCKED`）。不存在ユーザーは `None`。
+    /// Status of the user account itself (`ACTIVE` / `DISABLED` / `LOCKED`). `None` for nonexistent users.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_status: Option<String>,
-    /// ログイン失敗によるロックが**今**掛かっているか（AP6）。`user_status` とは別
-    /// （ロックは `locked_until` で表され、期限切れかどうかは読んだ時点で決まる）。
+    /// Whether a lock from failed sign-ins is in effect **now** (AP6). Separate from `user_status`
+    /// (the lock is represented by `locked_until`, and whether it expired is decided at read time).
     pub locked: bool,
-    /// 仮登録か（ADR-0064）。本人がまだ設定リンクで資格情報を決めておらず、ログインできない。
+    /// Whether provisionally registered (ADR-0064). The user has not yet set credentials via the setup link and can't sign in.
     pub pending_setup: bool,
-    /// 仮登録の人の、いまの設定リンクの期限（RFC 3339・UTC）。仮登録でない・リンクが無ければ省略される。
+    /// For provisionally registered people, the current setup link's expiry (RFC 3339, UTC). Omitted if not provisional or no link.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub setup_link_expires_at: Option<String>,
-    /// 仮登録で、使える設定リンクが無い（期限切れ・出していない）か。読んだ時点で判定する。
-    /// 立っていたら管理者が出し直すまで誰も入れない。
+    /// Whether provisionally registered with no usable setup link (expired or never issued). Decided at read time.
+    /// If set, nobody can get in until an admin issues a new one.
     pub setup_link_expired: bool,
-    /// 管理者メモ（ADR-0063）。書かれていなければ省略される。
+    /// Admin note (ADR-0063). Omitted if nothing is written.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<AccountNoteResponse>,
 }
 
-/// アカウント（人・サービスアカウント）の管理者メモ（ADR-0063 / ADR-0065）。経緯を書き残すための
-/// 自由記述で、判定には使わない。
+/// Admin note for an account (person or service account) (ADR-0063 / ADR-0065). Free text for recording
+/// background; never used for decisions.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct AccountNoteResponse {
     pub text: String,
-    /// 最後に書かれた日時（RFC 3339・UTC）。
+    /// When it was last written (RFC 3339, UTC).
     pub updated_at: String,
 }
 
-/// 管理者メモの書き込み（`PUT /{tenant_id}/admin/members/{user_id}/note`・
-/// `PUT /{tenant_id}/admin/service-accounts/{client_id}/note`。ADR-0063 / ADR-0065）。
+/// Writing an admin note (`PUT /{tenant_id}/admin/members/{user_id}/note`,
+/// `PUT /{tenant_id}/admin/service-accounts/{client_id}/note`, ADR-0063 / ADR-0065).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateAccountNoteRequest {
-    /// メモの本文（2000 文字まで）。空（空白だけ）ならメモを消す。
+    /// Note body (up to 2000 characters). Empty (whitespace only) deletes the note.
     pub note: String,
 }
 
-/// アカウント 1 つが使えるアプリの一覧（ADR-0063 / ADR-0065）。
+/// List of apps one account can use (ADR-0063 / ADR-0065).
 ///
-/// - 人（`GET /{tenant_id}/admin/members/{user_id}/applications`）: ログインの名乗り（OIDC / SAML）を
-///   持つアプリだけが載る
-/// - サービスアカウント（`GET /{tenant_id}/admin/service-accounts/{client_id}/applications`）: 宛名
-///   （`resource`）の名乗りを持つアプリだけが載る
+/// - People (`GET /{tenant_id}/admin/members/{user_id}/applications`): only apps with sign-in bindings (OIDC / SAML)
+///   are listed
+/// - Service accounts (`GET /{tenant_id}/admin/service-accounts/{client_id}/applications`): only apps with audience
+///   (`resource`) bindings are listed
 #[derive(Debug, Serialize, ToSchema)]
 pub struct AccountApplicationListResponse {
     pub applications: Vec<AccountApplicationResponse>,
-    /// いま人の判定が断るところまで来ているか（`record_only` / `enforce`）。サービスアカウントの
-    /// トークン発行はこの設定に関係なく断る。
+    /// How far the decision for people currently goes in rejecting (`record_only` / `enforce`). Service account
+    /// token issuance rejects regardless of this setting.
     pub enforcement: String,
 }
 
-/// アカウントから見たアプリ 1 件。
+/// One app as seen from an account.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct AccountApplicationResponse {
     pub application_id: String,
     pub display_name: String,
-    /// アプリの状態（`ACTIVE` / `DISABLED`）。
+    /// The app's status (`ACTIVE` / `DISABLED`).
     pub status: String,
-    /// `EVERYONE` / `INDIVIDUAL`。
+    /// `EVERYONE` / `INDIVIDUAL`.
     pub assignment_mode: String,
-    /// このアカウントがいま使えるか（`allowed` / `not_assigned` / `application_disabled`）。
-    /// 判定（人はログイン、サービスアカウントはトークン発行）と同じ規則で決まる。
+    /// Whether this account can use it now (`allowed` / `not_assigned` / `application_disabled`).
+    /// Decided by the same rule as the decision (sign-in for people, token issuance for service accounts).
     pub access: String,
-    /// 個別の割り当ての日時（RFC 3339・UTC）。割り当てが無ければ省略される。
+    /// Time of the individual assignment (RFC 3339, UTC). Omitted if there is no assignment.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assigned_at: Option<String>,
 }
 
-/// 一覧のページングクエリ（`GET /{tenant_id}/admin/tenants` ほか。G7）。
+/// Paging query for lists (`GET /{tenant_id}/admin/tenants` and others, G7).
 ///
-/// 絞り込み条件を持たない一覧で共有する。絞り込みのある一覧（clients・members）は固有の型を持つ。
+/// Shared by lists without filter conditions. Lists with filters (clients, members) have their own types.
 #[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct PageQueryParams {
-    /// 1 ページの件数。未指定は 50、上限 200（超過分は上限へ丸める）。
+    /// Entries per page. 50 if unspecified, max 200 (larger values are clamped to the max).
     #[serde(default)]
     pub limit: Option<i64>,
-    /// 読み飛ばす件数。未指定は 0。
+    /// Number of entries to skip. 0 if unspecified.
     #[serde(default)]
     pub offset: Option<i64>,
 }
 
-/// クライアント一覧のクエリ（`GET /{tenant_id}/admin/clients`）。ページングに絞り込みを重ねる。
+/// Client list query (`GET /{tenant_id}/admin/clients`). Layers filters on top of paging.
 ///
-/// `grant_type` は管理コンソールの一覧を「連携先」と「サービスアカウント」へ分けるためのもの
-/// （ADR-0038）。**用途そのものは受け取らない** —— 用途は api のモデルには無く、web が
-/// `redirect_uris` の有無と `client_credentials` の可否へ翻訳する語彙である（ADR-0032）。
-/// `authorization_code` と `client_credentials` は 1 つのクライアントに同居しないので
-/// （ADR-0032 Revised）、grant 1 つで排他に分かれる。
+/// `grant_type` is for splitting the admin console list into "connected apps" and "service accounts"
+/// (ADR-0038). **The purpose itself is not accepted** -- purpose is not in the api's model; it is vocabulary web
+/// translates into whether `redirect_uris` exist and whether `client_credentials` is allowed (ADR-0032).
+/// `authorization_code` and `client_credentials` never coexist in one client
+/// (ADR-0032 Revised), so a single grant splits them exclusively.
 #[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct ClientListQueryParams {
-    /// 1 ページの件数。未指定は 50、上限 200（超過分は上限へ丸める）。
+    /// Entries per page. 50 if unspecified, max 200 (larger values are clamped to the max).
     #[serde(default)]
     pub limit: Option<i64>,
-    /// 読み飛ばす件数。未指定は 0。
+    /// Number of entries to skip. 0 if unspecified.
     #[serde(default)]
     pub offset: Option<i64>,
-    /// 絞り込む grant（`authorization_code` / `client_credentials`）。未指定なら絞り込まない。
+    /// Grant to filter by (`authorization_code` / `client_credentials`). No filtering if unspecified.
     #[serde(default)]
     pub grant_type: Option<String>,
 }
 
-/// クライアント一覧のレスポンス（`GET /{tenant_id}/admin/clients`。G7）。
+/// Client list response (`GET /{tenant_id}/admin/clients`, G7).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ClientListResponse {
     pub clients: Vec<ClientResponse>,
-    /// `limit` / `offset` を無視した該当総数。画面が「全 N 件」と次ページの有無を確定できる。
+    /// Total matches ignoring `limit` / `offset`. Lets the screen settle "N in total" and whether a next page exists.
     pub total: i64,
-    /// 実際に適用された値（クランプ後）。要求値をそのまま返さないのは、上限で丸めた結果を
-    /// 呼び出し側がページ送りの計算にそのまま使えるようにするため。
+    /// The values actually applied (after clamping). The requested values are not echoed so that callers can use
+    /// the clamped result as is when computing paging.
     pub limit: i64,
     pub offset: i64,
 }
 
-/// 子テナント一覧のレスポンス（`GET /{tenant_id}/admin/tenants`。G7）。
+/// Child tenant list response (`GET /{tenant_id}/admin/tenants`, G7).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct TenantListResponse {
     pub tenants: Vec<TenantResponse>,
-    /// `limit` / `offset` を無視した該当総数。
+    /// Total matches ignoring `limit` / `offset`.
     pub total: i64,
-    /// 実際に適用された値（クランプ後）。
+    /// The values actually applied (after clamping).
     pub limit: i64,
     pub offset: i64,
 }
 
-/// メンバー一覧のクエリパラメータ（`GET /{tenant_id}/admin/members`。MT22）。
+/// Query parameters of the member list (`GET /{tenant_id}/admin/members`, MT22).
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct MemberListQueryParams {
-    /// 絞り込み語。メールアドレス・氏名の**部分一致**（大文字小文字を無視）。未指定・空は絞り込まない。
+    /// Filter term. **Partial match** on email address and name (case-insensitive). Unspecified or empty doesn't filter.
     #[serde(default)]
     pub q: Option<String>,
-    /// 1 ページの件数。未指定は 50、上限 200（超過分は上限へ丸める）。
+    /// Entries per page. 50 if unspecified, max 200 (larger values are clamped to the max).
     #[serde(default)]
     pub limit: Option<i64>,
-    /// 読み飛ばす件数。未指定は 0。
+    /// Number of entries to skip. 0 if unspecified.
     #[serde(default)]
     pub offset: Option<i64>,
 }
 
-/// メンバー一覧のレスポンス（`GET /{tenant_id}/admin/members`。MT22）。
+/// Member list response (`GET /{tenant_id}/admin/members`, MT22).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct MemberListResponse {
     pub members: Vec<MemberResponse>,
-    /// `limit` / `offset` を無視した該当総数。画面が「全 N 件」と次ページの有無を確定できる。
+    /// Total matches ignoring `limit` / `offset`. Lets the screen settle "N in total" and whether a next page exists.
     pub total: i64,
-    /// 実際に適用された値（クランプ後）。要求値をそのまま返さないのは、上限で丸めた結果を
-    /// 呼び出し側がページ送りの計算にそのまま使えるようにするため。
+    /// The values actually applied (after clamping). The requested values are not echoed so that callers can use
+    /// the clamped result as is when computing paging.
     pub limit: i64,
     pub offset: i64,
 }
 
-// --- アカウント（人とサービスアカウント。ADR-0065） -------------------------------------------
+// --- Accounts (people and service accounts, ADR-0065) -------------------------------------------
 
-/// アカウント一覧のクエリ（`GET /{tenant_id}/admin/accounts`）。
+/// Account list query (`GET /{tenant_id}/admin/accounts`).
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct AccountListQueryParams {
-    /// 並べる種別（`user` / `service_account`）。未指定は「読めるものすべて」。
-    /// ⚠ 読めない種別を指定すると 403（黙って空にしない）。
+    /// Kind to list (`user` / `service_account`). Unspecified means "everything readable".
+    /// ⚠ Specifying an unreadable kind gives 403 (not a silent empty list).
     #[serde(default)]
     pub kind: Option<String>,
-    /// 絞り込み語の**部分一致**（大文字小文字を無視）。人はメール・氏名・ユーザー名・メモ、
-    /// サービスアカウントは登録名・`client_id`・メモを見る。未指定・空は絞り込まない。
+    /// **Partial match** of the filter term (case-insensitive). For people: email, name, username, note;
+    /// for service accounts: registered name, `client_id`, note. Unspecified or empty doesn't filter.
     #[serde(default)]
     pub q: Option<String>,
-    /// 1 ページの件数。未指定は 50、上限 200（超過分は上限へ丸める）。
+    /// Entries per page. 50 if unspecified, max 200 (larger values are clamped to the max).
     #[serde(default)]
     pub limit: Option<i64>,
-    /// 読み飛ばす件数。未指定は 0。
+    /// Number of entries to skip. 0 if unspecified.
     #[serde(default)]
     pub offset: Option<i64>,
 }
 
-/// アカウント一覧のレスポンス（`GET /{tenant_id}/admin/accounts`）。
+/// Account list response (`GET /{tenant_id}/admin/accounts`).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct AccountListResponse {
-    /// 見出し（人はメール → ユーザー名、サービスアカウントは登録名）の昇順。種別をまたいで混ざる。
+    /// Ascending by heading (people: email -> username; service accounts: registered name). Kinds are mixed together.
     pub accounts: Vec<AccountResponse>,
-    /// 実際に並べた種別。
+    /// Kinds actually listed.
     pub kinds: Vec<String>,
-    /// 呼んだ主体が読める種別（画面が絞り込みの選択肢を出すため）。
+    /// Kinds the calling principal can read (so the screen can offer filter choices).
     pub readable_kinds: Vec<String>,
-    /// `limit` / `offset` を無視した該当総数。
+    /// Total matches ignoring `limit` / `offset`.
     pub total: i64,
-    /// 実際に適用された値（クランプ後）。
+    /// The values actually applied (after clamping).
     pub limit: i64,
     pub offset: i64,
 }
 
-/// アカウント一覧の 1 行。`kind` に応じて `user` か `service_account` のどちらか 1 つだけが載る。
+/// One account list row. Depending on `kind`, exactly one of `user` or `service_account` is present.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct AccountResponse {
-    /// `user` / `service_account`。
+    /// `user` / `service_account`.
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<MemberResponse>,
@@ -1361,167 +1361,167 @@ pub struct AccountResponse {
     pub service_account: Option<ServiceAccountResponse>,
 }
 
-/// サービスアカウント 1 件（`GET /{tenant_id}/admin/service-accounts/{client_id}`・一覧の 1 行。
-/// ADR-0065）。接続の設定（認証方式・scope・鍵）は `GET /admin/clients/{client_id}` にある。
+/// One service account (`GET /{tenant_id}/admin/service-accounts/{client_id}`, also one list row,
+/// ADR-0065). Connection settings (auth method, scopes, keys) are at `GET /admin/clients/{client_id}`.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ServiceAccountResponse {
     pub client_id: String,
-    /// 登録名。
+    /// Registered name.
     pub app_name: String,
-    /// `ACTIVE` / `DISABLED`。
+    /// `ACTIVE` / `DISABLED`.
     pub status: String,
-    /// 登録日時（RFC 3339・UTC）。
+    /// Registration time (RFC 3339, UTC).
     pub created_at: String,
-    /// このサービスアカウントを名乗り（binding）に持つアプリ。無ければ省略される。
-    /// ⚠ 「使えるアプリ」（割り当て）とは別の関係である。
+    /// The app that has this service account as a binding. Omitted if none.
+    /// ⚠ A different relation from "usable apps" (assignments).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub identity_of: Option<IdentityApplicationResponse>,
-    /// 管理者メモ。書かれていなければ省略される。
+    /// Admin note. Omitted if nothing is written.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<AccountNoteResponse>,
 }
 
-/// サービスアカウントを名乗りに持つアプリ。
+/// The app that has a service account as a binding.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct IdentityApplicationResponse {
     pub application_id: String,
     pub display_name: String,
 }
 
-/// ゲスト招待作成リクエスト（`POST /{tenant_id}/admin/invitations`）。被招待者は所属元が他テナントの
-/// 既存利用者で、内部 ID で指定する。
+/// Guest invitation creation request (`POST /{tenant_id}/admin/invitations`). The invitee is an existing user whose
+/// home is another tenant, specified by internal ID.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateInvitationRequest {
-    /// 招待する相手。**メールアドレス、または内部 ID（UUID）**（ADR-0061）。
+    /// The person to invite. **Email address or internal ID (UUID)** (ADR-0061).
     ///
-    /// 旧名 `user_id` でも受ける（内部 ID しか受け付けなかった頃の名前）。⚠ **欄は 1 本のまま
-    /// 増やさない** —— 「メールで指す」「ID で指す」は同じ 1 つの決定であって、2 つの入力に
-    /// 分けると「両方書いたらどちらが勝つのか」という表せない状態が生まれる（ADR-0032）。
+    /// Also accepted under the old name `user_id` (from when only internal IDs were accepted). ⚠ **Keep it a single field;
+    /// don't add another** -- "point by email" and "point by ID" are one and the same decision, and splitting it into two inputs
+    /// creates an unrepresentable state of "which wins if both are written" (ADR-0032).
     #[serde(alias = "user_id")]
     pub invitee: String,
 }
 
-/// 招待作成レスポンス。`token` は平文の招待トークンで、**この応答でのみ**返る（メール未達時に管理者が
-/// 被招待者へ別途通知する。ログ・監査には出さない。ADR-0009 §3）。
+/// Invitation creation response. `token` is the plaintext invitation token, returned **only in this response** (if mail fails,
+/// the admin notifies the invitee separately; never in logs or audits, ADR-0009 §3).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct InvitationCreatedResponse {
     pub token: String,
-    /// 招待の失効時刻（RFC3339）。
+    /// Invitation expiry time (RFC3339).
     pub expires_at: String,
-    /// 招待メール（承諾リンク）を被招待者へ送信できたか（MT17）。SMTP 未設定・送信失敗は false
-    /// （招待は成立しており、管理者が token を手動で伝達する）。
+    /// Whether the invitation mail (acceptance link) could be sent to the invitee (MT17). false when SMTP is unset or sending failed
+    /// (the invitation is still valid; the admin conveys the token manually).
     pub email_sent: bool,
-    /// 被招待者のメールアドレス（送信先の確認表示用）。**メールアドレスで招いたときだけ**載る
-    /// （内部 ID で招いたときは省く。ID から他のテナントの利用者のアドレスを引き出させない。task #591）。
+    /// The invitee's email address (for confirming the recipient). Present **only when invited by email address**
+    /// (omitted when invited by internal ID, so an ID can't be used to pull out another tenant's user's address, task #591).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub invitee_email: Option<String>,
 }
 
-/// 招待承諾リクエスト（`POST /{tenant_id}/invitations/accept`）。ログイン済み利用者がトークンを提示する。
+/// Invitation acceptance request (`POST /{tenant_id}/invitations/accept`). A signed-in user presents the token.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct AcceptInvitationRequest {
     pub token: String,
 }
 
-/// 認証ポリシー 1 件（ユーザー認証・認証ポリシー仕様書 §7）。
+/// One authentication policy (user authentication / authentication policy spec §7).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct AuthenticationPolicyResponse {
     pub id: String,
     pub policy_code: String,
     pub policy_name: String,
-    /// 評価順（昇順 = 小さいほど優先）。
+    /// Evaluation order (ascending = smaller takes priority).
     pub priority: i32,
     pub enabled: bool,
-    /// `allow` / `deny` / `require_mfa` / `require_specific_method`。
+    /// `allow` / `deny` / `require_mfa` / `require_specific_method`.
     pub effect: String,
-    /// `require_specific_method` の要求内容（他の効果では `null`。AP3）。
+    /// What `require_specific_method` requires (`null` for other effects, AP3).
     pub effect_params: Option<RequiredMethodsDto>,
-    /// 対象アプリの内部 ID（空 = 全アプリ。ADR-0054 の決定 5）。
+    /// Internal IDs of target apps (empty = all apps, ADR-0054 decision 5).
     pub application_ids: Vec<String>,
-    /// 対象ユーザーの内部 ID（空 = 全ユーザー）。
+    /// Internal IDs of target users (empty = all users).
     pub user_ids: Vec<String>,
-    /// 対象ネットワークゾーン（CIDR 表記。空 = 全ネットワーク。AP3）。
+    /// Target network zones (CIDR notation; empty = all networks, AP3).
     pub ip_cidrs: Vec<String>,
-    /// 適用時間帯（空 = 常時。AP3）。
+    /// Time windows when it applies (empty = always, AP3).
     pub time_windows: Vec<TimeWindowDto>,
-    /// 認可要求の `acr_values` 条件（空 = 要求内容を問わない。AP3）。
+    /// `acr_values` condition of the authorization request (empty = regardless of what is requested, AP3).
     pub requested_acr: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
 }
 
-/// `require_specific_method` の要求内容（AP3。仕様 §12.2）。
+/// What `require_specific_method` requires (AP3, spec §12.2).
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct RequiredMethodsDto {
-    /// 許可する認証方式（`password` / `totp` / `webauthn` / `recovery_code` / `email_otp` /
-    /// `sms_otp` / `external_idp`）。**いずれか 1 つ**を使っていれば満たす。
+    /// Allowed authentication methods (`password` / `totp` / `webauthn` / `recovery_code` / `email_otp` /
+    /// `sms_otp` / `external_idp`). Satisfied if **any one** of them was used.
     #[serde(default)]
     pub methods: Vec<String>,
-    /// WebAuthn の User Verification（生体・PIN）を必須とするか。
+    /// Whether WebAuthn User Verification (biometrics, PIN) is required.
     #[serde(default)]
     pub user_verification: bool,
 }
 
-/// 適用時間帯（AP3）。タイムゾーンは固定 UTC オフセット（分）で表す。
+/// Time window when it applies (AP3). The time zone is a fixed UTC offset (minutes).
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct TimeWindowDto {
-    /// 対象曜日（0 = 日曜 … 6 = 土曜。空 = 全曜日）。
+    /// Target weekdays (0 = Sunday … 6 = Saturday; empty = every day).
     #[serde(default)]
     pub days: Vec<u8>,
-    /// 開始時刻（0 時からの分。0〜1439）。
+    /// Start time (minutes from midnight, 0-1439).
     pub start_minute: u16,
-    /// 終了時刻（同上。開始より小さい場合は日をまたぐ帯）。
+    /// End time (same; if smaller than the start, the window crosses midnight).
     pub end_minute: u16,
-    /// UTC オフセット（分。例: JST = 540）。
+    /// UTC offset (minutes; e.g. JST = 540).
     #[serde(default)]
     pub utc_offset_minutes: i16,
 }
 
-/// 認証ポリシー一覧（priority 昇順）。
+/// Authentication policy list (priority ascending).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct AuthenticationPoliciesResponse {
     pub policies: Vec<AuthenticationPolicyResponse>,
-    /// どのポリシーにも一致しないときの既定動作（`allow` / `deny`）。**このテナントの値**
-    /// （ADR-0058 §4）。ポリシーの意味はこの値と組み合わせて初めて決まるので、一覧と同じ応答に載せる。
+    /// Default behaviour when no policy matches (`allow` / `deny`). **This tenant's value**
+    /// (ADR-0058 §4). The meaning of the policies is only settled together with this value, so it is in the same response as the list.
     pub default_effect: String,
 }
 
-/// 認証ポリシーの作成・更新（全項目置換）リクエスト。
+/// Authentication policy create/update (replace all fields) request.
 ///
-/// **未知のキーは受け付けない。** 黙って捨てると、条件名のタイポや未対応の条件
-/// （`country` など）を書いた要求が 200 で返り、**その制限が掛かっていないポリシーが保存される**。
-/// 送った側は絞ったつもりでいる。ADR-0020 が `PolicyConditions` に `deny_unknown_fields` を
-/// 付けたのと同じ理由で、入口の DTO にも要る —— 条件はここでは平坦に並ぶので、保存形の側の
-/// 検査はリクエストには届かない（ADR-0028）。
+/// **Unknown keys are rejected.** Silently dropping them would let a request with a typo in a condition name or an unsupported
+/// condition (such as `country`) return 200 and **save a policy without that restriction**,
+/// while the sender believes they narrowed it. For the same reason ADR-0020 put `deny_unknown_fields` on `PolicyConditions`,
+/// it is needed on the entry DTO too -- here the conditions are laid out flat, so the check on the stored form
+/// never reaches the request (ADR-0028).
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AuthenticationPolicyUpsertRequest {
-    /// テナント内一意の識別コード（英数字と `-` `_` `.`、1〜100 文字）。
+    /// Identifier code unique within the tenant (alphanumerics and `-` `_` `.`, 1-100 characters).
     pub policy_code: String,
     pub policy_name: String,
-    /// 評価順（昇順 = 小さいほど優先）。
+    /// Evaluation order (ascending = smaller takes priority).
     pub priority: i32,
-    /// 省略時は有効（`true`）。
+    /// Enabled (`true`) when omitted.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
-    /// `allow` / `deny` / `require_mfa` / `require_specific_method`。
+    /// `allow` / `deny` / `require_mfa` / `require_specific_method`.
     pub effect: String,
-    /// `require_specific_method` の要求内容（他の効果で指定するとエラー。AP3）。
+    /// What `require_specific_method` requires (an error if given with other effects, AP3).
     #[serde(default)]
     pub effect_params: Option<RequiredMethodsDto>,
-    /// 対象アプリの内部 ID（UUID。省略・空 = 全アプリ。ADR-0054 の決定 5）。
+    /// Internal IDs of target apps (UUID; omitted/empty = all apps, ADR-0054 decision 5).
     #[serde(default)]
     pub application_ids: Vec<String>,
-    /// 対象ユーザーの内部 ID（UUID。省略・空 = 全ユーザー）。
+    /// Internal IDs of target users (UUID; omitted/empty = all users).
     #[serde(default)]
     pub user_ids: Vec<String>,
-    /// 対象ネットワークゾーン（CIDR 表記。省略・空 = 全ネットワーク。AP3）。
+    /// Target network zones (CIDR notation; omitted/empty = all networks, AP3).
     #[serde(default)]
     pub ip_cidrs: Vec<String>,
-    /// 適用時間帯（省略・空 = 常時。AP3）。
+    /// Time windows when it applies (omitted/empty = always, AP3).
     #[serde(default)]
     pub time_windows: Vec<TimeWindowDto>,
-    /// 認可要求の `acr_values` 条件（省略・空 = 要求内容を問わない。AP3）。
+    /// `acr_values` condition of the authorization request (omitted/empty = regardless of what is requested, AP3).
     #[serde(default)]
     pub requested_acr: Vec<String>,
 }
@@ -1534,9 +1534,9 @@ fn default_enabled() -> bool {
 mod authentication_policy_contract_tests {
     use super::*;
 
-    /// 管理コンソール（web）が使う `assay_contracts::admin` 側の DTO と、ここ（OpenAPI に載せる
-    /// api 側の DTO）は**同じ JSON でなければならない**。食い違うと管理画面から保存できなくなる
-    /// （web が送った形を api が復号できない）。両方を JSON で往復させて形の一致を固定する。
+    /// The `assay_contracts::admin` DTO used by the admin console (web) and the one here (the api-side DTO that
+    /// appears in OpenAPI) **must be the same JSON**. If they diverge, saving from the admin screen breaks
+    /// (the api can't decode what web sent). Both are round-tripped through JSON to pin the shapes together.
     #[test]
     fn authentication_policy_contract_matches_the_api_dto() {
         let shared = assay_contracts::admin::AuthenticationPolicyUpsertRequest {
@@ -1582,8 +1582,8 @@ mod authentication_policy_contract_tests {
         assert_eq!(api.time_windows[0].utc_offset_minutes, 540);
     }
 
-    /// 管理コンソールが描く方式のチェックボックスは、api の `AuthenticationMethod` の
-    /// **保存値そのもの**でなければならない（選んだ方式が api に弾かれる形にしない）。
+    /// The method checkboxes the admin console draws must be **exactly the stored values** of the api's
+    /// `AuthenticationMethod` (so a chosen method is never rejected by the api).
     #[test]
     fn authentication_method_codes_match_the_contract() {
         use crate::domain::values::AuthenticationMethod;
@@ -1603,7 +1603,7 @@ mod authentication_policy_contract_tests {
             assay_contracts::admin::AUTHENTICATION_METHOD_CODES.to_vec(),
             expected
         );
-        // 一覧に載せた各コードが実際に解釈できること（綴り間違いの検出）。
+        // Each code listed can actually be parsed (detects misspellings).
         for code in assay_contracts::admin::AUTHENTICATION_METHOD_CODES {
             assert!(
                 AuthenticationMethod::parse(code).is_ok(),
@@ -1612,8 +1612,8 @@ mod authentication_policy_contract_tests {
         }
     }
 
-    /// 管理コンソールが描くログイン識別子の種別プルダウンは、api の `LoginIdentifierType` の
-    /// **保存値そのもの**でなければならない（AP16。選んだ種別が api に弾かれる形にしない）。
+    /// The login identifier type dropdown the admin console draws must be **exactly the stored values** of the api's
+    /// `LoginIdentifierType` (AP16; so a chosen type is never rejected by the api).
     #[test]
     fn login_identifier_type_codes_match_the_contract() {
         use crate::domain::login_identifier::LoginIdentifierType;
@@ -1643,8 +1643,8 @@ mod authentication_policy_contract_tests {
 mod console_support_contract_tests {
     use super::*;
 
-    /// api が返す JSON と、web が `assay_contracts` の型から作る JSON が**鍵まで同じ**であること。
-    /// 片方にだけ項目が増えると、web の復号が落ちるか、OpenAPI が実際と違う形を載せる。
+    /// The JSON the api returns and the JSON web builds from the `assay_contracts` types are **identical down to the keys**.
+    /// If a field is added on only one side, web's decoding fails or OpenAPI shows a shape different from reality.
     fn assert_same_json(api: &impl Serialize, shared: &impl Serialize) {
         assert_eq!(
             serde_json::to_value(api).expect("serialize the api dto"),

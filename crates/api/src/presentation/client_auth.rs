@@ -1,11 +1,11 @@
-//! トークン系エンドポイント（`/token`・`/introspect`・`/revoke`）のクライアント資格情報の取り出し。
+//! Extracts client credentials for the token endpoints (`/token`, `/introspect`, `/revoke`).
 //!
-//! 3 つのエンドポイントは RFC 6749 §2.3.1 の同じクライアント認証を受け付ける。`Authorization: Basic`
-//! の復号と body（`client_secret_post`・`private_key_jwt` の assertion）の読み取りをここへ集め、判定は
-//! `assay_core::application::client_authentication` が行う。
+//! The three endpoints accept the same client authentication of RFC 6749 §2.3.1. Decoding of
+//! `Authorization: Basic` and reading the body (`client_secret_post`, `private_key_jwt` assertion) live here;
+//! the decision is made by `assay_core::application::client_authentication`.
 //!
-//! 形式不正な Basic ヘッダは 401（`invalid_client`）で返す。ここでは**どの client か**を特定
-//! できないため監査ログは残さず、クライアントの存在が判明してからユースケース側で記録する。
+//! A malformed Basic header returns 401 (`invalid_client`). Here we cannot tell **which client** it is,
+//! so no audit log is written; the use case records it once the client is known to exist.
 
 use crate::domain::error::OAuthErrorCode;
 use crate::presentation::dto::OAuthErrorResponse;
@@ -17,14 +17,14 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use percent_encoding::percent_decode_str;
 
-/// `Authorization: Basic` ヘッダの形式不正。
+/// Malformed `Authorization: Basic` header.
 #[derive(Debug)]
 pub struct MalformedBasicHeader;
 
-/// `Authorization: Basic` から `(client_id, client_secret)` を取り出す。
+/// Extracts `(client_id, client_secret)` from `Authorization: Basic`.
 ///
-/// RFC 6749 §2.3.1 に従い、資格情報は form-urlencoded でエンコードされている前提で
-/// パーセントデコードする。ヘッダが無ければ `Ok(None)`。
+/// Per RFC 6749 §2.3.1 the credentials are assumed to be form-urlencoded, so they are
+/// percent-decoded. `Ok(None)` when the header is absent.
 pub fn basic_credentials(
     headers: &HeaderMap,
 ) -> Result<Option<(String, String)>, MalformedBasicHeader> {
@@ -47,22 +47,22 @@ pub fn basic_credentials(
     Ok(Some((id.into_owned(), secret.into_owned())))
 }
 
-/// body（フォーム本文）から読み取ったクライアント資格情報。
+/// Client credentials read from the body (form payload).
 ///
-/// 3 エンドポイントが同じ形で受け取るためにまとめてある。方式が増えたときに引数の並びを
-/// 3 か所で直さずに済む（並びの取り違えは型が同じなのでコンパイラが捕まえられない）。
+/// Grouped because all three endpoints receive them in the same shape. When a method is added the
+/// argument order need not be fixed in 3 places (the compiler cannot catch a swapped order, as the types match).
 #[derive(Debug, Default)]
 pub struct BodyClientCredentials {
     pub client_id: Option<String>,
-    /// `client_secret_post`。
+    /// `client_secret_post`.
     pub client_secret: Option<String>,
-    /// `private_key_jwt` の署名済み assertion（RFC 7523 §2.2。ADR-0030）。
+    /// Signed `private_key_jwt` assertion (RFC 7523 §2.2, ADR-0030).
     pub client_assertion: Option<String>,
     pub client_assertion_type: Option<String>,
 }
 
-/// ヘッダと body の資格情報をまとめる。空文字は「未提示」として落とす
-/// （フォームの空欄が secret の提示として扱われないようにする）。
+/// Combines header and body credentials. Empty strings are dropped as "not presented"
+/// (so an empty form field is not treated as presenting a secret).
 pub fn presented_credentials(
     headers: &HeaderMap,
     body: BodyClientCredentials,
@@ -76,7 +76,7 @@ pub fn presented_credentials(
     })
 }
 
-/// 401 + `WWW-Authenticate: Basic realm="<realm>"` の共通応答（RFC 6749 §5.2）。
+/// Shared 401 + `WWW-Authenticate: Basic realm="<realm>"` response (RFC 6749 §5.2).
 pub fn unauthorized(realm: &'static str, description: &str) -> Response {
     (
         StatusCode::UNAUTHORIZED,

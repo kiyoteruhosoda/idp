@@ -1,13 +1,13 @@
-//! エラー・警告ログ参照／取り込みエンドポイント（`log` テーブル。CLAUDE.md「ログ」）。
+//! Error/warning log query / ingestion endpoints (`log` table, CLAUDE.md "ログ").
 //!
-//! - `GET /{tenant_id}/admin/logs`: 管理コンソールからの参照。`level` / `service` / `target` /
-//!   `correlation_id` / 期間で絞り込める。`correlation_id` で監査ログ（`/admin/audit-logs`）と
-//!   同じリクエストの記録を突き合わせられる。
-//! - `POST /internal/logs`: web からの取り込み（web は DB を持たないため api に書いてもらう）。
+//! - `GET /{tenant_id}/admin/logs`: query from the admin console. Filterable by `level` / `service` / `target` /
+//!   `correlation_id` / period. `correlation_id` lets you match the audit log (`/admin/audit-logs`)
+//!   with records of the same request.
+//! - `POST /internal/logs`: ingestion from web (web has no DB, so the api writes for it).
 //!
-//! **参照は `idp.system.admin`（root）に限る**。アプリケーションログはテナント横断の運用情報で、
-//! 他テナントの処理で出たエラーも同じテーブルに載るため、テナント管理者には開けない
-//! （テナント単位の追跡は監査ログ `/admin/audit-logs` が担う）。
+//! **Querying is limited to `idp.system.admin` (root)**. Application logs are cross-tenant operational data,
+//! and errors from other tenants' processing land in the same table, so tenant admins cannot open them
+//! (per-tenant tracing is covered by the audit log `/admin/audit-logs`).
 
 use crate::application::application_log::ApplicationLogQueryParams;
 use crate::domain::application_log::ApplicationLogEntry;
@@ -24,7 +24,7 @@ use axum::extract::{Query, State};
 use axum::Json;
 use chrono::{DateTime, Utc};
 
-/// エラー・警告ログを条件で絞り込み、新しい順に返す。
+/// Filters error/warning logs by conditions and returns them newest first.
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/logs",
@@ -63,26 +63,26 @@ pub async fn list_application_logs(
     Ok(Json(entries.iter().map(entry_response).collect()))
 }
 
-/// 1 リクエストで受け取る最大件数。web の送信バッチ（64 件）に余裕を持たせた上限で、
-/// 想定外の巨大なバッチで 1 文の INSERT が膨らむのを防ぐ。超過分は捨てる。
+/// Max entries accepted per request. A limit with headroom over web's send batch (64 entries) that
+/// keeps an unexpectedly huge batch from bloating a single INSERT. The excess is dropped.
 const MAX_INGEST_RECORDS: usize = 256;
 
-/// web が送ってきた WARN / ERROR を `log` テーブルへ書く（`/internal/*` のサービストークンで保護）。
+/// Writes WARN / ERROR sent by web into the `log` table (protected by the `/internal/*` service token).
 ///
-/// 解釈できない行（未知のレベル・サービス、日時形式不正）は黙って捨て、書けた件数を返す。
-/// 取り込み側の不調でログ送出元（web）を失敗させないため、書き込み失敗も 200 + `accepted: 0` で返す。
+/// Unparseable rows (unknown level/service, malformed timestamp) are silently dropped; returns the count written.
+/// So that ingestion trouble never fails the log sender (web), write failures also return 200 + `accepted: 0`.
 pub async fn ingest_application_logs(
     State(state): State<AppState>,
     Json(body): Json<ApplicationLogIngestRequest>,
 ) -> Json<ApplicationLogIngestResponse> {
     let records = &body.records[..body.records.len().min(MAX_INGEST_RECORDS)];
-    // 失敗はここでログに出さない（ログ書き込み失敗のログがまた書き込みを誘発するため）。
+    // Failures are not logged here (a log about a failed log write would trigger another write).
     let accepted = state.application_logs.ingest(records).await.unwrap_or(0);
     Json(ApplicationLogIngestResponse { accepted })
 }
 
-/// RFC3339 の日時をパースする。未指定は `None`、形式不正は 400。
-/// どの項目（`from` / `to`）が不正かは翻訳文の差し込み値で伝える。
+/// Parses an RFC3339 timestamp. `None` if absent, 400 if malformed.
+/// Which field (`from` / `to`) is invalid is conveyed via the translated message's placeholder.
 fn parse_datetime(
     value: Option<&str>,
     field: &str,

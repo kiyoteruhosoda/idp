@@ -31,10 +31,10 @@
   </div>
 </div>
 
-{#- 言語と配色は 1 つのフォームで保存する（`POST /settings/display` は送られた項目をまとめて
-    保存する）。別々のカードと保存ボタンにしていた頃は、両方を変えるのに 2 回の保存が要った。
-    保存は CSRF トークン付きの POST（task #79）。GET の `?lang=` は一時切替で、ユーザー設定へは
-    書かない。保存のあとはこの画面へ戻す（PRG）。 -#}
+{#- Language and color scheme are saved with one form (`POST /settings/display` saves all submitted fields
+    together). When they were separate cards with separate save buttons, changing both needed two saves.
+    Saving is a CSRF-protected POST (task #79). GET `?lang=` is a temporary switch and does not write
+    to the user setting. After saving, return to this screen (PRG). -#}
 <div class="card mb-4 user-settings-display" id="display">
   <div class="card-header d-flex align-items-center"><i class="fa-solid fa-display me-2" aria-hidden="true"></i>{{ messages.get("user-settings-display-heading") }}</div>
   <div class="card-body">

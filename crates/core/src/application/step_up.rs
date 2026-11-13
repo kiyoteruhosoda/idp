@@ -1,35 +1,35 @@
-//! Step-up 認証のユースケース（AP5。ユーザー認証・認証ポリシー仕様書 §15）。
+//! Step-up authentication use case (AP5. User authentication & authentication policy spec §15).
 //!
-//! 重要操作（パスワード変更・認証器の追加削除・外部 IdP の紐付け・セッション失効）の直前に
-//! 「今この操作をしてよいと確認できているか」を判定し、足りなければ本人確認をやり直させる。
+//! Right before sensitive operations (password change, adding/removing authenticators, linking external IdPs, revoking sessions),
+//! decides "has it been confirmed that this operation may be done now", and if not, makes the user re-verify.
 //!
-//! 判定（[`crate::domain::step_up::evaluate_step_up`]）はドメインの純粋関数で、本サービスは
-//! SSO セッションと利用者の認証器の有無を集めて渡す係と、確認が通ったときに SSO セッションへ
-//! 記録する係を担う。
+//! The decision ([`crate::domain::step_up::evaluate_step_up`]) is a pure domain function; this service is
+//! responsible for collecting and passing the SSO session and whether the user has authenticators, and for recording
+//! to the SSO session when verification passes.
 //!
-//! # 2 つの経路（パスワードとパスキー）
+//! # Two paths (password and passkey)
 //!
-//! **パスワード経路** ではパスワードを必ず検証する（起点は「本人しか知らないもの」）。第二要素は
-//! 要件が多要素のときだけ追加で検証する。パスワードを飛ばして TOTP だけで通せる作りにすると、
-//! 端末を拾った攻撃者が本人確認を通せてしまう。
+//! On the **password path** the password is always verified (the starting point is "something only the user knows"). The second factor is
+//! additionally verified only when the requirement is multi-factor. If it were built to let TOTP alone pass, skipping the password,
+//! an attacker who picked up the device could pass the identity check.
 //!
-//! **パスキー経路**（[`StepUpService::verify_with_passkey`]）はこの 1 回で所有要素と User
-//! Verification を満たし、かつフィッシング耐性がある。「端末を拾っただけでは通らない」という
-//! 上の要求を、知識要素を経ずに満たす唯一の方式なので、パスワードの代わりに置ける
-//! （ADR-0020 §3 / ADR-0040 決定 2 が、ログインで既にそう扱っている規則の適用範囲を広げる）。
+//! The **passkey path** ([`StepUpService::verify_with_passkey`]) satisfies possession and User
+//! Verification in this one step, and is phishing resistant. It is the only method that meets the above requirement of
+//! "picking up the device alone is not enough" without a knowledge factor, so it can stand in for the password
+//! (extends the scope of the rule ADR-0020 §3 / ADR-0040 decision 2 already apply to sign-in).
 //!
-//! これが無いと、パスキーで入った利用者は**その先でパスキーを 1 本足すことも、失くした 1 本を
-//! 消すこともできない** —— 認証器の管理は step-up の対象で、その step-up がパスワードしか
-//! 受け付けないためである。ADR-0040 決定 3 は強制パスワード変更をパスキー経路では見ないと
-//! しており、パスワードを一度も意識していない利用者が現実に居る。
+//! Without it, users who signed in with a passkey **could neither add another passkey nor remove a lost one
+//! afterwards**: authenticator management is subject to step-up, and that step-up accepted
+//! only passwords. ADR-0040 decision 3 says forced password changes are not checked on the passkey path,
+//! and users who have never been aware of a password really exist.
 //!
-//! パスワード固有のゲート（アカウントロック `locked_until`）はパスキー経路では見ない —— これは
-//! パスワードの総当たりへの対策で、署名鍵の総当たりには効かない（ADR-0040 決定 3 と同じ規則）。
+//! Password-specific gates (account lock `locked_until`) are not checked on the passkey path: they
+//! counter password brute force and have no effect on brute-forcing signing keys (same rule as ADR-0040 decision 3).
 //!
-//! # 総当たり対策
+//! # Brute-force countermeasures
 //!
-//! step-up はログイン画面と同じく資格情報を受け取る入口なので、ログインと同じ IP レート制限器を
-//! 共有する（別枠にすると、ログインで締め出された攻撃者が step-up 経由で試行を続けられる）。
+//! Step-up is an entry point receiving credentials just like the sign-in screen, so it shares the same IP rate limiter as
+//! sign-in (with a separate budget, an attacker locked out of sign-in could keep trying via step-up).
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authenticator_management::has_usable_passkey;
@@ -53,53 +53,53 @@ use crate::domain::user_device::passkey_verified_recently;
 use crate::domain::values::{AuthenticationMethod, AuthenticationStrength};
 use std::sync::Arc;
 
-/// 「この操作を今してよいか」の判定結果（画面が次にどう振る舞うかを決める）。
+/// The decision of "may this operation be done now" (decides how the screen behaves next).
 pub enum StepUpCheckOutcome {
-    /// 要件を満たしている。操作を続けてよい。
+    /// Requirements are met. The operation may continue.
     Satisfied,
-    /// 本人確認をやり直す必要がある。`second_factor_required` が真なら TOTP まで求める。
+    /// Identity must be re-verified. If `second_factor_required` is true, TOTP is required too.
     ChallengeRequired {
         second_factor_required: bool,
-        /// パスキーでの確認を出してよいか（**いま使える**パスキーを持っている）。持っていない
-        /// 利用者にボタンを見せると、ブラウザのダイアログが出てから失敗する。
+        /// Whether passkey verification may be offered (the user has a passkey **usable now**). Showing the button
+        /// to users without one makes it fail after the browser dialog appears.
         passkey_available: bool,
-        /// パスキーでしか確かめられない操作か（画面はパスワードの欄を出さない。task #872）。
+        /// Whether the operation can only be verified with a passkey (the screen does not show a password field. task #872).
         passkey_only: bool,
     },
-    /// SSO セッションが無い・期限切れ・利用者が無効。
+    /// The SSO session is missing or expired, or the user is disabled.
     SessionExpired,
     Internal(String),
 }
 
 pub struct StepUpVerifyCommand {
-    /// SSO セッション Cookie の生値。
+    /// Raw value of the SSO session Cookie.
     pub sso_session_id: String,
-    /// 対象の重要操作（要件の決定と監査に使う）。
+    /// The target sensitive operation (used for deciding requirements and for the audit).
     pub operation: SensitiveOperation,
     pub password: String,
-    /// TOTP コード（第二要素を求められている場合のみ必須）。
+    /// TOTP code (required only when the second factor is requested).
     pub totp_code: Option<String>,
 }
 
-/// パスキーでの本人確認（AP5）。パスワード経路と違い、提示するのはアサーション 1 つだけ。
+/// Identity verification with a passkey (AP5). Unlike the password path, only one assertion is presented.
 pub struct StepUpPasskeyVerifyCommand {
-    /// SSO セッション Cookie の生値。**このセッションの利用者本人のパスキーでなければ通さない。**
+    /// Raw value of the SSO session Cookie. **Only a passkey of this session's own user passes.**
     pub sso_session_id: String,
     pub operation: SensitiveOperation,
-    /// `begin_passkey` が返したチャレンジ ID。
+    /// The challenge ID returned by `begin_passkey`.
     pub challenge_id: uuid::Uuid,
-    /// ブラウザが返した `PublicKeyCredential`（JSON）。
+    /// The `PublicKeyCredential` (JSON) returned by the browser.
     pub credential: serde_json::Value,
 }
 
 pub enum StepUpVerifyOutcome {
-    /// 確認できた。SSO セッションへ記録済みで、続けて操作してよい。
+    /// Verified. Recorded in the SSO session; the operation may continue.
     Ok,
-    /// パスワードまたは TOTP が不一致（どちらが違うかは返さない）。
+    /// Password or TOTP mismatch (which one is wrong is not returned).
     InvalidCredentials,
-    /// 第二要素が要るのにコードが提示されていない。画面は TOTP 入力欄を出す。
+    /// The second factor is needed but no code was presented. The screen shows the TOTP input field.
     SecondFactorRequired,
-    /// IP 単位のレート制限超過。
+    /// Per-IP rate limit exceeded.
     RateLimited,
     SessionExpired,
     Internal(String),
@@ -109,17 +109,17 @@ pub struct StepUpService {
     sso_sessions: Arc<dyn SsoSessionRepository>,
     users: Arc<dyn UserRepository>,
     totp_secrets: Arc<dyn TotpSecretRepository>,
-    /// WebAuthn セレモニー。ログインの 3 経路と同じ実装を共有する（AP9 の一時停止判定・署名
-    /// カウンタの更新・テナント境界が経路ごとにずれない。ADR-0040 決定 1）。
+    /// The WebAuthn ceremony. Shares the same implementation as the 3 sign-in paths (AP9 suspension checks, signature
+    /// counter updates, and tenant boundaries do not drift per path. ADR-0040 decision 1).
     passkey_ceremony: Arc<dyn PasskeyStepUpCeremony>,
-    /// 認証器の登録簿（AP9）。パスキーの導線を出してよいかの判定に使う。
+    /// Authenticator registry (AP9). Used to decide whether the passkey option may be shown.
     authenticators: Arc<dyn UserAuthenticatorRepository>,
     hasher: Arc<dyn PasswordHasher>,
     rate_limiter: Arc<dyn LoginRateLimiter>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
     key_encryption_key: [u8; 32],
-    /// テナントが上書きできる設定の解決（ADR-0058）。参照のたびに引く。
+    /// Resolution of settings tenants can override (ADR-0058). Looked up on every reference.
     settings: Arc<dyn EffectiveTenantSettings>,
 }
 
@@ -153,7 +153,7 @@ impl StepUpService {
         }
     }
 
-    /// 重要操作の直前に呼び、step-up が要るかを判定する。
+    /// Called right before a sensitive operation to decide whether step-up is needed.
     pub async fn check(
         &self,
         sso_session_id: &str,
@@ -171,13 +171,13 @@ impl StepUpService {
             Ok(_) => return StepUpCheckOutcome::SessionExpired,
             Err(e) => return StepUpCheckOutcome::Internal(e.to_string()),
         };
-        // 再確認の間隔は利用者の所属元テナントの値（`verify` と同じテナント。ADR-0058）。
+        // The re-verification interval is the value of the user's home tenant (same tenant as `verify`. ADR-0058).
         let max_age_secs = match self.settings.step_up_max_age_secs(home_tenant_id).await {
             Ok(secs) => secs,
             Err(e) => return StepUpCheckOutcome::Internal(e.to_string()),
         };
 
-        // パスキーでしか通さない操作（task #872）は、パスキーで確かめた時刻だけで決める。
+        // Operations allowed only via passkey (task #872) are decided only by the time verified with a passkey.
         if operation.passkey_only() {
             let verified_at = match self.sso_sessions.passkey_verified_at(&session_hash).await {
                 Ok(at) => at,
@@ -207,8 +207,8 @@ impl StepUpService {
             StepUpRequirement::for_operation(operation, max_age_secs, has_second_factor);
 
         let decision = evaluate_step_up(&session, session.step_up_at, requirement, now);
-        // 登録簿を引くのは画面を出すと決まってからにする。**ゲートは重要操作のたびに通る**ので、
-        // 満たしている場合まで毎回引くと、要らない問い合わせが操作の数だけ増える。
+        // Look up the registry only once it is decided to show the screen. **The gate is passed on every sensitive operation**,
+        // so looking it up every time even when satisfied would add unneeded queries for every operation.
         if matches!(decision, StepUpDecision::Satisfied) {
             return StepUpCheckOutcome::Satisfied;
         }
@@ -234,7 +234,7 @@ impl StepUpService {
         }
     }
 
-    /// 本人確認をやり直し、通ったら SSO セッションへ記録する。
+    /// Re-verifies identity, and if it passes, records it in the SSO session.
     pub async fn verify(
         &self,
         tenant: TenantContext,
@@ -244,19 +244,19 @@ impl StepUpService {
         let now = self.clock.now();
         let tenant_id = tenant.tenant_id();
 
-        // 1. IP 単位のレート制限（ログインと同じ枠を消費する）。
+        // 1. Per-IP rate limit (consumes the same budget as sign-in).
         if let Some(ip) = &ctx.ip_address {
             if !self.rate_limiter.check_and_record(ip, now) {
                 return StepUpVerifyOutcome::RateLimited;
             }
         }
 
-        // パスキーでしか通さない操作は、パスワードの経路では確かめない（task #872）。
+        // Operations allowed only via passkey are not verified on the password path (task #872).
         if cmd.operation.passkey_only() {
             return StepUpVerifyOutcome::InvalidCredentials;
         }
 
-        // 2. セッションから本人を解決する。
+        // 2. Resolve the user from the session.
         let session_hash = crypto::sha256_hex(&cmd.sso_session_id);
         let session = match self.sso_sessions.find_by_hash(&session_hash).await {
             Ok(Some(s)) if s.is_valid_at(now) => s,
@@ -269,7 +269,7 @@ impl StepUpService {
             Err(e) => return StepUpVerifyOutcome::Internal(e.to_string()),
         };
 
-        // 3. パスワード検証（step-up の起点は常にこれ）。
+        // 3. Password verification (step-up always starts from this).
         let password_ok = match self.hasher.verify(&cmd.password, &user.password_hash) {
             Ok(v) => v,
             Err(e) => return StepUpVerifyOutcome::Internal(e.to_string()),
@@ -280,13 +280,13 @@ impl StepUpService {
             return StepUpVerifyOutcome::InvalidCredentials;
         }
 
-        // 4. 要件に応じて第二要素も検証する。
+        // 4. Verify the second factor too, depending on the requirement.
         let has_second_factor =
             match user_has_confirmed_totp(self.totp_secrets.as_ref(), user.id).await {
                 Ok(v) => v,
                 Err(e) => return StepUpVerifyOutcome::Internal(e.to_string()),
             };
-        // 再確認の間隔は利用者の所属元テナントの値（`check` と同じテナント。ADR-0058）。
+        // The re-verification interval is the value of the user's home tenant (same tenant as `check`. ADR-0058).
         let max_age_secs = match self.settings.step_up_max_age_secs(user.tenant_id).await {
             Ok(secs) => secs,
             Err(e) => return StepUpVerifyOutcome::Internal(e.to_string()),
@@ -301,7 +301,7 @@ impl StepUpService {
             };
             let record = match self.totp_secrets.find_by_user_id(user.id).await {
                 Ok(Some(r)) if r.is_confirmed() => r,
-                // 要件が多要素なのに認証器が消えている（並行して削除された）ときは通さない。
+                // Do not pass when the requirement is multi-factor but the authenticator has disappeared (deleted concurrently).
                 Ok(_) => return StepUpVerifyOutcome::SecondFactorRequired,
                 Err(e) => return StepUpVerifyOutcome::Internal(e.to_string()),
             };
@@ -313,7 +313,7 @@ impl StepUpService {
                 Ok(v) => v,
                 Err(e) => return StepUpVerifyOutcome::Internal(e.to_string()),
             };
-            // ステップを記録できたときだけ受理する（同じ・古いコードの再利用を拒否。リプレイ対策）。
+            // Accept only if the step could be recorded (refuses reuse of the same or older code. Replay countermeasure).
             let accepted = match matched_step {
                 Some(step) => match self
                     .totp_secrets
@@ -333,7 +333,7 @@ impl StepUpService {
             methods.push(AuthenticationMethod::Totp);
         }
 
-        // 5. 記録する。単一要素の再確認では強度・MFA の鮮度は動かさない（実装は repository 側）。
+        // 5. Record. Single-factor re-verification does not change strength or MFA freshness (implemented on the repository side).
         if let Err(e) = self
             .sso_sessions
             .record_step_up(&session_hash, &methods, now)
@@ -356,20 +356,20 @@ impl StepUpService {
         StepUpVerifyOutcome::Ok
     }
 
-    /// パスキーでの本人確認の開始（チャレンジを 1 本発行する）。
+    /// Starts identity verification with a passkey (issues one challenge).
     ///
-    /// ログイン用のチャレンジとは種別で分かれるため、**ここで出したチャレンジではログインできない**
-    /// （逆も同じ。ADR-0040 決定 4 の考え方を本人確認へ広げたもの）。
+    /// It is a different kind from sign-in challenges, so **a challenge issued here cannot be used to sign in**
+    /// (and vice versa. Extends the idea of ADR-0040 decision 4 to identity verification).
     pub async fn begin_passkey(&self) -> Result<(uuid::Uuid, serde_json::Value), String> {
         self.passkey_ceremony.begin().await
     }
 
-    /// パスキーで本人確認をやり直し、通ったら SSO セッションへ記録する。
+    /// Re-verifies identity with a passkey, and if it passes, records it in the SSO session.
     ///
-    /// パスワード経路との違いは 3 点。**知識要素を求めない**（パスキーが所有 + User Verification を
-    /// 1 回で満たす）、**アカウントロックを見ない**（パスワードの総当たり対策で、署名鍵には効かない。
-    /// ADR-0040 決定 3）、**第二要素の段を持たない**（`[WebAuthn]` は多要素として記録されるので、
-    /// 多要素を要求する操作もこの 1 回で満たす。ADR-0020 §3）。
+    /// Three differences from the password path. **No knowledge factor is required** (a passkey satisfies possession + User Verification
+    /// in one step), **the account lock is not checked** (it counters password brute force and has no effect on signing keys.
+    /// ADR-0040 decision 3), and **there is no second-factor stage** (`[WebAuthn]` is recorded as multi-factor, so
+    /// operations requiring multi-factor are also satisfied by this one step. ADR-0020 §3).
     pub async fn verify_with_passkey(
         &self,
         tenant: TenantContext,
@@ -379,15 +379,15 @@ impl StepUpService {
         let now = self.clock.now();
         let tenant_id = tenant.tenant_id();
 
-        // 1. IP 単位のレート制限（パスワード経路と同じ枠を消費する。入口ごとに枠が違うと、
-        //    片方で締め出された攻撃者がもう片方で試行を続けられる）。
+        // 1. Per-IP rate limit (consumes the same budget as the password path. If budgets differed per entry point,
+        //    an attacker locked out of one could keep trying on the other).
         if let Some(ip) = &ctx.ip_address {
             if !self.rate_limiter.check_and_record(ip, now) {
                 return StepUpVerifyOutcome::RateLimited;
             }
         }
 
-        // 2. セッションから本人を解決する（ロックは見ない。上記のとおり効かないため）。
+        // 2. Resolve the user from the session (the lock is not checked, since it has no effect as noted above).
         let session_hash = crypto::sha256_hex(&cmd.sso_session_id);
         let session = match self.sso_sessions.find_by_hash(&session_hash).await {
             Ok(Some(s)) if s.is_valid_at(now) => s,
@@ -400,8 +400,8 @@ impl StepUpService {
             Err(e) => return StepUpVerifyOutcome::Internal(e.to_string()),
         };
 
-        // 3. WebAuthn セレモニー（チャレンジ消費・登録簿の一時停止判定・署名カウンタ更新・
-        //    テナント境界）は 3 つのログイン経路と同じものを通す。
+        // 3. The WebAuthn ceremony (challenge consumption, registry suspension check, signature counter update,
+        //    tenant boundary) goes through the same one as the 3 sign-in paths.
         let verified = match self
             .passkey_ceremony
             .verify(tenant_id, cmd.challenge_id, cmd.credential, ctx)
@@ -416,16 +416,16 @@ impl StepUpService {
             }
         };
 
-        // 4. **このセッションの利用者本人か。** 検証を通っただけでは「誰かのパスキー」でしかなく、
-        //    他人のパスキーで他人のセッションを引き上げられてはならない。
+        // 4. **Is this the session's own user?** Passing verification only means "someone's passkey",
+        //    and someone else's session must not be elevated with someone else's passkey.
         if verified.user_id != user.id {
             self.record_failure(tenant, cmd.operation, user.id, "other_user_passkey", ctx)
                 .await;
             return StepUpVerifyOutcome::InvalidCredentials;
         }
 
-        // 5. 記録する。`[WebAuthn]` は第二要素を含むため多要素として記録され、多要素を要求する
-        //    操作（認証器の管理・外部 IdP の紐付け）もこの 1 回で満たす。
+        // 5. Record. `[WebAuthn]` includes a second factor, so it is recorded as multi-factor, and operations requiring
+        //    multi-factor (authenticator management, linking external IdPs) are also satisfied by this one step.
         let methods = vec![AuthenticationMethod::WebAuthn];
         if let Err(e) = self
             .sso_sessions
@@ -494,7 +494,7 @@ mod tests {
     use uuid::Uuid;
 
     const COOKIE: &str = "sso-cookie";
-    /// フェイクの利用者（`FakeUsers` が返す 1 人・セッションの持ち主）。
+    /// The fake user (the one person `FakeUsers` returns; the session's owner).
     const USER: Uuid = Uuid::from_u128(1);
     const KEY: [u8; 32] = [3u8; 32];
 
@@ -561,9 +561,9 @@ mod tests {
             methods: &[AuthenticationMethod],
             verified_at: DateTime<Utc>,
         ) -> DomainResult<()> {
-            // 実装（`SqlxSsoSessionRepository::record_step_up`）と同じ更新をする。多要素の
-            // step-up は方式・強度も書き換える —— ここを省くと「第二要素を通したのに強度が
-            // 単一のまま」という実機に無い状態でテストが回り、パスキー経路の判定が試せない。
+            // Performs the same update as the implementation (`SqlxSsoSessionRepository::record_step_up`). Multi-factor
+            // step-up also rewrites method and strength: omitting this would run the tests in a state that does not exist
+            // in reality, "passed the second factor but strength stays single", and the passkey path decision could not be tested.
             self.step_ups.lock().unwrap().push(methods.to_vec());
             let mut row = self.row.lock().unwrap();
             row.step_up_at = Some(verified_at);
@@ -586,7 +586,7 @@ mod tests {
     struct FakeUsers;
     #[async_trait]
     impl UserRepository for FakeUsers {
-        /// このテストはログイン失敗経路を通らない（SEC13 の検証は login / mfa_login にある）。
+        /// This test does not go through the sign-in failure path (SEC13 verification is in login / mfa_login).
         async fn record_login_failure(
             &self,
             _id: Uuid,
@@ -692,7 +692,7 @@ mod tests {
         }
     }
 
-    /// 登録簿のパスキー行だけを持つフェイク（他の操作はこの経路を通らない）。
+    /// A fake holding only the registry's passkey rows (other operations do not go through this path).
     #[derive(Default)]
     struct FakeAuthenticators {
         passkeys: Vec<UserAuthenticator>,
@@ -732,8 +732,8 @@ mod tests {
         }
     }
 
-    /// セレモニーのフェイク。返す持ち主 ID だけを差し替えられればテストとしては足りる
-    /// （アサーションの検証そのものは `passkey_assertion` の担当）。
+    /// Fake of the ceremony. Being able to swap only the returned owner ID is enough for the tests
+    /// (verifying the assertion itself is the job of `passkey_assertion`).
     struct FakeCeremony(Result<Uuid, ()>);
     #[async_trait]
     impl PasskeyStepUpCeremony for FakeCeremony {
@@ -831,7 +831,7 @@ mod tests {
         }
     }
 
-    /// ログイン直後は step-up 済み。すぐに再入力を求めない。
+    /// Right after sign-in, step-up is already satisfied. Do not ask for re-entry immediately.
     #[tokio::test]
     async fn a_fresh_session_satisfies_a_password_level_operation() {
         let (svc, _) = service(
@@ -844,7 +844,7 @@ mod tests {
         ));
     }
 
-    /// 認証器を持つ利用者の「認証器管理」は、単一要素のセッションでは通さない。
+    /// "Authenticator management" for users with authenticators does not pass with a single-factor session.
     #[tokio::test]
     async fn managing_authenticators_needs_the_second_factor() {
         let (svc, _) = service(
@@ -863,7 +863,7 @@ mod tests {
         assert!(second_factor_required);
     }
 
-    /// 認証器を持たない利用者には第二要素を求めない（求めても通せないため）。
+    /// Users without authenticators are not asked for a second factor (it could not be passed even if asked).
     #[tokio::test]
     async fn managing_authenticators_without_an_enrolled_one_stays_single_factor() {
         let (svc, _) = service(
@@ -877,7 +877,7 @@ mod tests {
         ));
     }
 
-    /// 古いセッションは再確認を求める。パスワードが通れば `step_up_at` が進み、以後は満たす。
+    /// Old sessions are asked to re-verify. If the password passes, `step_up_at` advances and it is satisfied afterwards.
     #[tokio::test]
     async fn a_stale_session_is_refreshed_by_a_password_step_up() {
         let (svc, sessions) = service(
@@ -937,7 +937,7 @@ mod tests {
         assert!(sessions.step_ups.lock().unwrap().is_empty());
     }
 
-    /// 第二要素が要る操作で TOTP を省いた要求は、パスワードが正しくても通さない。
+    /// A request omitting TOTP for an operation requiring the second factor does not pass even with the correct password.
     #[tokio::test]
     async fn a_multi_factor_operation_rejects_a_password_only_step_up() {
         let (svc, sessions) = service(
@@ -960,7 +960,7 @@ mod tests {
         assert!(sessions.step_ups.lock().unwrap().is_empty());
     }
 
-    /// セッションが切れていれば、正しいパスワードでも通さない。
+    /// If the session has expired, even the correct password does not pass.
     #[tokio::test]
     async fn an_expired_session_cannot_step_up() {
         let mut expired = session(vec![AuthenticationMethod::Password], Duration::hours(4));
@@ -985,10 +985,10 @@ mod tests {
         assert!(matches!(outcome, StepUpVerifyOutcome::SessionExpired));
     }
 
-    // ── パスキーでの本人確認（T38。ADR-0040 決定 2 の適用範囲を step-up へ広げる） ──────
+    // ── Identity verification with a passkey (T38. Extends the scope of ADR-0040 decision 2 to step-up) ──────
 
-    /// パスキーは 1 回で多要素として記録される。**これが無いと、パスキーで入った利用者は
-    /// 認証器の管理（多要素を要求する操作）へ永久に入れない。**
+    /// A passkey is recorded as multi-factor in one step. **Without this, users who signed in with a passkey
+    /// could never enter authenticator management (an operation requiring multi-factor).**
     #[tokio::test]
     async fn a_passkey_satisfies_a_step_up_that_demands_two_factors() {
         let (svc, sessions) = build_service(
@@ -997,7 +997,7 @@ mod tests {
             FakeAuthenticators::with_active_passkey(),
             Ok(USER),
         );
-        // パスワードだけのセッションでは、認証器の管理は第二要素まで求められる。
+        // With a password-only session, authenticator management requires up to the second factor.
         let StepUpCheckOutcome::ChallengeRequired {
             second_factor_required,
             passkey_available,
@@ -1009,14 +1009,17 @@ mod tests {
             panic!("expected a challenge");
         };
         assert!(second_factor_required);
-        assert!(passkey_available, "使えるパスキーがあるなら導線を出す");
+        assert!(
+            passkey_available,
+            "show the passkey option when a usable passkey exists"
+        );
 
         let outcome = svc
             .verify_with_passkey(tenant(), passkey_command(), &ctx())
             .await;
         assert!(matches!(outcome, StepUpVerifyOutcome::Ok));
 
-        // 記録された方式が第二要素を含むため、要件が多要素の操作もそのまま通る。
+        // The recorded methods include a second factor, so operations requiring multi-factor pass as is.
         let recorded = sessions.step_ups.lock().unwrap().clone();
         assert_eq!(recorded, vec![vec![AuthenticationMethod::WebAuthn]]);
         assert!(matches!(
@@ -1026,8 +1029,8 @@ mod tests {
         ));
     }
 
-    /// 他人のパスキーで他人のセッションを引き上げさせない（セレモニーは「誰のパスキーか」までしか
-    /// 答えないので、本人かどうかはこの層が見る）。
+    /// Someone else's session must not be elevated with someone else's passkey (the ceremony only answers "whose passkey it is",
+    /// so whether it is the user themselves is checked by this layer).
     #[tokio::test]
     async fn a_passkey_belonging_to_someone_else_does_not_verify_this_session() {
         let (svc, sessions) = build_service(
@@ -1045,7 +1048,7 @@ mod tests {
         assert!(sessions.step_ups.lock().unwrap().is_empty());
     }
 
-    /// 検証が通らなかったアサーションでは記録しない。
+    /// An assertion that failed verification is not recorded.
     #[tokio::test]
     async fn a_rejected_assertion_does_not_record_a_step_up() {
         let (svc, sessions) = build_service(
@@ -1063,7 +1066,7 @@ mod tests {
         assert!(sessions.step_ups.lock().unwrap().is_empty());
     }
 
-    /// 一時停止中のパスキーしか無い利用者には導線を出さない（押しても通らないため）。
+    /// The passkey option is not shown to users who only have suspended passkeys (pressing it would not pass).
     #[tokio::test]
     async fn a_suspended_passkey_does_not_offer_the_passkey_route() {
         let (svc, _) = build_service(
@@ -1093,9 +1096,9 @@ mod tests {
         }
     }
 
-    /// 再確認の間隔は利用者の**所属元**テナントの値で測る。10 分前に本人確認したセッションは、
-    /// 所属元が 1 時間と決めていれば満たし、行が無ければ全体（5 分）に従って再確認を求める。
-    /// ⚠ 別のテナントの行は効かない（1 テナントだけの試験は全体の値を読んでいても通ってしまう）。
+    /// The re-verification interval is measured by the user's **home** tenant value. A session verified 10 minutes ago
+    /// satisfies it if the home tenant set 1 hour, and if there is no row, re-verification is required per the global value (5 minutes).
+    /// ⚠ Another tenant's row has no effect (a single-tenant test would pass even if it read the global value).
     #[tokio::test]
     async fn the_step_up_window_is_the_home_tenant_value() {
         let home = TenantId::from(Uuid::from_u128(9));

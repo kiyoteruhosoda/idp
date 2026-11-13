@@ -1,4 +1,4 @@
-//! `RefreshTokenRepository` の sqlx 実装（設計仕様 §9.1）。
+//! sqlx implementation of `RefreshTokenRepository` (design spec §9.1).
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::refresh_token::RefreshToken;
@@ -21,19 +21,19 @@ impl SqlxRefreshTokenRepository {
         Self { pool }
     }
 
-    /// 期限切れ行の掃除（`expired_records` の `ExpiringRecordStore` 実装）が使う。
+    /// Used by expired-row cleanup (the `ExpiringRecordStore` implementation in `expired_records`).
     pub(super) fn pool(&self) -> &Db {
         &self.pool
     }
 }
 
-/// 指定ユーザーの**いま使える** refresh token を指す条件（未失効かつ期限内）。bind は `user_id`、
-/// 基準時刻の順。
+/// Condition pointing at the given user's **currently usable** refresh tokens (not revoked and unexpired). Binds are `user_id`,
+/// then the reference time.
 ///
-/// 数える側（[`count_active_for_user`](RefreshTokenRepository::count_active_for_user)。管理コンソールが
-/// 押す前に見せる本数）と落とす側（[`revoke_all_for_user`](RefreshTokenRepository::revoke_all_for_user)。
-/// ADR-0047 の再発行が返す本数）が同じ範囲を指すよう、条件はここ 1 か所にだけ書く。片方だけ
-/// 直すと「画面では 0 本なのに、押すと無効にしましたと出る」ずれが戻る（task #123）。
+/// The condition is written only here so the counting side ([`count_active_for_user`](RefreshTokenRepository::count_active_for_user), the
+/// count the admin console shows before pressing) and the dropping side ([`revoke_all_for_user`](RefreshTokenRepository::revoke_all_for_user),
+/// the count ADR-0047's reissue returns) cover the same range. Fixing only one side
+/// brings back the drift "the screen says 0, but pressing says they were revoked" (task #123).
 const ACTIVE_FOR_USER: &str = "user_id = ? AND revoked_at IS NULL AND expires_at > ?";
 
 fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
@@ -146,10 +146,10 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
         family_hash: &str,
         revoked_at: DateTime<Utc>,
     ) -> Result<u64> {
-        // 同一グラント由来のトークンを 1 文で失効させる（SEC8）。`grant_hash` に索引があるため
-        // チェーンの深さに関係なく 1 回の UPDATE で済む。念のため提示されたトークン自身
-        //（移行前の行で `grant_hash` が NULL のまま = 家族が自分だけ）も同じ条件で拾えるよう、
-        // `token_hash` 一致も OR に含める。
+        // Revoke tokens from the same grant in one statement (SEC8). `grant_hash` is indexed, so
+        // one UPDATE suffices regardless of chain depth. Just in case, so the presented token itself
+        // (a pre-migration row whose `grant_hash` is still NULL = a family of itself only) is also picked up by the same condition,
+        // a `token_hash` match is included in the OR.
         let result = sqlx::query(
             "UPDATE refresh_tokens SET revoked_at = ? \
              WHERE tenant_id = ? AND (grant_hash = ? OR token_hash = ?) AND revoked_at IS NULL",
@@ -180,8 +180,8 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
         sid: &str,
         revoked_at: DateTime<Utc>,
     ) -> Result<u64> {
-        // `sid` に索引がある（0050）ので、rotation でチェーンが伸びていても 1 回の
-        // UPDATE で済む。テナントは条件に入れない（trait 側のコメント参照）。
+        // `sid` is indexed (0050), so even if rotation has lengthened the chain, one
+        // UPDATE suffices. The tenant is not part of the condition (see the trait comment).
         let result = sqlx::query(
             "UPDATE refresh_tokens SET revoked_at = ? \
              WHERE user_id = ? AND sid = ? AND revoked_at IS NULL",
@@ -236,8 +236,8 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
     }
 
     async fn revoke_all_for_user(&self, user_id: Uuid, revoked_at: DateTime<Utc>) -> Result<u64> {
-        // 落とす範囲は `count_active_for_user` が数える範囲と同じ（`ACTIVE_FOR_USER`）。期限切れの
-        // 行はもう更新に使えないので、失効印を付けても何も変わらず、本数だけが画面とずれる。
+        // The range dropped is the same as the range `count_active_for_user` counts (`ACTIVE_FOR_USER`). Expired
+        // rows can no longer be used for refresh, so marking them revoked changes nothing except making the count drift from the screen.
         let result = sqlx::query(sqlx::AssertSqlSafe(format!(
             "UPDATE refresh_tokens SET revoked_at = ? WHERE {ACTIVE_FOR_USER}"
         )))
@@ -251,7 +251,7 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
     }
 
     async fn count_active_for_user(&self, user_id: Uuid, now: DateTime<Utc>) -> Result<u64> {
-        // `refresh_tokens_user_idx (user_id)` で引ける。1 人ぶんの行数は小さいので索引の追加は不要。
+        // Resolved via `refresh_tokens_user_idx (user_id)`. Rows per user are few, so no extra index is needed.
         let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "SELECT COUNT(*) FROM refresh_tokens WHERE {ACTIVE_FOR_USER}"
         )))

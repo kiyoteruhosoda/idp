@@ -1,12 +1,12 @@
-//! クライアント（RP）登録・管理 API の E2E 統合テスト（Progress A1、設計仕様 §9.3）。
+//! E2E integration tests for the client (RP) registration and management API (Progress A1, design spec §9.3).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test admin_clients
 //!
-//! 認可は権限コード（`idp.clients:read` / `:write`。`idp.tenant.admin`・`idp.system.admin` は
-//! 含意により許可。ADR-0037）。
-//! 初期管理者（seed で root テナントへ `idp.system.admin` 付与済み）の SSO セッションを
-//! 直接作成し、管理トークンへ交換して管理 API を叩く。権限の無い利用者は 403 になることも検証する。
+//! Authorization is by permission code (`idp.clients:read` / `:write`; `idp.tenant.admin` and `idp.system.admin`
+//! are allowed by implication; ADR-0037).
+//! Creates the SSO session of the initial admin (granted `idp.system.admin` on the root tenant by seed)
+//! directly, exchanges it for an admin token and calls the admin API. Also checks users without permission get 403.
 
 mod support;
 
@@ -26,7 +26,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
     let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let clients_uri = format!("/{}/admin/clients", env.root_tenant_id);
 
-    // 未認証（トークン無し）→ 401。
+    // Unauthenticated (no token) → 401.
     let res = send(
         &env.app,
         Request::builder()
@@ -39,7 +39,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
     .await;
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "no cookie -> 401");
 
-    // 権限の無い利用者 → 403。
+    // User without permission → 403.
     let plain_user_id = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let plain_token = admin_token(&env.app, &env.pool, &env.root_tenant_id, &plain_user_id).await;
     let res = send(
@@ -58,7 +58,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
     .await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "no permission -> 403");
 
-    // バリデーション: フラグメント付き redirect_uri → 400。
+    // Validation: redirect_uri with a fragment → 400.
     let res = send(
         &env.app,
         post(
@@ -75,7 +75,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
     .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST, "fragment uri -> 400");
 
-    // public クライアント登録 → 201・secret 無し。
+    // Public client registration → 201, no secret.
     let res = send(
         &env.app,
         post(
@@ -99,7 +99,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
     );
     assert_eq!(created["token_endpoint_auth_method"], "none");
 
-    // public のシークレット再発行 → 400。
+    // Secret reissue for a public client → 400.
     let res = send(
         &env.app,
         post(
@@ -115,8 +115,8 @@ async fn admin_can_manage_clients_but_others_cannot() {
         "public secret -> 400"
     );
 
-    // confidential クライアント登録 → 201・secret 平文あり。
-    // 既定は `private_key_jwt`（ADR-0036）なので、secret を受け取るには方式を明示する。
+    // Confidential client registration → 201, plaintext secret included.
+    // The default is `private_key_jwt` (ADR-0036), so the method must be explicit to receive a secret.
     let res = send(
         &env.app,
         post(
@@ -146,10 +146,10 @@ async fn admin_can_manage_clients_but_others_cannot() {
     assert!(!first_secret.is_empty());
     assert_eq!(created["token_endpoint_auth_method"], "client_secret_basic");
 
-    // 一覧に両クライアントが含まれる。
+    // The list contains both clients.
     let res = send(&env.app, get(&admin_tok, &clients_uri)).await;
     assert_eq!(res.status(), StatusCode::OK);
-    // 一覧はページング付きのオブジェクト（`{clients, total, limit, offset}`）を返す（G7）。
+    // The list returns a paged object (`{clients, total, limit, offset}`) (G7).
     let list = body_json(res).await;
     let ids: Vec<&str> = list["clients"]
         .as_array()
@@ -160,7 +160,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
     assert!(ids.contains(&public_client_id.as_str()));
     assert!(ids.contains(&conf_client_id.as_str()));
 
-    // 更新: status を DISABLED に。
+    // Update: status to DISABLED.
     let res = send(
         &env.app,
         patch(
@@ -173,7 +173,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
     assert_eq!(res.status(), StatusCode::OK);
     assert_eq!(body_json(res).await["client_status"], "DISABLED");
 
-    // confidential のシークレット再発行 → 200・新しい値（旧値と異なる）。
+    // Confidential secret reissue → 200, new value (different from the old one).
     let res = send(
         &env.app,
         post(
@@ -191,7 +191,7 @@ async fn admin_can_manage_clients_but_others_cannot() {
     assert!(!rotated.is_empty());
     assert_ne!(rotated, first_secret, "rotation changes the secret");
 
-    // 不存在の取得 → 404。
+    // Fetching a nonexistent one → 404.
     let res = send(
         &env.app,
         get(&admin_tok, &format!("{clients_uri}/does-not-exist")),
@@ -200,8 +200,8 @@ async fn admin_can_manage_clients_but_others_cannot() {
     assert_eq!(res.status(), StatusCode::NOT_FOUND, "missing client -> 404");
 }
 
-/// クライアント認証方式（G3）。confidential は `client_secret_post` を選べ、あとから切り替えられる。
-/// `none`（＝認証なし）と public への指定は拒否する。
+/// Client authentication methods (G3). Confidential clients can choose `client_secret_post` and switch later.
+/// `none` (= no authentication) and setting it on public clients are rejected.
 #[tokio::test]
 async fn confidential_clients_can_choose_the_client_authentication_method() {
     let Some(env) = support::setup("admin clients auth method").await else {
@@ -210,7 +210,7 @@ async fn confidential_clients_can_choose_the_client_authentication_method() {
     let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let clients_uri = format!("/{}/admin/clients", env.root_tenant_id);
 
-    // 登録時に client_secret_post を選べる。
+    // client_secret_post can be chosen at registration.
     let res = send(
         &env.app,
         post(
@@ -231,7 +231,7 @@ async fn confidential_clients_can_choose_the_client_authentication_method() {
     assert_eq!(created["token_endpoint_auth_method"], "client_secret_post");
     let client_id = created["client_id"].as_str().unwrap().to_string();
 
-    // あとから client_secret_basic へ戻せる（secret はそのまま。提示場所だけが変わる）。
+    // It can be switched back to client_secret_basic later (secret unchanged; only where it is presented changes).
     let res = send(
         &env.app,
         patch(
@@ -247,7 +247,7 @@ async fn confidential_clients_can_choose_the_client_authentication_method() {
         "client_secret_basic"
     );
 
-    // `none` は confidential では選べない（secret を持ったまま認証が外れるため）。
+    // `none` cannot be chosen for confidential clients (authentication would be removed while holding a secret).
     let res = send(
         &env.app,
         patch(
@@ -259,7 +259,7 @@ async fn confidential_clients_can_choose_the_client_authentication_method() {
     .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 
-    // 未知の値も拒否する。
+    // Unknown values are rejected too.
     let res = send(
         &env.app,
         patch(
@@ -271,7 +271,7 @@ async fn confidential_clients_can_choose_the_client_authentication_method() {
     .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 
-    // public クライアントには設定できない。
+    // Cannot be set on public clients.
     let res = send(
         &env.app,
         post(
@@ -303,16 +303,16 @@ async fn confidential_clients_can_choose_the_client_authentication_method() {
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
 
-/// `?grant_type=` で一覧を系統ごとに分ける（ADR-0038）。
+/// `?grant_type=` splits the list by lineage (ADR-0038).
 ///
-/// **絞り込みはページングと同じ層で行う必要がある。** web が 1 ページ受け取ってから間引くと、
-/// `total` もページャも実際の件数と合わなくなる。ここでは、返る中身と `total` の両方が
-/// 絞り込み後の値になっていることを見る。
+/// **Filtering must happen at the same layer as paging.** If web thinned out a page after receiving it,
+/// `total` and the pager would not match the real counts. Here we check that both the returned content and
+/// `total` are post-filter values.
 ///
-/// ⚠ **専用のテナントを作ってその中で数える。** root テナントで数えると、同じ DB で他のテストが
-/// 作ったクライアントが積み上がり、1 ページ（50 件）に収まらなくなった時点で `total` と返却件数が
-/// 食い違って落ちる（実際に踏んだ。DB を作り直すまで再現し続ける）。テナントを分ければ件数は
-/// このテストが作った 2 件だけになり、`total` を**実数と突き合わせて**検証できる。
+/// ⚠ **Counts inside a dedicated tenant.** Counting in the root tenant piles up clients created by other
+/// tests in the same DB, and once they no longer fit on one page (50) `total` and the returned count
+/// disagree and the test fails (actually hit; it keeps reproducing until the DB is recreated). With a
+/// separate tenant only the 2 this test creates count, so `total` can be **checked against the real number**.
 #[tokio::test]
 async fn the_client_list_can_be_split_by_grant_type() {
     let Some(env) = support::setup("admin clients grant filter").await else {
@@ -337,12 +337,12 @@ async fn the_client_list_can_be_split_by_grant_type() {
         .as_str()
         .expect("tenant id")
         .to_string();
-    // 作成者（root）は新テナントの ACTIVE GUEST 管理者になる（ADR-0009 §4）。管理トークンは
-    // テナント毎なので取り直す。
+    // The creator (root) becomes an ACTIVE GUEST admin of the new tenant (ADR-0009 §4). Admin tokens are
+    // per tenant, so get a new one.
     let admin_tok = admin_token(&env.app, &env.pool, &tenant_id, &env.root_admin_id).await;
     let clients_uri = format!("/{tenant_id}/admin/clients");
 
-    // 連携先（redirect_uri を持つ）とサービスアカウント（持たない）を 1 つずつ。
+    // One linked app (has redirect_uri) and one service account (has none).
     for body in [
         json!({
             "app_name": "Relying Party App",
@@ -389,25 +389,29 @@ async fn the_client_list_can_be_split_by_grant_type() {
     assert!(rps.iter().any(|n| n == "Relying Party App"));
     assert!(
         !rps.iter().any(|n| n == "Service Account App"),
-        "連携先の一覧にサービスアカウントが混ざってはならない"
+        "service accounts must not be mixed into the linked app list"
     );
 
     let (sas, sa_total) = names_for(format!("{clients_uri}?grant_type=client_credentials")).await;
     assert!(sas.iter().any(|n| n == "Service Account App"));
     assert!(!sas.iter().any(|n| n == "Relying Party App"));
 
-    // total も絞り込み後の値であること（ページャがこの値で「次へ」を出す）。テナントを分けて
-    // あるので、期待値は「このテストが作った 2 件」で確定する。
-    assert_eq!((all.len(), all_total), (2, 2), "作った 2 件だけが見える");
+    // total is also the post-filter value (the pager shows "Next" based on it). The tenant is separate,
+    // so the expected value is exactly "the 2 this test created".
+    assert_eq!(
+        (all.len(), all_total),
+        (2, 2),
+        "only the 2 created are visible"
+    );
     assert_eq!((rps.len(), rp_total), (1, 1));
     assert_eq!((sas.len(), sa_total), (1, 1));
     assert_eq!(
         rp_total + sa_total,
         all_total,
-        "両立は作れないので排他に分かれる"
+        "both at once cannot be created, so they split exclusively"
     );
 
-    // 未知の値は黙って無視せず 400。無視すると、絞り込みの失敗が画面上は成功に見える。
+    // Unknown values are 400, not silently ignored. Ignoring them would make a filter failure look like success on screen.
     let res = send(
         &env.app,
         get(&admin_tok, &format!("{clients_uri}?grant_type=nonsense")),
@@ -416,26 +420,26 @@ async fn the_client_list_can_be_split_by_grant_type() {
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
 
-/// 「両方」の姿（`authorization_code` + `client_credentials` + redirect_uri）は、登録でも更新でも拒む
-/// （ADR-0032 決定 3・Revised）。
+/// The "both" shape (`authorization_code` + `client_credentials` + redirect_uri) is rejected on both
+/// registration and update (ADR-0032 decision 3, Revised).
 ///
-/// ADR-0032 は当初 `update` に猶予を置いていた——その姿で保存された既存行を無条件に拒むと、
-/// 漏洩したクライアントを DISABLED にすることすらできなくなるため。2026-08-27 に猶予を外したのは、
-/// **`delete` がこの検証を通らない**からである。DB を直接触るなどしてその姿の行が生まれても、
-/// 論理削除で必ず止められる（ADR-0035。DELETED は `is_active()` が false なので認可・トークン経路も
-/// 通らない）。止める手段が残っていることが猶予を外す条件なので、ここで一緒に検証する。
+/// ADR-0032 originally had a grace period for `update` — unconditionally rejecting existing rows saved in that
+/// shape would make it impossible even to DISABLE a leaked client. The grace was removed on 2026-08-27 because
+/// **`delete` does not go through this validation**. Even if such a row appears, e.g. by touching the DB directly,
+/// logical deletion can always stop it (ADR-0035; DELETED has `is_active()` false, so authorization and token
+/// paths reject it too). Having a way to stop it is the condition for removing the grace, so it is checked here too.
 #[tokio::test]
 async fn a_dual_usage_client_is_refused_on_update_but_can_still_be_stopped() {
     let Some(env) = support::setup("admin clients dual usage").await else {
         return;
     };
     let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
-    // api では作れない姿なので、DB へ直接入れる。
+    // A shape the api cannot create, so insert it into the DB directly.
     let (client_id, _) =
         support::insert_m2m_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
     let client_uri = format!("/{}/admin/clients/{client_id}", env.root_tenant_id);
 
-    // 更新は拒む（猶予を外した本体）。
+    // Update is rejected (the essence of removing the grace).
     let res = send(
         &env.app,
         patch(
@@ -448,18 +452,18 @@ async fn a_dual_usage_client_is_refused_on_update_but_can_still_be_stopped() {
     assert_eq!(
         res.status(),
         StatusCode::BAD_REQUEST,
-        "両用途の姿を温存する更新は通さない"
+        "an update keeping the dual-purpose shape is not allowed"
     );
 
-    // それでも止められること。ここが通らなくなったら猶予を戻す必要がある。
+    // It can still be stopped. If this stops passing, the grace needs to come back.
     let res = send(&env.app, delete(&admin_tok, &client_uri)).await;
     assert_eq!(
         res.status(),
         StatusCode::NO_CONTENT,
-        "論理削除は用途の検証を通らないので、必ず止められる"
+        "logical deletion skips the purpose validation, so it can always stop it"
     );
 
-    // これから両立させる登録も拒む。
+    // Registrations that would make it dual-purpose are rejected too.
     let res = send(
         &env.app,
         post(
@@ -479,7 +483,7 @@ async fn a_dual_usage_client_is_refused_on_update_but_can_still_be_stopped() {
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
 
-/// ADR-0035: 削除は論理削除。実体は残るが、一覧から消え、管理操作も認可経路も通らなくなる。
+/// ADR-0035: deletion is logical. The row remains, but it disappears from the list and admin ops and authorization paths reject it.
 #[tokio::test]
 async fn a_deleted_client_disappears_from_the_console_but_stays_in_the_database() {
     let Some(env) = support::setup("admin clients delete").await else {
@@ -509,8 +513,8 @@ async fn a_deleted_client_disappears_from_the_console_but_stays_in_the_database(
     let client_id = created["client_id"].as_str().expect("client_id");
     let client_uri = format!("{base}/{client_id}");
 
-    // 削除は専用経路だけが行う。更新で状態を DELETED に倒せると、`client.deleted` の監査記録を
-    // 残さないまま取り消せない削除ができてしまう（ADR-0035）。
+    // Deletion is done only by the dedicated path. If an update could set the state to DELETED, an irreversible
+    // deletion without a `client.deleted` audit record would be possible (ADR-0035).
     let res = send(
         &env.app,
         patch(
@@ -523,13 +527,13 @@ async fn a_deleted_client_disappears_from_the_console_but_stays_in_the_database(
     assert_eq!(
         res.status(),
         StatusCode::BAD_REQUEST,
-        "更新経路では削除できない"
+        "cannot delete through the update path"
     );
 
     let res = send(&env.app, delete(&admin_tok, &client_uri)).await;
     assert_eq!(res.status(), StatusCode::NO_CONTENT, "admin delete -> 204");
 
-    // 一覧から消える。
+    // Disappears from the list.
     let listed = body_json(send(&env.app, get(&admin_tok, &base)).await).await;
     let ids: Vec<&str> = listed["clients"]
         .as_array()
@@ -537,9 +541,12 @@ async fn a_deleted_client_disappears_from_the_console_but_stays_in_the_database(
         .iter()
         .filter_map(|c| c["client_id"].as_str())
         .collect();
-    assert!(!ids.contains(&client_id), "削除済みは一覧に出ない: {ids:?}");
+    assert!(
+        !ids.contains(&client_id),
+        "deleted clients are not listed: {ids:?}"
+    );
 
-    // 取得・更新・再削除はいずれも 404（`load` が削除済みを「無い」ものとして扱う）。
+    // Fetch, update and re-delete are all 404 (`load` treats deleted ones as "missing").
     for res in [
         send(&env.app, get(&admin_tok, &client_uri)).await,
         send(
@@ -552,7 +559,7 @@ async fn a_deleted_client_disappears_from_the_console_but_stays_in_the_database(
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
-    // **実体は残っている**（監査で client_id を引いたときに追えるようにするため）。
+    // **The row still exists** (so it can be traced when looking up the client_id in the audit log).
     let status: String =
         sqlx::query_scalar("SELECT client_status FROM clients WHERE client_id = ?")
             .bind(client_id)
@@ -562,11 +569,11 @@ async fn a_deleted_client_disappears_from_the_console_but_stays_in_the_database(
     assert_eq!(status, "DELETED");
 }
 
-/// ADR-0036: 認証方式を省略した登録は `private_key_jwt` になる。
+/// ADR-0036: registration without an auth method becomes `private_key_jwt`.
 ///
-/// OIDC Registration 1.0 の既定（`client_secret_basic`）から意図的に外している。既定は「選ぶ人が
-/// 何も書かなかったとき」に置かれる値なので、共有秘密ではなく公開鍵のほうへ倒す。弱いほうを
-/// 選ぶときだけ明示させる。
+/// Deliberately departs from the OIDC Registration 1.0 default (`client_secret_basic`). A default is the
+/// value used "when the chooser wrote nothing", so it leans toward public keys rather than a shared secret.
+/// Only choosing the weaker one has to be explicit.
 #[tokio::test]
 async fn omitting_the_authentication_method_registers_a_private_key_jwt_client() {
     let Some(env) = support::setup("admin clients default auth method").await else {
@@ -575,8 +582,8 @@ async fn omitting_the_authentication_method_registers_a_private_key_jwt_client()
     let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
     let clients_uri = format!("/{}/admin/clients", env.root_tenant_id);
 
-    // 方式も検証鍵も無い登録は拒む。既定が `private_key_jwt` である以上、通せば「どの資格情報でも
-    // 認証できないクライアント」ができてしまう。
+    // Registration with neither method nor verification key is rejected. Since the default is `private_key_jwt`,
+    // letting it through would create "a client that cannot authenticate with any credential".
     let res = send(
         &env.app,
         post(
@@ -592,18 +599,18 @@ async fn omitting_the_authentication_method_registers_a_private_key_jwt_client()
     )
     .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-    // 本文は既定が何かまで伝える。「検証鍵が必要」だけでは、`private_key_jwt` と書いた覚えの
-    // 無い呼び出し元に理由が伝わらない。
+    // The body even says what the default is. "A verification key is required" alone would not explain
+    // the reason to a caller who does not remember writing `private_key_jwt`.
     let message = body_json(res).await["message"]
         .as_str()
         .expect("message")
         .to_string();
     assert!(
         message.contains("token_endpoint_auth_method") && message.contains("private_key_jwt"),
-        "既定と省略された項目名が本文に出ていない: {message}"
+        "the default and the omitted field name are missing from the body: {message}"
     );
 
-    // 検証鍵だけを送れば、方式を書かなくても `private_key_jwt` として登録できる。
+    // Sending only a verification key registers as `private_key_jwt` without writing the method.
     let res = send(
         &env.app,
         post(
@@ -622,9 +629,9 @@ async fn omitting_the_authentication_method_registers_a_private_key_jwt_client()
     assert_eq!(res.status(), StatusCode::CREATED);
     let created = body_json(res).await;
     assert_eq!(created["token_endpoint_auth_method"], "private_key_jwt");
-    // この方式のクライアントは共有秘密を持たない（ADR-0030）。
+    // Clients with this method hold no shared secret (ADR-0030).
     assert!(
         created["client_secret"].is_null(),
-        "private_key_jwt で secret が発行されている: {created}"
+        "private_key_jwt issued a secret: {created}"
     );
 }

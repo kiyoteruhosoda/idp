@@ -1,4 +1,4 @@
-//! `ClientRepository` の sqlx 実装。配列カラム（redirect_uris 等）は JSON として入出力する。
+//! sqlx implementation of `ClientRepository`. Array columns (redirect_uris etc.) are read and written as JSON.
 
 use crate::domain::client::Client;
 use crate::domain::client_jwks::ClientJwks;
@@ -38,7 +38,7 @@ fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
     Utc.from_utc_datetime(&naive)
 }
 
-// MariaDB の JSON カラム（LONGTEXT 別名）は sqlx では BLOB として返るため、バイト列で受けて parse する。
+// MariaDB JSON columns (alias of LONGTEXT) come back as BLOB in sqlx, so receive bytes and parse.
 fn parse_json_strings(raw: &[u8], column: &str) -> Result<Vec<String>> {
     serde_json::from_slice(raw)
         .map_err(|e| DomainError::Repository(format!("invalid JSON in `{column}`: {e}")))
@@ -87,8 +87,8 @@ fn map_row(row: &MySqlRow) -> Result<Client> {
     })
 }
 
-// 保存済みの JWK Set を読み戻す。保存時と同じ検証を通し、通らない値は行の読み出しごと失敗させる
-// （DB を直接編集された鍵が検証経路へ素通りしないよう fail-closed。ADR-0030 決定 3）。
+// Reads back a stored JWK Set. It goes through the same validation as on save; values that fail make reading the row fail
+// (fail-closed so keys edited directly in the DB don't slip into the verification path; ADR-0030 decision 3).
 fn parse_client_jwks(raw: Option<&[u8]>) -> Result<Option<ClientJwks>> {
     let Some(raw) = raw else { return Ok(None) };
     let text = std::str::from_utf8(raw)
@@ -98,7 +98,7 @@ fn parse_client_jwks(raw: Option<&[u8]>) -> Result<Option<ClientJwks>> {
         .map_err(|e| DomainError::Repository(format!("invalid JWK Set in `jwks`: {e:?}")))
 }
 
-// JSON カラムへ格納する文字列配列をシリアライズする。
+// Serializes a string array stored in a JSON column.
 fn to_json(values: &[String], column: &str) -> Result<String> {
     serde_json::to_string(values)
         .map_err(|e| DomainError::Repository(format!("failed to serialize `{column}`: {e}")))
@@ -166,8 +166,8 @@ impl ClientRepository for SqlxClientRepository {
     }
 
     async fn list(&self, tenant_id: TenantId) -> Result<Vec<Client>> {
-        // 論理削除済みは一覧に出さない（ADR-0035）。認可・トークン経路は `is_active()` が
-        // 拒むので、絞り込みが要るのは「管理者に見せる一覧」だけである。
+        // Logically deleted clients are not listed (ADR-0035). Authorization and token paths are rejected by `is_active()`,
+        // so filtering is needed only for "the list shown to admins".
         let sql = format!(
             "SELECT {SELECT_COLUMNS} FROM clients \
              WHERE tenant_id = ? AND client_status <> 'DELETED' ORDER BY created_at DESC"
@@ -186,16 +186,16 @@ impl ClientRepository for SqlxClientRepository {
         grant_type: Option<GrantType>,
         page: PageRequest,
     ) -> Result<Page<Client>> {
-        // `grant_types` は JSON 配列（longtext）なので、要素の照合は `JSON_CONTAINS` で行う。
-        // LIKE で部分一致を見ると `authorization_code` が `client_credentials` を含まない代わりに、
-        // 将来 `authorization_code_jwt` のような値が増えたときに巻き込む。
+        // `grant_types` is a JSON array (longtext), so elements are matched with `JSON_CONTAINS`.
+        // Partial matching with LIKE avoids `authorization_code` matching `client_credentials`, but would
+        // sweep in values like `authorization_code_jwt` if they are added in the future.
         let grant_predicate = match grant_type {
             Some(_) => " AND JSON_CONTAINS(grant_types, JSON_QUOTE(?))",
             None => "",
         };
 
-        // 総件数は 1 ページ分と同じ条件で数える。画面の「次へ」は受信件数ではなく総件数で
-        // 判定する（最終ページがちょうど埋まると空ページへのリンクが出るため）。
+        // The total count uses the same conditions as one page. The screen's "Next" is decided by the total count
+        // rather than the number received (otherwise a link to an empty page appears when the last page is exactly full).
         let count_sql = format!(
             "SELECT COUNT(*) AS total FROM clients \
              WHERE tenant_id = ? AND client_status <> 'DELETED'{grant_predicate}"
@@ -212,8 +212,8 @@ impl ClientRepository for SqlxClientRepository {
             .try_get("total")
             .map_err(repo_err)?;
 
-        // 並びはページ間で安定していなければならない（重複・欠落を防ぐ）。`created_at` は
-        // 同一マイクロ秒で並び得るため、テナント内一意の `client_id` を副キーに置く。
+        // The order must be stable across pages (prevents duplicates/gaps). `created_at` can tie
+        // within the same microsecond, so the tenant-unique `client_id` is the secondary key.
         let sql = format!(
             "SELECT {SELECT_COLUMNS} FROM clients \
              WHERE tenant_id = ? AND client_status <> 'DELETED'{grant_predicate} \
@@ -236,9 +236,9 @@ impl ClientRepository for SqlxClientRepository {
     }
 
     async fn update(&self, client: &Client) -> Result<()> {
-        // 対象の存在は呼び出し側（load-then-update）が保証する。updated_at は
-        // ON UPDATE CURRENT_TIMESTAMP(6) に委ねる。値無変更時に MySQL が返す rows_affected=0 は
-        // 「不存在」と区別できないため、rows_affected では存在判定しない。
+        // The caller (load-then-update) guarantees the target exists. updated_at is left to
+        // ON UPDATE CURRENT_TIMESTAMP(6). rows_affected=0, which MySQL returns when no values changed, can't be
+        // distinguished from "nonexistent", so rows_affected is not used to judge existence.
         sqlx::query(
             "UPDATE clients SET \
              client_secret_hash = ?, client_type = ?, client_status = ?, app_name = ?, \

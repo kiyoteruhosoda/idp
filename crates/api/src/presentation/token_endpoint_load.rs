@@ -1,29 +1,29 @@
-//! トークン系エンドポイント（`/token`・`/introspect`・`/revoke`）の負荷ゲート（SEC10）。
+//! Load gate for the token endpoints (`/token`, `/introspect`, `/revoke`) (SEC10).
 //!
-//! この 3 つは RFC 6749 §2.3.1 のクライアント認証を使い、confidential クライアントの
-//! `client_secret` を **Argon2id（19 MiB・2 反復）で照合する**。総当たりは非現実的だが、
-//! メモリハード関数はそれ自体が増幅器になる: 攻撃者は数百バイトのリクエストで、
-//! サーバ側に 19 MiB のメモリ確保と数十ミリ秒の CPU を強制できる。しかも照合は同期関数で
-//! tokio のワーカースレッド上を走るため、バーストは**トークン発行だけでなく全エンドポイントの
-//! 応答を止める**。
+//! These three use RFC 6749 §2.3.1 client authentication and **verify a confidential client's
+//! `client_secret` with Argon2id (19 MiB, 2 iterations)**. Brute force is unrealistic, but a
+//! memory-hard function is itself an amplifier: with a request of a few hundred bytes an attacker can
+//! force the server to allocate 19 MiB and spend tens of milliseconds of CPU. And since verification is a
+//! synchronous function running on tokio worker threads, a burst **stalls responses of every endpoint,
+//! not just token issuance**.
 //!
-//! # 二段のゲート
+//! # Two-stage gate
 //!
-//! 1. **同時実行数の上限**（`TOKEN_ENDPOINT_MAX_CONCURRENCY`）。ピーク時のメモリを
-//!    「上限 × 19 MiB」に、CPU を「上限個のワーカー」に抑える。**接続元が分からなくても効く**のが
-//!    重要で、`TRUST_FORWARDED_HEADERS` が既定の `false` のとき（api が接続元 IP を知らない構成）
-//!    でも成立する唯一の防御線がこれである。溢れた要求は待たせずに落とす。待たせると
-//!    CPU の飽和が「待ち行列のメモリ」に化けるだけで、状況は悪くなる。
-//! 2. **接続元 IP 単位のレート制限**（`TOKEN_ENDPOINT_RATE_LIMIT_*`）。単一の送信元が上限枠を
-//!    占有し、正規の RP を締め出すのを防ぐ。IP が分かるとき（`TRUST_FORWARDED_HEADERS = true`）
-//!    のみ効く。
+//! 1. **A cap on concurrency** (`TOKEN_ENDPOINT_MAX_CONCURRENCY`). Bounds peak memory to
+//!    "cap × 19 MiB" and CPU to "cap workers". What matters is that it **works without knowing the
+//!    source**: it is the only line of defence that holds when `TRUST_FORWARDED_HEADERS` is the default
+//!    `false` (api does not know the client IP). Overflowing requests are dropped without waiting. Making
+//!    them wait only turns CPU saturation into "queue memory", which makes things worse.
+//! 2. **Per-source-IP rate limit** (`TOKEN_ENDPOINT_RATE_LIMIT_*`). Prevents a single source from
+//!    occupying the whole budget and locking out legitimate RPs. Works only when the IP is known
+//!    (`TRUST_FORWARDED_HEADERS = true`).
 //!
-//! # 応答
+//! # Response
 //!
-//! RFC 6749 §5.2 のトークンエンドポイントのエラーコードには「混雑」に当たる値が無い。
-//! §4.1.2.1 の `temporarily_unavailable`（一時的な過負荷を表す唯一のコード）を用い、
-//! HTTP ステータスは実態に合わせる（枠切れ = 503、送信元単位の超過 = 429）。
-//! `Retry-After` を添えてクライアントに再試行の間隔を伝える。
+//! RFC 6749 §5.2 token endpoint error codes have no value meaning "busy".
+//! We use §4.1.2.1's `temporarily_unavailable` (the only code for temporary overload), and
+//! the HTTP status follows reality (out of slots = 503, per-source excess = 429).
+//! `Retry-After` tells the client how long to wait before retrying.
 
 use crate::domain::clock::Clock;
 use crate::domain::rate_limit::LoginRateLimiter;
@@ -38,37 +38,37 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-/// 枠切れ・レート超過時に伝える再試行間隔（秒）。ウィンドウ全体を待たせる必要はなく、
-/// 「すぐに叩き直さない」ことが伝わればよい。
+/// Retry interval (seconds) sent when out of slots or rate-limited. No need to wait the whole window;
+/// it only has to convey "don't hit again immediately".
 const RETRY_AFTER_SECS: u32 = 5;
 
-/// ゲートの判定結果。
+/// Gate decision.
 pub enum Admission {
-    /// 通してよい。`_permit` は応答を返し終えるまで保持する（drop で枠が空く）。
+    /// May pass. `_permit` is held until the response is returned (dropping it frees the slot).
     Admitted(Option<OwnedSemaphorePermit>),
-    /// 送信元単位のレート制限を超えた。
+    /// Exceeded the per-source rate limit.
     RateLimited,
-    /// 同時実行の枠が空いていない。
+    /// No concurrency slot is free.
     AtCapacity,
 }
 
-/// トークン系エンドポイントの負荷ゲート（SEC10）。
+/// Load gate for the token endpoints (SEC10).
 ///
-/// axum から切り離してあるのは、判定（どの条件でどちらの理由で落とすか）を DB もルータも無しに
-/// 検証できるようにするため。ミドルウェアは HTTP への写像だけを担う。
+/// It is kept separate from axum so the decision (under which condition and for which reason to drop)
+/// can be tested without a DB or router. The middleware only maps it to HTTP.
 pub struct TokenEndpointLoadGate {
-    /// 同時実行の枠。`None` は無制限（`TOKEN_ENDPOINT_MAX_CONCURRENCY = 0`）。
+    /// Concurrency slots. `None` means unlimited (`TOKEN_ENDPOINT_MAX_CONCURRENCY = 0`).
     slots: Option<Arc<Semaphore>>,
-    /// 接続元 IP 単位のレート制限。`None` は無効（`..._MAX_REQUESTS = 0`）。
+    /// Per-source-IP rate limit. `None` means disabled (`..._MAX_REQUESTS = 0`).
     ///
-    /// 実体はログインと同じスライディングウィンドウ実装だが、**制限器は共有しない**
-    /// （RP のトークン取得がログイン試行の枠を食い合わないようにする）。
+    /// It is the same sliding window implementation as login, but **the limiter is not shared**
+    /// (so RPs fetching tokens do not eat into the login attempt budget).
     rate_limiter: Option<Arc<dyn LoginRateLimiter>>,
     clock: Arc<dyn Clock>,
 }
 
 impl TokenEndpointLoadGate {
-    /// 設定から組み立てる。どちらの上限も `0` なら素通しのゲートになる。
+    /// Builds from config. If both caps are `0`, the gate lets everything through.
     pub fn from_config(config: &crate::config::Config, clock: Arc<dyn Clock>) -> Self {
         Self {
             slots: config
@@ -85,7 +85,7 @@ impl TokenEndpointLoadGate {
         }
     }
 
-    /// テスト用に上限を直接指定して組み立てる。
+    /// Builds with caps given directly, for tests.
     pub fn new(
         max_concurrency: Option<usize>,
         rate_limit: Option<(usize, Duration)>,
@@ -104,18 +104,18 @@ impl TokenEndpointLoadGate {
         }
     }
 
-    /// 1 リクエストを通してよいか判定する。`client_ip` が `None`（接続元が分からない構成）でも
-    /// 同時実行の上限は効く。
+    /// Decides whether one request may pass. Even when `client_ip` is `None` (source unknown),
+    /// the concurrency cap applies.
     pub fn admit(&self, client_ip: Option<&str>) -> Admission {
-        // 送信元単位のレート制限を先に見る。枠（permit）を取ってから弾くと、弾かれる要求が
-        // 一瞬でも枠を占有し、攻撃者が枠を空にできてしまう。
+        // Check the per-source rate limit first. If the slot (permit) were taken before rejecting, rejected
+        // requests would occupy slots even briefly and an attacker could drain them.
         if let (Some(limiter), Some(ip)) = (&self.rate_limiter, client_ip) {
             if !limiter.check_and_record(ip, self.clock.now()) {
                 return Admission::RateLimited;
             }
         }
         match &self.slots {
-            // 待たずに落とす（待ち行列は CPU の飽和をメモリの飽和に変えるだけで解決にならない）。
+            // Drop without waiting (a queue only turns CPU saturation into memory saturation; it solves nothing).
             Some(slots) => match slots.clone().try_acquire_owned() {
                 Ok(permit) => Admission::Admitted(Some(permit)),
                 Err(_) => Admission::AtCapacity,
@@ -125,7 +125,7 @@ impl TokenEndpointLoadGate {
     }
 }
 
-/// トークン系エンドポイントの負荷ゲート。ルータ側で該当ルートにのみ `route_layer` する。
+/// Load gate for the token endpoints. The router attaches it with `route_layer` to those routes only.
 pub async fn limit_token_endpoint_load(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -133,7 +133,7 @@ pub async fn limit_token_endpoint_load(
     next: Next,
 ) -> Response {
     let ip = client_ip(&headers, state.config.trust_forwarded_headers());
-    // permit は応答を返し終えるまで保持する（`_permit` を早く drop しない）。
+    // The permit is held until the response is returned (do not drop `_permit` early).
     let _permit = match state.token_endpoint_load.admit(ip.as_deref()) {
         Admission::Admitted(permit) => permit,
         Admission::RateLimited => {
@@ -155,8 +155,8 @@ pub async fn limit_token_endpoint_load(
     next.run(request).await
 }
 
-/// 接続元 IP。`request_context` と同じ導出（最右の `X-Forwarded-For`。SEC1）を使う。
-/// 信頼していないときは `None`（＝ IP 単位の制限は行わない）。
+/// Client IP. Uses the same derivation as `request_context` (the rightmost `X-Forwarded-For`; SEC1).
+/// `None` when not trusted (= no per-IP limiting).
 fn client_ip(headers: &HeaderMap, trust_forwarded: bool) -> Option<String> {
     if !trust_forwarded {
         return None;
@@ -183,8 +183,8 @@ fn service_overloaded() -> Response {
     )
 }
 
-/// 文言は**翻訳しない**（`CLAUDE.md`「翻訳の対象外」: OAuth/OIDC のプロトコルエラーは RP 向けの
-/// 固定値であり、RP のログ・自動処理が文言に依存し得る）。
+/// The wording is **not translated** (`CLAUDE.md` "Not translated": OAuth/OIDC protocol errors are fixed
+/// values for RPs, and RP logs and automation may depend on the wording).
 fn oauth_error(status: StatusCode, description: &'static str) -> Response {
     (
         status,
@@ -223,8 +223,8 @@ mod tests {
         matches!(a, Admission::Admitted(_))
     }
 
-    /// 同時実行の上限は**接続元が分からなくても**効く。`TRUST_FORWARDED_HEADERS` が既定の
-    /// `false` のとき、Argon2 のメモリ増幅に対する防御線はこれだけになる。
+    /// The concurrency cap applies **even without knowing the source**. When `TRUST_FORWARDED_HEADERS`
+    /// is the default `false`, this is the only line of defence against Argon2 memory amplification.
     #[test]
     fn concurrency_is_capped_even_when_the_source_is_unknown() {
         let gate = gate(Some(2), None);
@@ -234,46 +234,46 @@ mod tests {
         assert!(admitted(&second));
         assert!(matches!(gate.admit(None), Admission::AtCapacity));
 
-        // permit を離すと枠が空く。
+        // Releasing the permit frees the slot.
         drop(first);
         assert!(admitted(&gate.admit(None)));
     }
 
-    /// 送信元単位の超過は、枠を取る**前に**判定する。枠を取ってから弾くと、弾かれる要求が
-    /// 一瞬でも枠を占有し、攻撃者が同時実行枠を空にできてしまう。
+    /// Per-source excess is decided **before** taking a slot. If a slot were taken before rejecting,
+    /// rejected requests would occupy slots briefly and an attacker could drain the concurrency slots.
     #[test]
     fn a_rate_limited_source_never_consumes_a_concurrency_slot() {
         let gate = gate(Some(1), Some((1, Duration::from_secs(60))));
         let held = gate.admit(Some("203.0.113.9"));
         assert!(admitted(&held));
-        // 同じ送信元の 2 回目はレート制限で落ちる（枠切れではない）。
+        // The second request from the same source fails on the rate limit (not out of slots).
         assert!(matches!(
             gate.admit(Some("203.0.113.9")),
             Admission::RateLimited
         ));
-        // 別の送信元から見ると、枠は 1 つ（held）だけが埋まっている。
+        // Seen from another source, only one slot (held) is occupied.
         assert!(matches!(
             gate.admit(Some("198.51.100.4")),
             Admission::AtCapacity
         ));
-        // 枠が空けば、まだ枠を使っていない送信元は通る。
+        // Once the slot frees, a source that has not used a slot yet passes.
         drop(held);
         assert!(admitted(&gate.admit(Some("192.0.2.30"))));
     }
 
-    /// 枠切れで落とした要求も、送信元の回数には数える。数えないと、枠が埋まっている間は
-    /// いくら叩いてもレート制限に触れず、攻撃者が枠の解放を待って叩き続けられる。
+    /// Requests dropped for lack of slots still count toward the source's total. Otherwise, while slots are
+    /// full, hitting never touches the rate limit and an attacker can keep hitting while waiting for a free slot.
     #[test]
     fn a_request_shed_for_capacity_still_counts_against_its_source() {
         let gate = gate(Some(1), Some((2, Duration::from_secs(60))));
         let held = gate.admit(Some("203.0.113.9"));
         assert!(admitted(&held));
-        // 同じ送信元の 2 回目: レート制限（上限 2）は通るが枠が無い。
+        // Second request from the same source: passes the rate limit (cap 2) but there is no slot.
         assert!(matches!(
             gate.admit(Some("203.0.113.9")),
             Admission::AtCapacity
         ));
-        // 3 回目は枠の有無に関係なくレート制限で落ちる。
+        // The third fails on the rate limit regardless of slot availability.
         drop(held);
         assert!(matches!(
             gate.admit(Some("203.0.113.9")),
@@ -281,7 +281,7 @@ mod tests {
         ));
     }
 
-    /// 送信元ごとに独立して数える（1 つの RP の集中が他の RP を巻き添えにしない）。
+    /// Counted independently per source (one RP's burst does not drag down other RPs).
     #[test]
     fn rate_limits_are_counted_per_source() {
         let gate = gate(None, Some((1, Duration::from_secs(60))));
@@ -293,7 +293,7 @@ mod tests {
         assert!(admitted(&gate.admit(Some("203.0.113.2"))));
     }
 
-    /// 両方 `0`（無効）なら素通しする。既定値を外した運用でゲートが黙って全拒否にならないこと。
+    /// If both are `0` (disabled) everything passes. The gate must not silently reject all when defaults are changed.
     #[test]
     fn both_limits_disabled_admits_everything() {
         let gate = gate(None, None);
@@ -302,8 +302,8 @@ mod tests {
         }
     }
 
-    /// 信頼していないヘッダからは IP を採らない（SEC1）。採ると、送信元を名乗り分けるだけで
-    /// レート制限を無限に回避できる。
+    /// Do not take the IP from untrusted headers (SEC1). Otherwise just claiming different sources
+    /// would bypass the rate limit indefinitely.
     #[test]
     fn forwarded_headers_are_ignored_unless_trusted() {
         let mut headers = HeaderMap::new();

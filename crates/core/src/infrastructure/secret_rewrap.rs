@@ -1,36 +1,36 @@
-//! DB に暗号化して保存している秘密を、`KEY_ENCRYPTION_KEY` の古い値から新しい値へ包み直す
-//! （鍵を作り直すときに一度だけ流す作業。バイナリは `assay-rewrap-secrets`）。
+//! Re-wraps secrets stored encrypted in the DB from the old `KEY_ENCRYPTION_KEY` value to the new one
+//! (a one-off job run when the key is recreated; the binary is `assay-rewrap-secrets`).
 //!
-//! 古い鍵も読み続ける仕組みは持たない。api を止めた間にこれで全部を包み直し、新しい鍵で起こし直す
-//! （task #618）。
+//! There is no mechanism to keep reading with the old key. While the api is stopped, this re-wraps everything,
+//! and the api is restarted with the new key (task #618).
 //!
-//! - **1 つの取引で全部を書く。** 1 件でも古い鍵で開けない・書いた値が新しい鍵で開けない・途中で
-//!   落ちた、のどれでも取り消す（DB は流す前のまま。退避も古い鍵で開ける）
-//! - **二重に掛けない。** 全部が既に新しい鍵で開けるなら何も書かずに「済み」を返す。古い鍵の行と
-//!   新しい鍵の行が混ざっていたら、どちらにも寄せずに止める（人が見るべき状態）
-//! - 値は出さない。返すのは欄ごとの件数だけ
-//! - 外部 IdP ログインの途中の状態（`external_login_requests`、数分で切れる）は包み直さずに消す
+//! - **Everything is written in one transaction.** It rolls back if any row can't be opened with the old key, a written
+//!   value can't be opened with the new key, or it crashes midway (the DB stays as before; backups open with the old key)
+//! - **Never applied twice.** If everything already opens with the new key, nothing is written and "done" is returned. If rows
+//!   with the old key and the new key are mixed, it stops without leaning either way (a state a human should look at)
+//! - Values are never output. Only per-field counts are returned
+//! - In-progress external IdP login state (`external_login_requests`, expires in minutes) is deleted rather than re-wrapped
 
 use crate::domain::crypto;
 use anyhow::{bail, Context};
 use sqlx::{MySqlPool, Row as _};
 
-/// 暗号化して保存している 1 つの欄。表と列の名前は固定の定数（利用者の入力は混ざらない）。
+/// One encrypted field. Table and column names are fixed constants (no user input mixed in).
 struct EncryptedColumn {
-    /// 報告に出す名前（`表.列`）。
+    /// Name shown in the report (`table.column`).
     label: &'static str,
     table: &'static str,
     value_column: &'static str,
-    /// 行を特定する列（主キー）。
+    /// Column identifying the row (primary key).
     key_columns: &'static [&'static str],
-    /// 包んでいる行だけを選ぶ条件。
+    /// Condition selecting only wrapped rows.
     filter: &'static str,
 }
 
-/// `KEY_ENCRYPTION_KEY` で包んでいる欄の全部。`crypto::encrypt(.., key_encryption_key)` の
-/// 書き手を足したら、ここにも足す。
+/// All fields wrapped with `KEY_ENCRYPTION_KEY`. When adding a writer of `crypto::encrypt(.., key_encryption_key)`,
+/// add it here too.
 const ENCRYPTED_COLUMNS: &[EncryptedColumn] = &[
-    // 署名の秘密鍵（RETIRED も含む。戻す・見直すときに開ける必要がある）。
+    // Signing private keys (including RETIRED; they must open when rolling back or reviewing).
     EncryptedColumn {
         label: "signing_keys.private_key_encrypted",
         table: "signing_keys",
@@ -38,8 +38,8 @@ const ENCRYPTED_COLUMNS: &[EncryptedColumn] = &[
         key_columns: &["kid"],
         filter: "1 = 1",
     },
-    // TOTP の共有鍵。同じ列でもパスキーは平文の JSON、リカバリーコードと email OTP はハッシュなので
-    // 種別で絞る。
+    // TOTP shared keys. In the same column passkeys are plaintext JSON and recovery codes / email OTP are hashes, so
+    // filter by type.
     EncryptedColumn {
         label: "user_authenticators.secret_encrypted (totp)",
         table: "user_authenticators",
@@ -54,7 +54,7 @@ const ENCRYPTED_COLUMNS: &[EncryptedColumn] = &[
         key_columns: &["id"],
         filter: "client_secret_encrypted IS NOT NULL AND client_secret_encrypted <> ''",
     },
-    // SMTP のパスワード・SMS のトークン。空文字は「未設定」で暗号文ではない。
+    // SMTP password, SMS token. An empty string means "unset", not ciphertext.
     EncryptedColumn {
         label: "system_settings.setting_value (is_secret)",
         table: "system_settings",
@@ -71,52 +71,52 @@ const ENCRYPTED_COLUMNS: &[EncryptedColumn] = &[
     },
 ];
 
-/// 流し方。
+/// How to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RewrapMode {
-    /// 開けるかを数えるだけ。何も書かない（取引は取り消す）。
+    /// Only counts whether rows can be opened. Writes nothing (the transaction is rolled back).
     Check,
-    /// 包み直して確定する。
+    /// Re-wraps and commits.
     Apply,
 }
 
-/// 欄ごとの件数。
+/// Per-field counts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColumnCount {
     pub label: &'static str,
-    /// 古い鍵で開けた件数（＝包み直す・包み直した件数）。
+    /// Number opened with the old key (= number to re-wrap / re-wrapped).
     pub under_old_key: usize,
-    /// 既に新しい鍵で開ける件数。
+    /// Number that already open with the new key.
     pub under_new_key: usize,
 }
 
-/// 結果。
+/// Result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RewrapOutcome {
-    /// 古い鍵の行を新しい鍵で包み直した（`Check` では「包み直せる」）。
+    /// Rows with the old key were re-wrapped with the new key (with `Check`: "can be re-wrapped").
     Rewrapped {
         columns: Vec<ColumnCount>,
-        /// 消した（`Check` では消せる）外部 IdP ログインの途中の状態の件数。
+        /// Number of in-progress external IdP login states deleted (with `Check`: deletable).
         discarded_login_requests: u64,
     },
-    /// 全部が既に新しい鍵で開ける。何も書いていない。
+    /// Everything already opens with the new key. Nothing was written.
     AlreadyRewrapped { columns: Vec<ColumnCount> },
 }
 
-/// 試験用の差し込み口。本番の道具は既定値（何もしない）で呼ぶ。
+/// Hook for tests. The production tool calls with the default (does nothing).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RewrapFaults {
-    /// この件数を書いたところで失敗させる（途中で落ちても取引ごと戻ることを試験で示す）。
+    /// Fail after writing this many (shows in tests that a mid-run crash rolls back the whole transaction).
     pub fail_after_writes: Option<usize>,
 }
 
-/// 読んだ 1 行。
+/// One row read.
 struct StoredSecret {
     key_values: Vec<String>,
     plaintext: Vec<u8>,
 }
 
-/// 古い鍵（`old_key`）で包んだ秘密を全部、新しい鍵（`new_key`）で包み直す。
+/// Re-wraps every secret wrapped with the old key (`old_key`) with the new key (`new_key`).
 pub async fn rewrap_secrets(
     pool: &MySqlPool,
     old_key: &[u8; 32],
@@ -126,7 +126,7 @@ pub async fn rewrap_secrets(
     rewrap_secrets_with_faults(pool, old_key, new_key, mode, RewrapFaults::default()).await
 }
 
-/// [`rewrap_secrets`] に試験用の失敗を差し込める版。
+/// Version of [`rewrap_secrets`] that can inject a failure for tests.
 pub async fn rewrap_secrets_with_faults(
     pool: &MySqlPool,
     old_key: &[u8; 32],
@@ -140,7 +140,7 @@ pub async fn rewrap_secrets_with_faults(
 
     let mut tx = pool.begin().await.context("begin transaction")?;
 
-    // 1. 全部を読み、どちらの鍵で開くかを数える（行は取引の終わりまで押さえる）。
+    // 1. Read everything and count which key opens each (rows stay locked until the end of the transaction).
     let mut counts = Vec::with_capacity(ENCRYPTED_COLUMNS.len());
     let mut to_rewrap: Vec<(&EncryptedColumn, Vec<StoredSecret>)> = Vec::new();
     let mut unreadable: Vec<String> = Vec::new();
@@ -204,11 +204,11 @@ pub async fn rewrap_secrets_with_faults(
         );
     }
     if under_old == 0 && under_new > 0 {
-        // 二重に掛けない: 済んでいるなら何も書かない。
+        // Never applied twice: if already done, write nothing.
         return Ok(RewrapOutcome::AlreadyRewrapped { columns: counts });
     }
 
-    // 2. 新しい鍵で包み直して書き、書いた値を新しい鍵で開いて元の平文と一致するかを確かめる。
+    // 2. Re-wrap with the new key and write, then open the written value with the new key and check it matches the original plaintext.
     let mut written = 0usize;
     for (column, secrets) in &to_rewrap {
         let where_keys = column
@@ -272,7 +272,7 @@ pub async fn rewrap_secrets_with_faults(
         }
     }
 
-    // 3. 外部 IdP ログインの途中の状態は包み直さずに消す（止めている間に切れる短命の行）。
+    // 3. In-progress external IdP login state is deleted rather than re-wrapped (short-lived rows that expire while stopped).
     let discarded_login_requests = sqlx::query("DELETE FROM external_login_requests")
         .execute(&mut *tx)
         .await

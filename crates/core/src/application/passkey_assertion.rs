@@ -1,22 +1,22 @@
-//! WebAuthn アサーション（discoverable credentials）の検証。
+//! Verification of WebAuthn assertions (discoverable credentials).
 //!
-//! パスキーの「ログイン」は 2 つの層でできている。**セレモニー**（チャレンジを発行し、ブラウザが返した
-//! アサーションを検証して「どの利用者か」を確定する）と、その後の**ログイン経路ごとの処理**
-//! （OIDC 認可フローの継続・管理コンソールの権限確認・ポータルの SSO 発行）である。
+//! A passkey "login" has two layers: the **ceremony** (issue a challenge, verify the assertion the
+//! browser returns, and settle "which user this is"), followed by **per-login-path handling**
+//! (continuing the OIDC authorization flow, checking admin console permissions, issuing portal SSO).
 //!
-//! 本モジュールは前者だけを持つ。パスキーを受け付ける画面は
-//! [`crate::application::passkey_authentication`]（OIDC 認可フロー）・
-//! [`crate::application::admin_login`]（管理コンソール）・
-//! [`crate::application::portal_login`]（ポータル）の 3 つあり、**セレモニーはどれも同一**である。
-//! 3 か所へ写すと、認証器登録簿の一時停止判定（AP9）や署名カウンタの更新といった見落とすと危険な
-//! 手順が経路ごとにずれていくため、ここを唯一の出所とする。
+//! This module owns only the former. There are three screens that accept passkeys:
+//! [`crate::application::passkey_authentication`] (OIDC authorization flow),
+//! [`crate::application::admin_login`] (admin console), and
+//! [`crate::application::portal_login`] (portal), and **the ceremony is identical for all of them**.
+//! Copying it into three places would let dangerous-to-miss steps such as the authenticator registry
+//! suspension check (AP9) and the signature counter update drift per path, so this is the single source.
 //!
-//! チャレンジは [`PasskeyFlow`] で用途を分ける。OIDC 経路のチャレンジは `auth_session_id` に結合して
-//! おり（[`PasskeyFlow::Oidc`]）、直接ログイン（管理コンソール・ポータル）のチャレンジは結合を持たない
-//! （[`PasskeyFlow::Direct`]）。重要操作の直前の本人確認（AP5）はどちらでもなく、種別そのもので
-//! 分ける（[`PasskeyFlow::StepUp`]）—— セッションを作らないので `auth_session_id_hash` は用途を
-//! 表せない。完了時に期待するフローと一致しないチャレンジは [`PasskeyAssertionError::WrongFlow`] で
-//! 弾き、経路をまたいだ使い回しを起こさせない。
+//! Challenges are separated by purpose via [`PasskeyFlow`]. OIDC-path challenges are bound to
+//! `auth_session_id` ([`PasskeyFlow::Oidc`]); direct-login (admin console, portal) challenges carry no
+//! binding ([`PasskeyFlow::Direct`]). Re-authentication right before a sensitive operation (AP5) is
+//! neither, and is separated by the type itself ([`PasskeyFlow::StepUp`]) — it creates no session, so
+//! `auth_session_id_hash` cannot express the purpose. A challenge that does not match the flow expected
+//! at completion is rejected with [`PasskeyAssertionError::WrongFlow`], preventing cross-path reuse.
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authenticator_management::is_blocked_in_registry;
@@ -39,23 +39,23 @@ use webauthn_rs::prelude::{
     DiscoverableAuthentication, DiscoverableKey, Passkey, PublicKeyCredential,
 };
 
-/// チャレンジの有効期限（5 分）。
+/// Challenge lifetime (5 minutes).
 const CHALLENGE_TTL: StdDuration = StdDuration::from_secs(300);
 
-/// パスキーを使おうとしている経路。チャレンジの発行時と完了時で一致していなければならない。
+/// The path trying to use the passkey. Must match between challenge issuance and completion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PasskeyFlow {
-    /// OIDC 認可フローの中のログイン。`auth_session_id` に結合する。
+    /// Login inside the OIDC authorization flow. Bound to `auth_session_id`.
     Oidc,
-    /// 認可フロー外の直接ログイン（管理コンソール・ポータル）。`auth_session_id` を持たない。
+    /// Direct login outside the authorization flow (admin console, portal). No `auth_session_id`.
     Direct,
-    /// 重要操作の直前の本人確認（AP5）。**セッションを作らず、既にあるセッションを引き上げる。**
-    /// ログインの 2 つと `challenge_type` で分かれる。
+    /// Re-authentication right before a sensitive operation (AP5). **Creates no session; elevates an existing one.**
+    /// Separated from the two login flows by `challenge_type`.
     StepUp,
 }
 
 impl PasskeyFlow {
-    /// この経路が発行・消費するチャレンジの種別。
+    /// Challenge type this path issues and consumes.
     fn challenge_type(self) -> PasskeyChallengeType {
         match self {
             Self::Oidc | Self::Direct => PasskeyChallengeType::Authenticate,
@@ -64,33 +64,33 @@ impl PasskeyFlow {
     }
 }
 
-/// アサーション検証の失敗。呼び出し側は自分の経路の outcome へ写す。
+/// Assertion verification failure. Callers map it to their own path's outcome.
 #[derive(Debug)]
 pub enum PasskeyAssertionError {
-    /// チャレンジが見つからない・期限切れ・使用済み。
+    /// Challenge not found, expired, or already used.
     ChallengeNotFound,
-    /// チャレンジの用途が期待する経路と違う。
+    /// The challenge's purpose differs from the expected path.
     WrongFlow,
-    /// クレデンシャルが無効（不存在・検証失敗・停止中・テナント非所属・アカウント無効）。
-    /// 列挙を避けるため理由を分けない。
+    /// Invalid credential (missing, verification failed, suspended, not a tenant member, account disabled).
+    /// Reasons are not distinguished, to avoid enumeration.
     InvalidCredential,
     Internal(String),
 }
 
-/// 検証を通ったパスキーの持ち主。
+/// Owner of a passkey that passed verification.
 #[derive(Debug)]
 pub struct VerifiedPasskeyUser {
     pub user_id: Uuid,
-    /// 利用者の所属元テナント。SSO セッションの寿命はこのテナントの値で決まる（ADR-0058）ので、
-    /// 呼び出し側に利用者を引き直させない。
+    /// The user's home tenant. The SSO session lifetime is determined by this tenant's values (ADR-0058),
+    /// so callers need not look the user up again.
     pub home_tenant_id: TenantId,
-    /// OIDC 経路のチャレンジが持つ `auth_sessions.id_hash`（`Direct` では常に `None`）。
+    /// `auth_sessions.id_hash` carried by an OIDC-path challenge (always `None` for `Direct`).
     pub auth_session_id_hash: Option<String>,
 }
 
 pub struct PasskeyAssertionService {
     webauthn_credentials: Arc<dyn WebAuthnCredentialRepository>,
-    /// 認証器の登録簿（AP9）。一時停止・失効はここにしか無いため、認証時に必ず見る。
+    /// Authenticator registry (AP9). Suspension and revocation live only here, so it is always checked at authentication.
     authenticators: Arc<dyn UserAuthenticatorRepository>,
     passkey_challenges: Arc<dyn PasskeyChallengeRepository>,
     users: Arc<dyn UserRepository>,
@@ -124,10 +124,10 @@ impl PasskeyAssertionService {
         }
     }
 
-    /// 認証開始。`auth_session_id` を渡すと OIDC フロー継続用のチャレンジになり、渡さなければ
-    /// 直接ログイン用のチャレンジになる。
+    /// Start authentication. Passing `auth_session_id` yields a challenge for continuing the OIDC flow;
+    /// omitting it yields a challenge for direct login.
     ///
-    /// 返り値: `(challenge_id, options_json)`
+    /// Returns: `(challenge_id, options_json)`
     pub async fn begin(
         &self,
         auth_session_id: Option<&str>,
@@ -135,16 +135,16 @@ impl PasskeyAssertionService {
         self.begin_for(PasskeyFlow::Direct, auth_session_id).await
     }
 
-    /// 本人確認（AP5）の開始。ログイン用のチャレンジとは種別で分かれるため、**この経路で出した
-    /// チャレンジではログインできない**（逆も同じ）。
+    /// Start re-authentication (AP5). Separated from login challenges by type, so **a challenge issued on
+    /// this path cannot be used to log in** (and vice versa).
     ///
-    /// 返り値: `(challenge_id, options_json)`
+    /// Returns: `(challenge_id, options_json)`
     pub async fn begin_step_up(&self) -> Result<(Uuid, serde_json::Value), String> {
         self.begin_for(PasskeyFlow::StepUp, None).await
     }
 
-    /// 用途を決めてチャレンジを 1 本作る。`Oidc` と `Direct` の別は `auth_session_id` の有無が
-    /// 表すため、ログイン経路はどちらを渡しても同じ結果になる。
+    /// Create one challenge for the given purpose. `Oidc` vs `Direct` is expressed by the presence of
+    /// `auth_session_id`, so the login paths get the same result whichever they pass.
     async fn begin_for(
         &self,
         flow: PasskeyFlow,
@@ -182,7 +182,7 @@ impl PasskeyAssertionService {
         Ok((challenge_id, options_json))
     }
 
-    /// アサーションを検証し、持ち主を確定する。チャレンジは（成否によらず）1 回で使い切る。
+    /// Verify an assertion and settle its owner. The challenge is used up in one go (success or not).
     pub async fn verify(
         &self,
         tenant_id: TenantId,
@@ -193,7 +193,7 @@ impl PasskeyAssertionService {
     ) -> Result<VerifiedPasskeyUser, PasskeyAssertionError> {
         let now = self.clock.now();
 
-        // 1. チャレンジを取得して消費する。
+        // 1. Fetch and consume the challenge.
         let challenge = match self.passkey_challenges.find_by_id(challenge_id).await {
             Ok(Some(c)) => c,
             Ok(None) => return Err(PasskeyAssertionError::ChallengeNotFound),
@@ -203,18 +203,18 @@ impl PasskeyAssertionService {
             let _ = self.passkey_challenges.delete(challenge_id).await;
             return Err(PasskeyAssertionError::ChallengeNotFound);
         }
-        // チャレンジを先に削除（リプレイ防止）。⚠ **消せた側だけが続ける**（task #586）。
-        // 同じチャレンジで同時に 2 本来ると、どちらも上の取得を通る。消せなかった側は、もう一方が
-        // 使ったチャレンジを使い回している（同期パスキーはカウンタが 0 のままで、署名の再送を
-        // カウンタで止められない）。
+        // Delete the challenge first (replay protection). ⚠ **Only the side that deleted it proceeds** (task #586).
+        // If two requests arrive concurrently with the same challenge, both pass the fetch above. The side that
+        // failed to delete is reusing a challenge the other already used (synced passkeys keep the counter at 0,
+        // so the counter cannot stop a resent signature).
         match self.passkey_challenges.delete(challenge_id).await {
             Ok(true) => {}
             Ok(false) => return Err(PasskeyAssertionError::ChallengeNotFound),
             Err(e) => return Err(PasskeyAssertionError::Internal(e.to_string())),
         }
 
-        // 1.5. 用途の一致を確認する。ログインと本人確認は `challenge_type` で分かれ、ログインの
-        //      2 経路（認可フロー・直接）は `auth_session_id_hash` の有無で分かれる。
+        // 1.5. Check that the purpose matches. Login and re-authentication are split by `challenge_type`; the two
+        //      login paths (authorization flow, direct) are split by presence of `auth_session_id_hash`.
         let flow_matches = challenge.challenge_type == flow.challenge_type()
             && match flow {
                 PasskeyFlow::Oidc => challenge.auth_session_id_hash.is_some(),
@@ -226,21 +226,21 @@ impl PasskeyAssertionService {
             return Err(PasskeyAssertionError::WrongFlow);
         }
 
-        // 2. DiscoverableAuthentication 状態を復元する。
+        // 2. Restore the DiscoverableAuthentication state.
         let auth_state: DiscoverableAuthentication =
             match serde_json::from_str(&challenge.state_json) {
                 Ok(s) => s,
                 Err(e) => return Err(PasskeyAssertionError::Internal(e.to_string())),
             };
 
-        // 3. ブラウザからのクレデンシャルをデシリアライズする。
+        // 3. Deserialize the credential from the browser.
         let public_key_credential: PublicKeyCredential =
             match serde_json::from_value(credential_value) {
                 Ok(c) => c,
                 Err(_) => return Err(PasskeyAssertionError::InvalidCredential),
             };
 
-        // 4. credential_id から登録済みクレデンシャルを引く。
+        // 4. Look up the registered credential by credential_id.
         let stored_cred = match self
             .webauthn_credentials
             .find_by_credential_id(public_key_credential.id.as_str())
@@ -259,9 +259,9 @@ impl PasskeyAssertionService {
         let user_id = stored_cred.user_id;
         let cred_row_id = stored_cred.id;
 
-        // 登録簿でこの 1 本が止められていないかを見る（AP9）。公開鍵を引く経路は「失効して
-        // いない行」しか見ないので、**一時停止**を効かせるのはこの判定だけである。パスキーは
-        // 1 利用者に複数あるため、止めた 1 本だけを塞ぐ。
+        // Check that this particular credential is not stopped in the registry (AP9). The public-key lookup only
+        // sees "non-revoked rows", so this check is the only thing that enforces **suspension**. A user can
+        // have several passkeys, so only the stopped one is blocked.
         match is_blocked_in_registry(
             self.authenticators.as_ref(),
             user_id,
@@ -275,7 +275,7 @@ impl PasskeyAssertionService {
             Err(e) => return Err(PasskeyAssertionError::Internal(e.to_string())),
         }
 
-        // 5. WebAuthn 検証。
+        // 5. WebAuthn verification.
         let dk = DiscoverableKey::from(&passkey);
         let auth_result =
             match self
@@ -299,7 +299,7 @@ impl PasskeyAssertionService {
                 }
             };
 
-        // 6. sign_count を更新して passkey_json を保存する（更新があれば DB に反映する）。
+        // 6. Update sign_count and save passkey_json (persist to the DB if anything changed).
         let mut updated_passkey = passkey;
         if updated_passkey
             .update_credential(&auth_result)
@@ -318,10 +318,10 @@ impl PasskeyAssertionService {
             }
         }
 
-        // 7. ユーザーの有効性と、フローのテナントへの ACTIVE メンバーシップ（HOME または GUEST）を
-        //    確認する。WebAuthn クレデンシャルはテナント列を持たずホスト単位で解決されるため、テナント
-        //    境界はこのアプリ層の紐付けで強制する（ADR-0009 §8。`authorize` の SSO 復元と同じ判定）。
-        //    非メンバー・無効・不明はいずれも `InvalidCredential` に倒す（列挙防止のため理由を分けない）。
+        // 7. Check that the user is active and has an ACTIVE membership (HOME or GUEST) in the flow's tenant.
+        //    WebAuthn credentials have no tenant column and are resolved per host, so the tenant boundary
+        //    is enforced by this application-layer link (ADR-0009 §8; same check as SSO restore in `authorize`).
+        //    Non-member, inactive, and unknown all fall to `InvalidCredential` (reasons not split, to avoid enumeration).
         let home_tenant_id = ensure_active_member(
             self.users.as_ref(),
             self.memberships.as_ref(),
@@ -338,20 +338,20 @@ impl PasskeyAssertionService {
     }
 }
 
-/// 本人確認（AP5）がパスキーへ求めること。
+/// What re-authentication (AP5) requires of passkeys.
 ///
-/// [`StepUpService`](crate::application::step_up::StepUpService) がセレモニーの実装全体ではなく
-/// この 2 つだけを見るのは、**本人確認の判定を試すのにセレモニー一式を組ませない**ためである
-/// （クレデンシャル・チャレンジ・登録簿・テナント所属の 4 リポジトリと WebAuthn 実装）。
-/// 実装は [`PasskeyAssertionService`] 1 つで、セレモニーそのものは 3 つのログイン経路と同じ
-/// 1 か所に留まる（ADR-0040 決定 1）。
+/// [`StepUpService`](crate::application::step_up::StepUpService) looks only at these two rather than the
+/// whole ceremony implementation **so that testing the re-authentication decision does not require
+/// assembling the full ceremony** (four repositories — credentials, challenges, registry, tenant membership —
+/// plus a WebAuthn implementation). The only implementation is [`PasskeyAssertionService`], so the ceremony
+/// itself stays in one place along with the three login paths (ADR-0040 decision 1).
 #[async_trait::async_trait]
 pub trait PasskeyStepUpCeremony: Send + Sync {
-    /// 本人確認用のチャレンジを 1 本発行する。
+    /// Issue one challenge for re-authentication.
     async fn begin(&self) -> Result<(Uuid, serde_json::Value), String>;
 
-    /// アサーションを検証して持ち主を確定する。**持ち主がセッションの利用者かは呼び出し側が見る**
-    /// （セレモニーは「誰のパスキーか」までしか答えない）。
+    /// Verify an assertion and settle its owner. **Whether the owner is the session's user is checked by the caller**
+    /// (the ceremony answers only "whose passkey is this").
     async fn verify(
         &self,
         tenant_id: TenantId,
@@ -386,9 +386,9 @@ impl PasskeyStepUpCeremony for PasskeyAssertionService {
     }
 }
 
-/// クレデンシャルの所有者がフローのテナントの ACTIVE メンバー（HOME または GUEST）で、かつ有効な
-/// アカウントであることを検証する。所属外・無効・不明・障害はいずれも `InvalidCredential`／`Internal`
-/// に倒す（テナント境界の強制。ADR-0009 §8）。サービス本体から切り出してユニットテスト可能にする。
+/// Verify that the credential owner is an ACTIVE member (HOME or GUEST) of the flow's tenant and an active
+/// account. Not a member, inactive, unknown, or failure all fall to `InvalidCredential` / `Internal`
+/// (tenant boundary enforcement, ADR-0009 §8). Split out of the service so it can be unit tested.
 async fn ensure_active_member(
     users: &dyn UserRepository,
     memberships: &dyn TenantMembershipRepository,
@@ -441,11 +441,11 @@ mod tests {
         }
     }
 
-    /// 単一ユーザーを返すフェイク（`None` で不存在を表す）。
+    /// Fake returning a single user (`None` means not found).
     struct FakeUsers(Option<User>);
     #[async_trait]
     impl UserRepository for FakeUsers {
-        /// このテストはログイン失敗経路を通らない（SEC13 の検証は login / mfa_login にある）。
+        /// This test never goes through the login failure path (SEC13 is verified in login / mfa_login).
         async fn record_login_failure(
             &self,
             _id: Uuid,
@@ -507,7 +507,7 @@ mod tests {
         }
     }
 
-    /// 指定テナントに対する `is_active_member` の戻り値を固定するフェイク。
+    /// Fake that fixes the return value of `is_active_member` for a given tenant.
     struct FakeMemberships {
         tenant_id: TenantId,
         is_member: DomainResult<bool>,
@@ -556,7 +556,7 @@ mod tests {
         (Uuid::new_v4(), Uuid::now_v7().into())
     }
 
-    /// 監査を捨てるだけのシンク（本モジュールのテストは監査の内容を検証しない）。
+    /// Sink that just discards audit events (this module's tests do not check audit content).
     struct DiscardingSink;
     #[async_trait]
     impl crate::domain::repositories::AuditLogSink for DiscardingSink {
@@ -572,7 +572,7 @@ mod tests {
         }
     }
 
-    /// 1 件のチャレンジを返し、削除されたかを記録するフェイク。
+    /// Fake that returns one challenge and records whether it was deleted.
     struct FakeChallenges {
         challenge: std::sync::Mutex<Option<PasskeyChallenge>>,
         deleted: std::sync::Mutex<Vec<Uuid>>,
@@ -591,7 +591,7 @@ mod tests {
                 .filter(|c| c.id == id))
         }
         async fn delete(&self, id: Uuid) -> DomainResult<bool> {
-            // 消せるのは最初の 1 回だけ（2 回目は同時に来た別の要求が先に消した形。task #586）。
+            // Only the first delete succeeds (the second models another concurrent request deleting it first; task #586).
             let mut deleted = self.deleted.lock().unwrap();
             let first = !deleted.contains(&id);
             deleted.push(id);
@@ -602,7 +602,7 @@ mod tests {
         }
     }
 
-    /// フローの判定より先には進まないことを保証するフェイク（呼ばれたら panic）。
+    /// Fake guaranteeing that nothing goes past the flow check (panics if called).
     struct UnreachableCredentials;
     #[async_trait]
     impl WebAuthnCredentialRepository for UnreachableCredentials {
@@ -646,7 +646,7 @@ mod tests {
         }
     }
 
-    /// 既定実装だけの登録簿フェイク（このテストでは到達しない）。
+    /// Registry fake with only default implementations (not reached in these tests).
     struct UnreachableAuthenticators;
     #[async_trait]
     impl UserAuthenticatorRepository for UnreachableAuthenticators {
@@ -707,7 +707,7 @@ mod tests {
         Utc.with_ymd_and_hms(2026, 8, 29, 12, 0, 0).unwrap()
     }
 
-    /// 指定の `auth_session_id_hash` を持つ認証チャレンジ 1 件だけを知っているサービスを組む。
+    /// Build a service that knows only one authentication challenge with the given `auth_session_id_hash`.
     fn service_with_challenge(
         auth_session_id_hash: Option<&str>,
         expires_at: chrono::DateTime<Utc>,
@@ -718,7 +718,7 @@ mod tests {
                 id: challenge_id,
                 user_id: None,
                 challenge_type: PasskeyChallengeType::Authenticate,
-                // フローの判定はこの JSON を読む前に行われるので、中身は問わない。
+                // The flow check runs before this JSON is read, so its content does not matter.
                 state_json: "not-a-discoverable-authentication".to_string(),
                 auth_session_id_hash: auth_session_id_hash.map(|s| s.to_string()),
                 expires_at,
@@ -755,8 +755,8 @@ mod tests {
 
     #[tokio::test]
     async fn an_authorization_flow_challenge_is_not_accepted_by_a_direct_login() {
-        // 認可フロー用に発行したチャレンジ（auth_session に結合）を管理コンソール／ポータルの
-        // 完了エンドポイントへ持ち込んでも通らない。
+        // A challenge issued for the authorization flow (bound to an auth_session) does not pass when
+        // brought to the admin console / portal completion endpoint.
         let (service, challenge_id, challenges) = service_with_challenge(
             Some("auth-session-hash"),
             fixed_now() + Duration::minutes(5),
@@ -772,7 +772,7 @@ mod tests {
             .await
             .expect_err("a challenge bound to an auth session must not complete a direct login");
         assert!(matches!(err, PasskeyAssertionError::WrongFlow));
-        // 用途違いでもチャレンジは使い切る（同じチャレンジで正しい経路を試させない）。
+        // Even on a purpose mismatch the challenge is used up (so the right path cannot be tried with it).
         assert_eq!(
             challenges.deleted.lock().unwrap().as_slice(),
             [challenge_id]
@@ -796,8 +796,8 @@ mod tests {
         assert!(matches!(err, PasskeyAssertionError::WrongFlow));
     }
 
-    /// 同じチャレンジを同時に使った別の要求が先に消していたら、署名の確認へ進まない（task #586）。
-    /// 同期パスキーはカウンタが 0 のままで、署名の再送をカウンタでは止められない。
+    /// If another request using the same challenge concurrently deleted it first, signature verification is not reached (task #586).
+    /// Synced passkeys keep the counter at 0, so the counter cannot stop a resent signature.
     #[tokio::test]
     async fn a_challenge_consumed_by_another_request_does_not_reach_verification() {
         let (service, challenge_id, challenges) =
@@ -852,8 +852,8 @@ mod tests {
 
     #[tokio::test]
     async fn non_member_is_rejected_as_invalid_credential() {
-        // 別テナントのフローでパスキーを提示しても、当該テナントの ACTIVE メンバーでなければ拒否する
-        // （テナント分離。ADR-0009 §8）。
+        // Presenting a passkey in another tenant's flow is rejected unless the user is an ACTIVE member of that tenant
+        // (tenant isolation, ADR-0009 §8).
         let (uid, home) = ids();
         let other_tenant: TenantId = Uuid::now_v7().into();
         let users = FakeUsers(Some(active_user(uid, home)));
@@ -873,7 +873,7 @@ mod tests {
         let mut user = active_user(uid, tid);
         user.status = UserStatus::Disabled;
         let users = FakeUsers(Some(user));
-        // メンバーシップ判定に到達したら panic する（無効ユーザーは先に弾く）。
+        // Panics if the membership check is reached (inactive users are rejected first).
         let memberships = FakeMemberships {
             tenant_id: tid,
             is_member: Err(DomainError::Repository("must not be called".to_string())),

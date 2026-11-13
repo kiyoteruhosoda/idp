@@ -1,13 +1,13 @@
 /*
- * web 共通スタイルシート。全画面（ログイン・管理コンソール・セルフサービス）に適用する。
+ * Common web stylesheet. Applies to every screen (login, admin console, self-service).
  *
- * 画面フォーマットは photonest と同じ Bootstrap 5 + Font Awesome を採用する
- * （`/assets/vendor/` 配下を自オリジン配信。CSP `style-src 'self'` を維持）。
- * このファイルには Bootstrap が持たないサイドバー等の最小限の補完だけを書く。
+ * The screen format uses Bootstrap 5 + Font Awesome, the same as photonest
+ * (served from our own origin under `/assets/vendor/`, keeping CSP `style-src 'self'`).
+ * This file only holds minimal additions Bootstrap lacks, such as the sidebar.
  */
 
-/* 管理コンソールのサイドバー（photonest の Sidebar と同フォーマット）。
- * <768px は Bootstrap の offcanvas（ドロワー）、>=768px は固定幅の常設サイドバー。 */
+/* Admin console sidebar (same format as photonest's Sidebar).
+ * <768px uses Bootstrap's offcanvas (drawer); >=768px a fixed-width permanent sidebar. */
 @media (min-width: 768px) {
   .app-sidebar.offcanvas-md {
     width: 250px;
@@ -24,23 +24,23 @@
   background-color: var(--bs-secondary-bg);
 }
 
-/* 長い識別子（client_id・トークン・correlation_id 等）は表のセル内で折り返す */
+/* Long identifiers (client_id, tokens, correlation_id, etc.) wrap within table cells */
 code {
   word-break: break-all;
 }
 
-/* 管理コンソール右上のユーザーメニュー。ラベルが長い識別子でもナビバーを崩さない */
+/* User menu at the top right of the admin console. Long identifier labels don't break the navbar */
 .navbar .navbar-user-label {
   max-width: min(16rem, 45vw);
 }
 
-/* 操作中テナントの常時表示。ユーザーラベルと並ぶため、名前が長くてもナビバーを崩さない
- * （狭い画面ではより短く切り詰めて、言語切替・ユーザーメニューを押せる幅を残す） */
+/* Always-visible current tenant. It sits next to the user label, so long names don't break the navbar
+ * (truncated further on narrow screens, leaving room to press the language switch and user menu) */
 .navbar .navbar-tenant-label {
   max-width: min(12rem, 30vw);
 }
 
-/* ドロップダウンはビューポート内に収め、長い識別子はヘッダ内で折り返す */
+/* Keep dropdowns within the viewport and wrap long identifiers inside the header */
 .navbar .dropdown-menu {
   max-width: calc(100vw - 1rem);
 }
@@ -50,47 +50,47 @@ code {
   overflow-wrap: anywhere;
 }
 
-/* テーブル内の見出し・ボタンは折り返さない。CJK 文言は任意の文字間で折り返せるため、
- * 狭い画面ではセルが縮んで 1 文字ずつ縦積みになり、行が縦へ伸びてしまう。
- * 折り返しを禁止し、はみ出す分は .table-responsive の横スクロールに任せる */
+/* Headings and buttons in tables don't wrap. CJK text can break between any characters,
+ * so on narrow screens cells shrink and stack one character per line, stretching rows vertically.
+ * Wrapping is forbidden and overflow is left to .table-responsive's horizontal scroll */
 .table-responsive th,
 .table-responsive .btn {
   white-space: nowrap;
 }
 
-/* 表のセル内の識別子（テナント ID 等の <code>）は、既定の `code { word-break: break-all }` だと
- * 狭い画面で 1 文字ずつ縦積みになり、ID 列が極端に細くなって一覧全体が崩れる。表内では折り返さず、
- * はみ出す分は .table-responsive の横スクロールに任せる（上の見出し・ボタンと同じ方針）。 */
+/* Identifiers in table cells (<code> such as tenant IDs) with the default `code { word-break: break-all }`
+ * stack one character per line on narrow screens, making the ID column extremely thin and breaking the list. In tables
+ * they don't wrap; overflow is left to .table-responsive's horizontal scroll (same policy as headings/buttons above). */
 .table-responsive td code {
   white-space: nowrap;
   word-break: normal;
 }
 
-/* ⚠ **ただし長い URL は折る**（外部 IdP の「相手に登録する URL」など）。上の規則のままだと、
- * テナント ID を含む 100 字近い URL が 1 行で列幅を決め、広い画面（1280px）でも表が右へはみ出し、
- * ほかの列（Issuer）が数文字ずつに潰れる。どこで折っても URL は URL なので、`anywhere` で
- * 列の最小幅から外す。全文は折り返して見え、横のコピーのボタンで写せる。 */
+/* ⚠ **But long URLs do wrap** (e.g. the external IdP's "URL to register with the other side"). With the rule above,
+ * a ~100-character URL containing the tenant ID sets the column width on one line, the table overflows to the right
+ * even on wide screens (1280px), and other columns (Issuer) get squashed to a few characters. A URL is a URL wherever
+ * it breaks, so `anywhere` removes it from the column's min width. The full text shows wrapped and can be copied with the button beside it. */
 .table-responsive td code.code-wrap {
   white-space: normal;
   overflow-wrap: anywhere;
 }
 
-/* 折り返さない塊（JWKS の JSON・traceback）を狭い画面でも読めるようにする。
+/* Make unbreakable blocks (JWKS JSON, tracebacks) readable on narrow screens.
  *
- * `<pre>` は既定が `white-space: pre` で、**行の途中では絶対に折り返さない**。JWKS は 1 行の
- * JSON なので、そのままだと画面の外へ伸びて横スクロールになる（カード表示にした表の外側で
- * 起きるため、表の対策では防げない）。かといって Bootstrap の `.text-wrap`
- * （`white-space: normal`）を当てると**改行が消える** —— traceback は行が意味を持つので、
- * 1 段落に潰れると読めない。改行は保ったまま長い行だけ折る `pre-wrap` を使う。 */
+ * `<pre>` defaults to `white-space: pre` and **never wraps mid-line**. JWKS is a single-line
+ * JSON, so as is it runs off-screen into horizontal scrolling (it happens outside the table shown
+ * as cards, so table measures don't help). But applying Bootstrap's `.text-wrap`
+ * (`white-space: normal`) **drops the line breaks** -- tracebacks rely on their lines, and
+ * squashed into one paragraph they're unreadable. Use `pre-wrap`, which keeps line breaks and only wraps long lines. */
 .pre-wrap {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-/* 一覧テーブルは狭い画面（<768px）ではカード表示へ変形する。
- * PC（>=768px）は従来どおりの表。モバイルでは見出し行（thead）を隠し、1 行を
- * 「項目名（各セルの data-label）＋値」を縦積みしたカードに組み替える（横スクロールを不要にする）。
- * 対象の <table> に .table-cards を付け、各データセルに列見出しと同じ翻訳を data-label で与える。 */
+/* List tables turn into cards on narrow screens (<768px).
+ * PCs (>=768px) keep the regular table. On mobile the header row (thead) is hidden and each row is
+ * rebuilt as a card stacking "item name (each cell's data-label) + value" (no horizontal scrolling needed).
+ * Add .table-cards to the target <table> and give each data cell the same translation as its column heading via data-label. */
 @media (max-width: 767.98px) {
   .table-cards,
   .table-cards tbody,
@@ -100,18 +100,18 @@ code {
     width: 100%;
   }
 
-  /* 見出し行はカードでは項目名を各セルの data-label で示すため隠す */
+  /* Header row is hidden; in cards each cell shows its item name via data-label */
   .table-cards thead {
     display: none;
   }
 
-  /* Bootstrap collapse 行（SAML 編集フォーム等）は開いたときだけブロック表示にし、
-   * 閉じている間は .collapse:not(.show) の非表示を維持する */
+  /* Bootstrap collapse rows (SAML edit form etc.) are shown as blocks only when open;
+   * while closed, the .collapse:not(.show) hiding stays in effect */
   .table-cards tr.collapse.show {
     display: block;
   }
 
-  /* データ行（collapse 以外）を 1 枚のカードにする */
+  /* Make each data row (other than collapse) a single card */
   .table-cards tr:not(.collapse) {
     margin-bottom: 0.75rem;
     padding: 0.75rem 1rem;
@@ -124,13 +124,13 @@ code {
     border: 0;
     padding: 0.25rem 0;
     white-space: normal;
-    /* 長い値（区切りの無いメール・reason・平文の client_id 等）もカード内で折り返し、
-     * .table-responsive の横スクロールが復活しないようにする */
+    /* Long values (unbroken emails, reason, plain client_id, etc.) also wrap within the card
+     * so .table-responsive's horizontal scroll doesn't come back */
     overflow-wrap: anywhere;
   }
 
-  /* 各セルの上に列見出し（data-label）を小さく表示する。data-label の無いセル
-   * （操作ボタン列・空表示の colspan セル等）には項目名を出さない */
+  /* Show the column heading (data-label) small above each cell. Cells without data-label
+   * (action button column, empty-state colspan cells, etc.) show no item name */
   .table-cards td[data-label]::before {
     content: attr(data-label);
     display: block;
@@ -141,15 +141,15 @@ code {
     color: var(--bs-secondary-color);
   }
 
-  /* カードはどこを押しても詳細へ行けるようにする。
+  /* Make the whole card navigate to the details.
    *
-   * 表では名前のセルだけがリンクだが、カードでは項目名と値が縦に並ぶため、**どこが押せるのかが
-   * 画面から読めない**（2026-09-02 に指摘。カード内の別の場所を押しても何も起きない）。
-   * リンクの当たり判定をカードいっぱいへ広げ、右端に矢印を出して「押せる」ことを示す。
-   * Bootstrap の .stretched-link と同じ手だが、**カード表示のときだけ**効かせたいので自前で持つ
-   * （素の表で効かせると、position を持つ祖先まで当たり判定が広がってしまう）。
-   * 目印は .card-link ではなく .table-cards-link と呼ぶ —— .card-link は Bootstrap が
-   * `.card-body` 内のリンク用に持っており（隣接すると margin が付く）、別の意味で使うと衝突する。 */
+   * In the table only the name cell is a link, but in a card item names and values stack vertically, so **what can be
+   * pressed can't be read from the screen** (pointed out on 2026-09-02; pressing elsewhere in the card did nothing).
+   * Stretch the link's hit area over the whole card and show an arrow at the right edge to signal it is pressable.
+   * Same trick as Bootstrap's .stretched-link, but we want it **only in card view**, so we have our own
+   * (applied to the plain table, the hit area would spread to the nearest positioned ancestor).
+   * The marker is called .table-cards-link rather than .card-link -- Bootstrap uses .card-link for links
+   * inside `.card-body` (adds margin when adjacent), so using it with another meaning would clash. */
   .table-cards tr:not(.collapse):has(.table-cards-link) {
     position: relative;
     padding-right: 2rem;
@@ -161,14 +161,14 @@ code {
     inset: 0;
   }
 
-  /* 名前は値の並びに埋もれないよう強調する（リンクだと分かる手掛かりを 1 つ増やす） */
+  /* Emphasize the name so it doesn't get lost among the values (one more cue that it is a link) */
   .table-cards .table-cards-link {
     font-weight: 600;
   }
 
-  /* 右端の矢印。コンソールの他のアイコンと同じ Font Awesome で描く（layout.html が app.css より
-   * 先に読み込む）。この擬似要素は覆いより後に描かれる（＝上に乗る）ため、pointer-events を切って
-   * 当たり判定を覆いへ通す。切らないと矢印の上だけ押しても詳細へ行けない。 */
+  /* Arrow at the right edge. Drawn with Font Awesome like the console's other icons (layout.html loads it before
+   * app.css). This pseudo-element is painted after (= on top of) the overlay, so pointer-events is turned off to
+   * pass hits through to the overlay. Otherwise pressing right on the arrow wouldn't go to the details. */
   .table-cards tr:not(.collapse):has(.table-cards-link)::after {
     content: "\f054";
     font: var(--fa-font-solid);
@@ -181,38 +181,38 @@ code {
     pointer-events: none;
   }
 
-  /* カード内の他のリンク・ボタン（操作列）は覆いより前へ出す。前に出さないと、
-   * カード全体の当たり判定に飲まれて押せなくなる。覆いのある行だけが対象。 */
+  /* Other links and buttons in the card (action column) are raised above the overlay. Otherwise
+   * they are swallowed by the card-wide hit area and can't be pressed. Only rows with an overlay are affected. */
   .table-cards tr:not(.collapse):has(.table-cards-link) :is(a:not(.table-cards-link), button) {
     position: relative;
     z-index: 1;
   }
 
-  /* カード内では識別子（<code>）を折り返す（横スクロール前提の nowrap を打ち消す） */
+  /* In cards, identifiers (<code>) wrap (cancels the nowrap meant for horizontal scrolling) */
   .table-cards td code {
     white-space: normal;
     word-break: break-all;
   }
 }
 
-/* パスワード表示切替ボタン（password_visibility.html の .password-toggle）の枠線を、
- * 隣接する入力欄（form-control: admin-login-username / admin-login-password 等）と揃える。
- * btn-outline-secondary の既定枠線色（--bs-secondary）だと入力欄の枠線色と食い違うため。 */
+/* Align the border of the password visibility toggle (.password-toggle in password_visibility.html) with
+ * the adjacent input (form-control: admin-login-username / admin-login-password, etc.).
+ * btn-outline-secondary's default border color (--bs-secondary) differs from the input's border color. */
 .password-toggle {
   border: var(--bs-border-width) solid var(--bs-border-color);
 }
 
-/* 認証系画面（page.html）: <768px は上詰めにする。縦センタリングのままだと
- * 上に余白を残しつつフォーム下部が画面外になり、スクロールが必要になるため。 */
+/* Auth screens (page.html): top-aligned below 768px. With vertical centering
+ * space remains above while the bottom of the form goes off-screen, requiring scrolling. */
 @media (max-width: 767.98px) {
   .auth-content {
     margin-top: 0 !important;
   }
 }
 
-/* 処理中の目印（button-pending.js）。押した瞬間にボタンの幅が変わると、隣のボタン
- * （同意画面の承認／拒否など）が動いて押し間違いの元になる。ラベルは場所を占めたまま
- * 隠し、スピナーをその上に重ねる。 */
+/* Busy marker (button-pending.js). If a button's width changes on press, the adjacent button
+ * (approve/deny on the consent screen etc.) moves and causes mis-presses. The label keeps its space
+ * but is hidden, and the spinner is overlaid on top. */
 button[aria-busy='true'] {
   position: relative;
 }
@@ -225,12 +225,12 @@ button[aria-busy='true'] .js-pending-label {
   position: absolute;
   top: 50%;
   left: 50%;
-  /* 自分の半分だけ戻して中央に置く（.spinner-border-sm は 1rem 角）。 */
+  /* Shift back by half its own size to center it (.spinner-border-sm is 1rem square). */
   margin: -0.5rem 0 0 -0.5rem;
 }
 
-/* モバイルブラウザではアドレスバー分だけ 100vh が実表示域より大きく、
- * 常に下へはみ出すため、実表示域基準の 100dvh で高さを取る */
+/* On mobile browsers 100vh exceeds the visible area by the address bar,
+ * always overflowing at the bottom, so the height uses 100dvh based on the visible area */
 @supports (min-height: 100dvh) {
   .min-vh-100 {
     min-height: 100dvh !important;
@@ -238,54 +238,54 @@ button[aria-busy='true'] .js-pending-label {
 }
 
 /* ============================================================================
- * assay の配色と印（名乗り）。
+ * assay's colors and mark (identity).
  *
- * 由来は試金 —— 試金石に検体を引き、既知の純度の試金針を隣に引いて色を見比べる。
- * 合えば通す。IdP がやっていることと同じなので、画面で色が意味を持つ系統をここ 1 つに
- * 絞る：**合ったものは金、合わなかったものは銅**、それ以外は石・紙・銀（罫と補助文言）。
- * 状態を表す色を他に足さない。
+ * Origin is assaying -- streak the sample on a touchstone, streak a touch needle of known purity next to it, and compare colors.
+ * If they match, it passes. That is what an IdP does, so the colors that carry meaning on screen are narrowed
+ * to this one family: **matched is gold, unmatched is copper**; everything else is stone, paper and silver (rules and secondary text).
+ * Don't add other colors for states.
  *
- * Bootstrap は外さない。5.3 の配色は CSS 変数で組まれているので、`--bs-*` を差し替える
- * だけで表・ドロップダウン・offcanvas まで追随する（このファイルの前半が補完している
- * サイドバー等もそのまま生きる）。
+ * Bootstrap is kept. 5.3's colors are built on CSS variables, so just replacing `--bs-*`
+ * makes tables, dropdowns and offcanvas follow (the sidebar etc. supplemented in the first half
+ * of this file keep working as is).
  *
- * ⚠ 書体は足せない。CSP が `default-src 'self'` で外部を禁じており、自オリジンへ置いても
- * 和文は結局システムのフォントに落ちる。表情はフェイスではなく**組み**で出す：ラベルと
- * 符牒だけを等幅の小さな字間広めに組み、角丸をほぼ落とす。
+ * ⚠ Typefaces can't be added. CSP `default-src 'self'` forbids external sources, and even self-hosted,
+ * Japanese text ends up in system fonts anyway. Character comes from **setting**, not the face: only labels and
+ * codes are set small in monospace with wide tracking, and corner radii are almost dropped.
  *
- * ⚠ ここで定義する順序に意味がある。`:root` を先、`[data-bs-theme=dark]` を後に置く
- * （どちらも詳細度が同じなので、後に書いた方が勝つ。逆にするとダークで明色が残る）。
+ * ⚠ The order of definitions here matters. `:root` first, `[data-bs-theme=dark]` after
+ * (both have the same specificity, so the later one wins; reversed, light colors remain in dark mode).
  * ========================================================================== */
 
 :root {
   --assay-gold: #8a6116;
   --assay-silver: #5f6a70;
   --assay-copper: #a8391f;
-  /* エラーの地。条の色をそのまま薄く敷く */
+  /* Error background. The streak color laid down thinly as is */
   --assay-copper-wash: rgba(168, 57, 31, 0.09);
-  /* 入力欄は地よりわずかに明るくして「書き込む場所」を示す */
+  /* Inputs are slightly lighter than the background to mark "a place to write" */
   --assay-field-bg: #fcfcfb;
-  /* 金のボタンだけは明暗で色を変えない。文字を石色に置けば、どちらの地でも 5:1 を超える */
+  /* Only the gold button keeps its color in both light and dark. With stone-colored text it exceeds 5:1 on either background */
   --assay-gold-solid: #b8862b;
   --assay-gold-hover: #a5761f;
   --assay-gold-active: #8f6619;
   --assay-on-gold: #12161a;
   --assay-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
 
-  /* 検定証の紙。白ではなく、わずかに緑を含む灰。
-   * ⚠ `.bg-body` `.text-muted` `a` などは 16 進ではなく **`--bs-*-rgb` の方**を読む
-   * （`rgba(var(--bs-body-bg-rgb), …)`）。片方だけ差し替えると地だけ Bootstrap の既定に
-   * 戻り、白い地に石色の文字という組み合わせになる。必ず対で置く。 */
+  /* The certificate paper. Not white, but a gray with a hint of green.
+   * ⚠ `.bg-body`, `.text-muted`, `a`, etc. read **the `--bs-*-rgb` variants**, not hex
+   * (`rgba(var(--bs-body-bg-rgb), …)`). Replacing only one side reverts just the background to Bootstrap's
+   * default, giving stone-colored text on white. Always set them as a pair. */
   --bs-body-bg: #e9ebe6;
   --bs-body-bg-rgb: 233, 235, 230;
   --bs-body-color: #14181a;
   --bs-body-color-rgb: 20, 24, 26;
   --bs-emphasis-color: #050708;
   --bs-emphasis-color-rgb: 5, 7, 8;
-  /* 補助文言の字色。⚠ **罫と同じ銀（`--assay-silver`）ではもう組まない。**
-   * ラベルは 0.7rem（11px）の等幅・字間広めで組んであり（`.auth-content .form-label`）、
-   * 銀のままだと地の上で 4.6:1 —— AA の下限は超えるが、この大きさと字間では読むのに力が要る。
-   * 字色だけを濃い側へ寄せて 7:1 台にする（罫・針は銀のまま。役割が違う）。 */
+  /* Secondary text color. ⚠ **No longer set in the same silver as rules (`--assay-silver`).**
+   * Labels are set at 0.7rem (11px) monospace with wide tracking (`.auth-content .form-label`), and
+   * in silver they are 4.6:1 on the background -- above the AA minimum, but at this size and tracking they take effort to read.
+   * Only the text color is pushed darker to the 7:1 range (rules and needles stay silver; different role). */
   --bs-secondary-color: #3f4a51;
   --bs-secondary-color-rgb: 63, 74, 81;
   --bs-secondary-bg: #dfe2dc;
@@ -302,9 +302,9 @@ button[aria-busy='true'] .js-pending-label {
   --bs-link-hover-color: #8a6116;
   --bs-link-hover-color-rgb: 138, 97, 22;
   --bs-code-color: #5f6a70;
-  /* 意味の色（成功・失敗・注意・情報）は金や銅とは別系統に保つ。ブランドの色で状態を
-   * 表すと、金が「合った条」と「主ボタン」の二役を負って読めなくなる。塗り（バッジ）は
-   * 明暗で共通、文字は地に応じて `-text-emphasis` 側で差し替える。 */
+  /* Semantic colors (success, failure, warning, info) are kept separate from gold and copper. Expressing state in
+   * brand colors makes gold serve two roles, "matched streak" and "primary button", and become unreadable. Fills (badges) are
+   * shared across light/dark; text is swapped per background via the `-text-emphasis` side. */
   --bs-primary: #b8862b;
   --bs-primary-rgb: 184, 134, 43;
   --bs-secondary: #5f6a70;
@@ -318,7 +318,7 @@ button[aria-busy='true'] .js-pending-label {
   --bs-info: #2f5c73;
   --bs-info-rgb: 47, 92, 115;
 
-  /* 文言の色（`.text-*`・alert の文字）と、alert の地・枠 */
+  /* Text colors (`.text-*`, alert text) and alert background/border */
   --bs-primary-text-emphasis: #8a6116;
   --bs-secondary-text-emphasis: #5f6a70;
   --bs-success-text-emphasis: #2c6449;
@@ -337,7 +337,7 @@ button[aria-busy='true'] .js-pending-label {
   --bs-danger-border-subtle: #e5c3b8;
   --bs-warning-border-subtle: #ddc8ae;
   --bs-info-border-subtle: #bccdd7;
-  /* 角は落とす。刻印は丸みを持たない */
+  /* Corners are dropped. Stamps have no roundness */
   --bs-border-radius: 0.125rem;
   --bs-border-radius-sm: 0.125rem;
   --bs-border-radius-lg: 0.1875rem;
@@ -350,14 +350,14 @@ button[aria-busy='true'] .js-pending-label {
   --assay-copper-wash: rgba(217, 112, 90, 0.14);
   --assay-field-bg: #141a1e;
 
-  /* 試金石そのもの */
+  /* The touchstone itself */
   --bs-body-bg: #0f1417;
   --bs-body-bg-rgb: 15, 20, 23;
   --bs-body-color: #e4e7e4;
   --bs-body-color-rgb: 228, 231, 228;
   --bs-emphasis-color: #f2f3f0;
   --bs-emphasis-color-rgb: 242, 243, 240;
-  /* 暗い地では逆に明るい側へ寄せる（同じ理由。明度差は 7:1 台）。 */
+  /* On dark backgrounds lean the other way, toward light (same reason; contrast in the 7:1 range). */
   --bs-secondary-color: #9aa5aa;
   --bs-secondary-color-rgb: 154, 165, 170;
   --bs-secondary-bg: #1a2126;
@@ -375,8 +375,8 @@ button[aria-busy='true'] .js-pending-label {
   --bs-link-hover-color-rgb: 200, 154, 60;
   --bs-code-color: #8c979c;
 
-  /* 塗り（バッジ）は `:root` の値をそのまま使う。石の上でも白抜きの文字が読める明度に
-   * してあるため。差し替えるのは文字と、alert の地・枠だけ。 */
+  /* Fills (badges) use the `:root` values as is. They are set to a lightness where white text is readable
+   * even on stone. Only text and alert background/border are swapped. */
   --bs-primary-text-emphasis: #c89a3c;
   --bs-secondary-text-emphasis: #8c979c;
   --bs-success-text-emphasis: #79c39c;
@@ -397,9 +397,9 @@ button[aria-busy='true'] .js-pending-label {
   --bs-info-border-subtle: #2a3f4c;
 }
 
-/* ── 印 ──────────────────────────────────────────────────────────────────
- * 二本の条。長い金が検体、短い銀が基準の試金針で、**上端をそろえて長さだけを違える**
- * ので「二つの物」ではなく「比べている一組」に見える。中身は `templates/assay_mark.html`。 */
+/* ── Mark ──────────────────────────────────────────────────────────────────
+ * Two streaks. The long gold is the sample, the short silver the reference touch needle; **tops aligned, only lengths differ**,
+ * so it reads as "a pair being compared" rather than "two things". The markup is in `templates/assay_mark.html`. */
 .assay-mark {
   display: block;
   height: 1.375rem;
@@ -407,8 +407,8 @@ button[aria-busy='true'] .js-pending-label {
   margin-bottom: 0.85rem;
 }
 
-/* 認証系画面では、印はカードの外（page.html の桁の直下）に置く。カード内の文字は
- * `.card-body p-4` の 1.5rem だけ内側にあるので、同じ分だけ寄せて頭をそろえる。 */
+/* On auth screens the mark sits outside the card (directly below page.html's column). The card's text is
+ * inset by `.card-body p-4`'s 1.5rem, so shift by the same amount to align the starts. */
 .auth-content .assay-mark {
   margin-left: 1.5rem;
 }
@@ -421,7 +421,7 @@ button[aria-busy='true'] .js-pending-label {
   fill: var(--assay-silver);
 }
 
-/* フッターの名乗り。ログイン画面の主役はテナントなので、assay はここまで下がる */
+/* Footer identity. On the login screen the tenant is the star, so assay steps back to here */
 .assay-wordmark {
   display: inline-flex;
   align-items: center;
@@ -437,10 +437,10 @@ button[aria-busy='true'] .js-pending-label {
   margin-bottom: 0;
 }
 
-/* ── 認証系画面（page.html を継承する全画面） ─────────────────────────── */
+/* ── Auth screens (all screens extending page.html) ─────────────────────────── */
 
-/* ラベルは等幅・字間広めの小さな組みにする。試金針に刻まれた刻印の voice で、
- * ラテン文字と数字のときだけ効く（和文は字間だけが効く）。 */
+/* Labels are set small in monospace with wide tracking. The voice of a stamp engraved on a touch needle;
+ * effective only for Latin letters and digits (for Japanese only the tracking applies). */
 .auth-content .form-label {
   font-family: var(--assay-mono);
   font-size: 0.7rem;
@@ -450,8 +450,8 @@ button[aria-busy='true'] .js-pending-label {
   margin-bottom: 0.35rem;
 }
 
-/* 入力欄は**下辺だけを 2px にして条として扱う**。空なら罫の色、合わせに行くと（フォーカス）
- * 金になる。太さを 2px にそろえてあるので、主ボタン・エラーの縦罫と同じ系統に見える。 */
+/* Inputs **use only a 2px bottom edge, treated as a streak**. Empty: rule color; when matching (focus):
+ * gold. The 2px thickness matches the primary button and error vertical rule, so they look like one family. */
 .auth-content .form-control {
   background-color: var(--assay-field-bg);
   border-bottom-width: 2px;
@@ -461,13 +461,13 @@ button[aria-busy='true'] .js-pending-label {
   border-color: var(--bs-border-color);
   border-bottom-color: var(--assay-gold);
   background-color: var(--assay-field-bg);
-  /* Bootstrap の淡い影の代わりに輪郭を出す。キーボード操作でどこにいるかを外さない */
+  /* An outline instead of Bootstrap's faint shadow. Keyboard users never lose track of where they are */
   box-shadow: none;
   outline: 2px solid var(--assay-gold);
   outline-offset: 2px;
 }
 
-/* 「または」。もとの `<hr>` ＋ 中央文言を 1 要素に畳み、罫を左右へ振り分ける */
+/* "or". Folds the original `<hr>` + centered text into one element, splitting the rule to left and right */
 .auth-or {
   display: flex;
   align-items: center;
@@ -488,7 +488,7 @@ button[aria-busy='true'] .js-pending-label {
   background-color: var(--bs-border-color);
 }
 
-/* 合わなかったときは銅の条。塗りつぶした警告色ではなく、左に 1 本引く */
+/* On mismatch, a copper streak. Not a filled warning color; one line drawn on the left */
 .auth-content .alert-warning {
   --bs-alert-bg: var(--assay-copper-wash);
   --bs-alert-border-color: transparent;
@@ -497,7 +497,7 @@ button[aria-busy='true'] .js-pending-label {
   border-radius: 0 var(--bs-border-radius) var(--bs-border-radius) 0;
 }
 
-/* エラー画面のコード。数字は機械が付けた名前なので等幅で組む */
+/* Code on the error screen. Digits are a machine-given name, so set in monospace */
 .error-code {
   font-family: var(--assay-mono);
   font-size: 3rem;
@@ -507,9 +507,9 @@ button[aria-busy='true'] .js-pending-label {
   margin-bottom: 0.75rem;
 }
 
-/* 同意画面の明細。読める言葉を上に、実際にトークンへ載る scope 名を下の小さな等幅に置く。
- * 利用者は上だけ読めば済み、実装者は下で照合できる（チェックマークの列は「全部に丸が
- * 付いている」以上のことを言っていなかったので置き換えた）。 */
+/* Details on the consent screen. Readable words on top; the scope names actually put in tokens below in small monospace.
+ * Users need only read the top, implementers can cross-check below (the checkmark column said nothing more than
+ * "everything has a circle", so it was replaced). */
 .grant-list {
   list-style: none;
   margin: 0 0 1.25rem;
@@ -531,8 +531,8 @@ button[aria-busy='true'] .js-pending-label {
   color: var(--bs-secondary-color);
 }
 
-/* ── 主ボタン ────────────────────────────────────────────────────────────
- * 画面で唯一の塗り。金は「合った条」なので、押せば通る操作だけに使う。 */
+/* ── Primary button ────────────────────────────────────────────────────────────
+ * The only fill on screen. Gold is the "matched streak", so it is used only for actions that pass when pressed. */
 .btn-primary {
   --bs-btn-bg: var(--assay-gold-solid);
   --bs-btn-border-color: var(--assay-gold-solid);
@@ -549,7 +549,7 @@ button[aria-busy='true'] .js-pending-label {
   --bs-btn-focus-shadow-rgb: 184, 134, 43;
 }
 
-/* 副ボタン（パスキー・拒否・確認ダイアログの取り消し）。枠だけにして、金と競わせない */
+/* Secondary buttons (passkey, deny, cancel in confirmation dialogs). Outline only, so they don't compete with gold */
 .btn-outline-secondary {
   --bs-btn-color: var(--bs-body-color);
   --bs-btn-border-color: var(--bs-border-color);
@@ -563,8 +563,8 @@ button[aria-busy='true'] .js-pending-label {
   --bs-btn-disabled-border-color: var(--bs-border-color);
 }
 
-/* `.text-*` は既定では塗り（`--bs-*-rgb`）をそのまま文字色に使う。塗りはバッジ用に明度を
- * 固定してあるので、そのままだと石の上で沈む。文字だけ `-text-emphasis` から引き直す。 */
+/* By default `.text-*` uses the fill (`--bs-*-rgb`) as the text color. Fills have fixed lightness for badges,
+ * so as is they sink on stone. Only the text is re-derived from `-text-emphasis`. */
 .text-primary {
   color: var(--bs-primary-text-emphasis) !important;
 }
@@ -589,9 +589,9 @@ button[aria-busy='true'] .js-pending-label {
   color: var(--bs-info-text-emphasis) !important;
 }
 
-/* Bootstrap は `.text-bg-warning` / `.text-bg-info` の文字色を黒で焼き込んでいる。
- * 塗りを暗い側へ寄せたので、他のバッジと同じ白抜きに戻す。金の主色だけは逆に、
- * 明るい塗りなので石色の文字にする。 */
+/* Bootstrap bakes black text into `.text-bg-warning` / `.text-bg-info`.
+ * The fills were moved darker, so they go back to white text like other badges. Only the gold primary is the
+ * opposite: a light fill, so stone-colored text. */
 .text-bg-warning,
 .text-bg-info {
   color: #fff !important;
@@ -601,18 +601,18 @@ button[aria-busy='true'] .js-pending-label {
   color: var(--assay-on-gold) !important;
 }
 
-/* ── 必須項目の印（`templates/required_mark.html`） ───────────────────────── */
+/* ── Required-field mark (`templates/required_mark.html`) ───────────────────────── */
 
-/* 色は銅（`--bs-danger-text-emphasis`）。状態の色を新しく足さないための選択で、
- * 「合わなかったものは銅」の一貫した読みになる ——この印は **空のまま出すと銅になる欄**の
- * 予告であって、印そのものが状態を表しているのではない。
+/* Color is copper (`--bs-danger-text-emphasis`). Chosen to avoid adding a new state color, it keeps
+ * the consistent reading "unmatched is copper" -- this mark is a forewarning of **a field that turns copper if left
+ * empty**; the mark itself does not represent a state.
  *
- * ⚠ 認証系画面のラベルは 0.7rem の等幅・字間広めで組んである（`.auth-content .form-label`）。
- * そのまま継ぐと記号が小さくなりすぎて埋もれるので、ラベルに対する比で持ち上げ、
- * 字間だけは受け継がない（継ぐと印の右にラベル 1 文字分の空きが残る）。
+ * ⚠ Labels on auth screens are set at 0.7rem monospace with wide tracking (`.auth-content .form-label`).
+ * Inherited as is the symbol becomes too small and gets lost, so it is scaled up relative to the label,
+ * and only the tracking is not inherited (otherwise one label character's gap remains to the right of the mark).
  *
- * ⚠ 上付きにしない。アスタリスクはもともと字面の上寄りに設計されていて、
- * `vertical-align` で持ち上げると行の高さだけが伸びる。 */
+ * ⚠ Not superscript. The asterisk is already designed to sit high in the glyph box, and
+ * raising it with `vertical-align` only increases the line height. */
 .form-required {
   color: var(--bs-danger-text-emphasis);
   margin-inline-start: 0.25em;
@@ -620,24 +620,24 @@ button[aria-busy='true'] .js-pending-label {
   font-weight: 700;
   letter-spacing: 0;
   line-height: 1;
-  /* ラベルを選んで写したときに印まで付いてこないようにする（印は文言の一部ではない）。 */
+  /* Keep the mark out when the label is selected and copied (the mark is not part of the wording). */
   user-select: none;
 }
 
-/* メンバーの「使えるアプリ」の絞り込み欄。狭い画面では 1 行を使い、広い画面では札と並べる。 */
+/* Member "available apps" filter field. Full row on narrow screens; next to the tags on wide ones. */
 .member-apps-search {
   flex: 1 1 14rem;
   max-width: 22rem;
 }
 
-/* 折り返す子を持つ flex 行で、子が中身の幅より狭くなれるようにする（既定の min-width:auto だと
- * 長いコードが縮まず、隣のボタンを押し出す）。 */
+/* Lets children of a wrapping flex row become narrower than their content (with the default min-width:auto
+ * long code doesn't shrink and pushes the adjacent button out). */
 .min-w-0 {
   min-width: 0;
 }
 
-/* 管理コンソールのホームの、まとまりの見出し（行き先の枠の外に置く小さな大文字の見出し）。
- * ⚠ 行き先（list-group-item）と地の色で見分けさせない ——暗い配色ではほぼ同じ色になる。 */
+/* Group headings on the admin console home (small uppercase headings placed outside the destination boxes).
+ * ⚠ Don't distinguish them from destinations (list-group-item) by background color -- in dark mode they are nearly the same. */
 .console-home-group {
   font-size: 0.8rem;
   font-weight: 700;
@@ -650,15 +650,15 @@ button[aria-busy='true'] .js-pending-label {
 }
 
 /* ============================================================================
- * Bootstrap の既定色を残さない。
+ * Leave none of Bootstrap's default colors.
  *
- * `--bs-primary` などを差し替えても、枠だけのボタン・タブ・チェックボックス・フォーカスの輪は
- * 色を 16 進で焼き込んであり、青（#0d6efd）と黄（#ffc107）がそのまま出る。金と石の画面に
- * 別の系統の色が混ざるうえ、黄の文字は紙の地の上で 1.4:1 しかなく読めなかった（「退役」）。
- * 文字は `-text-emphasis`（明暗で切り替わる側）から、塗りは `--bs-*`（明暗で共通）から引く。
+ * Even with `--bs-primary` etc. replaced, outline buttons, tabs, checkboxes and focus rings
+ * bake colors in hex, so blue (#0d6efd) and yellow (#ffc107) show through. A foreign color family mixes into the gold
+ * and stone screen, and yellow text on the paper background was only 1.4:1 and unreadable ("Retired").
+ * Text comes from `-text-emphasis` (the side that switches with light/dark), fills from `--bs-*` (shared).
  * ========================================================================== */
 
-/* 枠だけのボタン。文字と枠は意味の色、押している間だけ塗る。 */
+/* Outline buttons. Text and border in the semantic color; filled only while pressed. */
 .btn-outline-primary {
   --bs-btn-color: var(--bs-primary-text-emphasis);
   --bs-btn-border-color: var(--assay-gold);
@@ -715,7 +715,7 @@ button[aria-busy='true'] .js-pending-label {
   --bs-btn-focus-shadow-rgb: 168, 57, 31;
 }
 
-/* 塗りのボタン（注意・危険・副）。バッジと同じ塗りに白抜きでそろえる。 */
+/* Filled buttons (warning, danger, secondary). Same fill as badges with white text. */
 .btn-warning {
   --bs-btn-color: #fff;
   --bs-btn-bg: var(--bs-warning);
@@ -764,8 +764,8 @@ button[aria-busy='true'] .js-pending-label {
   --bs-btn-focus-shadow-rgb: 95, 106, 112;
 }
 
-/* 入力欄のフォーカス。認証系画面（`.auth-content`）は下辺の条と輪郭で示すので、ここは
- * それ以外（管理コンソール）の入力欄に効く。 */
+/* Input focus. Auth screens (`.auth-content`) show it with the bottom streak and outline, so this
+ * applies to other inputs (admin console). */
 .form-control:focus,
 .form-select:focus,
 .form-check-input:focus {
@@ -773,8 +773,8 @@ button[aria-busy='true'] .js-pending-label {
   box-shadow: 0 0 0 0.2rem rgba(var(--bs-primary-rgb), 0.3);
 }
 
-/* チェックボックスとラジオ。入れた印は金（合った条と同じ）。金の上の印は石色にする
- * ——白抜きだと 3.2:1 で、小さな印には足りない。 */
+/* Checkboxes and radios. The check is gold (same as the matched streak). The mark on gold is stone-colored
+ * -- white gives 3.2:1, not enough for a small mark. */
 .form-check-input:checked,
 .form-check-input[type='checkbox']:indeterminate {
   background-color: var(--assay-gold-solid);
@@ -804,8 +804,8 @@ button[aria-busy='true'] .js-pending-label {
   --bs-dropdown-link-active-bg: var(--bs-secondary-bg);
 }
 
-/* 一覧の中の「いまのもの」（テナント切り替えの現在のテナント）。青く塗らず、サイドバーの
- * 印と同じ形（淡い地と左の金の条）にする。 */
+/* The "current one" in a list (current tenant in tenant switching). Not painted blue; same shape as the sidebar
+ * mark (faint background and a gold streak on the left). */
 .list-group {
   --bs-list-group-active-color: var(--bs-emphasis-color);
   --bs-list-group-active-bg: var(--bs-secondary-bg);
@@ -816,11 +816,11 @@ button[aria-busy='true'] .js-pending-label {
   box-shadow: inset 2px 0 0 var(--assay-gold);
 }
 
-/* ── いまいる場所の印 ─────────────────────────────────────────────────────
- * 「合ったものは金」をそのまま使う。開いている画面のメニューと、選んでいるタブに金の条を
- * 1 本引く（入力欄のフォーカスの下辺・エラーの縦罫と同じ 2px）。塗りつぶさない。 */
+/* ── Where you are ─────────────────────────────────────────────────────
+ * Reuses "matched is gold" as is. The open screen's menu item and the selected tab get one gold streak
+ * (2px, same as the input focus bottom edge and error vertical rule). No fill. */
 
-/* サイドバー。印はサーバが付ける（`aria-current="page"`。`console/layout.html`）。 */
+/* Sidebar. The server sets the mark (`aria-current="page"`, `console/layout.html`). */
 .app-sidebar .nav-link[aria-current='page'] {
   background-color: var(--bs-secondary-bg);
   box-shadow: inset 2px 0 0 var(--assay-gold);
@@ -828,8 +828,8 @@ button[aria-busy='true'] .js-pending-label {
   font-weight: 600;
 }
 
-/* まとまりの見出しは認証系画面のラベルと同じ刻印の組み（等幅・字間広め）。行き先と
- * 太さで競わせない。 */
+/* Group headings use the same stamp setting as auth screen labels (monospace, wide tracking). They don't
+ * compete with destinations by weight. */
 .app-sidebar .sidebar-category-header {
   font-family: var(--assay-mono);
   font-size: 0.7rem;
@@ -839,8 +839,8 @@ button[aria-busy='true'] .js-pending-label {
   color: var(--bs-secondary-color);
 }
 
-/* タブ（アカウントの種別・アカウント設定）。Bootstrap の `.nav-pills` は選んだものを青く
- * 塗るので、下辺の条に置き換える。並びの下に罫を 1 本通して、条がその上に乗る。 */
+/* Tabs (account kind, account settings). Bootstrap's `.nav-pills` paints the selected one blue,
+ * so it is replaced with a bottom streak. A rule runs under the row and the streak sits on it. */
 .nav-pills {
   --bs-nav-pills-border-radius: 0;
   --bs-nav-pills-link-active-color: var(--bs-emphasis-color);
@@ -856,8 +856,8 @@ button[aria-busy='true'] .js-pending-label {
   white-space: nowrap;
 }
 
-/* 狭い画面でもタブは 1 段に収める。折り返すと下辺の罫が 2 段目だけに付き、条がどのタブの
- * ものか読めなくなる。字と余白を少し詰め、それでも収まらない分（英語の長い名前）は横へ送る。 */
+/* Tabs fit in one row even on narrow screens. If they wrapped, the bottom rule would be only on the second row and it
+ * couldn't be read which tab the streak belongs to. Text and padding are tightened a bit; what still doesn't fit (long English names) scrolls sideways. */
 @media (max-width: 575.98px) {
   .nav-pills {
     flex-wrap: nowrap;
@@ -881,16 +881,16 @@ button[aria-busy='true'] .js-pending-label {
   font-weight: 600;
 }
 
-/* 操作中テナントの札。押せる高さ（24px 以上）を確保する —— もとは 20px だった。 */
+/* Current tenant tag. Ensures a pressable height (24px or more) -- it used to be 20px. */
 .navbar .navbar-tenant {
   min-height: 1.75rem;
 }
 
-/* ── アカウント設定（`account_tabs.html` を置く 3 画面） ─────────────────────
- * 器は認証系画面と同じ `page.html` だが、こちらは「読んで直す」画面で、欄も多い。 */
+/* ── Account settings (the 3 screens with `account_tabs.html`) ─────────────────────
+ * The container is `page.html` like auth screens, but these are "read and fix" screens with many fields. */
 
-/* ラベルは本文と同じ大きさにする。ログインの 2 欄なら刻印の組み（0.7rem・等幅・字間広め）が
- * 効くが、10 を超える欄を 11px で読ませるのは力が要る。 */
+/* Labels are the same size as body text. The stamp setting (0.7rem, monospace, wide tracking) works for login's 2 fields,
+ * but reading 10+ fields at 11px takes effort. */
 .auth-content .account-content .form-label {
   font-family: inherit;
   font-size: 0.875rem;
@@ -899,20 +899,20 @@ button[aria-busy='true'] .js-pending-label {
   color: var(--bs-body-color);
 }
 
-/* タブで行き来する画面は上詰めにする。縦の中央に置くと、中身の高さが違う画面へ移るたびに
- * 見出しとタブの位置が上下に動く。 */
+/* Screens navigated by tabs are top-aligned. Centered vertically, the heading and tabs move up and down
+ * each time you move to a screen of different content height. */
 .auth-content:has(.account-content) {
   margin-top: 0 !important;
 }
 
-/* 印はカードの外の左端にそろえる（ログイン画面のような、内側へ寄せた文字が無い）。 */
+/* Align the mark to the left edge outside the card (there is no inset text like on the login screen). */
 .auth-content .account-content .assay-mark {
   margin-left: 0;
 }
 
-/* ── 管理コンソールの設定画面 ─────────────────────────────────────────── */
+/* ── Admin console settings screen ─────────────────────────────────────────── */
 
-/* 目次。区画が多い画面の先頭に置く、ページ内リンクの並び。 */
+/* Table of contents. A row of in-page links placed at the top of screens with many sections. */
 .settings-index {
   display: flex;
   flex-wrap: wrap;
@@ -923,11 +923,11 @@ button[aria-busy='true'] .js-pending-label {
 }
 
 .settings-index a {
-  /* 押せる高さ（24px 以上）を確保する。 */
+  /* Ensures a pressable height (24px or more). */
   padding-block: 0.25rem;
 }
 
-/* 折りたたんだ表の開閉。枠だけのボタンと同じ見た目にして、押せることを示す。 */
+/* Toggle for collapsed tables. Looks like an outline button to show it is pressable. */
 .settings-runtime-list > summary {
   display: inline-block;
   padding: 0.375rem 0.75rem;
@@ -965,9 +965,9 @@ button[aria-busy='true'] .js-pending-label {
 }
 
 
-/* ── 新しいバージョンの知らせ（`console/layout.html` の `.update-notice`） ───────
- * 画面の上の中央に留め、押すまで消さない（下の端では気付かれにくかった）。印は他の「いまのもの」と
- * 同じ左の金の条。 */
+/* ── New version notice (`.update-notice` in `console/layout.html`) ───────
+ * Pinned at the top center of the screen and kept until pressed (at the bottom edge it was easy to miss). The mark is the
+ * same gold streak on the left as other "current" things. */
 .update-notice {
   position: fixed;
   top: 0.5rem;
@@ -987,7 +987,7 @@ button[aria-busy='true'] .js-pending-label {
     0 0.25rem 0.75rem rgba(0, 0, 0, 0.18);
 }
 
-/* `display: flex` が `hidden` 属性の既定（`display: none`）に勝ってしまうので、明示して戻す。 */
+/* `display: flex` beats the default of the `hidden` attribute (`display: none`), so restore it explicitly. */
 .update-notice[hidden] {
   display: none;
 }

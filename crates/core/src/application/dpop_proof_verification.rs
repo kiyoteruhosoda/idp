@@ -1,19 +1,19 @@
-//! DPoP の証明を確かめる（ADR-0075）。ドメインの確かめ（形・署名・`htm`/`htu`/`iat`/`ath`）に、
-//! 「同じ鍵・同じ `jti` の証明を 2 回受けない」記録の照合を足す。
+//! Verifies DPoP proofs (ADR-0075). Adds to the domain checks (shape, signature, `htm`/`htu`/`iat`/`ath`)
+//! a lookup in the record that "never accepts a proof with the same key and same `jti` twice".
 //!
-//! トークンの口（`/token`）とリソースの口（`/userinfo`）が同じものを使う。
+//! The token endpoint (`/token`) and the resource endpoint (`/userinfo`) use the same thing.
 
 use crate::domain::clock::Clock;
 use crate::domain::dpop::{self, DpopProofRejection, DpopProofRequirements, VerifiedDpopProof};
 use crate::domain::repositories::DpopProofReplayRepository;
 use std::sync::Arc;
 
-/// 証明を受けられなかった理由。
+/// Why a proof could not be accepted.
 #[derive(Debug)]
 pub enum DpopProofFailure {
-    /// 証明が正しくない（相手へは `invalid_dpop_proof`）。
+    /// The proof is invalid (`invalid_dpop_proof` to the peer).
     Rejected(DpopProofRejection),
-    /// 記録に届かなかった（相手へは 500）。
+    /// Could not reach the record (500 to the peer).
     Unavailable(String),
 }
 
@@ -27,8 +27,8 @@ impl DpopProofVerifier {
         Self { replays, clock }
     }
 
-    /// `method` は大文字の HTTP メソッド、`uri` は assay が discovery で名乗るこの口の URL。
-    /// リソースの口では `access_token` に一緒に来たトークンを渡す（`ath` を見る）。
+    /// `method` is the uppercase HTTP method; `uri` is this endpoint's URL as assay announces it in discovery.
+    /// At the resource endpoint, pass the token that came along in `access_token` (to check `ath`).
     pub async fn verify(
         &self,
         proof: &str,

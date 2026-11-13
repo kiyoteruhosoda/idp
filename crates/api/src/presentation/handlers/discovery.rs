@@ -1,5 +1,5 @@
-//! OIDC Discovery（`GET /.well-known/openid-configuration`）と
-//! JWKS（`GET /.well-known/jwks.json`）（設計仕様 §4.5 / §4.6）。
+//! OIDC Discovery (`GET /.well-known/openid-configuration`) and
+//! JWKS (`GET /.well-known/jwks.json`) (design spec §4.5 / §4.6).
 
 use crate::domain::issuer::tenant_issuer;
 use crate::domain::jwt;
@@ -15,10 +15,10 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use serde_json::{json, Value};
 
-/// Discovery ドキュメント。`issuer` は末尾スラッシュ無しで ID Token の `iss` と完全一致する。
+/// Discovery document. `issuer` has no trailing slash and exactly matches the ID Token's `iss`.
 ///
-/// `issuer` はテナント毎に `<基底 issuer>/<tenant_id>` を合成する（ADR-0009 §6）。要求テナントは
-/// パス由来（`resolve_tenant` が注入）。全エンドポイントもこの issuer から導出する。
+/// `issuer` is composed per tenant as `<base issuer>/<tenant_id>` (ADR-0009 §6). The requested tenant is
+/// path-derived (injected by `resolve_tenant`). All endpoints are also derived from this issuer.
 #[utoipa::path(
     get,
     path = "/{tenant_id}/.well-known/openid-configuration",
@@ -30,8 +30,8 @@ pub async fn openid_configuration(
     Extension(tenant): Extension<ResolvedTenant>,
 ) -> Json<Value> {
     let issuer = tenant_issuer(state.config.issuer(), tenant.id());
-    // end_session_endpoint は web が受ける（ADR-0018 決定 2。api はブラウザ Cookie を読まないため、
-    // RP-initiated logout の起点は SSO Cookie を自ドメインで扱える web 側になる）。
+    // end_session_endpoint is received by web (ADR-0018 decision 2; the api doesn't read browser cookies, so
+    // RP-initiated logout starts on the web side, which can handle the SSO cookie on its own domain).
     let end_session_endpoint = format!(
         "{}/{}/logout",
         state.config.public_web_base_url(),
@@ -40,7 +40,7 @@ pub async fn openid_configuration(
     Json(discovery_document(&issuer, &end_session_endpoint))
 }
 
-/// JWKS（ACTIVE + RETIRED の公開鍵）。
+/// JWKS (public keys of ACTIVE + RETIRED).
 #[utoipa::path(
     get,
     path = "/{tenant_id}/.well-known/jwks.json",
@@ -57,12 +57,12 @@ pub async fn jwks(State(state): State<AppState>) -> Response {
     }
 }
 
-/// SAML IdP メタデータ（`GET /{tenant_id}/saml/metadata`）。
+/// SAML IdP metadata (`GET /{tenant_id}/saml/metadata`).
 ///
-/// assay を記述する `EntityDescriptor`（`IDPSSODescriptor`）を XML で返す。SP（クライアント）が assay を
-/// 信頼するために取り込む公開メタデータで、テナント issuer を entityID とし、SSO URL も issuer から導出する。
-/// 署名用 `KeyDescriptor` には ACTIVE 署名鍵（RSA）を `RSAKeyValue` で含める。広告する
-/// SingleSignOnService は [`super::saml_sso`]（`/{tenant_id}/saml/sso`）が実装する。
+/// Returns as XML the `EntityDescriptor` (`IDPSSODescriptor`) describing assay. Public metadata SPs (clients) import
+/// to trust assay; the entityID is the tenant issuer and the SSO URL is derived from the issuer too.
+/// The signing `KeyDescriptor` contains the ACTIVE signing key (RSA) as `RSAKeyValue`. The advertised
+/// SingleSignOnService is implemented by [`super::saml_sso`] (`/{tenant_id}/saml/sso`).
 #[utoipa::path(
     get,
     path = "/{tenant_id}/saml/metadata",
@@ -75,9 +75,9 @@ pub async fn saml_idp_metadata(
 ) -> Response {
     let issuer = tenant_issuer(state.config.issuer(), tenant.id());
     let sso_url = format!("{issuer}/saml/sso");
-    // 鍵集合が引けないときは**メタデータを返さない**。200 で `KeyDescriptor` の無いメタデータを
-    // 返すと、そのタイミングで取り込み直した SP は検証鍵を 1 本も持たない状態になり、再取り込み
-    // まで全アサーションを弾く（この変更が無くそうとしている断絶そのもの）。
+    // If the key set cannot be fetched, **no metadata is returned**. Returning 200 with metadata lacking `KeyDescriptor`
+    // would leave an SP that re-imports at that moment with no verification key at all, rejecting every assertion until
+    // the next re-import (the very outage this change aims to remove).
     let signing_keys = match published_idp_signing_keys(&state).await {
         Ok(keys) => keys,
         Err(e) => {
@@ -99,25 +99,25 @@ pub async fn saml_idp_metadata(
         .into_response()
 }
 
-/// 公開中の署名鍵を SAML の `KeyDescriptor` 用へ変換する（ADR-0039）。
+/// Converts the published signing keys for SAML `KeyDescriptor` (ADR-0039).
 ///
-/// **JWKS と同じ集合を出す。** `jwks()` は公開中の鍵（署名中・まだ署名しない後継・有効期間内の
-/// 退役）をすべて返すので、それをそのまま並べれば OIDC 側と SAML 側で見えるものが揃う。1 本しか
-/// 出さないと、署名の切り替わりで SP の検証が落ちる。
+/// **Emits the same set as JWKS.** `jwks()` returns all published keys (signing, successors not yet signing, retired
+/// within validity), so listing them as is makes the OIDC and SAML sides show the same thing. Emitting only one
+/// would make SP verification fail when signing switches over.
 ///
-/// **署名中の鍵を先頭に置く。** `jwks()` の並びは公開順（新しい鍵が先）なので、そのままだと
-/// **まだ署名していない後継鍵**が先頭に来る。先頭の `KeyDescriptor` だけを読む SP の実装がある。
+/// **The signing key goes first.** `jwks()` is in publication order (newest first), so as is
+/// **a successor key not yet signing** would come first. Some SP implementations read only the first `KeyDescriptor`.
 async fn published_idp_signing_keys(state: &AppState) -> anyhow::Result<Vec<IdpSigningKey>> {
     let jwks = state.keys.jwks().await?;
     let published = jwks.keys.len();
-    // 署名中の鍵が引けないときは並べ替えないだけで、公開自体は続ける（検証側の鍵が
-    // 消えるほうが困る）。`kid` しか要らないので秘密鍵は復号しない。
+    // If the signing key cannot be fetched we just don't reorder and keep publishing (losing the verifier's keys
+    // would be worse). Only the `kid` is needed, so the private key is not decrypted.
     let signing_kid = state.keys.signing_kid().await.ok().flatten();
     let keys = signing_key_first(jwks.keys, signing_kid.as_deref());
     let converted: Vec<IdpSigningKey> = keys.iter().filter_map(jwk_to_idp_signing_key).collect();
-    // 1 本も変換できなかったときも**メタデータを返さない**。解釈できない鍵は 1 本ずつ落とすが、
-    // 全滅したまま 200 を返すと `KeyDescriptor` の無いメタデータが出て行き、`jwks()` が失敗した
-    // ときと同じ断絶（取り込み直した SP が検証鍵を 1 本も持たない）になる。
+    // Also **return no metadata** when not a single key could be converted. Unparseable keys are dropped one by one, but
+    // returning 200 with all of them gone would emit metadata without `KeyDescriptor`, the same outage as when `jwks()`
+    // fails (an SP that re-imports holds no verification key at all).
     if published > 0 && converted.is_empty() {
         anyhow::bail!(
             "none of the {published} published keys could be rendered as a KeyDescriptor"
@@ -126,16 +126,16 @@ async fn published_idp_signing_keys(state: &AppState) -> anyhow::Result<Vec<IdpS
     Ok(converted)
 }
 
-/// 署名中の鍵を先頭へ寄せる。**先頭の `KeyDescriptor` だけを読む SP の実装がある**ため、
-/// 公開順（新しい鍵が先）のままだと、まだ署名していない後継鍵を掴ませることになる。
+/// Moves the signing key to the front. **Some SP implementations read only the first `KeyDescriptor`**, so
+/// leaving publication order (newest first) would hand them a successor key that is not signing yet.
 ///
-/// `signing_kid` が無い・見つからないときは並べ替えない（公開自体は続ける。検証側の鍵が
-/// 消えるほうが困る）。
+/// No reordering when `signing_kid` is absent or not found (publishing continues; losing the verifier's keys
+/// would be worse).
 fn signing_key_first(mut keys: Vec<jwt::Jwk>, signing_kid: Option<&str>) -> Vec<jwt::Jwk> {
     if let Some(kid) = signing_kid {
         if let Some(at) = keys.iter().position(|k| k.kid == kid) {
-            // 入れ替え（`swap`）ではなく前へ動かす。`swap` だと先頭に居た鍵が `at` へ飛び、
-            // 残りの公開順（新しい鍵が先）が崩れる。
+            // Move it forward rather than `swap`. With `swap` the key at the front would jump to `at`,
+            // breaking the publication order (newest first) of the rest.
             let signing = keys.remove(at);
             keys.insert(0, signing);
         }
@@ -143,8 +143,8 @@ fn signing_key_first(mut keys: Vec<jwt::Jwk>, signing_kid: Option<&str>) -> Vec<
     keys
 }
 
-/// 1 本の JWK を SAML `KeyValue` 用の表現へ変換する。RSA は `RSAKeyValue`（modulus/exponent）、
-/// EC は `ECKeyValue`（NamedCurve URI と非圧縮点）。解釈できない鍵は `None`（その鍵だけ落とす）。
+/// Converts one JWK to the SAML `KeyValue` representation. RSA becomes `RSAKeyValue` (modulus/exponent),
+/// EC becomes `ECKeyValue` (NamedCurve URI and uncompressed point). Unparseable keys yield `None` (only that key is dropped).
 fn jwk_to_idp_signing_key(jwk: &jwt::Jwk) -> Option<IdpSigningKey> {
     match jwk.kty.as_str() {
         "RSA" => Some(IdpSigningKey::Rsa {
@@ -153,7 +153,7 @@ fn jwk_to_idp_signing_key(jwk: &jwt::Jwk) -> Option<IdpSigningKey> {
         }),
         "EC" => {
             let named_curve_uri = named_curve_uri(jwk.crv.as_deref()?)?.to_string();
-            // XMLDSIG の ECKeyValue は非圧縮点（0x04 || X || Y）を base64 で持つ。
+            // XMLDSIG's ECKeyValue holds the uncompressed point (0x04 || X || Y) in base64.
             let mut point = vec![0x04u8];
             point.extend_from_slice(
                 &URL_SAFE_NO_PAD
@@ -192,52 +192,52 @@ fn discovery_document(issuer: &str, end_session_endpoint: &str) -> Value {
         "scopes_supported": ["openid", "profile", "email", "offline_access"],
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "refresh_token", "client_credentials"],
-        // DPoP（RFC 9449 §5.1。ADR-0075）。証明の署名は ES256 だけ。
+        // DPoP (RFC 9449 §5.1, ADR-0075). Proofs are signed only with ES256.
         "dpop_signing_alg_values_supported": crate::domain::dpop::SUPPORTED_ALGORITHMS,
         "subject_types_supported": ["public"],
         "id_token_signing_alg_values_supported": ["RS256"],
-        // クライアント認証（RFC 6749 §2.3.1）。`client_secret_post` は多くの RP ライブラリが
-        // 既定にするため受け入れる（G3）。`private_key_jwt`（RFC 7523）は共有秘密を持たないシステム向け
-        // （ADR-0030）。どれを使うかはクライアントの登録値が決める（併存は認めない）。
+        // Client authentication (RFC 6749 §2.3.1). `client_secret_post` is accepted because many RP libraries
+        // default to it (G3). `private_key_jwt` (RFC 7523) is for systems that hold no shared secret
+        // (ADR-0030). Which one is used is decided by the client's registered value (no coexistence).
         "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "private_key_jwt", "none"],
-        // `private_key_jwt` の assertion に使える署名アルゴリズム。広告しないと、RP・クライアント
-        // ライブラリが対応アルゴリズムを推測して食い違う。
+        // Signing algorithms usable for `private_key_jwt` assertions. Without advertising them, RP and client
+        // libraries guess the supported algorithms and diverge.
         "token_endpoint_auth_signing_alg_values_supported": ["RS256", "ES256"],
-        // `/revoke`・`/introspect` も同じ方式（RFC 7009 §2.1・RFC 7662 §2.1）。
+        // `/revoke` and `/introspect` use the same methods (RFC 7009 §2.1, RFC 7662 §2.1).
         "revocation_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "private_key_jwt", "none"],
         "revocation_endpoint_auth_signing_alg_values_supported": ["RS256", "ES256"],
         "introspection_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "private_key_jwt"],
         "introspection_endpoint_auth_signing_alg_values_supported": ["RS256", "ES256"],
         "code_challenge_methods_supported": ["S256"],
-        // 応答の返し方は `query` のみ（`form_post` は未実装。G12）。広告しないと、RP の
-        // メタデータ検証が厳しい実装（OIDC 認定テストを含む）が既定を推測して食い違う。
-        // `form_post` は認可コードを URL ではなくフォーム本文で返す（G12）。
+        // The response mode is `query` only (`form_post` not implemented, G12). Without advertising it, RP
+        // implementations with strict metadata validation (including the OIDC certification tests) guess the default and diverge.
+        // `form_post` returns the authorization code in a form body instead of the URL (G12).
         "response_modes_supported": ["query", "form_post"],
-        // `prompt`（OIDC Core §3.1.2.1）。`select_account` は「現在のアカウントで黙って続けない」
-        // ＝ SSO 復元を止めてログイン画面へ戻す形で扱う（ assay はブラウザごとに SSO セッションを
-        // 1 つしか持たないため、複数アカウントの一覧は出せない。G12）。
+        // `prompt` (OIDC Core §3.1.2.1). `select_account` is handled as "don't silently continue with the current account"
+        // = stop SSO restoration and return to the login screen (assay holds only one SSO session per browser,
+        // so it cannot show a list of multiple accounts, G12).
         "prompt_values_supported": ["none", "login", "consent", "select_account"],
-        // `request` / `request_uri`（署名付き要求オブジェクト）と `claims` は未対応。
-        // 既定は false だが、明示しておく方が RP 側の実装判断が早い。
+        // `request` / `request_uri` (signed request objects) and `claims` are not supported.
+        // The default is false, but stating it explicitly speeds up RP-side implementation decisions.
         "request_parameter_supported": false,
         "request_uri_parameter_supported": false,
         "claims_parameter_supported": false,
-        // 意味を assay が定義し、**要求されたら必ず効く**予約語だけを載せる（ADR-0043）。
-        // テナントが認証ポリシーの `requested_acr` 条件へ独自の文字列を書くことは従来どおり
-        // できるが、それは assay が意味を定義していないので公開しない（保証できない値を
-        // 名乗ると、RP は効いたかどうかを確かめられないまま依存する）。
+        // Only reserved words whose meaning assay defines and which **always take effect when requested** are listed (ADR-0043).
+        // Tenants can still write their own strings in an authentication policy's `requested_acr` condition
+        // as before, but assay doesn't define their meaning so they are not published (claiming values we can't
+        // guarantee would make RPs depend on them without being able to check whether they took effect).
         "acr_values_supported": SUPPORTED_ACR_VALUES,
-        // ログイン画面が実際に描画できる言語（web の i18n リソースと一致させる）。
+        // Languages the login screen can actually render (kept in line with web's i18n resources).
         "ui_locales_supported": ["ja", "en"],
         "frontchannel_logout_supported": true,
         "backchannel_logout_supported": true,
-        // logout_token に `sid` を載せるため、RP はセッション単位で失効できる（G5）。
+        // `sid` is put in logout_token, so RPs can revoke per session (G5).
         "backchannel_logout_session_supported": true,
         "frontchannel_logout_session_supported": false,
         "claims_supported": [
             "sub", "iss", "aud", "exp", "iat", "auth_time", "nonce", "sid",
-            // `acr` は認証の強度（ADR-0043）。`amr` は使われた方式（RFC 8176）で、
-            // **強度の判断には使えない**（`fed` の先で何が使われたかは assay も知らない）。
+            // `acr` is the authentication strength (ADR-0043). `amr` is the methods used (RFC 8176) and
+            // **cannot be used to judge strength** (assay doesn't know either what was used beyond `fed`).
             "acr", "amr",
             "email", "email_verified", "preferred_username", "name"
         ],
@@ -266,8 +266,8 @@ mod tests {
         keys.iter().map(|k| k.kid.as_str()).collect()
     }
 
-    /// 公開順は新しい鍵が先なので、ADR-0039 の「公開してから署名」では**まだ署名していない
-    /// 後継鍵**が先頭に来る。先頭の `KeyDescriptor` だけを読む SP に、それを掴ませない。
+    /// Publication order is newest first, so with ADR-0039's "publish, then sign" **a successor key not yet
+    /// signing** comes first. Don't hand that to SPs that read only the first `KeyDescriptor`.
     #[test]
     fn the_signing_key_comes_first_even_when_a_successor_is_newer() {
         let keys = vec![jwk("successor"), jwk("signing"), jwk("retired")];
@@ -277,7 +277,7 @@ mod tests {
         );
     }
 
-    /// 既に先頭なら並びは変わらない。
+    /// If it is already first, the order doesn't change.
     #[test]
     fn an_already_leading_signing_key_is_left_alone() {
         let keys = vec![jwk("signing"), jwk("retired")];
@@ -287,8 +287,8 @@ mod tests {
         );
     }
 
-    /// 署名中の鍵が引けない・公開集合に無いときは、並べ替えないだけで公開は続ける
-    /// （検証に使える鍵がメタデータから消えるほうが困る）。
+    /// When the signing key cannot be fetched or is not in the published set, we just don't reorder and keep publishing
+    /// (losing usable verification keys from the metadata would be worse).
     #[test]
     fn an_unknown_signing_kid_leaves_the_published_set_intact() {
         let keys = vec![jwk("a"), jwk("b")];
@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn discovery_endpoints_derive_from_issuer() {
-        // end_session_endpoint だけは web の URL（ADR-0018 決定 2: RP-initiated logout の起点は web）。
+        // Only end_session_endpoint is web's URL (ADR-0018 decision 2: RP-initiated logout starts at web).
         let doc = discovery_document(
             "https://api.idp.example.com",
             "https://idp.example.com/tenant-a/logout",
@@ -313,8 +313,8 @@ mod tests {
             "https://api.idp.example.com/.well-known/jwks.json"
         );
         assert_eq!(doc["code_challenge_methods_supported"], json!(["S256"]));
-        // G3: `client_secret_post`、ADR-0030: `private_key_jwt` を広告する
-        // （`/revoke`・`/introspect` も同じ方式）。
+        // G3: advertise `client_secret_post`, ADR-0030: `private_key_jwt`
+        // (`/revoke` and `/introspect` use the same methods).
         assert_eq!(
             doc["token_endpoint_auth_methods_supported"],
             json!([
@@ -345,7 +345,7 @@ mod tests {
                 "private_key_jwt"
             ])
         );
-        // G12: RP のメタデータ検証が見る項目を明示的に広告する。
+        // G12: explicitly advertise the fields RP metadata validation looks at.
         assert_eq!(
             doc["response_modes_supported"],
             json!(["query", "form_post"])
@@ -371,7 +371,7 @@ mod tests {
         );
         assert_eq!(doc["frontchannel_logout_supported"], true);
         assert_eq!(doc["backchannel_logout_supported"], true);
-        // `sid` を載せる以上、セッション単位のログアウト対応も広告する（G5）。
+        // Since `sid` is included, also advertise per-session logout support (G5).
         assert_eq!(doc["backchannel_logout_session_supported"], true);
         assert!(doc["claims_supported"]
             .as_array()

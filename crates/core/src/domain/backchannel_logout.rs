@@ -1,33 +1,33 @@
-//! Back-channel logout の送信要求（`backchannel_logout_deliveries`。G5）。
+//! Back-channel logout delivery requests (`backchannel_logout_deliveries`. G5).
 //!
-//! OpenID Connect Back-Channel Logout 1.0 の通知を「撃ちっぱなし」から「永続キュー + 再試行」へ
-//! 移すための行表現。RP がその瞬間だけ落ちていた・ネットワークが切れていた、という理由で
-//! ログアウトが黙って失われないようにする。
+//! Row representation for moving OpenID Connect Back-Channel Logout 1.0 notifications from "fire and forget"
+//! to "persistent queue + retry". Prevents logouts from being silently lost just because the RP was down
+//! at that moment or the network was cut.
 //!
-//! 署名済みの `logout_token` は保存しない（保存すると「RP へ提示すればログアウトが成立する値」が
-//! DB に長く残り、再試行のたびに `iat`/`exp` も古いままになる）。クレームの素材だけを持ち、送信の
-//! 直前に現行の署名鍵で署名する。`jti` だけは行の作成時に確定させ、再試行でも変えない（RP 側は
-//! `jti` で重複配送を弾ける）。
+//! The signed `logout_token` is not stored (storing it would leave "a value that completes a logout when shown to the RP"
+//! in the DB for a long time, and `iat`/`exp` would stay stale on every retry). Only the claim material is kept, and it
+//! is signed with the current signing key right before sending. Only `jti` is fixed when the row is created and does not change on retry (the RP can
+//! reject duplicate deliveries by `jti`).
 #![allow(dead_code)]
 
 use crate::domain::tenant::TenantId;
 use chrono::{DateTime, Duration, Utc};
 use uuid::Uuid;
 
-/// 1 クライアントへの back-channel logout 通知要求。
+/// A back-channel logout notification request to one client.
 #[derive(Debug, Clone)]
 pub struct BackchannelLogoutDelivery {
     pub id: Uuid,
-    /// ログアウトが発生したテナント（`logout_token` の `iss` を導出する）。
+    /// The tenant where the logout happened (derives the `iss` of the `logout_token`).
     pub tenant_id: TenantId,
-    /// 通知先クライアント（`logout_token` の `aud`）。
+    /// The client to notify (`aud` of the `logout_token`).
     pub client_id: String,
     pub target_uri: String,
-    /// `logout_token` の `sub`（利用者の外部公開識別子）。
+    /// `sub` of the `logout_token` (the user's externally exposed identifier).
     pub subject: String,
-    /// `logout_token` の `sid`。セッション単位のログアウトに使う（不明なら `None`）。
+    /// `sid` of the `logout_token`. Used for per-session logout (`None` if unknown).
     pub sid: Option<String>,
-    /// `logout_token` の `jti`。再試行で変えない。
+    /// `jti` of the `logout_token`. Does not change on retry.
     pub jti: Uuid,
     pub attempts: i32,
     pub next_attempt_at: DateTime<Utc>,
@@ -37,11 +37,11 @@ pub struct BackchannelLogoutDelivery {
     pub updated_at: DateTime<Utc>,
 }
 
-/// 新規の送信要求を組み立てるための値（試行回数・時刻は [`BackchannelLogoutDelivery::new`] が決める）。
+/// Values for building a new delivery request (attempt count and times are decided by [`BackchannelLogoutDelivery::new`]).
 #[derive(Debug, Clone)]
 pub struct NewBackchannelLogoutDelivery {
     pub id: Uuid,
-    /// `logout_token` の `jti`。再試行で変えないため、行の作成時に確定させる。
+    /// `jti` of the `logout_token`. Fixed when the row is created, since it does not change on retry.
     pub jti: Uuid,
     pub tenant_id: TenantId,
     pub client_id: String,
@@ -51,7 +51,7 @@ pub struct NewBackchannelLogoutDelivery {
 }
 
 impl BackchannelLogoutDelivery {
-    /// 新規の送信要求を組み立てる（次回試行は即時）。
+    /// Builds a new delivery request (next attempt is immediate).
     pub fn new(new: NewBackchannelLogoutDelivery, now: DateTime<Utc>) -> Self {
         Self {
             id: new.id,
@@ -75,10 +75,10 @@ impl BackchannelLogoutDelivery {
     }
 }
 
-/// 再試行の待ち時間（指数バックオフ）。
+/// Retry wait time (exponential backoff).
 ///
-/// `attempts` は**その試行を終えた時点の回数**（1 回目の失敗後は 1）。上限を設けるのは、
-/// 長期間落ちている RP のために間隔が無限に伸びて事実上の放置になるのを避けるため。
+/// `attempts` is **the count as of finishing that attempt** (1 after the first failure). The cap exists
+/// so that the interval does not grow without bound for an RP that is down for a long time, effectively abandoning it.
 pub fn retry_backoff(attempts: i32) -> Duration {
     const BASE_SECS: i64 = 30;
     const MAX_SECS: i64 = 3_600;
@@ -96,9 +96,9 @@ mod tests {
         assert_eq!(retry_backoff(1), Duration::seconds(30));
         assert_eq!(retry_backoff(2), Duration::seconds(60));
         assert_eq!(retry_backoff(3), Duration::seconds(120));
-        // 上限（1 時間）を超えない。
+        // Does not exceed the cap (1 hour).
         assert_eq!(retry_backoff(20), Duration::seconds(3_600));
-        // 0・負の入力でも最小待ちに落ちる（呼び出し側の取り違えでゼロ待ちループにしない）。
+        // Zero or negative input also falls back to the minimum wait (so a caller mix-up does not cause a zero-wait loop).
         assert_eq!(retry_backoff(0), Duration::seconds(30));
         assert_eq!(retry_backoff(-5), Duration::seconds(30));
     }

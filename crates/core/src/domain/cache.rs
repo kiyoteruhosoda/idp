@@ -1,23 +1,23 @@
-//! 汎用 TTL キャッシュ抽象（DIP 境界。ADR-0009 §7）。
+//! Generic TTL cache abstraction (DIP boundary. ADR-0009 §7).
 //!
-//! テナント解決（id → tenant）と scope→権限解決（`(user_id, permission_code, tenant_id)` の存在確認）は
-//! いずれもリクエスト毎に評価されるホットパスであり、TTL 付きインメモリキャッシュ + 更新時 invalidation
-//! で参照コストを抑える。キャッシュは用途ごとに別インスタンス（別キー空間）を注入して共有する
-//! 汎用機構として設計する。
+//! Tenant resolution (id -> tenant) and scope->permission resolution (existence check of `(user_id, permission_code, tenant_id)`)
+//! are both hot paths evaluated on every request, so a TTL in-memory cache + invalidation on update
+//! keeps lookup cost down. The cache is designed as a generic mechanism, with a separate instance
+//! (separate key space) injected per use.
 //!
-//! `InMemoryLoginRateLimiter` と同様、trait 越しに注入して単体インスタンス前提とし、スケールアウト時は
-//! Redis 等の共有ストア実装へ差し替える（本 trait が DIP 境界）。実装は infrastructure 層
-//! （[`crate::infrastructure::cache`]）。
+//! Like `InMemoryLoginRateLimiter`, it is injected through a trait and assumes a single instance; when scaling out
+//! it is swapped for a shared-store implementation such as Redis (this trait is the DIP boundary). Implemented in the
+//! infrastructure layer ([`crate::infrastructure::cache`]).
 #![allow(dead_code)]
 
-/// キー `K` から値 `V` を引く TTL キャッシュ。時刻依存（有効期限判定）は実装内部に閉じ、
-/// 呼び出し側は現在時刻を意識しない。トレイトオブジェクト（`Arc<dyn Cache<K, V>>`）として
-/// 注入できるよう、メソッドはジェネリクスを持たない（object-safe）。
+/// A TTL cache that looks up value `V` by key `K`. Time dependence (expiry checks) is kept inside the implementation,
+/// so callers need not be aware of the current time. Methods have no generics (object-safe) so it can be
+/// injected as a trait object (`Arc<dyn Cache<K, V>>`).
 pub trait Cache<K, V>: Send + Sync {
-    /// 有効期限内のエントリがあれば複製を返す。無い（未登録・期限切れ）場合は `None`。
+    /// Returns a clone if there is an unexpired entry. Returns `None` if there is none (unregistered or expired).
     fn get(&self, key: &K) -> Option<V>;
-    /// エントリを登録する（既存キーは上書きし、TTL を張り直す）。
+    /// Registers an entry (overwrites an existing key and resets the TTL).
     fn insert(&self, key: K, value: V);
-    /// 指定キーのエントリを無効化する（付与・剥奪・更新時に呼ぶ）。
+    /// Invalidates the entry for the given key (called on grant, revoke, or update).
     fn invalidate(&self, key: &K);
 }

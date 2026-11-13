@@ -1,15 +1,15 @@
-//! システム用クライアントへの管理権限の付与・剥奪・参照
-//! （`/{tenant_id}/admin/clients/{client_id}/permissions`。ADR-0037）。
+//! Granting, revoking and listing admin permissions for system clients
+//! (`/{tenant_id}/admin/clients/{client_id}/permissions`, ADR-0037).
 //!
-//! ここで付与した権限コードが、`client_credentials` に `resource={issuer}/admin` を添えて得た
-//! 管理トークンの `perms` クレームになる。**この API が IdP を機械から操作させるための入口**である。
+//! Permission codes granted here become the `perms` claim of the admin token obtained via `client_credentials`
+//! with `resource={issuer}/admin`. **This API is the entry point for letting machines operate the IdP**.
 //!
-//! 保護は `idp.clients:write`（読み取りは `idp.clients:read`）。クライアントへ何を許すかを決める
-//! 操作なので、権限管理（`idp.permissions:write`）ではなくクライアント管理の側に置く —— 対象の
-//! ライフサイクル（登録・失効）と同じ人が握るべき判断だからである。
+//! Protected by `idp.clients:write` (reads: `idp.clients:read`). As it decides what a client is allowed to do,
+//! it sits on the client-management side rather than permission management (`idp.permissions:write`) -- the
+//! decision belongs to whoever owns the target's lifecycle (registration, revocation).
 //!
-//! 付与できるのは細粒度コードだけで、`idp.tenant.admin` / `idp.system.admin` は
-//! Application 層（`ClientPermissionManagementService`）と DB の CHECK 制約が拒む。
+//! Only fine-grained codes can be granted; `idp.tenant.admin` / `idp.system.admin` are
+//! rejected by the application layer (`ClientPermissionManagementService`) and a DB CHECK constraint.
 
 use crate::application::client_permission_management::ClientPermissionError;
 use crate::presentation::admin::{ClientsRead, ClientsWrite, RequirePerms};
@@ -25,7 +25,7 @@ use axum::extract::{Extension, Path, State};
 use axum::http::HeaderMap;
 use axum::Json;
 
-/// 対象クライアントが保有する管理権限コードを一覧する。
+/// Lists the admin permission codes held by the target client.
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/clients/{client_id}/permissions",
@@ -44,7 +44,7 @@ pub async fn list_client_permissions(
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
-    // 先頭のパスセグメントは `{tenant_id}`（`ResolvedTenant` から取得済みのため破棄する）。
+    // The first path segment is `{tenant_id}` (discarded; already obtained from `ResolvedTenant`).
     Path((_tenant_id, client_id)): Path<(String, String)>,
 ) -> Result<Json<ClientPermissionsResponse>, ApiError> {
     let codes = state
@@ -58,7 +58,7 @@ pub async fn list_client_permissions(
     }))
 }
 
-/// 対象クライアントへ管理権限コードを付与する（冪等）。付与後の保有コード一覧を返す。
+/// Grants an admin permission code to the target client (idempotent). Returns the held codes after granting.
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/clients/{client_id}/permissions",
@@ -116,7 +116,7 @@ pub async fn grant_client_permission(
     }))
 }
 
-/// 対象クライアントから管理権限コードを剥奪する（未保有でもエラーにしない）。
+/// Revokes an admin permission code from the target client (not an error if not held).
 #[utoipa::path(
     delete,
     path = "/{tenant_id}/admin/clients/{client_id}/permissions/{permission_code}",

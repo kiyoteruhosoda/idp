@@ -1,4 +1,4 @@
-//! `ClientPermissionRepository` の sqlx 実装（ADR-0037）。UUID は CHAR(36) 正準文字列で入出力する。
+//! sqlx implementation of `ClientPermissionRepository` (ADR-0037). UUIDs are read and written as canonical CHAR(36) strings.
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::ClientPermissionRepository;
@@ -55,11 +55,11 @@ impl ClientPermissionRepository for SqlxClientPermissionRepository {
         .execute(&self.pool)
         .await
         .map_err(|e| match &e {
-            // permissions マスタに無いコード・存在しないクライアント（FK 違反）は不正リクエスト扱い。
+            // A code missing from the permissions master or a nonexistent client (FK violation) is treated as a bad request.
             sqlx::Error::Database(db) if db.is_foreign_key_violation() => {
                 DomainError::InvalidValue(format!("unknown permission code or client: {code}"))
             }
-            // 包括的な管理権限は CHECK 制約が拒む（アプリ層でも同じ判定を行う。二重防御）。
+            // Blanket admin permissions are rejected by a CHECK constraint (the app layer checks the same; defense in depth).
             sqlx::Error::Database(db) if db.is_check_violation() => DomainError::InvalidValue(
                 format!("permission code cannot be granted to a client: {code}"),
             ),

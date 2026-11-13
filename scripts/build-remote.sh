@@ -1,29 +1,29 @@
 #!/usr/bin/env bash
-# scripts/build-remote.sh — デプロイ先（リモート）で「取得 → 自己更新 → ビルド → デプロイ」を一気通貫で行う。
+# scripts/build-remote.sh — on the deployment target (remote), runs "fetch -> self-update -> build -> deploy" end to end.
 #
-# 二ホスト方式（ビルド側で build.sh → dist/ を作り、デプロイ先へ転送）に対し、本スクリプトは
-# **デプロイ先だけで完結する一ホスト方式**を提供する。デプロイ先に置くのは最初にこの
-# build-remote.sh 一本だけでよい。ソースは git から取得するので dist/ の転送は不要。
-# 以後スクリプト自体が更新されても、実行時に git 上の最新版へ自分を書き換えて再実行する（自己更新）。
+# Unlike the two-host method (build.sh -> dist/ on the build side, transferred to the deployment target), this script
+# provides a **one-host method completed on the deployment target alone**. Only this one
+# build-remote.sh needs to be placed on the deployment target at first. The source is fetched from git, so no dist/ transfer is needed.
+# Even if the script itself is updated later, at run time it rewrites itself to the latest version in git and re-runs (self-update).
 #
-# 使い方（デプロイ先で。モードは deploy.sh へそのまま渡す。既定 app）:
-#   ./build-remote.sh            # app: 取得 → ビルド → deploy.sh app（初回・更新とも）
-#   ./build-remote.sh migrate    # migrate: 取得 → ビルド → deploy.sh migrate
-#   ./build-remote.sh reset      # reset: 取得 → ビルド → deploy.sh reset（破壊的）
+# Usage (on the deployment target; the mode is passed to deploy.sh as is; default app):
+#   ./build-remote.sh            # app: fetch -> build -> deploy.sh app (initial setup and updates alike)
+#   ./build-remote.sh migrate    # migrate: fetch -> build -> deploy.sh migrate
+#   ./build-remote.sh reset      # reset: fetch -> build -> deploy.sh reset (destructive)
 #
-# 設定（環境変数。既定のままでも動く）:
-#   IDP_REPO_URL   取得元 git URL   （既定 https://github.com/kiyoteruhosoda/idp.git）
-#   IDP_BRANCH     取得ブランチ     （既定 main）
-#   IDP_SRC_DIR    ソース取得先 DIR （既定 <このスクリプトの場所>/src）
-#   IMAGE_TAG      イメージタグ     （build.sh / deploy へ引き継ぐ。既定 latest）
+# Settings (environment variables; works with the defaults):
+#   IDP_REPO_URL   git URL to fetch from   (default https://github.com/kiyoteruhosoda/idp.git)
+#   IDP_BRANCH     branch to fetch         (default main)
+#   IDP_SRC_DIR    source checkout DIR     (default <this script's location>/src)
+#   IMAGE_TAG      image tag               (passed on to build.sh / deploy; default latest)
 #
-# 前提: git・docker（Compose v2 か v1）・openssl。
+# Requires: git, docker (Compose v2 or v1), openssl.
 set -euo pipefail
 
 log() { printf '[idp:build-remote] %s\n' "$*" >&2; }
 die() { printf '[idp:build-remote][error] %s\n' "$*" >&2; exit 1; }
 
-# --- 自身の正準パスとソース取得先を解決 ------------------------------------------
+# --- Resolve our canonical path and the source checkout location ------------------------------------------
 resolve_path() {
   if command -v realpath >/dev/null 2>&1; then
     realpath "$1"
@@ -44,18 +44,18 @@ mode="${1:-app}"
 case "$mode" in
   app | migrate | reset) ;;
   -h | --help) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
-  *) die "不明なモード: $mode（app / migrate / reset のいずれか）" ;;
+  *) die "unknown mode: $mode (one of app / migrate / reset)" ;;
 esac
 
-command -v git >/dev/null 2>&1 || die "git が見つかりません。"
-command -v docker >/dev/null 2>&1 || die "docker が見つかりません。"
+command -v git >/dev/null 2>&1 || die "git not found."
+command -v docker >/dev/null 2>&1 || die "docker not found."
 
-# --- ソース取得（clone / 更新） -------------------------------------------------
+# --- Fetch the source (clone / update) -------------------------------------------------
 fetch_source() {
   if [[ -d "$src_dir/.git" ]]; then
-    log "ソースを更新します: $src_dir (branch=$branch)"
-    # IDP_REPO_URL の変更（fork/mirror → 本番リポジトリ切替など）に追従。既存 clone の
-    # 古い origin を使い続けて誤ったリポジトリからデプロイしないよう、取得前に URL を合わせる。
+    log "updating source: $src_dir (branch=$branch)"
+    # Follow changes to IDP_REPO_URL (switching from a fork/mirror to the production repository etc.). Align the URL
+    # before fetching so an existing clone does not keep using an old origin and deploy from the wrong repository.
     if git -C "$src_dir" remote get-url origin >/dev/null 2>&1; then
       git -C "$src_dir" remote set-url origin "$repo_url"
     else
@@ -64,44 +64,44 @@ fetch_source() {
     git -C "$src_dir" fetch --depth 1 origin "$branch"
     git -C "$src_dir" reset --hard FETCH_HEAD
   else
-    # 既存ディレクトリでも空なら git clone できる。非空かつ非 git のときだけ拒否する。
+    # Even an existing directory can be git-cloned into if empty. Refuse only when non-empty and not git.
     if [[ -e "$src_dir" && -n "$(ls -A "$src_dir" 2>/dev/null)" ]]; then
-      die "$src_dir は git リポジトリではなく空でもありません。IDP_SRC_DIR を見直すか、空のディレクトリを指定してください。"
+      die "$src_dir is not a git repository and not empty either. Check IDP_SRC_DIR or specify an empty directory."
     fi
-    log "ソースを取得します: $repo_url → $src_dir (branch=$branch)"
+    log "fetching source: $repo_url -> $src_dir (branch=$branch)"
     git clone --depth 1 --branch "$branch" "$repo_url" "$src_dir"
   fi
 }
 
-# --- 自己更新（リポジトリの build-remote.sh と不一致なら自分を書き換えて再実行） ----
+# --- Self-update (rewrite ourselves and re-run if different from the repository's build-remote.sh) ----
 self_update_and_reexec() {
-  [[ -f "$repo_script" ]] || die "$repo_script が見つかりません（リポジトリ構成が想定と異なります）。"
-  # 同一ファイルを実行している場合（ソースチェックアウト内から直接実行）は更新対象なし。
+  [[ -f "$repo_script" ]] || die "$repo_script not found (the repository layout is not as expected)."
+  # When running the same file (run directly from inside the source checkout), there is nothing to update.
   [[ "$(resolve_path "$repo_script")" == "$self" ]] && return 0
   if cmp -s "$repo_script" "$self"; then
     return 0
   fi
-  log "build-remote.sh がリポジトリ最新版と不一致のため、自身を更新して再実行します。"
+  log "build-remote.sh differs from the latest in the repository; updating ourselves and re-running."
   cp -f "$repo_script" "$self"
   chmod +x "$self"
   export IDP_BUILD_REMOTE_UPDATED=1
   exec "$self" "$mode"
 }
 
-# 取得と自己更新は初回のみ（再実行後は IDP_BUILD_REMOTE_UPDATED=1 でスキップし二重取得を防ぐ）。
+# Fetch and self-update only the first time (after re-running, IDP_BUILD_REMOTE_UPDATED=1 skips them to avoid fetching twice).
 if [[ "${IDP_BUILD_REMOTE_UPDATED:-0}" != 1 ]]; then
   fetch_source
   self_update_and_reexec
 fi
 
-# --- ビルド → デプロイ ----------------------------------------------------------
-[[ -x "$src_dir/scripts/build.sh" ]] || die "$src_dir/scripts/build.sh が見つかりません。"
-log "イメージをビルドします（build.sh）..."
+# --- Build -> deploy ----------------------------------------------------------
+[[ -x "$src_dir/scripts/build.sh" ]] || die "$src_dir/scripts/build.sh not found."
+log "building images (build.sh)..."
 IMAGE_TAG="${IMAGE_TAG:-latest}" "$src_dir/scripts/build.sh"
 
 deploy_script="$src_dir/dist/deploy.sh"
-[[ -x "$deploy_script" ]] || die "$deploy_script が見つかりません（build.sh の出力を確認してください）。"
-log "デプロイします（deploy.sh $mode）..."
+[[ -x "$deploy_script" ]] || die "$deploy_script not found (check build.sh's output)."
+log "deploying (deploy.sh $mode)..."
 "$deploy_script" "$mode"
 
-log "完了（mode: $mode）。"
+log "done (mode: $mode)."

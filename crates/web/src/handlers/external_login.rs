@@ -1,22 +1,22 @@
-//! 外部 IdP ログインのブラウザ経路（web。AP10）。
+//! Browser path of external IdP login (web. AP10).
 //!
-//! - `GET /{tenant_id}/external/{provider}/start` — api に認可 URL を作らせて外部 IdP へ 302 する。
-//! - `GET /{tenant_id}/external/{provider}/callback` — 外部 IdP から戻る先。api に検証させ、
-//!   成功なら SSO Cookie を発行して戻り先へ送る。
+//! - `GET /{tenant_id}/external/{provider}/start` — has the api build the authorization URL and 302s to the external IdP.
+//! - `GET /{tenant_id}/external/{provider}/callback` — where the external IdP returns. Has the api verify it and,
+//!   on success, issues the SSO cookie and sends the user to the return destination.
 //!
-//! OIDC 認可フローの途中から来ていた場合、その続き（同意確認・code 発行）を進めるのも api で、
-//! web は返ってきた戻り先へ 302 するだけである。認可要求のパラメータ（`client_id`・`redirect_uri`・
-//! PKCE・`nonce`）は api 側の auth_session にしか無く、web には組み立てようがない。
+//! If it came from the middle of an OIDC authorization flow, continuing it (consent check, code issuance) is also the api's job;
+//! web just 302s to the returned destination. The authorization request parameters (`client_id`, `redirect_uri`,
+//! PKCE, `nonce`) exist only in the api's auth_session, so web has no way to build it.
 //!
-//! `state` / `nonce` / PKCE の生成・検証はすべて api 側（進行状態は DB）。web は Cookie の組み立てと
-//! 画面遷移だけを担う（他のログイン経路と同じ責務分担）。**Cookie に `state` を置かない**のは、
-//! ADR-0018 と同じ理由（api はブラウザ Cookie を読まない）で、`state` は外部 IdP から戻る値だけを
-//! 鍵として使う設計にしているため。
+//! Generating and verifying `state` / `nonce` / PKCE all happen on the api side (progress state in the DB). web only builds
+//! cookies and handles screen transitions (same split of duties as other login paths). **`state` is not put in a cookie**
+//! for the same reason as ADR-0018 (the api does not read browser cookies); the design uses only the `state` value
+//! returned from the external IdP as the key.
 //!
-//! ⚠ **ただし `state` だけではブラウザを特定できない**（外部 IdP を経て URL に載る値なので、
-//! 攻撃者が自分で途中まで進めた戻り URL を他人に踏ませられる。ログイン CSRF。task #581）。
-//! そこで開始時に api が返す一度きりの値を Cookie（[`cookies::EXTERNAL_LOGIN_BINDING_COOKIE`]）に
-//! 置き、戻り口で api へ渡す。照らすのは api で、web は運ぶだけである。
+//! ⚠ **However, `state` alone cannot identify the browser** (it travels in the URL via the external IdP, so an
+//! attacker can make someone else follow a return URL the attacker started. Login CSRF. task #581).
+//! So at start a one-time value returned by the api is placed in a cookie ([`cookies::EXTERNAL_LOGIN_BINDING_COOKIE`])
+//! and passed to the api at the return endpoint. The api checks it; web only carries it.
 
 use super::{api_internal_error, internal_call_status};
 use crate::client_ip::ClientIp;
@@ -36,19 +36,19 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use serde::Deserialize;
 
-/// 外部 IdP から戻ってくるクエリ（成功時は `code` + `state`、失敗時は `error`）。
+/// Query returned from the external IdP (`code` + `state` on success, `error` on failure).
 #[derive(Debug, Deserialize)]
 pub struct CallbackQuery {
     #[serde(default)]
     pub code: Option<String>,
     #[serde(default)]
     pub state: Option<String>,
-    /// 外部 IdP 側で拒否された場合のエラーコード（利用者が同意しなかった等）。
+    /// Error code when the external IdP refused (e.g. the user did not consent).
     #[serde(default)]
     pub error: Option<String>,
 }
 
-/// 外部 IdP ログインの開始（`GET /{tenant_id}/external/{provider}/start`）。
+/// Starts external IdP login (`GET /{tenant_id}/external/{provider}/start`).
 pub async fn start(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -56,7 +56,7 @@ pub async fn start(
     headers: HeaderMap,
     Path((_tenant_id, provider_code)): Path<(String, String)>,
 ) -> Response {
-    // OIDC 認可フローの途中から来た場合は `auth_session_id` を引き継ぐ（戻り先の判断に使う）。
+    // If it came from the middle of an OIDC authorization flow, carry over `auth_session_id` (used to decide the return destination).
     let auth_session_id = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE);
     let request = InternalExternalStartRequest {
         tenant_id: Some(tenant.0.clone()),
@@ -69,7 +69,7 @@ pub async fn start(
             browser_binding,
         }) => {
             let Some(browser_binding) = browser_binding else {
-                // 古い api（値を返さない）。戻り口で必ず断られるので、ここで止める。
+                // Old api (returns no value). It would always be refused at the return endpoint, so stop here.
                 tracing::error!("external idp start returned no browser binding");
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             };
@@ -104,7 +104,7 @@ pub async fn start(
     }
 }
 
-/// 外部 IdP からのコールバック（`GET /{tenant_id}/external/{provider}/callback`）。
+/// Callback from the external IdP (`GET /{tenant_id}/external/{provider}/callback`).
 pub async fn callback(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -115,8 +115,8 @@ pub async fn callback(
 ) -> Response {
     let locale = locale(&headers);
 
-    // 外部 IdP 側が拒否した場合（利用者が同意しなかった等）。エラーコードは画面へ出さない
-    //（外部 IdP の語彙をそのまま出しても利用者の助けにならず、値も外部由来のため）。
+    // The external IdP refused (e.g. the user did not consent). The error code is not shown on screen
+    // (showing the external IdP's vocabulary as is does not help users, and the value comes from outside).
     if let Some(error) = query.error.as_deref() {
         tracing::info!(
             correlation_id = %correlation.0,
@@ -164,7 +164,7 @@ pub async fn callback(
     render_outcome(&state, &tenant, &headers, locale, outcome)
 }
 
-/// 開始時に置いた値（[`cookies::EXTERNAL_LOGIN_BINDING_COOKIE`]）を読む。
+/// Reads the value placed at start ([`cookies::EXTERNAL_LOGIN_BINDING_COOKIE`]).
 fn browser_binding(state: &WebState, headers: &HeaderMap) -> Option<String> {
     cookies::get(
         headers,
@@ -172,10 +172,10 @@ fn browser_binding(state: &WebState, headers: &HeaderMap) -> Option<String> {
     )
 }
 
-/// 外部 SAML IdP がブラウザ経由で POST してくるアサーションを受ける（ACS。AP12）。
+/// Receives the assertion an external SAML IdP POSTs via the browser (ACS. AP12).
 ///
-/// 値の検証は一切しない——`SAMLResponse` の署名検証は api 側にあり、web は運ぶだけである
-/// （web は sqlx にも鍵にも触れない。ADR-0007）。
+/// No validation whatsoever — verifying the `SAMLResponse` signature is on the api side; web only carries it
+/// (web touches neither sqlx nor keys. ADR-0007).
 pub async fn saml_acs(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -208,8 +208,8 @@ pub async fn saml_acs(
     render_outcome(&state, &tenant, &headers, locale, outcome)
 }
 
-/// ACS が受け取るフォーム（HTTP-POST binding）。`RelayState` は仕様上は任意だが、assay は
-/// 開始時に必ず載せる（無ければ進行状態を引けないので、その場で失敗する）。
+/// Form received by the ACS (HTTP-POST binding). `RelayState` is optional per spec, but assay
+/// always includes it at start (without it the progress state cannot be looked up, so it fails on the spot).
 #[derive(Debug, serde::Deserialize)]
 pub struct SamlAcsForm {
     #[serde(rename = "SAMLResponse")]
@@ -218,11 +218,11 @@ pub struct SamlAcsForm {
     pub relay_state: Option<String>,
 }
 
-/// 外部 IdP からの戻り（OIDC のコールバック / SAML の ACS）を画面・リダイレクトへ落とす。
+/// Turns a return from the external IdP (OIDC callback / SAML ACS) into a screen or redirect.
 ///
-/// **プロトコルで分けない。** 「誰が認証されたか」を確かめる方法は違っても、そこから先
-/// （Cookie の発行・同意画面への誘導・失敗時の見せ方）は同じであるべきで、分けると片方だけ
-/// 直った状態が生まれる。
+/// **Not split by protocol.** Even though the way of confirming "who was authenticated" differs, what follows
+/// (issuing cookies, leading to the consent screen, presenting failures) should be the same; splitting it would
+/// produce states where only one side is fixed.
 fn render_outcome(
     state: &WebState,
     tenant: &WebTenant,
@@ -230,7 +230,7 @@ fn render_outcome(
     locale: Locale,
     outcome: InternalExternalCallbackResponse,
 ) -> Response {
-    // 開始時の値は一度きり。結果に関わらず消す（api 側の進行状態も消費済み）。
+    // The start value is single-use. Delete it regardless of the result (the api-side progress state is consumed too).
     (
         state
             .set_cookies()
@@ -266,10 +266,10 @@ fn render_callback_result(
                     &sso_session_id,
                     sso_absolute_ttl_secs,
                 )
-                // 認可まで進んだなら auth_session は api 側で使い切っている。認可の外から来た
-                // 場合も、この Cookie を残す理由は無い。
+                // If it went as far as authorization, the auth_session was used up on the api side. When coming from
+                // outside authorization, there is no reason to keep this cookie either.
                 .expire_session(cookies::AUTH_SESSION_COOKIE);
-            // ユーザーの DB 言語設定があれば lang Cookie に同期する（MT20: DB > Cookie）。
+            // If the user has a DB language setting, sync it into the lang cookie (MT20: DB > Cookie).
             if let Some(lang) = user_language.as_deref().and_then(Locale::from_tag) {
                 set_cookies = set_cookies.set_local(
                     cookies::LANG_COOKIE,
@@ -277,11 +277,11 @@ fn render_callback_result(
                     cookies::PREFERENCE_COOKIE_MAX_AGE_SECS,
                 );
             }
-            // OIDC 認可フローの途中から来ていれば、api が組み立てた code 付き `redirect_uri` へ
-            // 送る（認可要求のパラメータは api 側の auth_session にしか無いため、web では
-            // 組み立てられない）。そうでなければアカウント画面へ。
-            // 認可フローの外（アカウント設定から始めた連携）は web が戻り先を決める。
-            // その場合 `form_post` は付かない（認可応答ではないため）。
+            // If it came from the middle of an OIDC authorization flow, send to the api-built `redirect_uri` with the code
+            // (the authorization request parameters exist only in the api's auth_session, so web
+            // cannot build it). Otherwise go to the account screen.
+            // Outside an authorization flow (linking started from account settings), web decides the return destination.
+            // In that case `form_post` is not attached (it is not an authorization response).
             let destination =
                 redirect_to.unwrap_or_else(|| format!("{}/settings", tenant.prefix()));
             (
@@ -336,7 +336,7 @@ fn render_callback_result(
             "login-error-invalid-credentials",
             StatusCode::FORBIDDEN,
         ),
-        // 外部 IdP での認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。
+        // Authentication at the external IdP succeeded, but use of this app is not permitted (ADR-0054).
         InternalExternalCallbackResponse::ApplicationNotPermitted {
             application_name,
             sso_session_id,
@@ -364,9 +364,9 @@ fn render_callback_result(
             )
                 .into_response()
         }
-        // 登録した端末に限る組織で、登録していない端末だった（task #916）。札を置いて登録の画面へ。
+        // Organization limited to registered devices, and this device is not registered (task #916). Place the ticket and go to enrollment.
         InternalExternalCallbackResponse::DeviceEnrollmentRequired { ticket } => {
-            // 認可フローの途中ならログイン画面へ（開き直すと、登録の後の SSO から続ける）。
+            // In the middle of an authorization flow, go to the login screen (reopening continues from the SSO created after enrollment).
             let next = if cookies::get(headers, cookies::AUTH_SESSION_COOKIE).is_some() {
                 format!("{}/login", tenant.prefix())
             } else {

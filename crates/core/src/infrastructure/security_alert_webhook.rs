@@ -1,11 +1,11 @@
-//! セキュリティの知らせを Webhook で送る（task #872。ADR-0071）。
+//! Sends security notices via webhook (task #872, ADR-0071).
 //!
-//! 送る形は nolumia notice の受け口（`POST /api/notices`、`Authorization: Bearer <受付の鍵>`）と同じ
-//! JSON（`source` / `level` / `headline` / `items` / `key`）。宛先と鍵は**環境変数だけ**で決める
-//! （`SECURITY_ALERT_WEBHOOK_URL` / `SECURITY_ALERT_WEBHOOK_TOKEN_FILE`。画面から通信先を変えさせない）。
+//! The format is the same JSON as nolumia notice's intake (`POST /api/notices`, `Authorization: Bearer <intake key>`)
+//! (`source` / `level` / `headline` / `items` / `key`). Destination and key are set **only by environment variables**
+//! (`SECURITY_ALERT_WEBHOOK_URL` / `SECURITY_ALERT_WEBHOOK_TOKEN_FILE`; the destination can't be changed from a screen).
 //!
-//! 送信は呼び出し元を待たせない（`tokio::spawn`）。失敗したら間を空けて 3 回まで送り直し、それでも
-//! 届かなければエラーログを残して諦める。出来事そのものは監査ログに残っている。
+//! Sending doesn't make the caller wait (`tokio::spawn`). On failure it retries up to 3 times with a delay, and if
+//! it still doesn't arrive, it logs an error and gives up. The event itself remains in the audit log.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,12 +18,12 @@ use crate::domain::security_alert::{
 };
 use crate::domain::values::AuthenticationMethod;
 
-/// 送り直しの回数（最初の 1 回を含まない）。
+/// Number of retries (not counting the first attempt).
 const RETRIES: u32 = 3;
-/// 1 回の送信の時間切れ。
+/// Timeout for one send.
 const TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Webhook の送り口。
+/// Webhook sender.
 pub struct WebhookSecurityAlertSink {
     client: reqwest::Client,
     url: String,
@@ -32,11 +32,11 @@ pub struct WebhookSecurityAlertSink {
 }
 
 impl WebhookSecurityAlertSink {
-    /// `url` は http(s) の URL、`token` は受付の鍵（ファイルから読んだ値）。
+    /// `url` is an http(s) URL; `token` is the intake key (value read from a file).
     pub fn new(url: String, token: String) -> anyhow::Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(TIMEOUT)
-            // 送り先が別の場所へ転送しても追わない（鍵を載せたまま知らない宛先へ行かせない）。
+            // Don't follow if the destination redirects elsewhere (don't let the key travel to an unknown destination).
             .redirect(reqwest::redirect::Policy::none())
             .user_agent(concat!(
                 "assay/",
@@ -77,7 +77,7 @@ impl WebhookSecurityAlertSink {
                         attempt,
                         "security alert webhook answered with an error"
                     );
-                    // 4xx は送り直しても通らない（鍵の誤り・形の誤り）。
+                    // 4xx won't succeed on retry (wrong key or wrong format).
                     if response.status().is_client_error() {
                         break;
                     }
@@ -118,9 +118,9 @@ fn method_label(method: &AuthenticationMethod) -> &'static str {
     }
 }
 
-/// notice の受け口の形へ組み立てる。
+/// Builds the notice intake's format.
 ///
-/// ⚠ 知らせの文言は運用者（持ち主）が読むものなので日本語で組む（assay の利用者向けの i18n とは別）。
+/// ⚠ The notice wording is read by the operator (owner), so it is composed in Japanese (separate from assay's user-facing i18n).
 pub(crate) fn notice_body(alert: &SecurityAlert) -> Value {
     let (headline, key_prefix) = match &alert.kind {
         SecurityAlertKind::UnregisteredDeviceSignIn { first_seen, .. } => (
@@ -300,7 +300,7 @@ pub(crate) fn notice_body(alert: &SecurityAlert) -> Value {
             "details": details,
         }],
         "look": look,
-        // 同じ端末の同じ種類の知らせを 1 件へ束ねる（対応済みにするまで足されていく）。
+        // Bundle notices of the same kind for the same device into one (added to until marked handled).
         "key": format!("assay-{key_prefix}-{}", alert.group_key),
     })
 }

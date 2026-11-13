@@ -1,11 +1,11 @@
-//! テナントメンバー（HOME/GUEST）管理画面（web。ADR-0009 §3・§6・MT13）。
+//! Tenant member (HOME/GUEST) management screen (web. ADR-0009 §3, §6, MT13).
 //!
-//! メンバー管理の起点となるハブ画面。api の JSON 管理 API を管理者の SSO Cookie 転送で呼ぶ。
-//! ゲストはメンバーシップの解除のみでき（HOME は api 側が 403 を返す）、所属元（HOME）の利用者には
-//! 無効化・有効化・パスワード再発行・削除を提供する（対象が所属元でない場合は api 側が 404 を返す）。
+//! The hub screen where member management starts. Calls the api's JSON admin APIs by forwarding the admin's SSO cookie.
+//! Guests can only have their membership removed (the api returns 403 for HOME); users whose home is this tenant
+//! get disable, enable, password reissue and deletion (the api returns 404 when the target's home is not this tenant).
 //!
-//! 一覧の**絞り込み・ページングは api（DB）側**が行う（MT22）。web は検索語とページ位置をクエリで
-//! 引き継ぎ、応答の `total` からページャの前後リンクを組み立てるだけで、全件を受け取らない。
+//! **Filtering and paging of the list are done by the api (DB)** (MT22). web carries over the search term and page position
+//! in the query and only builds the pager's prev/next links from the response's `total`, never receiving all rows.
 
 use super::locale;
 use crate::api_client::AdminApiError;
@@ -28,37 +28,37 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use serde::Deserialize;
 
-/// 一覧（アカウントの一覧を人に絞ったもの。ADR-0065）。操作の後の戻り先。
+/// The list (the account list filtered to people. ADR-0065). Where to return after an operation.
 const MEMBERS_LIST: &str = "/admin/accounts?kind=user";
 
 #[derive(Debug, Default, Deserialize)]
 pub struct ViewQuery {
     #[serde(default)]
     pub error: Option<String>,
-    /// 完了通知（Post/Redirect/Get で操作結果を伝える。MT21 の MFA 解除など）。
+    /// Completion notice (conveys the operation result via Post/Redirect/Get; e.g. MFA removal in MT21).
     #[serde(default)]
     pub notice: Option<String>,
-    /// メンバー一覧の絞り込み語（メールアドレス・氏名の部分一致。大文字小文字を無視）。
-    /// 絞り込みは api（DB）側で行う。
+    /// Filter term for the member list (substring match on email address and name, case-insensitive).
+    /// Filtering is done by the api (DB).
     #[serde(default)]
     pub q: Option<String>,
-    /// ページャの読み飛ばし件数。未指定は 0。
+    /// Number of items the pager skips. Unspecified is 0.
     #[serde(default)]
     pub offset: Option<i64>,
 }
 
-/// メンバー 1 人の画面（`GET /{tenant_id}/admin/members/{user_id}`）。
+/// Screen for one member (`GET /{tenant_id}/admin/members/{user_id}`).
 ///
-/// ⚠ **一覧は探す場所、ここは操作する場所**と分ける。一覧の 1 セルへ 7 つのボタンを並べて
-/// いた頃は、操作列 168px にボタンが縦 7 段に積まれ、幅の広いものは右端で切れていた。
+/// ⚠ **Keep the list as the place to find and this as the place to operate.** Back when 7 buttons sat in one list cell,
+/// they were stacked 7 high in the 168px operations column, and wide ones were cut off at the right edge.
 pub async fn detail(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
-    // ⚠ **経路には `{tenant_id}` と `{user_id}` の 2 つがある。** 1 つだけで受けると
-    //   `WrongNumberOfParameters` で弾かれ、ハンドラへ入る前に 500 になる
-    //   （同じファイルの他のハンドラも 2 つで受けている）。
+    // ⚠ **The path has two parameters, `{tenant_id}` and `{user_id}`.** Receiving only one gets rejected with
+    //   `WrongNumberOfParameters`, a 500 before entering the handler
+    //   (the other handlers in this file also receive two).
     Path((_, user_id)): Path<(String, String)>,
     Query(query): Query<ViewQuery>,
 ) -> Response {
@@ -66,14 +66,14 @@ pub async fn detail(
         AdminResolution::Ok(uid) => uid,
         AdminResolution::Reject(resp) => return resp,
     };
-    // ⚠ `Messages` は `Send` ではないので、`await` をまたいで持たない（api 呼び出しの後に作る）。
+    // ⚠ `Messages` is not `Send`, so do not hold it across an `await` (create it after the api calls).
     let sso = sso(&headers);
     let result = state
         .api
         .get_member(&correlation.0, &tenant.0, &sso, &user_id)
         .await;
-    // 使えるアプリは `idp.applications:read` が要る。持たない管理者にはメンバーの画面ごと
-    // 断らず、アプリの欄だけを出さない（メモや復旧の操作はアプリの権限と関係が無い）。
+    // Available apps need `idp.applications:read`. Admins without it are not refused the whole member screen;
+    // only the apps section is hidden (notes and recovery operations are unrelated to app permissions).
     let applications = match &result {
         Ok(_) => state
             .api
@@ -82,10 +82,10 @@ pub async fn detail(
             .ok(),
         Err(_) => None,
     };
-    // いま有効なトークンの本数（task #83）。再発行を押す前に対象があるかを見せる。数えられるのは
-    // 所属元（HOME）の利用者だけ（api は他テナントの利用者に 404 を返す）なので、ゲストには
-    // 聞かない。引けなかったときは欄ごと出さず、画面そのものは断らない（操作は本数を知らなくても
-    // 成り立つ。ADR-0047）。
+    // Number of currently valid tokens (task #83). Shows whether there is anything before pressing reissue. Only users
+    // whose home is this tenant can be counted (the api returns 404 for users of other tenants), so guests are
+    // not asked. If it cannot be fetched, the section is hidden and the screen itself is not refused (the operation works
+    // without knowing the count. ADR-0047).
     let active_tokens = match &result {
         Ok(member) if member.membership_type == "HOME" => state
             .api
@@ -110,7 +110,7 @@ pub async fn detail(
         .into_response(),
         Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
         Err(AdminApiError::Forbidden) => forbidden_response(&headers),
-        // 他テナントのメンバーの存在を推測させないため、不存在も 404 のまま一覧へ戻す。
+        // So as not to reveal the existence of other tenants' members, nonexistence also stays a 404 and returns to the list.
         Err(AdminApiError::NotFound) => {
             found(&format!("{}{MEMBERS_LIST}&error=notfound", tenant.prefix()))
         }
@@ -118,9 +118,9 @@ pub async fn detail(
     }
 }
 
-/// 管理者メモを書く（`POST /{tenant_id}/admin/members/{user_id}/note`。ADR-0063）。
+/// Writes an admin note (`POST /{tenant_id}/admin/members/{user_id}/note`. ADR-0063).
 ///
-/// 書き方はサービスアカウントと同じ（[`admin_accounts_console::write_note`]。ADR-0065）。
+/// Written the same way as for service accounts ([`admin_accounts_console::write_note`]. ADR-0065).
 pub async fn update_note(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -140,8 +140,8 @@ pub async fn update_note(
     .await
 }
 
-/// このメンバーをアプリへ割り当てる
-/// （`POST /{tenant_id}/admin/members/{user_id}/applications/{application_id}/assign`）。
+/// Assigns this member to an app
+/// (`POST /{tenant_id}/admin/members/{user_id}/applications/{application_id}/assign`).
 pub async fn assign_application(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -163,8 +163,8 @@ pub async fn assign_application(
     .await
 }
 
-/// このメンバーの割り当てを外す
-/// （`POST /{tenant_id}/admin/members/{user_id}/applications/{application_id}/unassign`）。
+/// Removes this member's assignment
+/// (`POST /{tenant_id}/admin/members/{user_id}/applications/{application_id}/unassign`).
 pub async fn unassign_application(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -191,7 +191,7 @@ pub struct RevokeForm {
     pub csrf_token: String,
 }
 
-/// ゲストメンバーシップの解除（`POST /{tenant_id}/admin/members/{user_id}/revoke`）。
+/// Removes a guest membership (`POST /{tenant_id}/admin/members/{user_id}/revoke`).
 pub async fn revoke(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -221,8 +221,8 @@ pub async fn revoke(
     }
 }
 
-/// 利用者の無効化・有効化（`POST /{tenant_id}/admin/members/{user_id}/status`）。
-/// 所属元（HOME）が当該テナントの利用者のみ。自分自身は変更できない（api 側が 403 を返す）。
+/// Disables/enables a user (`POST /{tenant_id}/admin/members/{user_id}/status`).
+/// Only users whose home (HOME) is this tenant. One cannot change oneself (the api returns 403).
 pub async fn set_status(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -259,8 +259,8 @@ pub async fn set_status(
     }
 }
 
-/// 利用者のパスワード再発行（`POST /{tenant_id}/admin/members/{user_id}/reset-password`）。
-/// 成功時は生成パスワードを一度だけ表示する。
+/// Reissues a user's password (`POST /{tenant_id}/admin/members/{user_id}/reset-password`).
+/// On success the generated password is shown only once.
 pub async fn reset_password(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -307,8 +307,8 @@ pub async fn reset_password(
     .into_response()
 }
 
-/// ゲストメンバーシップの一時停止（`POST /{tenant_id}/admin/members/{user_id}/suspend`。MT24）。
-/// 解除（削除）と違い、メンバーシップと権限を残したままアクセスだけを止める。
+/// Suspends a guest membership (`POST /{tenant_id}/admin/members/{user_id}/suspend`. MT24).
+/// Unlike removal (deletion), it stops only access while keeping the membership and permissions.
 pub async fn suspend(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -329,7 +329,7 @@ pub async fn suspend(
     .await
 }
 
-/// 一時停止したゲストメンバーシップの再開（`POST /{tenant_id}/admin/members/{user_id}/resume`。MT24）。
+/// Resumes a suspended guest membership (`POST /{tenant_id}/admin/members/{user_id}/resume`. MT24).
 pub async fn resume(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -380,16 +380,16 @@ async fn set_member_status(
     {
         Ok(()) => found(&format!("{base}&notice={notice}")),
         Err(AdminApiError::Unauthorized) => redirect_to_login(tenant),
-        // HOME・遷移できない状態（既に停止済み等）は api が 403 を返す。
+        // HOME or states that cannot transition (already suspended etc.) get a 403 from the api.
         Err(AdminApiError::Forbidden) => found(&format!("{base}&error=forbidden")),
         Err(AdminApiError::NotFound) => found(&format!("{base}&error=notfound")),
         Err(_) => found(&format!("{base}&error=internal")),
     }
 }
 
-/// 利用者の MFA 解除（`POST /{tenant_id}/admin/members/{user_id}/reset-mfa`。MT21）。
-/// 端末を失って本人では解除できない状態からの復旧手段。TOTP と Passkey をまとめて外す。
-/// 秘密情報を伴わないため結果画面は出さず、一覧へ戻して完了通知を出す（Post/Redirect/Get）。
+/// Removes a user's MFA (`POST /{tenant_id}/admin/members/{user_id}/reset-mfa`. MT21).
+/// Recovery for users who lost their device and cannot remove it themselves. Removes TOTP and passkeys together.
+/// No secrets are involved, so no result screen; return to the list with a completion notice (Post/Redirect/Get).
 pub async fn reset_mfa(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -411,8 +411,8 @@ pub async fn reset_mfa(
         .reset_user_mfa(&correlation.0, &tenant.0, &sso(&headers), &user_id)
         .await
     {
-        // 何も設定されていなかった場合も成功だが、管理者には区別して伝える（「効いていない」と
-        // 誤解して操作を繰り返すのを防ぐ）。
+        // Nothing configured is also success, but tell the admin the difference (prevents repeating the operation
+        // thinking "it did not work").
         Ok(reset) if !reset.totp_removed && reset.passkeys_removed == 0 => {
             found(&format!("{base}&notice=mfa-none"))
         }
@@ -424,11 +424,11 @@ pub async fn reset_mfa(
     }
 }
 
-/// 利用者のトークン再発行（`POST /{tenant_id}/admin/members/{user_id}/reissue-tokens`。ADR-0047）。
+/// Reissues a user's tokens (`POST /{tenant_id}/admin/members/{user_id}/reissue-tokens`. ADR-0047).
 ///
-/// 発行済みの refresh token をまとめて失効させ、アプリに取り直させる。落とすのはトークンだけで、
-/// 無効化（業務が止まる）やパスワード再発行（本人に再設定を強いる）まで持ち出さずに済む一段。
-/// 秘密情報を伴わないため結果画面は出さず、一覧へ戻して完了通知を出す（Post/Redirect/Get）。
+/// Revokes all issued refresh tokens and makes apps re-acquire them. Only tokens are dropped — one step that avoids going as far as
+/// disabling (stops their work) or password reissue (forces the user to reset).
+/// No secrets are involved, so no result screen; return to the list with a completion notice (Post/Redirect/Get).
 pub async fn reissue_tokens(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -450,8 +450,8 @@ pub async fn reissue_tokens(
         .reissue_user_tokens(&correlation.0, &tenant.0, &sso(&headers), &user_id)
         .await
     {
-        // 落とすものが無かった場合も成功だが、管理者には区別して伝える（「効いていない」と
-        // 誤解して操作を繰り返すのを防ぐ。MFA 解除・ロック解除と同じ扱い）。
+        // Nothing to drop is also success, but tell the admin the difference (prevents repeating the operation
+        // thinking "it did not work"; same as MFA removal and unlock).
         Ok(result) if result.revoked == 0 => found(&format!("{base}&notice=tokens-none")),
         Ok(_) => found(&format!("{base}&notice=tokens-reissued")),
         Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
@@ -461,9 +461,9 @@ pub async fn reissue_tokens(
     }
 }
 
-/// アカウントロックの解除（`POST /{tenant_id}/admin/members/{user_id}/unlock`。AP6）。
-/// 段階的ロックでロック時間が伸びた利用者を、期限を待たずに戻す。秘密情報を伴わないため
-/// 一覧へ戻して完了通知を出す（Post/Redirect/Get）。
+/// Unlocks an account (`POST /{tenant_id}/admin/members/{user_id}/unlock`. AP6).
+/// Restores a user whose lock time grew under progressive locking, without waiting for expiry. No secrets are involved,
+/// so return to the list with a completion notice (Post/Redirect/Get).
 pub async fn unlock(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -485,8 +485,8 @@ pub async fn unlock(
         .unlock_user(&correlation.0, &tenant.0, &sso(&headers), &user_id)
         .await
     {
-        // 元からロックされていなかった場合も成功だが、管理者には区別して伝える
-        //（「効いていない」と誤解して操作を繰り返すのを防ぐ。MFA 解除と同じ扱い）。
+        // Not locked in the first place is also success, but tell the admin the difference
+        //(prevents repeating the operation thinking "it did not work"; same as MFA removal).
         Ok(result) if !result.was_locked => found(&format!("{base}&notice=unlock-none")),
         Ok(_) => found(&format!("{base}&notice=unlocked")),
         Err(AdminApiError::Unauthorized) => redirect_to_login(&tenant),
@@ -496,8 +496,8 @@ pub async fn unlock(
     }
 }
 
-/// 利用者の削除（`POST /{tenant_id}/admin/members/{user_id}/delete`）。
-/// 所属元（HOME）が当該テナントの利用者のみ。自分自身は削除できない。
+/// Deletes a user (`POST /{tenant_id}/admin/members/{user_id}/delete`).
+/// Only users whose home (HOME) is this tenant. One cannot delete oneself.
 pub async fn delete(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -527,7 +527,7 @@ pub async fn delete(
     }
 }
 
-/// Post/Redirect/Get で戻ったときに出す完了通知の翻訳キー。
+/// Translation key of the completion notice shown when returning via Post/Redirect/Get.
 pub(crate) fn notice_key_for(notice: &str) -> Option<&'static str> {
     match notice {
         "mfa-reset" => Some("admin-members-mfa-reset-done"),
@@ -606,7 +606,7 @@ mod tests {
         }
     }
 
-    /// 人だけのアカウント一覧を描く（一覧はアカウントの画面が持つ。ADR-0065）。
+    /// Renders the people-only account list (the list belongs to the accounts screen. ADR-0065).
     fn render_page(members: &[MemberView], notice_key: Option<&str>) -> String {
         crate::handlers::admin_accounts_console::tests::render_accounts(
             members
@@ -618,8 +618,8 @@ mod tests {
         )
     }
 
-    /// 1 人の画面を描く。⚠ **操作の有無を確かめる場所は一覧ではなくこちら**
-    /// （一覧は探す場所になったため）。
+    /// Renders the single-person screen. ⚠ **This is where to check for the presence of operations, not the list**
+    /// (the list became the place to find).
     fn render_detail(m: &MemberView) -> String {
         render_detail_in(Locale::Ja, m)
     }
@@ -658,9 +658,9 @@ mod tests {
         })
     }
 
-    /// task #83: 1 人の画面に、いま有効な refresh token の本数を**何を数えたか**と一緒に出す。
-    /// 本数だけを出すと「アクセストークンも数えている」「0 なら何も生きていない」と読める
-    /// （アクセストークンは DB に行が無く数えられない）。
+    /// task #83: the single-person screen shows the number of currently valid refresh tokens **together with what was counted**.
+    /// Showing only the number reads as "access tokens are counted too" or "0 means nothing is alive"
+    /// (access tokens have no DB rows and cannot be counted).
     #[test]
     fn active_token_count_is_shown_with_what_was_counted() {
         let tokens = crate::admin_dto::UserActiveTokensView {
@@ -678,7 +678,7 @@ mod tests {
         assert!(en.contains("access tokens cannot be counted"), "{en}");
     }
 
-    /// 本数が引けなかったとき（`None`）は欄ごと出さない。0 本と取り違えさせない。
+    /// When the count could not be fetched (`None`), the section is hidden. Do not let it be mistaken for 0.
     #[test]
     fn active_token_count_is_hidden_when_unknown() {
         let html = render_detail(&member("HOME"));
@@ -719,14 +719,14 @@ mod tests {
         }
     }
 
-    /// ⚠ **一覧に操作を戻さない。** 7 つのボタンを 1 セルへ並べていた頃は、操作列 168px に
-    /// ボタンが縦 7 段に積まれ、幅の広いものは右端で切れていた。一覧に出てよいのは
-    /// 1 人の画面への導線だけで、破壊的な口（削除・解除）は決して並べない。
+    /// ⚠ **Do not put operations back in the list.** Back when 7 buttons sat in one cell, they were stacked
+    /// 7 high in the 168px operations column, and wide ones were cut off at the right edge. The list may only have
+    /// the link to the single-person screen, never destructive endpoints (delete, remove).
     #[test]
     fn the_list_carries_no_actions_only_a_way_into_each_member() {
         let html = render_page(&[member("HOME"), member("GUEST")], None);
-        // ⚠ 部分一致で見ない ——`/status` はサイドバーの `/admin/status`（クライアント状況）にも
-        //   当たる。メンバー配下の口だけを数える。
+        // ⚠ Do not use substring matching — `/status` also hits the sidebar's `/admin/status` (client status).
+        //   Count only the endpoints under members.
         let uid = member("HOME").user_id;
         for action in [
             "reset-mfa",
@@ -740,22 +740,22 @@ mod tests {
             "status",
         ] {
             let path = format!("/admin/members/{uid}/{action}");
-            assert!(!html.contains(&path), "一覧に {path} が残っている: {html}");
+            assert!(!html.contains(&path), "{path} remains in the list: {html}");
         }
-        // 一覧にも検索フォームとログアウト（レイアウト）は在ってよい。禁じるのは
-        // **メンバー宛の送信口**だけ。
+        // The list may have the search form and logout (layout). What is forbidden is
+        // **submission endpoints targeting members** only.
         assert!(
             !html.contains("action=\"/00000000-0000-7000-8000-000000000000/admin/members/"),
-            "一覧にメンバー宛の送信口が残っている: {html}"
+            "submission endpoints targeting members remain in the list: {html}"
         );
         assert!(
             html.contains("/admin/members/11111111-1111-1111-1111-111111111111"),
-            "1 人の画面への導線が要る: {html}"
+            "a link to the single-person screen is required: {html}"
         );
     }
 
-    /// MT21: 所属元（HOME）の利用者にだけ MFA 解除ボタンを出す。ゲストは所属元テナントの管理者が
-    /// 操作する対象で、こちらからは（api も 404 を返すため）出してはいけない。
+    /// MT21: the MFA removal button is shown only for users whose home (HOME) is this tenant. Guests are handled by
+    /// their home tenant's admin and must not get it from here (the api returns 404 too).
     #[test]
     fn mfa_reset_button_is_shown_for_home_members_only() {
         let home = render_detail(&member("HOME"));
@@ -766,8 +766,8 @@ mod tests {
         assert!(!guest.contains("/reset-mfa"), "{guest}");
     }
 
-    /// ADR-0047: トークン再発行も所属元（HOME）の利用者にだけ出す（api は他テナントの利用者へ
-    /// 404 を返すため、ゲストに出すと押せないボタンになる）。
+    /// ADR-0047: token reissue is also shown only for users whose home (HOME) is this tenant (the api returns 404 for
+    /// users of other tenants, so for guests it would be a button that cannot be pressed).
     #[test]
     fn token_reissue_button_is_shown_for_home_members_only() {
         let home = render_detail(&member("HOME"));
@@ -777,20 +777,20 @@ mod tests {
         assert!(!guest.contains("/reissue-tokens"), "{guest}");
     }
 
-    /// 確認ダイアログの文言は `data-confirm` 属性で渡す（インライン JS の文字列へ埋め込まない）。
+    /// The confirm dialog wording is passed via the `data-confirm` attribute (not embedded in inline JS strings).
     ///
-    /// `onsubmit="return confirm('…')"` へ埋め込むと、Askama が `'` を `&#39;` にしてもブラウザが
-    /// 属性値の解釈時に `'` へ戻すため、英語の "user's" のようなアポストロフィが JS 文字列を
-    /// 終端させてハンドラごと構文エラーになり、**確認なしで破壊的操作が送信される**。
-    /// 属性値として渡せば HTML エスケープがそのまま正しい防御になる。
+    /// Embedded in `onsubmit="return confirm('…')"`, even though Askama turns `'` into `&#39;`, the browser turns it
+    /// back into `'` when interpreting the attribute value, so an apostrophe like English "user's" terminates the JS string,
+    /// the whole handler becomes a syntax error, and **the destructive operation is submitted without confirmation**.
+    /// Passed as an attribute value, HTML escaping as is is the correct defense.
     #[test]
     fn confirmation_text_is_passed_as_an_attribute_not_inline_javascript() {
         let html = render_detail(&member("HOME"));
         assert!(!html.contains("onsubmit="), "no inline handlers: {html}");
         assert!(html.contains("data-confirm="));
 
-        // アポストロフィを含む文言（英語ロケール）でも属性として正しくエスケープされ、
-        // 生の `'` が属性値を終端しない。
+        // Even wording containing an apostrophe (English locale) is correctly escaped as an attribute,
+        // and a raw `'` does not terminate the attribute value.
         let english = render_detail_in(Locale::En, &member("HOME"));
         let messages = Messages::new(Locale::En);
         let confirm = messages.get("admin-members-reset-mfa-confirm");
@@ -799,8 +799,8 @@ mod tests {
         assert!(!english.contains(&format!("data-confirm=\"{confirm}\"")));
     }
 
-    /// MT24: ゲストの行だけに停止・再開ボタンを出し、状態に応じて片方だけ出す
-    /// （停止中に「一時停止」を出すと押しても 403 になるだけで、操作できるように見えてしまう）。
+    /// MT24: suspend/resume buttons only on guest rows, showing only one depending on state
+    /// (showing "suspend" while suspended would just give a 403 when pressed, while looking operable).
     #[test]
     fn suspend_and_resume_buttons_follow_the_membership_state() {
         let active_guest = render_detail(&member("GUEST"));
@@ -813,16 +813,16 @@ mod tests {
         assert!(html.contains("/resume"), "{html}");
         assert!(!html.contains("/suspend"));
 
-        // 停止中であることは**一覧で**分かる（探す場所に状態が要る）。
+        // Being suspended is visible **in the list** (the place to find needs the state).
         let listed = render_page(&[suspended], None);
         assert!(listed.contains(&Messages::new(Locale::Ja).get("admin-members-status-suspended")));
 
-        // HOME は停止できない（api も 403 を返す）ので導線を出さない。
+        // HOME cannot be suspended (the api returns 403 too), so no entry is shown.
         let home = render_detail(&member("HOME"));
         assert!(!home.contains("/suspend"));
         assert!(!home.contains("/resume"));
 
-        // 招待中（未承諾）はまだアクセスが無いため停止対象にならない。
+        // Invited (not accepted) has no access yet, so it is not a suspension target.
         let mut invited = member("GUEST");
         invited.status = "INVITED".into();
         let html = render_detail(&invited);
@@ -830,8 +830,8 @@ mod tests {
         assert!(!html.contains("/resume"));
     }
 
-    /// ロック解除の導線は**ロック中の HOME 利用者にだけ**出す。常時出すと、押しても何も
-    /// 変わらない操作が並び、ロックされている利用者を見分けられなくなる（AP6）。
+    /// The unlock entry is shown **only for locked HOME users**. Showing it always would line up operations
+    /// that change nothing when pressed, and locked users could not be told apart (AP6).
     #[test]
     fn the_unlock_action_appears_only_for_a_locked_home_member() {
         let unlocked = render_detail(&member("HOME"));
@@ -843,21 +843,21 @@ mod tests {
         assert!(html.contains("/unlock"), "{html}");
         assert!(html.contains(&Messages::new(Locale::Ja).get("admin-members-unlock-button")));
 
-        // ロック中であることは**一覧でも**分かる（誰が入れないのかを探す場所）。
+        // Being locked is visible **in the list too** (the place to find who cannot get in).
         let listed = render_page(&[locked], None);
         assert!(listed.contains(&Messages::new(Locale::Ja).get("admin-members-user-status-locked")));
 
-        // ゲストの `users` レコードは所属元テナントの管理者だけが操作できる（ADR-0009 §3）。
+        // A guest's `users` record can only be operated by their home tenant's admin (ADR-0009 §3).
         let mut guest = member("GUEST");
         guest.locked = true;
         let guest_html = render_detail(&guest);
         assert!(!guest_html.contains("/unlock"), "{guest_html}");
     }
 
-    /// 一覧はユーザー名（主たるログイン識別子）を出す。
+    /// The list shows the username (the primary login identifier).
     ///
-    /// メールアドレスと表示名だけでは、**利用者が「入れない」と言ってきたときに何を打って
-    /// もらえばよいのかが分からない**。見出し（メール）の下に添える。
+    /// With only the email address and display name, **when a user says "I can't get in", you cannot tell what
+    /// to have them type**. It is attached under the heading (email).
     #[test]
     fn the_list_shows_the_login_identifier_under_the_email() {
         let mut m = member("HOME");
@@ -868,7 +868,7 @@ mod tests {
         assert!(html.contains("kyon · Kyon"), "{html}");
     }
 
-    /// 見出しと同じ値は添えない（メールをユーザー名にしている人は同じ文字列が 2 段並ぶ）。
+    /// A value identical to the heading is not attached (people using their email as username would get the same string twice).
     #[test]
     fn the_list_does_not_repeat_the_headline() {
         let mut m = member("HOME");
@@ -880,7 +880,7 @@ mod tests {
         assert_eq!(m.secondary_names(), vec!["U"]);
     }
 
-    /// ⚠ **普通の人に札を並べない。** 全員に「HOME」「ACTIVE」が並ぶと、止まっている人が埋もれる。
+    /// ⚠ **Do not put badges on ordinary people.** If everyone shows "HOME" and "ACTIVE", the stopped ones get buried.
     #[test]
     fn the_list_badges_only_what_is_unusual() {
         let html = render_page(&[member("HOME")], None);
@@ -901,7 +901,7 @@ mod tests {
         );
     }
 
-    /// ADR-0064: 仮登録の人は「有効」ではなく「仮登録」と出す。
+    /// ADR-0064: provisionally registered people are shown as "provisional", not "active".
     #[test]
     fn a_pending_member_is_shown_as_pending_not_active() {
         let messages = Messages::new(Locale::Ja);
@@ -923,7 +923,7 @@ mod tests {
         assert!(detail.contains(&messages.get("admin-members-user-status-pending-help")));
     }
 
-    /// 仮登録の人には設定リンクの期限を出し、切れたら札を変える。ボタンは「設定リンクを出し直す」。
+    /// Provisionally registered people show the setup link expiry, and the badge changes once expired. The button is "reissue setup link".
     #[test]
     fn a_pending_member_shows_the_setup_link_deadline_and_its_expiry() {
         let messages = Messages::new(Locale::Ja);
@@ -943,7 +943,7 @@ mod tests {
         );
         assert!(
             !detail.contains(&messages.get("admin-members-reset-password-button")),
-            "仮登録の人に「パスワード再発行」を出さない: {detail}"
+            "do not offer \"password reissue\" to provisionally registered people: {detail}"
         );
 
         m.setup_link_expired = true;
@@ -957,13 +957,13 @@ mod tests {
                 ">{}<",
                 messages.get("admin-members-user-status-pending")
             )),
-            "期限切れを普通の仮登録と同じ札にしない: {list}"
+            "an expired one must not get the same badge as an ordinary provisional one: {list}"
         );
         let detail = render_detail(&m);
         assert!(detail.contains(&messages.get("admin-members-user-status-setup-expired-help")));
     }
 
-    /// ADR-0063: 一覧にはメモの 1 行目だけを出す（全文は 1 人の画面で読む）。
+    /// ADR-0063: the list shows only the first line of the note (the full text is read on the single-person screen).
     #[test]
     fn the_list_shows_the_first_line_of_the_note() {
         let mut m = member("HOME");
@@ -977,10 +977,10 @@ mod tests {
 
         m.note.as_mut().unwrap().text = "あ".repeat(100);
         let excerpt = m.note.as_ref().unwrap().excerpt().unwrap();
-        assert_eq!(excerpt.chars().count(), 61, "60 文字 ＋ 省略記号");
+        assert_eq!(excerpt.chars().count(), 61, "60 chars + ellipsis");
     }
 
-    /// ADR-0063: メモの欄は HOME にもゲストにも出し、書かれていれば中身と日時を出す。
+    /// ADR-0063: the note section is shown for both HOME and guests, with content and date when written.
     #[test]
     fn the_detail_has_a_note_form_for_every_member() {
         for kind in ["HOME", "GUEST"] {
@@ -999,13 +999,13 @@ mod tests {
         let html = render_detail(&m);
         assert!(
             !html.contains("<b>経緯</b>"),
-            "メモは必ずエスケープする: {html}"
+            "the note must always be escaped: {html}"
         );
         assert!(html.contains("経緯"), "{html}");
         assert!(html.contains("datetime=\"2026-09-24T12:00:00Z\""), "{html}");
     }
 
-    /// ADR-0063: アプリの欄は引けたときだけ出す（`idp.applications:read` の無い管理者には無い）。
+    /// ADR-0063: the apps section is shown only when fetched (absent for admins without `idp.applications:read`).
     #[test]
     fn the_applications_card_is_hidden_without_the_permission() {
         let html = render_detail(&member("HOME"));
@@ -1013,7 +1013,7 @@ mod tests {
         assert!(!html.contains(&title), "{html}");
     }
 
-    /// ADR-0063: 割り当ての出し入れは「個別」のアプリだけ。「全員」のアプリで外しても入れてしまう。
+    /// ADR-0063: adding/removing assignments only for "individual" apps. Removing from an "everyone" app would still let them in.
     #[test]
     fn assignment_buttons_appear_only_for_individual_applications() {
         let apps = crate::admin_dto::AccountApplicationListView {
@@ -1046,7 +1046,7 @@ mod tests {
         assert!(!html.contains(&messages.get("admin-member-applications-record-only")));
     }
 
-    /// 「使えるアプリ」はその場で絞り込める。行は名前と可否を持ち、札には件数が付く。
+    /// "Available apps" can be filtered in place. Rows hold the name and availability; badges carry counts.
     #[test]
     fn the_applications_card_can_be_filtered_in_place() {
         let apps = crate::admin_dto::AccountApplicationListView {
@@ -1065,11 +1065,11 @@ mod tests {
             "{html}"
         );
         assert_eq!(apps.count("not_assigned"), 2);
-        // 停止中のアプリが無ければ、その札は出さない（押しても 0 件になるだけ）。
+        // If there are no suspended apps, that badge is not shown (pressing it would just give 0 rows).
         assert!(!html.contains("data-list-filter-state=\"application_disabled\""));
     }
 
-    /// 記録だけの間は、割り当てがまだ効いていないことを添える。
+    /// While record-only, it notes that assignments do not take effect yet.
     #[test]
     fn record_only_is_mentioned_on_the_applications_card() {
         let apps = crate::admin_dto::AccountApplicationListView {
@@ -1082,7 +1082,7 @@ mod tests {
         assert!(html.contains(&messages.get("admin-member-applications-none")));
     }
 
-    /// 解除後の完了通知は「外した」「元から無かった」を区別して出す。
+    /// The completion notice after removal distinguishes "removed" from "was not there".
     #[test]
     fn mfa_reset_notices_distinguish_removed_from_absent() {
         let removed = render_page(&[member("HOME")], notice_key_for("mfa-reset"));
@@ -1091,7 +1091,7 @@ mod tests {
         let absent = render_page(&[member("HOME")], notice_key_for("mfa-none"));
         assert!(absent.contains(&Messages::new(Locale::Ja).get("admin-members-mfa-reset-none")));
 
-        // 未知の通知値は無視する（クエリ経由で任意文字列が来るため）。
+        // Unknown notice values are ignored (arbitrary strings arrive via the query).
         assert!(notice_key_for("../../etc/passwd").is_none());
     }
 }

@@ -1,8 +1,8 @@
-//! TOTP の自己登録（`/{tenant_id}/account/mfa/totp/setup`。AP9）をルータ経由で確かめる。
+//! Checks TOTP self-enrollment (`/{tenant_id}/account/mfa/totp/setup`; AP9) through the router.
 //!
-//! この経路には試験が 1 本も無く、本番で 500 になっていることに画面からしか気付けなかった。
-//! ここで見たいのはハンドラ内の純関数ではなく、その外側 —— step-up のゲートを抜けたあとに
-//! 画面が実際に描けるか。
+//! This route had not a single test, and the 500 in production was only noticed from the screen.
+//! What we want to check is not the handler's pure functions but the outside -- whether the screen actually
+//! renders after passing the step-up gate.
 
 mod support;
 
@@ -20,12 +20,12 @@ fn cookies() -> String {
     format!("{SSO_SESSION_COOKIE}={SSO}")
 }
 
-/// この SSO セッションのフォームに埋まる CSRF トークン（task #118）。
+/// CSRF token embedded in this SSO session's forms (task #118).
 fn csrf() -> String {
     assay_web::csrf::console_csrf_token(SSO, support::TEST_CSRF_SECRET)
 }
 
-/// step-up はもう満たされている（別画面で本人確認を済ませた直後）。
+/// Step-up is already satisfied (right after verifying on another screen).
 async fn stub_step_up_satisfied(env: &WebEnv) {
     Mock::given(method("POST"))
         .and(path("/internal/step-up/check"))
@@ -46,7 +46,7 @@ async fn stub_totp_setup_ok(env: &WebEnv) {
         .await;
 }
 
-/// 本人確認を済ませた利用者には、セットアップ画面（QR と生シークレット）がそのまま出る。
+/// Users who have verified get the setup screen (QR and raw secret) directly.
 #[tokio::test]
 async fn the_setup_page_renders_for_a_stepped_up_user() {
     let env = setup().await;
@@ -68,7 +68,7 @@ async fn the_setup_page_renders_for_a_stepped_up_user() {
     assert!(html.contains("<svg"), "{html}");
 }
 
-/// 本人確認がまだなら、セットアップ画面ではなく本人確認へ送る（500 にはしない）。
+/// If not verified yet, send to verification instead of the setup screen (not a 500).
 #[tokio::test]
 async fn a_user_who_has_not_verified_recently_is_sent_to_the_challenge() {
     let env = setup().await;
@@ -103,8 +103,8 @@ async fn a_user_who_has_not_verified_recently_is_sent_to_the_challenge() {
     );
 }
 
-/// **api が内部エラーを返したときでも、利用者は戻れる。** 画面に出口が無いと、
-/// ブラウザの戻る以外に手が無くなる（実際にそうなっていた）。
+/// **Users can go back even when the api returns an internal error.** Without an exit on screen,
+/// they have nothing but the browser's back (which actually happened).
 #[tokio::test]
 async fn the_error_page_lets_the_user_get_back_to_settings() {
     let env = setup().await;
@@ -133,13 +133,13 @@ async fn the_error_page_lets_the_user_get_back_to_settings() {
     let html = body_text(response).await;
     assert!(
         html.contains(&format!(r#"href="{prefix}/settings""#)),
-        "戻り先のリンクが無い: {html}"
+        "no link back: {html}"
     );
 }
 
-/// **セットアップ画面から戻れる。** 設定を中断したい利用者に、ブラウザの戻る以外の出口を
-/// 置く（task #82）。パスキーの画面と同じく、本文の先頭の「戻る」と左上の名乗りの両方を
-/// アカウント設定へのリンクにする。
+/// **The setup screen has a way back.** Give users who want to abort an exit other than the browser's back
+/// (task #82). As on the passkey screens, both the "Back" at the top of the body and the top-left label
+/// link to account settings.
 #[tokio::test]
 async fn the_setup_page_links_back_to_settings() {
     let env = setup().await;
@@ -162,17 +162,17 @@ async fn the_setup_page_links_back_to_settings() {
         html.contains(&format!(
             r#"<a class="navbar-brand mb-0 h1 text-decoration-none" href="{prefix}/settings""#
         )),
-        "左上の名乗りがリンクになっていない: {html}"
+        "top-left label is not a link: {html}"
     );
     assert!(
         html.contains(&format!(r#"<a href="{prefix}/settings">"#)),
-        "本文に戻る導線が無い: {html}"
+        "no way back in the body: {html}"
     );
 }
 
-/// **設定を終えたら、認証器の画面へ戻して結果をバナーで伝える。** 完了を行き止まりの
-/// 画面で告げると、次にどこへ行けばよいかが画面に無い（task #82）。PRG にするので、
-/// 再読み込みで確認コードを二重に送ることも無い。
+/// **After setup, return to the authenticator screen and report the result in a banner.** Announcing completion on a
+/// dead-end screen leaves nowhere obvious to go next (task #82). It is PRG, so
+/// reloading does not resend the confirmation code.
 #[tokio::test]
 async fn a_confirmed_setup_returns_to_the_authenticators_page() {
     let env = setup().await;
@@ -204,9 +204,9 @@ async fn a_confirmed_setup_returns_to_the_authenticators_page() {
     );
 }
 
-/// **削除を終えたら、認証器の画面へ戻して結果をバナーで伝える。** 以前は完了を告げるだけの
-/// 最小のページで、アカウント設定へ戻る導線が無かった（task #119 の作業で判明・#121 で直す）。
-/// 設定の完了（task #82）と同じく PRG にする。
+/// **After removal, return to the authenticator screen and report the result in a banner.** Previously a minimal
+/// page only announced completion, with no link back to account settings (found in task #119, fixed in #121).
+/// PRG like setup completion (task #82).
 #[tokio::test]
 async fn a_deleted_totp_returns_to_the_authenticators_page() {
     let env = setup().await;
@@ -241,9 +241,9 @@ async fn a_deleted_totp_returns_to_the_authenticators_page() {
     );
 }
 
-/// **削除のあとに戻る認証器の画面にも出口がある**（task #121 の確かめ）。お知らせ
-/// （`?saved=totp-deleted`）を出し、左上の名乗りと、アカウント設定のタブ（task #251。3 画面に
-/// 共通）の「基本」の両方からアカウント設定へ行ける。
+/// **The authenticator screen returned to after removal also has exits** (check for task #121). It shows the notice
+/// (`?saved=totp-deleted`), and account settings can be reached both from the top-left label and the "Basics" tab of the
+/// account settings tabs (task #251; shared by 3 screens).
 #[tokio::test]
 async fn the_authenticators_page_after_deletion_links_back_to_settings() {
     let env = setup().await;
@@ -274,19 +274,19 @@ async fn the_authenticators_page_after_deletion_links_back_to_settings() {
     let html = body_text(response).await;
     assert!(
         html.contains(r#"<div class="alert alert-success" role="status">"#),
-        "削除のお知らせが出ていない: {html}"
+        "removal notice is not shown: {html}"
     );
     assert!(
         html.contains(&format!(
             r#"<a class="navbar-brand mb-0 h1 text-decoration-none" href="{prefix}/settings""#
         )),
-        "左上の名乗りがリンクになっていない: {html}"
+        "top-left label is not a link: {html}"
     );
     assert!(
         html.contains(&format!(r#"<a class="nav-link" href="{prefix}/settings">"#)),
-        "タブにアカウント設定（基本）への導線が無い: {html}"
+        "tabs have no link to account settings (basics): {html}"
     );
-    // いま開いているタブ（認証アプリとパスキー）に印が付く。
+    // The currently open tab (authenticator app and passkeys) is marked.
     assert!(
         html.contains(&format!(
             r#"href="{prefix}/settings/authenticators" aria-current="page""#
@@ -295,12 +295,12 @@ async fn the_authenticators_page_after_deletion_links_back_to_settings() {
     );
 }
 
-// ── 失敗の画面の出口（task #119） ────────────────────────────────────────────
+// ── Exits of failure screens (task #119) ────────────────────────────────────────
 //
-// 失敗を告げるだけの最小のページには戻る導線が無く、既に設定済み（409）・セッション切れ（401）・
-// コード誤りのあとに QR を取り直せなかったとき（422）が行き止まりになっていた。設定画面と同じく、
-// 左上の名乗りと本文の先頭の「戻る」をアカウント設定へのリンクにする。セッションが切れて
-// いるならアカウント設定は開けないので、本文の導線はサインインへ向ける。
+// The minimal page that only reports failure had no way back, so already set up (409), session expired (401),
+// and failing to regenerate the QR after a wrong code (422) were dead ends. As on the setup screen,
+// the top-left label and the "Back" at the top of the body link to account settings. If the session
+// expired account settings cannot be opened, so the body link points to sign-in.
 
 async fn stub_totp_setup(env: &WebEnv, result: &str) {
     Mock::given(method("POST"))
@@ -318,34 +318,34 @@ async fn stub_totp_confirm(env: &WebEnv, result: &str) {
         .await;
 }
 
-/// 失敗の画面に、左上の名乗りと本文の先頭の「アカウント設定へ戻る」の両方が出ていること。
+/// The failure screen shows both the top-left label and "Back to account settings" at the top of the body.
 fn assert_links_back_to_settings(prefix: &str, html: &str) {
     assert!(
         html.contains(&format!(
             r#"<a class="navbar-brand mb-0 h1 text-decoration-none" href="{prefix}/settings""#
         )),
-        "左上の名乗りがリンクになっていない: {html}"
+        "top-left label is not a link: {html}"
     );
     assert!(
         html.contains(&format!(r#"<a href="{prefix}/settings">"#)),
-        "本文に戻る導線が無い: {html}"
+        "no way back in the body: {html}"
     );
 }
 
-/// セッションが切れた画面は、本文の導線をサインインへ向ける（アカウント設定は開けない）。
+/// A session-expired screen points the body link to sign-in (account settings cannot be opened).
 fn assert_links_to_sign_in(prefix: &str, html: &str) {
     assert!(
         html.contains(&format!(r#"<a href="{prefix}/login">"#)),
-        "サインインへの導線が無い: {html}"
+        "no link to sign-in: {html}"
     );
     assert!(
         !html.contains(&format!(r#"<a href="{prefix}/settings">"#)),
-        "開けないアカウント設定へ誘っている: {html}"
+        "points to account settings, which cannot be opened: {html}"
     );
 }
 
-/// **既に設定済みの画面から戻れる。** 再設定するには先に削除が要るので、削除の置き場所で
-/// あるアカウント設定へ戻す。
+/// **The already-set-up screen has a way back.** Reconfiguring requires removing first, so it returns to
+/// account settings, where removal lives.
 #[tokio::test]
 async fn the_already_configured_page_links_back_to_settings() {
     let env = setup().await;
@@ -370,7 +370,7 @@ async fn the_already_configured_page_links_back_to_settings() {
     assert_links_back_to_settings(&env.prefix(), &html);
 }
 
-/// 確認の送信で既に設定済みと分かったとき（別のタブで先に済ませた）も同じ出口を出す。
+/// When submitting the confirmation reveals it is already set up (done first in another tab), show the same exit.
 #[tokio::test]
 async fn the_already_configured_page_after_confirm_links_back_to_settings() {
     let env = setup().await;
@@ -396,8 +396,8 @@ async fn the_already_configured_page_after_confirm_links_back_to_settings() {
     assert_links_back_to_settings(&env.prefix(), &html);
 }
 
-/// **コードが違い、QR も取り直せなかったとき**（その間に設定が済んだ・api が落ちた）は、
-/// 設定画面を描き直せないので、失敗を告げてアカウント設定へ戻す。
+/// **When the code is wrong and the QR cannot be regenerated either** (setup completed meanwhile, the api went down),
+/// the setup screen cannot be redrawn, so report the failure and return to account settings.
 #[tokio::test]
 async fn an_invalid_code_without_a_fresh_qr_links_back_to_settings() {
     let env = setup().await;
@@ -424,8 +424,8 @@ async fn an_invalid_code_without_a_fresh_qr_links_back_to_settings() {
     assert_links_back_to_settings(&env.prefix(), &html);
 }
 
-/// **セッションが切れた画面は、サインインへ誘う。** アカウント設定へ戻しても、そこで
-/// またサインインを求められるだけで一手遠回りになる。
+/// **A session-expired screen invites sign-in.** Returning to account settings would just ask for
+/// sign-in again there, a needless detour.
 #[tokio::test]
 async fn the_session_expired_page_links_to_sign_in() {
     let env = setup().await;
@@ -450,7 +450,7 @@ async fn the_session_expired_page_links_to_sign_in() {
     assert_links_to_sign_in(&env.prefix(), &html);
 }
 
-/// 確認の送信でセッション切れと分かったときも同じ。
+/// Same when submitting the confirmation reveals the session expired.
 #[tokio::test]
 async fn the_session_expired_page_after_confirm_links_to_sign_in() {
     let env = setup().await;
@@ -476,7 +476,7 @@ async fn the_session_expired_page_after_confirm_links_to_sign_in() {
     assert_links_to_sign_in(&env.prefix(), &html);
 }
 
-/// サインインしていない（SSO Cookie が無い）まま確認を送ったときも、サインインへ誘う。
+/// Also invite sign-in when the confirmation is submitted without being signed in (no SSO Cookie).
 #[tokio::test]
 async fn confirming_without_signing_in_links_to_sign_in() {
     let env = setup().await;

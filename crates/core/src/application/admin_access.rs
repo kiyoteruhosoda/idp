@@ -1,19 +1,19 @@
-//! 管理機能のアクセス制御ユースケース（ADR-0006 §5 / ADR-0037）。
+//! Use case: access control for admin features (ADR-0006 §5 / ADR-0037).
 //!
-//! SSO セッション Cookie の値から利用者を解決し、**要求テナントで保有する権限コード**を返す。
-//! CLAUDE.md「権限管理」に従い、権限の解決は本 Application 層で行い、Presentation には結果のみ
-//! 渡す。ADR-0037 以降、管理 API の認可判定そのものは管理トークン（`ManagementTokenService`）が
-//! 担い、本サービスは**その原資となる権限コードの解決**を担当する。
+//! Resolves the user from the SSO session cookie value and returns **the permission codes held in the requested tenant**.
+//! Per CLAUDE.md "Permission management", permissions are resolved in this Application layer and only the result
+//! goes to Presentation. Since ADR-0037, the admin API authorization decision itself is made by the admin token
+//! (`ManagementTokenService`), and this service handles **resolving the permission codes that feed it**.
 //!
-//! 解決は 2 段構えで、**要求テナントで `ACTIVE` なメンバーシップを持つこと**（MT24）と
-//! **要求テナントを scope として保有する権限コード**の両方を見る。前者が必要なのは、ゲストの
-//! 一時停止（`SUSPENDED`）が権限行を残す可逆な操作であり、権限だけを見る判定では停止が効かないため。
-//! 停止中は「権限コード 0 件」として解決する（＝管理トークンは出るが何も通らない）。
+//! Resolution has two parts and checks both **an `ACTIVE` membership in the requested tenant** (MT24) and
+//! **permission codes held with the requested tenant as scope**. The former is needed because suspending a
+//! guest (`SUSPENDED`) is a reversible operation that keeps the permission rows, so a permission-only check would ignore suspension.
+//! While suspended it resolves as "0 permission codes" (= an admin token is issued but nothing passes).
 //!
-//! 権限は「要求テナントを scope に持つか」の**完全一致**で取得する（ADR-0009 §4）。コード同士の
-//! 含意（`idp.tenant.admin` が細粒度コードを含む等）は `domain::permission` が単一の出所として持つ。
+//! Permissions are fetched by **exact match** on "has the requested tenant as scope" (ADR-0009 §4). Implications
+//! between codes (`idp.tenant.admin` includes fine-grained codes etc.) have a single source in `domain::permission`.
 //!
-//! OIDC scope（claim 制御）とは別軸の判定であり、Discovery の `scopes_supported` には出さない。
+//! This is a separate axis from OIDC scope (claim control) and is not listed in Discovery's `scopes_supported`.
 
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
@@ -25,17 +25,17 @@ use crate::domain::user::User;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// SSO セッションから解決した「主体 + 要求テナントで保有する権限コード」（ADR-0037）。
+/// "Principal + permission codes held in the requested tenant" resolved from the SSO session (ADR-0037).
 ///
-/// 管理トークンの発行原資。権限コードが空でも返る（＝ログイン済みだが権限が無い）。
+/// What admin tokens are issued from. Returned even with no permission codes (= logged in but without permissions).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagementGrant {
     pub user_id: Uuid,
-    /// 表示名（未設定なら `None`）。管理コンソールのヘッダ表示に使う。
+    /// Display name (`None` if unset). Shown in the admin console header.
     pub name: Option<String>,
-    /// ログイン識別子（未設定なら `None`）。
+    /// Login identifier (`None` if unset).
     pub preferred_username: Option<String>,
-    /// 要求テナントを scope として保有する権限コード（順序は不定。不保有なら空）。
+    /// Permission codes held with the requested tenant as scope (order unspecified; empty if none).
     pub permission_codes: Vec<String>,
 }
 
@@ -64,12 +64,12 @@ impl AdminAccessService {
         }
     }
 
-    /// SSO セッション Cookie の値（平文 session_id）から、主体と要求テナントでの保有権限を解決する。
+    /// Resolves the principal and its permissions in the requested tenant from the SSO session cookie value (plain session_id).
     ///
-    /// セッションが無効・利用者が無効・リポジトリ障害はいずれも `None`（fail-closed = 未認証扱い）。
-    /// **メンバーシップが `ACTIVE` でない場合や権限を 1 つも持たない場合は `Some`（権限コードは空）**
-    /// を返す。「未認証」と「権限不足」は呼び出し側が 401 / 403 へ writeし分ける必要があり、
-    /// ここで両者を潰すと管理コンソールがログイン画面へ戻す判断をできなくなる。
+    /// An invalid session, a disabled user or a repository failure all yield `None` (fail-closed = unauthenticated).
+    /// **If the membership is not `ACTIVE` or no permission is held, returns `Some` (with empty permission codes).**
+    /// The caller must tell "unauthenticated" and "insufficient permission" apart as 401 / 403;
+    /// collapsing both here would keep the admin console from deciding to go back to the login screen.
     pub async fn resolve_session_grant(
         &self,
         tenant: TenantContext,
@@ -78,9 +78,9 @@ impl AdminAccessService {
         let user = self.resolve_session_user(sso_session_id).await?;
         let tenant_id = tenant.tenant_id();
 
-        // 要求テナントで **ACTIVE なメンバーシップ**を持つこと（MT24）。権限行だけを見ると、
-        // ゲストを一時停止（`SUSPENDED`）しても権限行が残るため管理操作が通ってしまう。
-        // 一時停止は可逆であることが要件で権限行を消せないので、停止の実効性はこの判定が担う。
+        // Must hold an **ACTIVE membership** in the requested tenant (MT24). Looking only at permission rows,
+        // a suspended guest (`SUSPENDED`) keeps its permission rows, so admin operations would pass.
+        // Suspension must be reversible and the rows cannot be deleted, so this check makes suspension effective.
         let active_member = match self.memberships.is_active_member(tenant_id, user.id).await {
             Ok(active) => active,
             Err(e) => {
@@ -113,25 +113,25 @@ impl AdminAccessService {
         })
     }
 
-    /// SSO セッション Cookie から認証済み利用者の内部 ID を解決する（権限は問わない）。
+    /// Resolves the internal ID of an authenticated user from the SSO session cookie (permissions not checked).
     ///
-    /// 招待の承諾（`POST /{tenant_id}/invitations/accept`。ADR-0009 §3）のように「ログイン済みである
-    /// こと」だけを要求し、テナント権限を要求しないフローで使う。セッションが無効・利用者が無効・
-    /// リポジトリ障害はいずれも `None`（未認証）に倒す（fail-closed）。本人性の最終確認（被招待者本人か）は
-    /// 呼び出し側のユースケースがトークン照合で行う。
+    /// Used by flows that only require "being logged in" and no tenant permission, such as accepting an invitation
+    /// (`POST /{tenant_id}/invitations/accept`; ADR-0009 §3). An invalid session, a disabled user or a
+    /// repository failure all fall to `None` (unauthenticated; fail-closed). The final identity check (is it the invitee)
+    /// is done by the calling use case through token matching.
     pub async fn authenticated_user(&self, sso_session_id: Option<&str>) -> Option<Uuid> {
         self.resolve_session_user(sso_session_id)
             .await
             .map(|user| user.id)
     }
 
-    /// Cookie 平文 session_id → SSO セッション取得 → 有効性検証 → ユーザー有効性確認 の
-    /// 共通フロー（REF3）。いずれかの段階で失敗したら `None`（fail-closed）。有効なら
-    /// 解決したユーザー行を返す（呼び出し側が id・表示名等を利用する。追加クエリを避けるため）。
+    /// Common flow (REF3): cookie plain session_id -> fetch SSO session -> validity check -> user validity check.
+    /// `None` if any step fails (fail-closed). If valid, returns the resolved user row
+    /// (the caller uses id, display name etc.; avoids extra queries).
     async fn resolve_session_user(&self, sso_session_id: Option<&str>) -> Option<User> {
         let session_id = sso_session_id.filter(|s| !s.is_empty())?;
 
-        // Cookie は平文 session_id、DB にはその SHA-256 のみ（sso_session.rs と同じ導出）。
+        // The cookie holds the plain session_id; the DB holds only its SHA-256 (same derivation as sso_session.rs).
         let session_hash = crypto::sha256_hex(session_id);
         let session = match self.sso_sessions.find_by_hash(&session_hash).await {
             Ok(Some(session)) => session,
@@ -146,7 +146,7 @@ impl AdminAccessService {
             return None;
         }
 
-        // 利用者が現存し有効であること（無効化された管理者を締め出す）。
+        // The user must exist and be active (locks out disabled admins).
         match self.users.find_by_id(session.user_id).await {
             Ok(Some(user)) if user.is_active() => Some(user),
             Ok(_) => None,
@@ -183,7 +183,7 @@ mod tests {
         }
     }
 
-    /// テスト用に「Cookie 平文 → SHA-256 ハッシュ」を DB 保存相当に写した SSO セッション 1 件を保持する。
+    /// For tests: holds one SSO session mapped "cookie plain text -> SHA-256 hash" as it would be stored in the DB.
     struct FakeSsoSessions {
         session: Option<SsoSession>,
     }
@@ -214,7 +214,7 @@ mod tests {
     }
     #[async_trait]
     impl UserRepository for FakeUsers {
-        /// このテストはログイン失敗経路を通らない（SEC13 の検証は login / mfa_login にある）。
+        /// This test does not go through the login failure path (SEC13 is verified in login / mfa_login).
         async fn record_login_failure(
             &self,
             _id: Uuid,
@@ -386,7 +386,7 @@ mod tests {
         }
     }
 
-    /// メンバーシップの有無を切り替えられるフェイク（MT24 の ACTIVE メンバーシップ要求の検証用）。
+    /// A fake whose membership presence can be toggled (to verify MT24's ACTIVE membership requirement).
     struct FakeMemberships {
         active: bool,
     }
@@ -448,9 +448,9 @@ mod tests {
         )
     }
 
-    /// MT24: 権限を持っていても、要求テナントで ACTIVE なメンバーシップが無ければ権限は 0 件。
-    /// ゲストの一時停止（`SUSPENDED`）は権限行を残す可逆な操作なので、ここで落とさないと
-    /// 停止したゲストが管理トークンで操作を続けられてしまう。
+    /// MT24: even holding permissions, without an ACTIVE membership in the requested tenant there are 0 permissions.
+    /// Suspending a guest (`SUSPENDED`) is reversible and keeps the permission rows, so unless it is dropped here
+    /// a suspended guest could keep operating with an admin token.
     #[tokio::test]
     async fn resolves_no_permissions_when_membership_is_not_active() {
         let uid = Uuid::new_v4();
@@ -511,7 +511,7 @@ mod tests {
     async fn unauthenticated_when_session_unknown_or_expired() {
         let uid = Uuid::new_v4();
         let tenant: TenantId = Uuid::now_v7().into();
-        // 別セッション ID（ハッシュ不一致）。
+        // A different session ID (hash mismatch).
         let svc = service(
             Some(test_session("other", uid, true)),
             Some(test_user(uid, tenant, UserStatus::Active)),
@@ -522,7 +522,7 @@ mod tests {
             .await
             .is_none());
 
-        // 期限切れセッション。
+        // An expired session.
         let svc = service(
             Some(test_session("sid", uid, false)),
             Some(test_user(uid, tenant, UserStatus::Active)),
@@ -549,7 +549,7 @@ mod tests {
             .is_none());
     }
 
-    /// 他テナント scope の権限は要求テナントでは 1 件も解決しない（ADR-0009 §4 の完全一致）。
+    /// Permissions scoped to other tenants resolve to none in the requested tenant (exact match of ADR-0009 §4).
     #[tokio::test]
     async fn permissions_scoped_to_another_tenant_do_not_resolve() {
         let uid = Uuid::new_v4();

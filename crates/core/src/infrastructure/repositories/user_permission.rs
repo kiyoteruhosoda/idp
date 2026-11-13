@@ -1,4 +1,4 @@
-//! `UserPermissionRepository` の sqlx 実装（ADR-0006）。UUID は CHAR(36) 正準文字列で入出力する。
+//! sqlx implementation of `UserPermissionRepository` (ADR-0006). UUIDs are read and written as canonical CHAR(36) strings.
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::UserPermissionRepository;
@@ -23,8 +23,8 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-/// user_permissions への付与 INSERT（プール直接実行と provisioning トランザクションで共用する）。
-/// 冪等: 既存付与は granted_at を保持する（ON DUPLICATE KEY UPDATE user_id = user_id）。
+/// Grant INSERT into user_permissions (shared by direct pool execution and the provisioning transaction).
+/// Idempotent: existing grants keep granted_at (ON DUPLICATE KEY UPDATE user_id = user_id).
 pub(crate) async fn insert_grant<'e>(
     executor: impl sqlx::Executor<'e, Database = sqlx::MySql>,
     tenant_id: TenantId,
@@ -43,7 +43,7 @@ pub(crate) async fn insert_grant<'e>(
     .execute(executor)
     .await
     .map_err(|e| match &e {
-        // permission_code が permissions マスタに無い（FK 違反）等は不正リクエスト扱い。
+        // A permission_code missing from the permissions master (FK violation) etc. is treated as a bad request.
         sqlx::Error::Database(db) if db.is_foreign_key_violation() => {
             DomainError::InvalidValue(format!("unknown permission code or user: {code}"))
         }
@@ -168,7 +168,7 @@ impl UserPermissionRepository for SqlxUserPermissionRepository {
         tenant_id: TenantId,
         user_id: Uuid,
     ) -> Result<Vec<String>> {
-        // 剥奪対象コードの読み取りと削除を同一トランザクションで行い、返す一覧と削除行を一致させる。
+        // Read the codes to revoke and delete them in one transaction, so the returned list matches the deleted rows.
         let mut tx = self.pool.begin().await.map_err(repo_err)?;
         let rows = sqlx::query(
             "SELECT permission_code FROM user_permissions \

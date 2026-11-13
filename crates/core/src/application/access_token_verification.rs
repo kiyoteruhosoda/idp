@@ -1,15 +1,15 @@
-//! Access Token（`typ=at+jwt` の JWT）の検証（`/userinfo`・`/introspect`・`/revoke` で共有する）。
+//! Verification of access tokens (JWTs with `typ=at+jwt`) (shared by `/userinfo`, `/introspect` and `/revoke`).
 //!
-//! 確かめる段は 2 つある:
+//! There are two levels of checks:
 //!
-//! 1. [`AccessTokenVerifier::verify_issued`] —— **このテナントが発行したアクセストークンか**
-//!    （`typ`・`kid`・署名鍵・署名・`iss`）。宛先（`aud`）も期限も見ない。失効（`/revoke`）は、
-//!    管理 API 向けなど宛先の違うトークンも対象にするので、ここまででよい
-//! 2. [`AccessTokenVerifier::verify_for_userinfo`] —— 1 に加えて、`/userinfo` 宛てで、期限内で
-//!    （クロックスキューを許す）、失効していないか。`/userinfo` と `/introspect` が使う
+//! 1. [`AccessTokenVerifier::verify_issued`]: **is this an access token issued by this tenant**
+//!    (`typ`, `kid`, signing key, signature, `iss`). Neither the audience (`aud`) nor expiry is checked.
+//!    Revocation (`/revoke`) also targets tokens with other audiences such as the admin API, so this is enough
+//! 2. [`AccessTokenVerifier::verify_for_userinfo`]: in addition to 1, is it for `/userinfo`, unexpired
+//!    (allowing clock skew) and not revoked. Used by `/userinfo` and `/introspect`
 //!
-//! 失敗の理由は [`AccessTokenRejection`] で返し、どう扱うか（401 にするか、`active: false` に
-//! するか）は呼び出し側が決める。
+//! The failure reason is returned as [`AccessTokenRejection`], and the caller decides how to handle it
+//! (a 401, or `active: false`).
 
 use crate::application::token::{userinfo_audience, AccessTokenClaims};
 use crate::domain::clock::Clock;
@@ -20,33 +20,33 @@ use crate::domain::tenant_context::TenantContext;
 use jsonwebtoken::Validation;
 use std::sync::Arc;
 
-/// アクセストークンを受け付けない理由。
+/// Why an access token is not accepted.
 #[derive(Debug)]
 pub enum AccessTokenRejection {
-    /// JWT として読めない。
+    /// Cannot be read as a JWT.
     Malformed,
-    /// `typ` が `at+jwt` ではない（ID Token 等の取り違え）。
+    /// `typ` is not `at+jwt` (mixed up with an ID token etc.).
     NotAnAccessToken,
-    /// `kid` が無い。
+    /// No `kid`.
     MissingKeyId,
-    /// `kid` の署名鍵が無い（別の発行者・破棄済みの鍵）。
+    /// No signing key for `kid` (another issuer, or a discarded key).
     UnknownSigningKey,
-    /// 署名が合わない。
+    /// Signature does not match.
     InvalidSignature,
-    /// `iss` がこのテナントの発行者ではない。
+    /// `iss` is not this tenant's issuer.
     IssuerMismatch,
-    /// `aud` が `/userinfo` ではない。
+    /// `aud` is not `/userinfo`.
     AudienceMismatch,
-    /// 期限切れ（クロックスキューを越えて）。
+    /// Expired (beyond clock skew).
     Expired,
-    /// 失効リストにある。
+    /// On the revocation list.
     Revoked,
-    /// 確かめる材料を引けなかった（保存先の障害など）。
+    /// Could not fetch what is needed to check (storage failure etc.).
     Unavailable(String),
 }
 
 impl AccessTokenRejection {
-    /// `/userinfo` の 401 に載せる短い理由（利用者の言語に依らない固定文字列）。
+    /// Short reason put on the `/userinfo` 401 (a fixed string independent of the user's language).
     pub fn reason(&self) -> &'static str {
         match self {
             Self::Malformed => "malformed token",
@@ -67,8 +67,8 @@ pub struct AccessTokenVerifier {
     keys: Arc<dyn SigningKeyRepository>,
     revoked_access_tokens: Arc<dyn RevokedAccessTokenRepository>,
     clock: Arc<dyn Clock>,
-    /// 基底 issuer。テナント毎に `<基底>/<tenant_id>` を合成して `iss`/`aud` を厳密照合する
-    /// （ADR-0009 §6。他テナント発行トークンの流用を防ぐ）。
+    /// Base issuer. Per tenant, `<base>/<tenant_id>` is composed and `iss`/`aud` are matched strictly
+    /// (ADR-0009 §6; prevents reuse of tokens issued by another tenant).
     base_issuer: String,
     clock_skew: chrono::Duration,
 }
@@ -90,7 +90,7 @@ impl AccessTokenVerifier {
         }
     }
 
-    /// このテナントが発行したアクセストークンか（`typ`・`kid`・署名・`iss`）。宛先と期限は見ない。
+    /// Whether this is an access token issued by this tenant (`typ`, `kid`, signature, `iss`). Audience and expiry are not checked.
     pub async fn verify_issued(
         &self,
         tenant: TenantContext,
@@ -108,12 +108,12 @@ impl AccessTokenVerifier {
             .await
             .map_err(|e| AccessTokenRejection::Unavailable(e.to_string()))?
             .ok_or(AccessTokenRejection::UnknownSigningKey)?;
-        // 検証アルゴリズムは**署名鍵の algorithm**（RS256 / ES256）で決める。RS256 に決め打ちに
-        // すると、ES256 鍵を ACTIVE にした環境で発行された at+jwt がすべて弾かれる。
+        // The verification algorithm is decided by **the signing key's algorithm** (RS256 / ES256). Hardcoding
+        // RS256 would reject every at+jwt issued in an environment where an ES256 key is ACTIVE.
         let (decoding_key, algorithm) = jwt::decoding_key_for(&key.algorithm, &key.public_key)
             .map_err(|e| AccessTokenRejection::Unavailable(e.to_string()))?;
 
-        // exp / aud は Clock トレイト経由の時刻で自前検証する（テストで時刻固定するため）。
+        // exp / aud are verified here using time from the Clock trait (to pin time in tests).
         let mut validation = Validation::new(algorithm);
         validation.validate_exp = false;
         validation.validate_aud = false;
@@ -128,7 +128,7 @@ impl AccessTokenVerifier {
         Ok(claims)
     }
 
-    /// `/userinfo` 宛ての、期限内で失効していないアクセストークンか。
+    /// Whether this is an unexpired, unrevoked access token for `/userinfo`.
     pub async fn verify_for_userinfo(
         &self,
         tenant: TenantContext,
@@ -141,7 +141,7 @@ impl AccessTokenVerifier {
         if self.is_expired(&claims) {
             return Err(AccessTokenRejection::Expired);
         }
-        // jti 失効リスト確認（F5: token revocation）。
+        // Check the jti revocation list (F5: token revocation).
         if !claims.jti.is_empty()
             && self
                 .revoked_access_tokens
@@ -154,7 +154,7 @@ impl AccessTokenVerifier {
         Ok(claims)
     }
 
-    /// 期限切れか（クロックスキューを許す）。
+    /// Whether it has expired (allowing clock skew).
     pub fn is_expired(&self, claims: &AccessTokenClaims) -> bool {
         claims.exp + self.clock_skew.num_seconds() <= self.clock.now().timestamp()
     }

@@ -1,5 +1,5 @@
-// RP-initiated logout の front-channel 通知ページ（SEC12 で `rp_logout.html` のインライン script から切り出し）。
-// 全 iframe の読み込み完了、または 5 秒経過でリダイレクトする。
+// Front-channel notification page for RP-initiated logout (split out of the inline script in `rp_logout.html` by SEC12).
+// Redirects once all iframes have loaded, or after 5 seconds.
 (function () {
   var holder = document.getElementById('logout-redirect');
   if (!holder) { return; }
@@ -12,6 +12,6 @@
   frames.forEach(function (f) {
     f.onload = function () { loaded++; if (loaded >= frames.length) { done(); } };
   });
-  /* RP 側 iframe が load を発火しない場合でも 5 秒でリダイレクトする。 */
+  /* Redirect after 5 seconds even if an RP iframe never fires load. */
   setTimeout(done, 5000);
 })();

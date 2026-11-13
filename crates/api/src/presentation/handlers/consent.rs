@@ -1,7 +1,7 @@
-//! 同意 API（`/internal/consent-info`、`/internal/consent/approve`、`/internal/consent/deny`）。
+//! Consent API (`/internal/consent-info`, `/internal/consent/approve`, `/internal/consent/deny`).
 //!
-//! 同意画面に必要な情報の提供と、同意付与・拒否の処理を担う内部エンドポイント。
-//! ログイン画面と同様に `/internal/*` は外部公開しない（`require_service_token` で保護）。
+//! Internal endpoints that provide what the consent screen needs and handle granting/denying consent.
+//! As with the login screen, `/internal/*` is not exposed externally (protected by `require_service_token`).
 
 use crate::application::audit::RequestContext;
 use crate::application::consent::ConsentOutcome;
@@ -17,8 +17,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 
-/// 同意画面情報（`GET /internal/consent-info`）。
-/// `auth_session_id` の AuthSession を確認し、クライアント名・要求 scope を返す。
+/// Consent screen info (`GET /internal/consent-info`).
+/// Checks the AuthSession of `auth_session_id` and returns the client name and requested scopes.
 pub async fn consent_info(
     State(state): State<AppState>,
     Query(req): Query<InternalConsentInfoRequest>,
@@ -43,7 +43,7 @@ pub async fn consent_info(
     )
 }
 
-/// 同意承認（`POST /internal/consent/approve`）。同意を記録し code を発行する。
+/// Consent approval (`POST /internal/consent/approve`). Records consent and issues a code.
 pub async fn consent_approve(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -77,13 +77,13 @@ pub async fn consent_approve(
             InternalConsentApproveResponse::Internal
         }
         ConsentOutcome::Denied { .. } => {
-            // approve エンドポイントで Denied は起きないが念のため。
+            // Denied cannot happen at the approve endpoint, but just in case.
             InternalConsentApproveResponse::Internal
         }
     }))
 }
 
-/// 同意拒否（`POST /internal/consent/deny`）。`access_denied` エラーを RP へリダイレクトする。
+/// Consent denial (`POST /internal/consent/deny`). Redirects an `access_denied` error to the RP.
 pub async fn consent_deny(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -107,7 +107,7 @@ pub async fn consent_deny(
                 redirect_to: location,
                 form_post,
             },
-            // deny エンドポイントでは判定まで進まない（code を発行しない）。
+            // The deny endpoint never reaches the decision (no code is issued).
             ConsentOutcome::ApplicationNotPermitted { .. } => InternalConsentDenyResponse::Internal,
             ConsentOutcome::SessionExpired => InternalConsentDenyResponse::SessionExpired,
             ConsentOutcome::Internal(e) => {
@@ -115,7 +115,7 @@ pub async fn consent_deny(
                 InternalConsentDenyResponse::Internal
             }
             ConsentOutcome::Approved { .. } => {
-                // deny エンドポイントで Approved は起きないが念のため。
+                // Approved cannot happen at the deny endpoint, but just in case.
                 InternalConsentDenyResponse::Internal
             }
         }),

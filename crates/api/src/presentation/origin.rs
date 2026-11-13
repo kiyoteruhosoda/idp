@@ -1,49 +1,49 @@
-//! Cookie 認証の変更系リクエストに対する Origin / Referer 検証（SEC4）。
+//! Origin / Referer check for state-changing requests authenticated by cookie (SEC4).
 //!
-//! 既定の `domain-split` トポロジでは SSO Cookie が host-only で web ホストにしか付かないため、
-//! ブラウザから api の管理 API へ Cookie が届くことはない。しかし `PUBLISH_TOPOLOGY=single-origin`
-//! では nginx が `/{tenant}/admin/*` を `Accept` ヘッダで振り分けるため、`Accept: application/json`
-//! を付けた same-site のスクリプトから Cookie 付きで api の管理 API へ到達できる。
+//! In the default `domain-split` topology the SSO cookie is host-only and attached only to the web host,
+//! so it never reaches the api admin API from a browser. With `PUBLISH_TOPOLOGY=single-origin`, however,
+//! nginx routes `/{tenant}/admin/*` by the `Accept` header, so a same-site script sending
+//! `Accept: application/json` can reach the api admin API with the cookie.
 //!
-//! **JSON の content-type は防御にならない。** 変更系の一部は body を取らず（`restart_service`・
-//! `rotate_client_secret`・`reset_user_password` / `reset_user_mfa`）、POST + `Accept` だけの
-//! **simple request**（プリフライト無し）で発火する。`SameSite=Lax` の Cookie は same-site なので送られる。
+//! **A JSON content-type is no defence.** Some state-changing endpoints take no body (`restart_service`,
+//! `rotate_client_secret`, `reset_user_password` / `reset_user_mfa`) and fire on a POST + `Accept`
+//! **simple request** (no preflight). A `SameSite=Lax` cookie is sent because the request is same-site.
 //!
-//! そこで Cookie 認証を行う extractor は、変更系メソッドで **`Origin`（無ければ `Referer`）が
-//! 許可オリジンと一致すること**を要求する。
+//! So extractors that authenticate by cookie require, for state-changing methods, that **`Origin`
+//! (or `Referer` if absent) matches an allowed origin**.
 //!
-//! 許可オリジンは配置から決まる 2 つだけ:
+//! Only two allowed origins, determined by the deployment:
 //!
-//! * `PUBLIC_WEB_BASE_URL` のオリジン（single-origin では api と同じホストになる）
-//! * `ISSUER` のオリジン（api 自身。`/api/docs` の Swagger UI からの試行を想定）
+//! * the origin of `PUBLIC_WEB_BASE_URL` (the same host as the api under single-origin)
+//! * the origin of `ISSUER` (the api itself; meant for trying calls from the `/api/docs` Swagger UI)
 //!
-//! **ヘッダを一切持たないリクエストは通す。** ブラウザは変更系メソッドで必ず `Origin` を送るため
-//! CSRF の脅威モデルからは外れ、運用手順（`docs/OPERATIONS.md` の `curl` 例）を壊さないため。
+//! **Requests with neither header pass.** Browsers always send `Origin` on state-changing methods, so
+//! they are outside the CSRF threat model, and this keeps the runbooks (`curl` examples in `docs/OPERATIONS.md`) working.
 
 use crate::config::Config;
 use axum::http::header::{ORIGIN, REFERER};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, Method};
 
-/// Cookie 認証の変更系リクエストとして許容できるオリジンから来ているか。
+/// Whether a cookie-authenticated state-changing request comes from an acceptable origin.
 pub fn is_allowed(parts: &Parts, config: &Config) -> bool {
     is_allowed_from(&parts.method, &parts.headers, &allowed_origins(config))
 }
 
 fn is_allowed_from(method: &Method, headers: &HeaderMap, allowed: &[String]) -> bool {
-    // 安全メソッド（状態を変えない）は対象外。ブラウザの画面遷移には Origin が付かない。
+    // Safe (non-state-changing) methods are out of scope. Browser navigations carry no Origin.
     if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
         return true;
     }
     let Some(origin) = request_origin(headers) else {
-        // ブラウザ以外（サーバ間・CLI）。CSRF の前提（ブラウザが Cookie を自動付与する）が無い。
+        // Not a browser (server-to-server, CLI). The CSRF premise (the browser attaching the cookie) does not hold.
         return true;
     };
     allowed.contains(&origin)
 }
 
-/// リクエストが主張するオリジン。`Origin` を優先し、無ければ `Referer` から導出する。
-/// `Origin: null`（サンドボックス iframe・`data:` 由来）は「不透明なオリジン」なので一致させない。
+/// The origin the request claims. Prefers `Origin`, otherwise derived from `Referer`.
+/// `Origin: null` (sandboxed iframe, `data:`) is an "opaque origin" and never matches.
 fn request_origin(headers: &HeaderMap) -> Option<String> {
     if let Some(origin) = headers.get(ORIGIN).and_then(|v| v.to_str().ok()) {
         return Some(normalize(origin).unwrap_or_else(|| origin.to_string()));
@@ -52,7 +52,7 @@ fn request_origin(headers: &HeaderMap) -> Option<String> {
     normalize(referer)
 }
 
-/// 許可オリジン（ascii シリアライズ済み。`scheme://host[:port]`）。
+/// Allowed origin (ascii-serialized, `scheme://host[:port]`).
 fn allowed_origins(config: &Config) -> Vec<String> {
     [config.public_web_base_url(), config.issuer()]
         .into_iter()
@@ -90,7 +90,7 @@ mod tests {
 
     #[test]
     fn safe_methods_are_never_blocked() {
-        // 状態を変えないので CSRF の対象外。画面遷移には Origin が付かない。
+        // Does not change state, so out of CSRF scope. Navigations carry no Origin.
         assert!(check(
             Method::GET,
             &[("origin", "https://evil.example.com")]
@@ -103,7 +103,7 @@ mod tests {
 
     #[test]
     fn same_site_subdomain_cannot_post_to_the_admin_api() {
-        // SEC4 の攻撃形: 同一 eTLD+1 の別サブドメインから body 無しの simple request。
+        // The SEC4 attack shape: a body-less simple request from another subdomain of the same eTLD+1.
         assert!(!check(
             Method::POST,
             &[
@@ -132,7 +132,7 @@ mod tests {
 
     #[test]
     fn requests_without_browser_headers_still_work() {
-        // 運用手順の curl（Cookie を明示的に付ける）を壊さない。
+        // Does not break the runbook curl (which attaches the cookie explicitly).
         assert!(check(Method::POST, &[]));
     }
 
@@ -151,7 +151,7 @@ mod tests {
             normalize("http://id.example.com:8080/").as_deref(),
             Some("http://id.example.com:8080")
         );
-        // 不透明なオリジン（tuple でない）は一致対象にしない。
+        // An opaque origin (not a tuple) is never matched.
         assert_eq!(normalize("null"), None);
         assert_eq!(normalize("data:text/html,x"), None);
     }
@@ -171,7 +171,7 @@ mod tests {
     #[test]
     fn opaque_origin_never_matches_an_allowed_origin() {
         let p = parts(Method::POST, &[("origin", "null")]);
-        // 正規化できないので生値のまま返り、許可オリジン（URL 由来）とは一致しない。
+        // Cannot be normalized, so it comes back raw and never matches an allowed origin (derived from a URL).
         assert_eq!(request_origin(&p.headers).as_deref(), Some("null"));
     }
 

@@ -1,21 +1,21 @@
-// ログイン画面のパスキー（WebAuthn）ログイン（SEC12）。
+// Passkey (WebAuthn) login on the login screen (SEC12).
 //
-// もともとは `login.html` のインライン <script> だったが、CSP から `script-src 'unsafe-inline'` を
-// 外すため外部アセットへ切り出した。テンプレートが持っていた埋め込み値（テナントプレフィクス・
-// 翻訳済みのエラー文言）は `#passkey-error` の data 属性から読む —— テンプレートが HTML エスケープ
-// した値を dataset 経由で受け取る形にすると、JS 文字列リテラルへの直接埋め込みが無くなる。
+// Originally an inline <script> in `login.html`, split out into an external asset to drop `script-src 'unsafe-inline'`
+// from the CSP. The values the template used to embed (tenant prefix,
+// translated error wording) are read from the data attributes of `#passkey-error` -- receiving the template's
+// HTML-escaped values via dataset removes direct embedding into JS string literals.
 //
-// 3 つのログイン画面（OIDC 認可フロー・管理コンソール・ポータル）と、重要操作の直前の本人確認
-// （`/settings/verify`。T38）がこの 1 本を共有する。開始・完了のパスは `data-begin-path` /
-// `data-complete-path` で受け取る（未指定なら認可フローの経路）。完了 API へ添える値も
-// `data-operation` / `data-next` で受け取る —— 本人確認は「どの操作のための確認か」「終わったら
-// どこへ戻すか」を要るが、ログイン画面は何も渡さない。表示するエラー文言も同じく data 属性から
-// 引くので、画面が増えてもスクリプト側に画面名は現れない。
+// The 3 login screens (OIDC authorization flow, admin console, portal) and identity verification right before
+// sensitive operations (`/settings/verify`, T38) share this one script. Begin/complete paths come from `data-begin-path` /
+// `data-complete-path` (the authorization-flow paths if unspecified). Values sent to the complete API also
+// come from `data-operation` / `data-next` -- verification needs "which operation it is for" and "where to
+// return afterwards", while the login screens pass nothing. Error wording is likewise taken from data
+// attributes, so no screen names appear in the script as screens are added.
 //
-// **画面に出す文言は必ず data 属性から採る。** 例外の `message` をそのまま出すと、利用者の言語に
-// 関係なくブラウザ既定の英語（"The operation either timed out or was not allowed..."）が並ぶ。
-// セレモニーの中止・時間切れ（`NotAllowedError` / `AbortError`）は独立した文言に当て、それ以外は
-// 「検証できなかった」に倒す。
+// **Wording shown on screen always comes from data attributes.** Showing an exception's `message` as is shows the
+// browser's default English ("The operation either timed out or was not allowed...") regardless of the user's language.
+// Ceremony cancel/timeout (`NotAllowedError` / `AbortError`) map to dedicated wording; everything else
+// falls back to "could not verify".
 (function () {
   const btn = document.getElementById('btn-passkey-login');
   const errorBox = document.getElementById('passkey-error');
@@ -24,20 +24,20 @@
   const tenantPrefix = messages.tenantPrefix || '';
   const beginPath = messages.beginPath || '/passkey/login/begin';
   const completePath = messages.completePath || '/passkey/login/complete';
-  // 画面が完了 API へ添える値。渡されたものだけを載せる（ログイン画面はどちらも渡さない）。
+  // Values the screen sends to the complete API. Only those passed are included (login screens pass neither).
   const extraFields = {};
   if (messages.operation) { extraFields.operation = messages.operation; }
   if (messages.next) { extraFields.next = messages.next; }
-  // 印が付かなくてもログインそのものは通す（`button-pending.js` の読み込み順が崩れたとき）。
+  // Login itself proceeds even without the mark (when the `button-pending.js` load order is broken).
   const pending = window.idpButtonPending || { mark: function () {}, clear: function () {} };
 
-  // パスキーの導線はテンプレートで隠してある。この環境で使えると分かってから出す
-  // （押しても何も起きないボタンを並べない）。
+  // The passkey entry point is hidden by the template. Show it only once it is known to work here
+  // (don't line up buttons that do nothing when pressed).
   if (!window.PublicKeyCredential) { return; }
   const block = document.getElementById('passkey-login');
   if (block) { block.hidden = false; }
 
-  // 画面に出すのは翻訳済みの文言だけ。原因は握り潰さず、開発者向けにコンソールへ残す。
+  // Only translated wording goes on screen. The cause is not swallowed; it is left in the console for developers.
   function fail(text, cause) {
     if (cause) { console.warn('passkey login failed', cause); }
     document.getElementById('passkey-error-msg').textContent =
@@ -45,7 +45,7 @@
     errorBox.style.display = '';
   }
 
-  // ブラウザのセレモニーが投げた例外を文言へ写す。中止・時間切れは利用者の操作なので分ける。
+  // Map exceptions thrown by the browser ceremony to wording. Cancel/timeout are user actions, so they are separate.
   function ceremonyMessage(e) {
     if (e && (e.name === 'NotAllowedError' || e.name === 'AbortError')) {
       return messages.msgCancelled;
@@ -55,10 +55,10 @@
 
   btn.addEventListener('click', async function () {
     errorBox.style.display = 'none';
-    // 押してから WebAuthn のダイアログが出るまでにはサーバ往復があり、その間ボタンは何も
-    // 変わらない。押した直後に処理中の印を付け、遷移しないと決まったところで外す。
-    // **画面を離れる経路では付けたままにする** —— 遷移の直前に押せる見た目へ戻すと、一瞬
-    // ちらついたうえに押せてしまう（`finally` は `return` でも走るので旗で分ける）。
+    // There is a server round trip between pressing and the WebAuthn dialog appearing, during which the button
+    // doesn't change. Mark it busy right after the press and remove the mark once it is clear there is no navigation.
+    // **Keep the mark on paths that leave the screen** -- reverting to the pressable look just before navigating
+    // flickers and lets it be pressed (`finally` runs even on `return`, so a flag distinguishes them).
     let leaving = false;
     pending.mark(btn);
     try {
@@ -101,7 +101,7 @@
         credJson.response.userHandle = toB64(credential.response.userHandle);
       }
 
-      // 端末の登録の画面（task #916）だけ、利用者が打った端末の名前を添える。
+      // Only on the device registration screen (task #916), attach the device name the user typed.
       const deviceName = document.getElementById('passkey-device-name');
       const typedFields = deviceName ? { device_name: deviceName.value } : {};
 
@@ -116,9 +116,9 @@
       if (!completeRes.ok) { fail(messages.msgServer, completeRes.status); return; }
       const result = await completeRes.json();
       if (result.redirect_to && result.form_post) {
-        // response_mode=form_post（G12）: 認可コードを URL ではなくフォーム本文で RP へ渡す。
-        // 他の経路はサーバ側で自動送信フォームを描くが、パスキーだけは応答が JSON なので
-        // ここで組み立てて送る。遷移するので処理中の印は付けたままにする。
+        // response_mode=form_post (G12): pass the authorization code to the RP in the form body, not the URL.
+        // Other paths have the server draw an auto-submit form, but passkeys respond with JSON, so
+        // the form is built and submitted here. Navigation follows, so the busy mark stays on.
         const form = document.createElement('form');
         form.method = 'post';
         form.action = result.redirect_to;
@@ -139,12 +139,12 @@
         window.location.href = result.redirect_to;
         return;
       }
-      // api のエラーコードを #passkey-error の data 属性（翻訳済み文言）へ写す。
-      // 対応表に無いコード（その画面では起こらないエラー）は既定文言に落ちる。
+      // Map api error codes to the data attributes of #passkey-error (translated wording).
+      // Codes not in the table (errors that cannot happen on that screen) fall back to the default wording.
       fail({
         'policy_denied': messages.msgPolicyDenied,
-        // 割り当てが無い（ADR-0054）。**認証は通っている**ので、資格情報の失敗と同じ
-        // 文言にしない。どのアプリの話かはこの画面の見出しが示している。
+        // No assignment (ADR-0054). **Authentication succeeded**, so don't use the same wording as a
+        // credential failure. Which app it concerns is shown by this screen's heading.
         'application_not_permitted': messages.msgApplicationNotPermitted,
         'invalid_credential': messages.msgInvalidCredential,
         'challenge_not_found': messages.msgChallengeNotFound,
@@ -152,13 +152,13 @@
         'forbidden': messages.msgForbidden,
         'email_verification_required': messages.msgEmailVerificationRequired,
         'rate_limited': messages.msgRateLimited,
-        // 端末の登録の画面（task #916）。
+        // The device registration screen (task #916).
         'ticket_invalid': messages.msgTicketInvalid,
         'invalid_name': messages.msgInvalidName,
         'account_unavailable': messages.msgAccountUnavailable,
       }[result.error], result.error);
     } catch (e) {
-      // ここへ来るのは想定外（応答の JSON が壊れている等）。文言は既定へ落とす。
+      // Reaching here is unexpected (broken response JSON etc.). Fall back to the default wording.
       fail(null, e);
     } finally {
       if (!leaving) { pending.clear(btn); }

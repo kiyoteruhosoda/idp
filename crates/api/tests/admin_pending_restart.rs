@@ -1,23 +1,23 @@
-//! 「保存済みだが未反映」の可視化（`GET /{tenant_id}/admin/system-settings`。MT27）の統合テスト（DB あり）。
+//! Integration tests (with DB) for showing "saved but not applied" (`GET /{tenant_id}/admin/system-settings`; MT27).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test admin_pending_restart
 //!
-//! ランタイム設定は `restart_required` で、保存しただけでは稼働中のプロセスの挙動が変わらない。
-//! それが画面から見えないと、運用者は「保存したのに直らない」と誤った結論に至る。検証するのは:
+//! Runtime settings are `restart_required`; saving alone does not change the running process's behaviour.
+//! If that is not visible on screen, operators wrongly conclude "I saved it but it is not fixed". What is checked:
 //!
-//! 1. 起動時の値と保存値が一致していれば未反映ではない。
-//! 2. 保存値を変えると未反映になる（api を再起動していないため）。
-//! 3. **上書きを解除しても未反映**（起動時は DB から採っていたので、まだ既定値に戻っていない）。
-//! 4. その状態で api を起動し直すと未反映が解消する。
-//! 5. 共有キー（`shared_with_web`）はその旨が応答に載る（反映に web の再起動も要るため）。
-//! 6. 出所区分が `DbManaged` から `EnvLocked` へ変わったキーの残存行は未反映にしない
-//!    （`EnvLocked` は DB を見ないので、突き合わせると再起動しても消えない警告になる）。
+//! 1. If the startup value and the saved value match, it is not pending.
+//! 2. Changing the saved value makes it pending (api has not been restarted).
+//! 3. **Removing the override is pending too** (at startup the value came from the DB, so it is not back to the default yet).
+//! 4. Restarting api in that state clears the pending state.
+//! 5. Shared keys (`shared_with_web`) say so in the response (applying needs a web restart too).
+//! 6. Leftover rows of keys whose source changed from `DbManaged` to `EnvLocked` are not pending
+//!    (`EnvLocked` does not read the DB, so comparing would give a warning that never goes away after restarts).
 //!
-//! `system_settings` はテナント列を持たない assay 全体の共有テーブルで、テストバイナリは並列に走る。
-//! 他のテストと同じキーを書き換えると互いに競合するため、本テスト専用のキー
-//! （`TENANT_CACHE_TTL_SECS`）を 1 つのテスト関数の中だけで扱う。共有キーの確認は**書き換えずに**
-//! フラグの有無だけを見る。
+//! `system_settings` is an assay-wide shared table without a tenant column, and test binaries run in parallel.
+//! Rewriting keys other tests use would make them conflict, so a key dedicated to this test
+//! (`TENANT_CACHE_TTL_SECS`) is handled only inside one test function. Shared keys are checked **without
+//! rewriting**, only by the presence of the flag.
 
 mod support;
 
@@ -29,12 +29,12 @@ use serde_json::Value;
 use std::sync::Arc;
 use support::{admin_token, body_json, get, send};
 
-/// 本テスト専用のキー（`DB_MANAGED` / 非 secret / `restart_required`。web とは共有しない）。
+/// Key dedicated to this test (`DB_MANAGED` / not secret / `restart_required`; not shared with web).
 const KEY: &str = "TENANT_CACHE_TTL_SECS";
-/// 共有キーの代表。値は書き換えず `shared_with_web` フラグの確認にだけ使う。
+/// Representative shared key. Its value is not rewritten; used only to check the `shared_with_web` flag.
 const SHARED_KEY: &str = "COOKIE_SECURE";
-/// `EnvLocked` のキー（ADR-0012 で `DbManaged` から移した）。残存行があっても未反映にしないことの確認用。
-/// `EnvLocked` は解決時に DB を参照しないため、この行を入れても設定の解決には影響しない。
+/// An `EnvLocked` key (moved from `DbManaged` in ADR-0012). Used to check leftover rows are not reported as pending.
+/// `EnvLocked` does not read the DB when resolving, so inserting this row does not affect setting resolution.
 const ENV_LOCKED_KEY: &str = "PUBLIC_WEB_BASE_URL";
 
 async fn upsert_setting(pool: &sqlx::MySqlPool, key: &str, value: &str) {
@@ -57,8 +57,8 @@ async fn delete_setting(pool: &sqlx::MySqlPool, key: &str) {
         .expect("delete system setting");
 }
 
-/// api の起動シーケンス（DB 管理設定の読み出し → `Config` 解決 → ルータ組立）を再現する。
-/// 「起動時スナップショット」と現在の DB 値のずれを見る本テストでは、再起動を表現する要になる。
+/// Reproduces api's startup sequence (read DB-managed settings → resolve `Config` → assemble the router).
+/// In this test, which looks at the gap between the "startup snapshot" and the current DB values, this is how a restart is expressed.
 async fn start_api(pool: &sqlx::MySqlPool) -> axum::Router {
     let db_settings = assay_api::load_db_managed_settings(pool)
         .await
@@ -68,7 +68,7 @@ async fn start_api(pool: &sqlx::MySqlPool) -> axum::Router {
     router::build(AppState::build(pool.clone(), Arc::new(config), clock))
 }
 
-/// 設定画面が読む応答から、対象キーの 1 件を取り出す。
+/// Takes the entry for the target key out of the response the settings screen reads.
 async fn runtime_setting(app: &axum::Router, token: &str, tenant_id: &str, key: &str) -> Value {
     let response = send(
         app,
@@ -94,7 +94,7 @@ async fn saved_settings_are_reported_as_pending_until_the_api_restarts() {
     let pool = env.pool.clone();
     let admin_tok = admin_token(&env.app, &pool, &env.root_tenant_id, &env.root_admin_id).await;
 
-    // ── 1. 上書きを保存した状態で api を「起動」する → 反映済み。
+    // ── 1. "Start" api with the override saved → applied.
     upsert_setting(&pool, KEY, "120").await;
     let app = start_api(&pool).await;
     let item = runtime_setting(&app, &admin_tok, &env.root_tenant_id, KEY).await;
@@ -103,55 +103,73 @@ async fn saved_settings_are_reported_as_pending_until_the_api_restarts() {
     assert_eq!(item["db_value"], "120");
     assert_eq!(
         item["pending_restart"], false,
-        "起動時の値と保存値が同じなら未反映ではない: {item}"
+        "not pending if the startup value equals the saved value: {item}"
     );
 
-    // ── 2. 保存値を変える（api は再起動していない）→ 未反映。
+    // ── 2. Change the saved value (api not restarted) → pending.
     upsert_setting(&pool, KEY, "300").await;
     let item = runtime_setting(&app, &admin_tok, &env.root_tenant_id, KEY).await;
-    assert_eq!(item["value"], "120", "稼働中の api は起動時の値のまま");
-    assert_eq!(item["db_value"], "300", "保存値は新しい");
+    assert_eq!(
+        item["value"], "120",
+        "the running api keeps the startup value"
+    );
+    assert_eq!(item["db_value"], "300", "the saved value is new");
     assert_eq!(
         item["pending_restart"], true,
-        "保存しただけでは効いていないことが分かる: {item}"
+        "it is visible that saving alone has not taken effect: {item}"
     );
 
-    // ── 3. 上書きを解除する → **これも未反映**（まだ既定値に戻っていない）。
+    // ── 3. Remove the override → **also pending** (not back to the default yet).
     delete_setting(&pool, KEY).await;
     let item = runtime_setting(&app, &admin_tok, &env.root_tenant_id, KEY).await;
-    assert!(item["db_value"].is_null(), "保存値は無くなった: {item}");
-    assert_eq!(item["value"], "120", "稼働中の api は起動時の値のまま");
+    assert!(
+        item["db_value"].is_null(),
+        "the saved value is gone: {item}"
+    );
+    assert_eq!(
+        item["value"], "120",
+        "the running api keeps the startup value"
+    );
     assert_eq!(
         item["pending_restart"], true,
-        "解除の未反映を取りこぼすと「解除したのに戻らない」が見えない: {item}"
+        "missing the pending removal would hide \"removed but not reverted\": {item}"
     );
 
-    // ── 4. 再起動すると解消する。
+    // ── 4. Restarting clears it.
     let restarted = start_api(&pool).await;
     let item = runtime_setting(&restarted, &admin_tok, &env.root_tenant_id, KEY).await;
-    assert_ne!(item["source"], "DB", "DB 上書きは解除済み: {item}");
-    assert_eq!(item["pending_restart"], false, "再起動で解消する: {item}");
+    assert_ne!(
+        item["source"], "DB",
+        "the DB override has been removed: {item}"
+    );
+    assert_eq!(
+        item["pending_restart"], false,
+        "a restart clears it: {item}"
+    );
 
-    // ── 5. 共有キーは「web の再起動も要る」ことが応答から分かる（値は書き換えない）。
+    // ── 5. For shared keys the response shows "a web restart is needed too" (the value is not rewritten).
     let shared = runtime_setting(&restarted, &admin_tok, &env.root_tenant_id, SHARED_KEY).await;
     assert_eq!(shared["shared_with_web"], true, "{shared}");
     let own = runtime_setting(&restarted, &admin_tok, &env.root_tenant_id, KEY).await;
     assert_eq!(own["shared_with_web"], false, "{own}");
 
-    // ── 6. 出所区分が `DbManaged` から `EnvLocked` へ変わったキーの残存行は未反映にしない。
-    // `EnvLocked` は解決時に DB を見ないので `source` が `DB` になり得ず、突き合わせると
-    // **再起動しても消えない**警告が出続ける。しかも `editable` が false で画面から消せない。
+    // ── 6. Leftover rows of keys whose source changed from `DbManaged` to `EnvLocked` are not pending.
+    // `EnvLocked` does not read the DB when resolving, so `source` can never be `DB`, and comparing would keep
+    // showing a warning that **never goes away after restarts**. And `editable` is false, so it cannot be cleared on screen.
     upsert_setting(&pool, ENV_LOCKED_KEY, "https://legacy.example.com").await;
     let legacy = start_api(&pool).await;
     let item = runtime_setting(&legacy, &admin_tok, &env.root_tenant_id, ENV_LOCKED_KEY).await;
-    assert_ne!(item["source"], "DB", "EnvLocked は DB を参照しない: {item}");
+    assert_ne!(
+        item["source"], "DB",
+        "EnvLocked does not read the DB: {item}"
+    );
     assert_eq!(
         item["editable"], false,
-        "画面から消せないキーであることの確認: {item}"
+        "confirms the key cannot be cleared on screen: {item}"
     );
     assert_eq!(
         item["pending_restart"], false,
-        "残存行は設定の解決に影響しないので未反映ではない: {item}"
+        "leftover rows do not affect setting resolution, so they are not pending: {item}"
     );
     delete_setting(&pool, ENV_LOCKED_KEY).await;
 }

@@ -1,17 +1,17 @@
 {% extends "page.html" %}
 {% block title %}{{ messages.get("passkey-register-title") }}{% endblock %}
-{#- パスキーの画面はアカウント設定から来る枝葉なので、左上の名乗りもホームへのリンクにする。
-    ただし戻る導線はこれに頼らない（名乗りがリンクだとは見て分からない）。本文の先頭に
-    認証器・セキュリティ画面と同じ「戻る」を置く。 -#}
+{#- Passkey screens branch off account settings, so the top-left label also links home.
+    But the way back does not rely on it (the label is not visibly a link). A "Back" like the
+    authenticator and security screens is placed at the top of the body. -#}
 {% block brand %}<a class="navbar-brand mb-0 h1 text-decoration-none" href="{{ tenant_prefix }}/settings" title="{{ messages.get("nav-home") }}">assay</a>{% endblock %}
 {% block column %}col-md-8 col-lg-6 mx-auto{% endblock %}
 {% block content %}
 <div class="mb-3">
   <a href="{{ tenant_prefix }}/account/passkey"><i class="fa-solid fa-arrow-left me-2" aria-hidden="true"></i>{{ messages.get("passkey-back-to-list") }}</a>
 </div>
-{#- スクリプトが読む値。文言はテンプレートが HTML エスケープし、スクリプトは dataset 経由で
-    受け取る（JS 文字列リテラルへ埋め込まない。SEC12）。api の結果コードをそのまま画面へ出すと
-    `duplicate_credential` のような識別子が並ぶので、ここで翻訳済みの文言へ写す。 -#}
+{#- Values read by the script. The template HTML-escapes the text and the script receives it via dataset
+    (not embedded in JS string literals; SEC12). Showing the api's result codes as is would list
+    identifiers like `duplicate_credential`, so they are mapped to translated text here. -#}
 <div id="passkey-register"
      data-tenant-prefix="{{ tenant_prefix }}"
      data-msg-server="{{ messages.get("passkey-error-server") }}"
@@ -44,8 +44,8 @@
         <a class="btn btn-outline-secondary" href="{{ tenant_prefix }}/settings">{{ messages.get("user-security-back-settings") }}</a>
       </div>
     </div>
-    {#- 失敗しても行き止まりにしない。再試行が通らない種類の失敗（既に登録済み・セッション切れ）
-        もあるので、必ず一覧・設定へ抜けられるようにしておく。 -#}
+    {#- A failure is not a dead end. Some failures cannot be fixed by retrying (already registered, session expired),
+        so always leave a way out to the list or settings. -#}
     <div id="step-error" style="display:none">
       <div class="alert alert-danger" role="alert" id="js-error-msg"></div>
       <div class="d-grid gap-2">

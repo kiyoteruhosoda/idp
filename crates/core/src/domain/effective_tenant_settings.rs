@@ -1,39 +1,42 @@
-//! テナントについて効いている設定値を引く口（ADR-0058）。
+//! Entry point for reading the setting values in effect for a tenant (ADR-0058).
 //!
-//! テナントが上書きできるキーを読む側（認証の各経路・パスワードポリシー・アプリの門・リンクの
-//! 発行など）は、起動時の `Config` でも解決器の具象でもなく、**このトレイト 1 本**から値を引く。
-//! 実装は `application::tenant_settings::TenantSettingsService`（テナントの行 → 全体の行 →
-//! 環境変数 → 組み込み既定）。
+//! Readers of keys a tenant can override (each authentication path, password policy, app gate, link
+//! issuance, etc.) read values from **this one trait**, not from the startup `Config` nor a
+//! concrete resolver. The implementation is `application::tenant_settings::TenantSettingsService`
+//! (tenant row → global row → environment variable → built-in default).
 //!
-//! ⚠ **1 経路でも `Config` を読み残すと、その経路だけ全体の値で動き、しかも静かに間違える。**
-//! 読む側がトレイトしか持たないようにしてあるのは、それを型で塞ぐためである。
+//! ⚠ **If even one path is left reading `Config`, only that path runs on the global value, and is
+//! silently wrong.** Readers hold only the trait so that this is blocked by the type.
 //!
-//! # 口が 2 本あった
+//! # There used to be two entry points
 //!
-//! 判定の既定 2 キー（#22）と、パスワード・ロックアウト・SSO・step-up など（#24）が別々に
-//! 足され、同じ解決器へ別の口（トレイトと具象）で届いていた。どちらも同じ解決に乗るので 1 本に
-//! まとめた。書き込み（`set` / `clear`）と画面向けの一覧は管理の口であり、ここには載せない。
+//! The two decision-default keys (#22) and password / lockout / SSO / step-up etc. (#24) were added
+//! separately and reached the same resolver through different entry points (a trait and a concrete
+//! type). Both go through the same resolution, so they were merged into one. Writes (`set` /
+//! `clear`) and listings for screens are the admin entry point and are not here.
 //!
-//! # どのテナントを渡すか（ADR-0058 §13）
+//! # Which tenant to pass (ADR-0058 §13)
 //!
-//! | まとまり | 渡すテナント |
+//! | Group | Tenant to pass |
 //! |---|---|
-//! | パスワードポリシー・ロックアウト・SSO セッションの寿命・step-up | 利用者の**所属元** |
-//! | パスワード再設定・メール検証のリンク | 利用者の**所属元** |
-//! | 招待のリンク | 招待した**参加先** |
-//! | 認証ポリシーの既定動作・アプリ割り当ての強制 | 判定しているテナント |
+//! | Password policy, lockout, SSO session lifetime, step-up | the user's **home** tenant |
+//! | Password reset and email verification links | the user's **home** tenant |
+//! | Invitation links | the **joined** tenant that invited |
+//! | Default effect of auth policies, enforcement of app assignment | the tenant making the decision |
 //!
-//! # 判定の既定 2 キー
+//! # The two decision-default keys
 //!
-//! - `AUTH_POLICY_DEFAULT_EFFECT` —— 認証ポリシーが 1 件も一致しないときの既定動作
-//! - `APPLICATION_ASSIGNMENT_ENFORCEMENT` —— アプリの割り当て判定で断るか、記録するだけか
+//! - `AUTH_POLICY_DEFAULT_EFFECT` — default effect when no auth policy matches
+//! - `APPLICATION_ASSIGNMENT_ENFORCEMENT` — whether app assignment checks refuse or only record
 //!
-//! どちらも**テナントが決める**（§4・§10）。名簿が整ったテナントから `enforce` へ倒せるように
-//! するためで、全体 1 枚だと「全テナントの名簿が揃うまで倒せない」。行の無いテナントの既定は
-//! `allow` と `record_only` で、⚠ 名簿の無いテナントが勝手に断る側へ倒れることは無い。
+//! Both are **decided by the tenant** (§4, §10). This lets tenants whose rosters are ready flip to
+//! `enforce`; with one global sheet, "nobody can flip until every tenant's roster is ready".
+//! Defaults for tenants with no row are `allow` and `record_only`; ⚠ a tenant without a roster
+//! never flips to refusing on its own.
 //!
-//! 管理コンソールが既定動作・強制の有無を示すときも、web はこの値を持たず、api の応答に
-//! 載ったテナントの値を描くだけにする（ADR-0013 の起動時スナップショットには載せない）。
+//! When the admin console shows the default effect / enforcement, web does not hold the value; it
+//! just draws the tenant's value carried in the api response (not part of ADR-0013's startup
+//! snapshot).
 
 use crate::domain::authentication_policy::{DefaultPolicyEffect, LockoutPolicy};
 use crate::domain::error::Result;
@@ -47,48 +50,51 @@ pub const AUTH_POLICY_DEFAULT_EFFECT: &str = "AUTH_POLICY_DEFAULT_EFFECT";
 pub const APPLICATION_ASSIGNMENT_ENFORCEMENT: &str = "APPLICATION_ASSIGNMENT_ENFORCEMENT";
 pub const REGISTERED_DEVICE_REQUIRED: &str = "REGISTERED_DEVICE_REQUIRED";
 
-/// SSO セッションの寿命（`SSO_IDLE_TTL_SECS` / `SSO_ABSOLUTE_TTL_SECS` / `SSO_BOUND_TTL_SECS`）。
+/// SSO session lifetimes (`SSO_IDLE_TTL_SECS` / `SSO_ABSOLUTE_TTL_SECS` / `SSO_BOUND_TTL_SECS`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SsoSessionLifetime {
     pub idle: Duration,
     pub absolute: Duration,
-    /// 端末の鍵に結び付き、端末が登録済みのときの長さ（task #887。ADR-0074）。
+    /// Length when bound to a device key and the device is registered (task #887; ADR-0074).
     pub bound: Duration,
 }
 
-/// テナントについて効いている値を、型付きで返す。
+/// Returns values in effect for a tenant, typed.
 ///
-/// 読む側はキーの綴りと型変換をここに任せる（呼び出し側で文字列を解釈させない）。⚠ 保存値が
-/// 型に合わないときは全体へ黙って落とさずにエラーを返す。
+/// Readers leave key spelling and type conversion to this (callers never parse strings). ⚠ When a
+/// stored value does not fit the type, it returns an error rather than silently falling back to the
+/// global value.
 #[async_trait]
 pub trait EffectiveTenantSettings: Send + Sync {
-    /// パスワードポリシー（`PASSWORD_*`）。
+    /// Password policy (`PASSWORD_*`).
     async fn password_policy(&self, tenant_id: TenantId) -> Result<PasswordPolicy>;
-    /// ロックアウト（`LOGIN_*`）。
+    /// Lockout (`LOGIN_*`).
     async fn login_lockout(&self, tenant_id: TenantId) -> Result<LockoutPolicy>;
-    /// SSO セッションの寿命（確立と idle 延長の両方で使う）。
+    /// SSO session lifetimes (used both at establishment and for idle extension).
     async fn sso_session_lifetime(&self, tenant_id: TenantId) -> Result<SsoSessionLifetime>;
-    /// step-up（重要操作の直前の本人確認）の有効秒数。
+    /// Validity in seconds of step-up (re-verification right before a sensitive operation).
     async fn step_up_max_age_secs(&self, tenant_id: TenantId) -> Result<u64>;
-    /// 招待リンクの有効期間。
+    /// Validity period of invitation links.
     async fn invitation_ttl(&self, tenant_id: TenantId) -> Result<Duration>;
-    /// パスワード再設定リンクの有効期間。
+    /// Validity period of password reset links.
     async fn password_reset_ttl(&self, tenant_id: TenantId) -> Result<Duration>;
-    /// アカウント設定リンク（管理者が発行する。ADR-0062）の有効期間。
+    /// Validity period of account setup links (issued by admins; ADR-0062).
     async fn account_setup_ttl(&self, tenant_id: TenantId) -> Result<Duration>;
-    /// SMTP で送れないとき、再設定リンクをサーバのコンソールへ出してよいか。
+    /// Whether reset links may be printed to the server console when SMTP cannot send.
     async fn password_reset_console_link_enabled(&self, tenant_id: TenantId) -> Result<bool>;
-    /// メール検証リンクの有効期間。
+    /// Validity period of email verification links.
     async fn email_verification_ttl(&self, tenant_id: TenantId) -> Result<Duration>;
-    /// 認証ポリシーが 1 件も一致しないときの既定動作。
+    /// Default effect when no auth policy matches.
     async fn policy_default_effect(&self, tenant_id: TenantId) -> Result<DefaultPolicyEffect>;
-    /// アプリの割り当て判定をどこまでやるか。
+    /// How far the app assignment check goes.
     async fn assignment_enforcement(&self, tenant_id: TenantId) -> Result<AssignmentEnforcement>;
-    /// 登録していない端末でのログイン・端末の登録などを知らせるか（task #872）。
+    /// Whether to alert on sign-ins from unregistered devices, device registrations, etc. (task
+    /// #872).
     async fn unregistered_device_alerts_enabled(&self, tenant_id: TenantId) -> Result<bool>;
-    /// 登録した端末（と認証アプリの承認）でしかログインを終わらせないか（task #916）。渡すのは利用者の
-    /// **所属元**テナント。
+    /// Whether sign-ins complete only on registered devices (and authenticator app approval) (task
+    /// #916). Pass the user's **home** tenant.
     async fn registered_device_required(&self, tenant_id: TenantId) -> Result<bool>;
-    /// 利用者が SSH の公開鍵を登録でき、配る機械へ一覧を渡すか（task #885）。渡すのは**要求の**テナント。
+    /// Whether users may register SSH public keys and the list is handed to distributing machines
+    /// (task #885). Pass the **requested** tenant.
     async fn ssh_keys_enabled(&self, tenant_id: TenantId) -> Result<bool>;
 }

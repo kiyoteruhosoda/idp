@@ -1,40 +1,40 @@
-//! テナント設定の解決（ADR-0058）。
+//! Resolution of tenant settings (ADR-0058).
 //!
-//! # 解決順
+//! # Resolution order
 //!
-//! 1. **テナントの行**（`tenant_settings`）——そのテナントにだけ効く
-//! 2. **全体の行**（`system_settings`）
-//! 3. **環境変数 → 組み込み既定**（起動時に解決しておいたもの。環境変数は実行中に変わらない）
+//! 1. **The tenant's rows** (`tenant_settings`): apply only to that tenant
+//! 2. **Global rows** (`system_settings`)
+//! 3. **Environment variable -> built-in default** (resolved at startup. Environment variables do not change at runtime)
 //!
-//! ⚠ **テナントに行が無いことが「全体に従う」である。** 既定値の写しをテナントへ配らない。
-//! 写すと、全体の値を変えてもそのテナントだけ追随しなくなり、しかも画面上は同じ値に見える。
+//! ⚠ **A tenant having no row is what "follows global" means.** Copies of default values are not handed out to tenants.
+//! Copying would make that tenant stop following when the global value changes, while looking like the same value on screen.
 //!
-//! # 参照のたびに引く
+//! # Looked up on every reference
 //!
-//! テナントごとに違う値は、起動時に 1 つ解決して `Config` で配る形では表せない（ADR-0058 §9）。
-//! そこで 1 と 2 は**参照のたびに**引き、TTL キャッシュ（テナント解決と同じ寿命）で抑える。
-//! ⚠ **2（全体の行）もスナップショットから採らない。** 起動時の `Config` は DB 由来の値と
-//! 環境変数由来の値を区別せずに持つので、全体の上書きを消したときに再起動まで古い値が残る。
+//! Values differing per tenant cannot be expressed by resolving one at startup and handing it out via `Config` (ADR-0058 §9).
+//! So 1 and 2 are looked up **on every reference**, kept cheap by a TTL cache (same lifetime as tenant resolution).
+//! ⚠ **2 (global rows) is not taken from a snapshot either.** The startup `Config` holds DB-derived values and
+//! environment-derived values without distinction, so after clearing a global override the old value would remain until restart.
 //!
-//! # この口を通すのは「テナントが上書きできるキー」だけ
+//! # Only "keys tenants can override" go through this endpoint
 //!
-//! `scope = Global` のキーを渡すと断る。全体のキーは今までどおり `Config` から読む ——ここで
-//! 通してしまうと、呼び出し側は「テナントの値で動いている」と誤解したまま全体の値を使う。
-//! 逆に、⚠ **テナントが上書きできるキーを `Config` から直接読む箇所を残さない**（そこだけ全体の
-//! 値で動き、しかも静かに間違える）。
+//! Passing a key with `scope = Global` is refused. Global keys are read from `Config` as before: letting them
+//! through here would make callers use the global value while mistakenly believing "it runs on the tenant's value".
+//! Conversely, ⚠ **leave no place that reads a tenant-overridable key directly from `Config`** (only that place would
+//! run on the global value, and be silently wrong).
 //!
-//! # どのテナントの値で動くか（ADR-0058 §13）
+//! # Which tenant's value is used (ADR-0058 §13)
 //!
-//! 消費側は domain のトレイト [`EffectiveTenantSettings`]（実装は下の型付きの口）から引く。渡す
-//! テナントは次のとおりで、⚠ **発行と検証で必ず同じテナントを渡す**（片方だけ違うと、発行した
-//! 直後に切れているリンクやセッションが出る）。
+//! Consumers look up through the domain trait [`EffectiveTenantSettings`] (implemented by the typed endpoints below). The tenant
+//! passed is as follows, and ⚠ **always pass the same tenant for issuance and verification** (if only one differs,
+//! links or sessions appear that are already expired right after issuance).
 //!
-//! | まとまり | 渡すテナント | 理由 |
+//! | Group | Tenant passed | Reason |
 //! |---|---|---|
-//! | パスワードポリシー・ロックアウト | 利用者の**所属元** | 資格情報とロックの状態は利用者の行にあり、所属元だけが管理する（ADR-0009 §2） |
-//! | SSO セッションの寿命・step-up の間隔 | 利用者の**所属元** | SSO セッションはホスト単位で全テナントに共有され、テナント列を持たない |
-//! | パスワード再設定・メール検証のリンク | 利用者の**所属元** | リンクは所属元を指し、消費も所属元でしか通らない（MT26） |
-//! | 招待のリンク | 招待した**参加先** | 招待は参加先のメンバーシップ行である |
+//! | Password policy, lockout | The user's **home** | Credentials and lock state live in the user's row, managed only by the home tenant (ADR-0009 §2) |
+//! | SSO session lifetime, step-up interval | The user's **home** | SSO sessions are shared per host across all tenants and have no tenant column |
+//! | Password reset and email verification links | The user's **home** | Links point to the home tenant and can be consumed only there (MT26) |
+//! | Invitation links | The inviting **joined** tenant | An invitation is a membership row of the joined tenant |
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::admin_actor::AdminActor;
@@ -61,58 +61,58 @@ use chrono::Duration;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// 保存されている上書きの写し（キー → 保存形式の値）。空文字列の行は含めない。
+/// A copy of stored overrides (key -> stored-format value). Rows with empty strings are excluded.
 pub type SettingOverrides = HashMap<String, String>;
 
-/// 解決した値がどこから来たか。画面が「このテナントで決めた」と「全体に従っている」を
-/// 読み分けるために持つ（ADR-0058 §6）。
+/// Where a resolved value came from. Held so the screen can tell "decided in this tenant" from "following global"
+/// (ADR-0058 §6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingOrigin {
-    /// このテナントで上書きした値。
+    /// A value overridden in this tenant.
     TenantOverride,
-    /// 全体の値に従っている（全体の行・環境変数・組み込み既定のいずれか）。
+    /// Following the global value (a global row, environment variable, or built-in default).
     Inherited,
 }
 
-/// テナントについて解決した設定値。
+/// A setting value resolved for a tenant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedTenantSetting {
     pub value: String,
     pub origin: SettingOrigin,
 }
 
-/// テナントの設定画面に並べる 1 項目（ADR-0058 §6）。
+/// One item listed on the tenant settings screen (ADR-0058 §6).
 ///
-/// ⚠ **値だけを見せない。** 「このテナントで決めた」か「全体に従っている」か（`origin`）と、
-/// 全体の値（`whole_idp_value`）を必ず一緒に持つ。上書きしている項目でも全体の値を並べるのは、
-/// 「全体に戻すと何になるか」を読めないまま戻させないため。
+/// ⚠ **Do not show only the value.** Always hold together whether it was "decided in this tenant" or "following global" (`origin`) and
+/// the global value (`whole_idp_value`). The global value is listed even for overridden items so that
+/// users do not revert without being able to read "what it becomes when reverted to global".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TenantSettingView {
     pub definition: &'static SettingDefinition,
-    /// このテナントで効いている値。
+    /// The value in effect in this tenant.
     pub value: String,
     pub origin: SettingOrigin,
-    /// 全体の値（全体の行 → 環境変数 → 組み込み既定）。上書きを消すとこの値に戻る。
+    /// The global value (global row -> environment variable -> built-in default). Clearing the override reverts to this value.
     pub whole_idp_value: String,
 }
 
-/// あるキーについて、全テナントがどう決めているか（全体の設定画面が読む。ADR-0058 §6）。
+/// For a key, how all tenants decide it (read by the global settings screen. ADR-0058 §6).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TenantSettingAdoption {
-    /// 全体の値に従っている（行を持たない）テナントの件数。
+    /// Number of tenants following the global value (having no row).
     pub following: u64,
-    /// 既定から外れている（このキーを上書きしている）テナント。
+    /// Tenants deviating from the default (overriding this key).
     pub overriding: Vec<TenantOverrideEntry>,
 }
 
 pub struct TenantSettingsService {
     tenant_settings: Arc<dyn TenantSettingsRepository>,
     system_settings: Arc<dyn SystemSettingsRepository>,
-    /// DB を除いた全体の値（環境変数 → 組み込み既定）。テナントが上書きできるキーの分だけ持つ。
-    /// 組み立ては配線側が `Config::value_without_db` で行う（本サービスは `Config` に依存しない）。
+    /// The global value excluding the DB (environment variable -> built-in default). Held only for keys tenants can override.
+    /// Assembled by the wiring side with `Config::value_without_db` (this service does not depend on `Config`).
     fallback: HashMap<String, String>,
     tenant_cache: Arc<dyn Cache<TenantId, SettingOverrides>>,
-    /// 全体の行のキャッシュ。キー空間は 1 つだけなので `()` を鍵にする。
+    /// Cache of global rows. There is only one key space, so `()` is the key.
     global_cache: Arc<dyn Cache<(), SettingOverrides>>,
     audit: Arc<AuditService>,
 }
@@ -136,7 +136,7 @@ impl TenantSettingsService {
         }
     }
 
-    /// テナントについてキーの値を解決する（テナントの行 > 全体の行 > 環境変数 > 組み込み既定）。
+    /// Resolves a key's value for a tenant (tenant row > global row > environment variable > built-in default).
     pub async fn resolve(&self, tenant_id: TenantId, key: &str) -> Result<ResolvedTenantSetting> {
         let def = overridable_definition(key)?;
         if let Some(value) = self.tenant_overrides(tenant_id).await?.get(def.key) {
@@ -151,7 +151,7 @@ impl TenantSettingsService {
         })
     }
 
-    /// 全体の値（全体の行 → 環境変数 → 組み込み既定）。テナントの行は見ない。
+    /// The global value (global row -> environment variable -> built-in default). Tenant rows are not looked at.
     async fn whole_idp_value(&self, def: &SettingDefinition) -> Result<String> {
         Ok(match self.global_overrides().await?.get(def.key) {
             Some(value) => value.clone(),
@@ -159,10 +159,10 @@ impl TenantSettingsService {
         })
     }
 
-    /// テナントが上書きできる全項目を、出どころと全体の値つきで返す（定義の並び順）。
+    /// Returns all items tenants can override, with origin and global value (in definition order).
     ///
-    /// 項目はキー定義（`scope = TenantOverridable`）から導く ——キーを足すたびに画面や API の型を
-    /// 書き足さない。
+    /// Items are derived from the key definitions (`scope = TenantOverridable`), so screens and API types need not
+    /// be extended every time a key is added.
     pub async fn list(&self, tenant_id: TenantId) -> Result<Vec<TenantSettingView>> {
         let tenant = self.tenant_overrides(tenant_id).await?;
         let mut views = Vec::new();
@@ -182,14 +182,14 @@ impl TenantSettingsService {
         Ok(views)
     }
 
-    /// テナントの値を決める（行を書く）。
+    /// Decides a tenant's value (writes a row).
     ///
-    /// - 定義に無いキー・全体で決めるキー・秘匿値のキーは断る（`InvalidValue`）
-    /// - 型は全体の保存と同じ `validate_setting_value` を通す
-    /// - ⚠ **締め出し得る値**（定義の `locks_out`）は `confirmed` が無ければ保存せず `Conflict` を返す。
-    ///   画面は確認を挟んでから `confirmed` を付けて送り直す
-    /// - 空の値は受けない。全体に戻すのは [`Self::clear`]（空の行を残すと「決めた」のか「戻した」
-    ///   のかが行から読めなくなる）
+    /// - Keys not in the definitions, globally decided keys, and secret keys are refused (`InvalidValue`)
+    /// - Types go through the same `validate_setting_value` as global saves
+    /// - ⚠ **Values that may lock people out** (the definition's `locks_out`) are not saved without `confirmed`; `Conflict` is returned.
+    ///   The screen asks for confirmation and then resends with `confirmed`
+    /// - Empty values are not accepted. Reverting to global is [`Self::clear`] (leaving an empty row would make it unreadable from the row
+    ///   whether it was "decided" or "reverted")
     pub async fn set(
         &self,
         tenant: TenantContext,
@@ -226,7 +226,7 @@ impl TenantSettingsService {
         Ok(())
     }
 
-    /// テナントの上書きを消す（＝全体に従う状態へ戻す）。行が無くても成功する。
+    /// Clears the tenant's override (= goes back to following global). Succeeds even if there is no row.
     pub async fn clear(
         &self,
         tenant: TenantContext,
@@ -257,16 +257,16 @@ impl TenantSettingsService {
                 Some(tenant_id),
                 actor.user_id(),
                 actor.client_id(),
-                // 値そのものは記録しない（キーと設定/解除の別のみ）。
+                // The value itself is not recorded (only the key and whether it was set or cleared).
                 Some(&format!("{key} {change}")),
                 ctx,
             )
             .await;
     }
 
-    /// テナントが上書きできる各キーについて、従っているテナントの件数と、外れているテナントを返す。
+    /// For each key tenants can override, returns the number of tenants following it and the tenants deviating from it.
     ///
-    /// ⚠ テナントをまたいで読む。呼べるのは全体の設定画面（`idp.system.admin`）だけにすること。
+    /// ⚠ Reads across tenants. Only the global settings screen (`idp.system.admin`) may call this.
     pub async fn adoption_across_tenants(
         &self,
     ) -> Result<HashMap<&'static str, TenantSettingAdoption>> {
@@ -275,7 +275,7 @@ impl TenantSettingsService {
             .map(|def| (def.key, TenantSettingAdoption::default()))
             .collect();
         for entry in across.overrides {
-            // 定義に無い行・全体のキーの行は数えない（効いていない行を「外れている」と見せない）。
+            // Rows not in the definitions and rows of global keys are not counted (do not show ineffective rows as "deviating").
             if let Some((_, item)) = adoption.iter_mut().find(|(key, _)| **key == entry.key) {
                 item.overriding.push(entry);
             }
@@ -288,11 +288,11 @@ impl TenantSettingsService {
         Ok(adoption)
     }
 
-    /// テナントについてキーの値を型へ変換して返す。
+    /// Converts a key's value for a tenant into its type and returns it.
     ///
-    /// ⚠ 変換に失敗したら**全体へ黙って落とさずにエラーを返す。** 保存の時点で型は検証している
-    /// （`validate_setting_value`）ので、ここで失敗するのは DB を直接書き換えた場合だけであり、
-    /// 黙って落とすと「上書きしたのに効かない」が見えなくなる。
+    /// ⚠ If conversion fails, **return an error instead of silently falling back to global.** Types are validated at save time
+    /// (`validate_setting_value`), so failing here only happens when the DB was edited directly, and
+    /// silently falling back would hide "overridden but not taking effect".
     pub async fn parse<T>(&self, tenant_id: TenantId, key: &str) -> Result<T>
     where
         T: std::str::FromStr,
@@ -307,7 +307,7 @@ impl TenantSettingsService {
         })
     }
 
-    /// そのテナントの上書き（保存形式のまま。空の行は含めない）。
+    /// That tenant's overrides (as stored. Empty rows are excluded).
     pub async fn tenant_overrides(&self, tenant_id: TenantId) -> Result<SettingOverrides> {
         if let Some(cached) = self.tenant_cache.get(&tenant_id) {
             return Ok(cached);
@@ -324,12 +324,12 @@ impl TenantSettingsService {
         Ok(loaded)
     }
 
-    /// テナントの上書きを書き換えたあとに呼ぶ（次の参照で DB を引き直させる）。
+    /// Called after rewriting a tenant's overrides (forces the next reference to re-read the DB).
     pub fn invalidate(&self, tenant_id: TenantId) {
         self.tenant_cache.invalidate(&tenant_id);
     }
 
-    /// 全体の設定を書き換えたあとに呼ぶ。
+    /// Called after rewriting global settings.
     pub fn invalidate_global(&self) {
         self.global_cache.invalidate(&());
     }
@@ -343,7 +343,7 @@ impl TenantSettingsService {
             .load_all()
             .await?
             .into_iter()
-            // secret の暗号文をテナントの解決へ混ぜない（テナントが上書きできるキーに secret は無い）。
+            // Do not mix secret ciphertext into tenant resolution (no key tenants can override is a secret).
             .filter(|setting| !setting.is_secret && !setting.value.is_empty())
             .map(|setting| (setting.key, setting.value))
             .collect();
@@ -352,18 +352,18 @@ impl TenantSettingsService {
     }
 }
 
-/// 型付きの口。消費側はキーの綴りと型変換をここに任せる（呼び出し側で `parse` を書かせない）。
+/// Typed endpoints. Consumers leave key spelling and type conversion to these (callers are not made to write `parse`).
 ///
-/// 読む側は [`EffectiveTenantSettings`]（domain のトレイト）だけを持つ。この実装を具象のまま
-/// 渡さない（ADR-0058。口を 2 本にしない）。
+/// Readers hold only [`EffectiveTenantSettings`] (the domain trait). This implementation is not passed
+/// as the concrete type (ADR-0058. Do not have two endpoints).
 #[async_trait]
 impl EffectiveTenantSettings for TenantSettingsService {
-    /// パスワードポリシー（`PASSWORD_*`）。渡すのは利用者の**所属元**テナント。
+    /// Password policy (`PASSWORD_*`). Pass the user's **home** tenant.
     async fn password_policy(&self, tenant_id: TenantId) -> Result<PasswordPolicy> {
         Ok(PasswordPolicy {
             min_length: self.parse(tenant_id, "PASSWORD_MIN_LENGTH").await?,
-            // 上限はハッシュ計算量の防御（argon2 の入力長）であって運用で緩める値ではないため、
-            // 設定にせずドメインの既定値を使う。
+            // The upper limit is a defense on hashing cost (argon2 input length), not a value to relax in operation,
+            // so it is not a setting and the domain default is used.
             max_length: MAX_PASSWORD_LEN,
             history_count: self.parse(tenant_id, "PASSWORD_HISTORY_COUNT").await?,
             max_age_days: self.parse(tenant_id, "PASSWORD_MAX_AGE_DAYS").await?,
@@ -373,12 +373,12 @@ impl EffectiveTenantSettings for TenantSettingsService {
         })
     }
 
-    /// ロックアウト（`LOGIN_*`）。渡すのは利用者の**所属元**テナント。
+    /// Lockout (`LOGIN_*`). Pass the user's **home** tenant.
     async fn login_lockout(&self, tenant_id: TenantId) -> Result<LockoutPolicy> {
         let max_failed_attempts: u32 = self.parse(tenant_id, "LOGIN_MAX_FAILED_ATTEMPTS").await?;
         Ok(LockoutPolicy {
-            // i32 に収まらない巨大値は「実質ロックしない」として i32::MAX へ飽和させる
-            // （`as` キャストだと負数へラップし、初回失敗で即ロックという逆の挙動になる）。
+            // Huge values not fitting in i32 saturate to i32::MAX as "effectively never lock"
+            // (an `as` cast would wrap to a negative number, giving the opposite behavior of locking immediately on the first failure).
             max_failed_attempts: i32::try_from(max_failed_attempts).unwrap_or(i32::MAX),
             lock_duration_secs: self.parse(tenant_id, "LOGIN_LOCK_DURATION_SECS").await?,
             max_lock_duration_secs: self
@@ -387,7 +387,7 @@ impl EffectiveTenantSettings for TenantSettingsService {
         })
     }
 
-    /// SSO セッションの寿命。渡すのは利用者の**所属元**テナント（確立と idle 延長の両方で）。
+    /// SSO session lifetime. Pass the user's **home** tenant (for both establishment and idle extension).
     async fn sso_session_lifetime(&self, tenant_id: TenantId) -> Result<SsoSessionLifetime> {
         Ok(SsoSessionLifetime {
             idle: self.seconds(tenant_id, "SSO_IDLE_TTL_SECS").await?,
@@ -396,48 +396,48 @@ impl EffectiveTenantSettings for TenantSettingsService {
         })
     }
 
-    /// step-up（重要操作の直前の本人確認）の有効秒数。渡すのは利用者の**所属元**テナント。
+    /// Validity in seconds of step-up (identity verification right before sensitive operations). Pass the user's **home** tenant.
     async fn step_up_max_age_secs(&self, tenant_id: TenantId) -> Result<u64> {
         self.parse(tenant_id, "STEP_UP_MAX_AGE_SECS").await
     }
 
-    /// 招待リンクの有効期間。渡すのは招待した**参加先**テナント。
+    /// Validity period of invitation links. Pass the inviting **joined** tenant.
     async fn invitation_ttl(&self, tenant_id: TenantId) -> Result<Duration> {
         self.seconds(tenant_id, "INVITATION_TTL_SECS").await
     }
 
-    /// パスワード再設定リンクの有効期間。渡すのは利用者の**所属元**テナント。
+    /// Validity period of password reset links. Pass the user's **home** tenant.
     async fn password_reset_ttl(&self, tenant_id: TenantId) -> Result<Duration> {
         self.seconds(tenant_id, "PASSWORD_RESET_TTL_SECS").await
     }
 
-    /// アカウント設定リンクの有効期間。渡すのは利用者の**所属元**テナント。
+    /// Validity period of account setup links. Pass the user's **home** tenant.
     ///
-    /// 再設定より長いのは、渡し方が違うからである ——再設定は本人が「いま」押して自分のメールで
-    /// 受け取るが、設定リンクは管理者が受け取って人づてに渡す（ADR-0062）。
+    /// It is longer than reset because delivery differs: a reset is clicked by the user "now" and received in their own email,
+    /// while a setup link is received by an admin and passed on by hand (ADR-0062).
     async fn account_setup_ttl(&self, tenant_id: TenantId) -> Result<Duration> {
         self.seconds(tenant_id, "ACCOUNT_SETUP_TTL_SECS").await
     }
 
-    /// SMTP で送れないとき、再設定リンクをサーバのコンソールへ出してよいか。
+    /// Whether reset links may be printed to the server console when SMTP cannot send.
     async fn password_reset_console_link_enabled(&self, tenant_id: TenantId) -> Result<bool> {
         self.parse(tenant_id, "PASSWORD_RESET_CONSOLE_LINK_ENABLED")
             .await
     }
 
-    /// メール検証リンクの有効期間。渡すのは利用者の**所属元**テナント。
+    /// Validity period of email verification links. Pass the user's **home** tenant.
     async fn email_verification_ttl(&self, tenant_id: TenantId) -> Result<Duration> {
         self.seconds(tenant_id, "EMAIL_VERIFICATION_TTL_SECS").await
     }
 
-    /// 認証ポリシーの既定動作。渡すのは判定しているテナント。
+    /// Default behavior of authentication policies. Pass the tenant making the decision.
     async fn policy_default_effect(&self, tenant_id: TenantId) -> Result<DefaultPolicyEffect> {
         let resolved = self.resolve(tenant_id, AUTH_POLICY_DEFAULT_EFFECT).await?;
         DefaultPolicyEffect::parse(&resolved.value)
             .map_err(|e| unparsable(AUTH_POLICY_DEFAULT_EFFECT, e))
     }
 
-    /// アプリ割り当ての強制。渡すのは判定しているテナント。
+    /// Enforcement of app assignments. Pass the tenant making the decision.
     async fn assignment_enforcement(&self, tenant_id: TenantId) -> Result<AssignmentEnforcement> {
         let resolved = self
             .resolve(tenant_id, APPLICATION_ASSIGNMENT_ENFORCEMENT)
@@ -446,18 +446,18 @@ impl EffectiveTenantSettings for TenantSettingsService {
             .map_err(|e| unparsable(APPLICATION_ASSIGNMENT_ENFORCEMENT, e))
     }
 
-    /// 登録していない端末でのログインを知らせるか（task #872）。渡すのは利用者の**所属元**テナント。
+    /// Whether to notify sign-ins on unregistered devices (task #872). Pass the user's **home** tenant.
     async fn unregistered_device_alerts_enabled(&self, tenant_id: TenantId) -> Result<bool> {
         self.parse(tenant_id, "UNREGISTERED_DEVICE_ALERTS_ENABLED")
             .await
     }
 
-    /// 登録した端末でしかログインを終わらせないか（task #916）。渡すのは利用者の**所属元**テナント。
+    /// Whether sign-in completes only on registered devices (task #916). Pass the user's **home** tenant.
     async fn registered_device_required(&self, tenant_id: TenantId) -> Result<bool> {
         self.parse(tenant_id, REGISTERED_DEVICE_REQUIRED).await
     }
 
-    /// SSH の公開鍵の登録と配布を使うか（task #885）。渡すのは要求のテナント（鍵を登録した組織）。
+    /// Whether SSH public key registration and distribution are used (task #885). Pass the requested tenant (the organization where the key was registered).
     async fn ssh_keys_enabled(&self, tenant_id: TenantId) -> Result<bool> {
         self.parse(tenant_id, "SSH_KEYS_ENABLED").await
     }
@@ -473,19 +473,19 @@ impl TenantSettingsService {
     }
 }
 
-/// 保存値が型に合わない。⚠ 全体へ黙って落とさない（[`TenantSettingsService::parse`] と同じ扱い）。
+/// A stored value does not match its type. ⚠ Do not silently fall back to global (same handling as [`TenantSettingsService::parse`]).
 fn unparsable(key: &str, error: DomainError) -> DomainError {
     DomainError::InvalidValue(format!("stored value for {key} cannot be parsed: {error}"))
 }
 
-/// テナントが上書きできる（秘匿値でない）キーの定義。並びは定義の順。
+/// Definitions of keys tenants can override (non-secret). In definition order.
 fn overridable_definitions() -> impl Iterator<Item = &'static SettingDefinition> {
     RUNTIME_SETTING_DEFINITIONS
         .iter()
         .filter(|def| def.scope == SettingScope::TenantOverridable && !def.secret)
 }
 
-/// テナントが上書きできるキーの定義を返す。そうでなければ断る。
+/// Returns the definition of a key tenants can override. Refuses otherwise.
 fn overridable_definition(key: &str) -> Result<&'static SettingDefinition> {
     let def = runtime_setting_definition(key)
         .ok_or_else(|| DomainError::InvalidValue(format!("unknown setting key: {key}")))?;
@@ -494,7 +494,7 @@ fn overridable_definition(key: &str) -> Result<&'static SettingDefinition> {
             "setting {key} is decided by the whole IdP, not by a tenant"
         )));
     }
-    // secret は復号の口が別に要る（ADR-0058 §8 の SMTP）。平文と暗号文を同じ口から返さない。
+    // Secrets need a separate decryption endpoint (SMTP in ADR-0058 §8). Plaintext and ciphertext are not returned from the same endpoint.
     if def.secret {
         return Err(DomainError::InvalidValue(format!(
             "setting {key} is secret and cannot be resolved as plain text"
@@ -503,10 +503,10 @@ fn overridable_definition(key: &str) -> Result<&'static SettingDefinition> {
     Ok(def)
 }
 
-/// 消費側の単体試験が使う土台（ADR-0058）。
+/// The base used by consumers' unit tests (ADR-0058).
 ///
-/// ⚠ **試験では行を repository へ直接入れる。** 書き込みの口（`set` / `clear`）を通すと、
-/// 消費側の試験が監査や入力検査の都合に引きずられる。
+/// ⚠ **Tests put rows directly into the repository.** Going through the write endpoints (`set` / `clear`) would drag
+/// consumers' tests into the concerns of auditing and input validation.
 #[cfg(test)]
 pub(crate) mod testing {
     use super::*;
@@ -524,12 +524,12 @@ pub(crate) mod testing {
     pub struct FakeTenantSettings {
         pub rows: Mutex<Vec<TenantSetting>>,
         pub loads: AtomicUsize,
-        /// 行を 1 つも持たないテナントの数（横断集計の試験用）。
+        /// Number of tenants holding no rows at all (for cross-tenant aggregation tests).
         pub extra_tenants: Mutex<u64>,
     }
 
     impl FakeTenantSettings {
-        /// 秘匿値の行を入れる（SMTP のパスワードのような行が集計へ混ざらないことの試験用）。
+        /// Inserts a secret row (for testing that rows like the SMTP password do not leak into aggregation).
         pub fn put_secret(&self, tenant_id: TenantId, key: &str, value: &str) {
             self.rows.lock().unwrap().push(TenantSetting {
                 tenant_id,
@@ -583,7 +583,7 @@ pub(crate) mod testing {
             tenants.sort_by_key(|id| id.to_string());
             tenants.dedup();
             Ok(TenantOverridesAcrossTenants {
-                // 行を持たないテナントも数に入る（`extra_tenants` 件ぶん）。
+                // Tenants without rows are counted too (`extra_tenants` of them).
                 tenant_count: tenants.len() as u64 + *self.extra_tenants.lock().unwrap(),
                 overrides: rows
                     .iter()
@@ -599,7 +599,7 @@ pub(crate) mod testing {
         }
     }
 
-    /// 監査イベントを溜めるだけの sink。
+    /// A sink that just accumulates audit events.
     #[derive(Default)]
     pub struct CapturingSink {
         pub events: Mutex<Vec<AuditEvent>>,
@@ -620,7 +620,7 @@ pub(crate) mod testing {
         }
     }
 
-    /// 試験用の監査サービス（記録は捨てずに `CapturingSink` へ溜める）。
+    /// Audit service for tests (records are kept in `CapturingSink` instead of discarded).
     pub fn audit(sink: Arc<CapturingSink>) -> Arc<AuditService> {
         Arc::new(AuditService::new(sink, Arc::new(EpochClock)))
     }
@@ -643,7 +643,7 @@ pub(crate) mod testing {
         }
     }
 
-    /// 何も覚えないキャッシュ。試験の途中で行を足しても次の参照で必ず見える。
+    /// A cache that remembers nothing. Rows added mid-test are always visible on the next reference.
     pub struct NoCache;
 
     impl<K, V> Cache<K, V> for NoCache {
@@ -654,7 +654,7 @@ pub(crate) mod testing {
         fn invalidate(&self, _key: &K) {}
     }
 
-    /// 行の無い状態（＝全テナントが組み込み既定に従う）の解決器と、行を入れるための repository。
+    /// A resolver with no rows (= all tenants follow built-in defaults), and a repository for inserting rows.
     pub struct TenantSettingsFixture {
         pub service: Arc<TenantSettingsService>,
         pub tenants: Arc<FakeTenantSettings>,
@@ -662,12 +662,12 @@ pub(crate) mod testing {
     }
 
     impl TenantSettingsFixture {
-        /// そのテナントの行を入れる（テナントの上書き）。
+        /// Inserts a row for that tenant (the tenant's override).
         pub fn set_tenant(&self, tenant_id: TenantId, key: &str, value: &str) {
             self.tenants.put(tenant_id, key, value);
         }
 
-        /// 全体の行を入れる（`system_settings`）。
+        /// Inserts a global row (`system_settings`).
         pub fn set_global(&self, key: &str, value: &str) {
             let mut rows = self.system.rows.lock().unwrap();
             rows.retain(|row| row.key != key);
@@ -679,7 +679,7 @@ pub(crate) mod testing {
         }
     }
 
-    /// 組み込み既定（定義の `default_value`）を最後の層にした解決器。
+    /// A resolver whose last layer is the built-in default (the definition's `default_value`).
     pub fn tenant_settings() -> TenantSettingsFixture {
         let fallback = tenant_overridable_setting_keys()
             .filter_map(|key| {
@@ -705,7 +705,7 @@ pub(crate) mod testing {
         }
     }
 
-    /// 組み込み既定から一部のキーだけ全体の値を変えた解決器（従来 `Config` で値を注入していた試験用）。
+    /// A resolver that changes the global value of only some keys from the built-in defaults (for tests that used to inject values via `Config`).
     pub fn tenant_settings_with_global(values: &[(&str, &str)]) -> Arc<TenantSettingsService> {
         let fixture = tenant_settings();
         for (key, value) in values {
@@ -747,7 +747,7 @@ mod tests {
         let tenants = Arc::new(FakeTenantSettings::default());
         let system = Arc::new(FakeSystemSettings::default());
         let audit = Arc::new(CapturingSink::default());
-        // 環境変数 → 組み込み既定の層（配線側が `Config::value_without_db` で作るもの）。
+        // The environment variable -> built-in default layer (what the wiring side builds with `Config::value_without_db`).
         let fallback = HashMap::from([
             ("PASSWORD_MIN_LENGTH".to_string(), "8".to_string()),
             ("LOGIN_MAX_FAILED_ATTEMPTS".to_string(), "10".to_string()),
@@ -824,8 +824,8 @@ mod tests {
         assert_eq!(resolved.origin, SettingOrigin::TenantOverride);
     }
 
-    /// ⚠ 1 テナントだけの試験は、全体の値を読んでいても通ってしまう。2 テナントで違う値を入れ、
-    /// 互いの行が見えないことを確かめる。
+    /// ⚠ A single-tenant test would pass even if it read the global value. Put different values in 2 tenants and
+    /// check that neither sees the other's rows.
     #[tokio::test]
     async fn two_tenants_see_only_their_own_rows() {
         let f = fixture();
@@ -847,13 +847,13 @@ mod tests {
                 .unwrap(),
             20
         );
-        // 行の無いテナントは全体に従う。
+        // A tenant without rows follows global.
         let resolved = f.service.resolve(c, "PASSWORD_MIN_LENGTH").await.unwrap();
         assert_eq!(resolved.value, "8");
         assert_eq!(resolved.origin, SettingOrigin::Inherited);
     }
 
-    /// 上書きの無いキーは、別のキーを上書きしたテナントでも全体に従う（既定値の写しを作らない）。
+    /// A key without an override follows global even in a tenant that overrode another key (no copies of defaults are made).
     #[tokio::test]
     async fn overriding_one_key_does_not_pin_the_others() {
         let f = fixture();
@@ -875,7 +875,7 @@ mod tests {
         assert_eq!(f.tenants.rows.lock().unwrap().len(), 1, "no row is copied");
     }
 
-    /// 空の行は「行が無い」と同じ（`system_settings` と同じ扱い）。
+    /// An empty row is the same as "no row" (same handling as `system_settings`).
     #[tokio::test]
     async fn an_empty_row_means_no_override() {
         let f = fixture();
@@ -886,8 +886,8 @@ mod tests {
         assert_eq!(resolved.origin, SettingOrigin::Inherited);
     }
 
-    /// 全体で決めるキーはこの口を通さない。通すと、呼び出し側は「テナントの値で動いている」と
-    /// 誤解したまま全体の値を使う。
+    /// Globally decided keys do not go through this endpoint. If they did, callers would use the global value while mistakenly
+    /// believing "it runs on the tenant's value".
     #[tokio::test]
     async fn keys_decided_by_the_whole_idp_are_refused() {
         let f = fixture();
@@ -908,7 +908,7 @@ mod tests {
         assert!(matches!(err, DomainError::InvalidValue(_)));
     }
 
-    /// キャッシュは書き換えのあと `invalidate` で捨てるまで古い値を返す ——書き込み側は必ず呼ぶこと。
+    /// The cache returns old values after a rewrite until discarded by `invalidate`: writers must always call it.
     #[tokio::test]
     async fn invalidate_makes_the_next_lookup_reload() {
         let f = fixture();
@@ -942,7 +942,7 @@ mod tests {
         assert_eq!(resolved.value, "12");
     }
 
-    /// 型に合わない保存値は、全体へ黙って落とさずにエラーにする。
+    /// A stored value not matching its type is an error, not a silent fallback to global.
     #[tokio::test]
     async fn an_unparsable_stored_value_is_an_error_not_a_silent_fallback() {
         let f = fixture();
@@ -956,7 +956,7 @@ mod tests {
         assert!(matches!(err, DomainError::InvalidValue(_)));
     }
 
-    /// 型付きの口も 2 テナントで確かめる。行のあるテナントはその値、行の無いテナントは全体に従う。
+    /// The typed endpoints are also checked with 2 tenants. A tenant with a row gets that value; a tenant without follows global.
     #[tokio::test]
     async fn typed_readers_resolve_each_tenant_separately() {
         let fixture = super::testing::tenant_settings();
@@ -988,7 +988,7 @@ mod tests {
         assert!(!service.password_policy(b).await.unwrap().reject_breached);
     }
 
-    /// 組み込み既定だけで全部の口が引ける（定義の `default_value` の綴りと型が口と合っている）。
+    /// All endpoints can be looked up with built-in defaults alone (the spelling and type of the definitions' `default_value` match the endpoints).
     #[tokio::test]
     async fn every_typed_reader_works_on_the_builtin_defaults() {
         let fixture = super::testing::tenant_settings();
@@ -1010,7 +1010,7 @@ mod tests {
         assert!(!service.ssh_keys_enabled(t).await.unwrap());
     }
 
-    /// i32 に収まらない失敗回数は負数へラップさせず i32::MAX へ飽和させる（初回失敗で即ロックしない）。
+    /// A failure count not fitting in i32 saturates to i32::MAX instead of wrapping negative (no immediate lock on the first failure).
     #[tokio::test]
     async fn a_huge_failure_threshold_saturates_instead_of_wrapping() {
         let fixture = super::testing::tenant_settings();
@@ -1043,7 +1043,7 @@ mod tests {
     async fn set_writes_a_row_and_the_next_lookup_sees_it_without_waiting_for_the_cache() {
         let f = fixture();
         let t = tenant();
-        // 先に引いてキャッシュへ載せておく（書いたあとに invalidate しないと古い値が返る）。
+        // Look it up first to load it into the cache (without invalidate after writing, the old value is returned).
         f.service.resolve(t, "PASSWORD_MIN_LENGTH").await.unwrap();
 
         f.service
@@ -1063,7 +1063,7 @@ mod tests {
         assert_eq!(resolved.origin, SettingOrigin::TenantOverride);
     }
 
-    /// 「全体に戻す」は行を消す。値を全体と同じにするのとは違い、以後は全体の変更に追随する。
+    /// "Revert to global" deletes the row. Unlike setting the value equal to global, it follows global changes from then on.
     #[tokio::test]
     async fn clear_removes_the_row_so_the_tenant_follows_the_whole_idp_again() {
         let f = fixture();
@@ -1101,7 +1101,7 @@ mod tests {
         assert_eq!(resolved.origin, SettingOrigin::Inherited);
     }
 
-    /// ⚠ テナントの権限でシステム区画のキーを開かない（使う側の防御）。定義に無いキーも書かない。
+    /// ⚠ Do not open system-section keys with tenant permissions (defense on the consumer side). Keys not in the definitions are not written either.
     #[tokio::test]
     async fn keys_decided_by_the_whole_idp_cannot_be_written_or_cleared_by_a_tenant() {
         let f = fixture();
@@ -1152,7 +1152,7 @@ mod tests {
         assert!(f.tenants.rows.lock().unwrap().is_empty());
     }
 
-    /// 監査ログにはキーと設定/解除の別だけを残し、値そのものは残さない。
+    /// The audit log keeps only the key and whether it was set or cleared, not the value itself.
     #[tokio::test]
     async fn the_audit_log_records_the_key_and_the_change_but_not_the_value() {
         let f = fixture();
@@ -1233,7 +1233,7 @@ mod tests {
         let (a, b) = (tenant(), tenant());
         f.tenants.put(a, "PASSWORD_MIN_LENGTH", "16");
         f.tenants.put(b, "LOGIN_MAX_FAILED_ATTEMPTS", "3");
-        // 定義に無いキーの行（綴り違い）は「外れている」に数えない。
+        // Rows of keys not in the definitions (misspellings) are not counted as "deviating".
         f.tenants.put(b, "PASSWORD_MIN_LENGHT", "4");
         *f.tenants.extra_tenants.lock().unwrap() = 1;
 
@@ -1250,8 +1250,8 @@ mod tests {
         assert!(!adoption.contains_key("ACCESS_TOKEN_TTL_SECS"));
     }
 
-    /// SMTP の行（#113 が同じ表に置く）は、秘匿でも非秘匿でも、テナントが上書きできるキーの
-    /// 集計に混ざらない（キーの絞り込みは呼び出し側で定義から行う）。
+    /// SMTP rows (which #113 puts in the same table), secret or not, do not leak into the aggregation of keys tenants
+    /// can override (keys are narrowed from the definitions on the caller side).
     #[tokio::test]
     async fn smtp_rows_in_the_same_table_are_not_counted_as_overrides() {
         let f = fixture();
@@ -1266,7 +1266,7 @@ mod tests {
         assert!(adoption.values().all(|item| item.following == 1));
     }
 
-    /// 締め出し得る値（定義の `locks_out`）は、確認が無ければ保存しない。確認があれば保存する。
+    /// Values that may lock people out (the definition's `locks_out`) are not saved without confirmation. With confirmation they are saved.
     #[tokio::test]
     async fn a_value_that_can_lock_people_out_needs_confirmation() {
         let f = fixture();
@@ -1289,7 +1289,7 @@ mod tests {
                 .unwrap();
             f.tenants.rows.lock().unwrap().clear();
         }
-        // 締め出さない側の値は確認なしで保存できる。
+        // Values on the non-lockout side can be saved without confirmation.
         f.service
             .set(
                 TenantContext::new(t),
@@ -1301,7 +1301,7 @@ mod tests {
             )
             .await
             .unwrap();
-        // 選択肢に無い値は確認があっても断る。
+        // Values not among the choices are refused even with confirmation.
         let err = f
             .service
             .set(
@@ -1317,8 +1317,8 @@ mod tests {
         assert!(matches!(err, DomainError::InvalidValue(_)));
     }
 
-    /// 判定の既定 2 キー（ADR-0058 §4・§10）。2 テナントで違う値を入れ、互いの値が混ざらないこと。
-    /// 行の無いテナントは既定に従う。
+    /// The 2 default decision keys (ADR-0058 §4, §10). Put different values in 2 tenants and check they do not mix.
+    /// A tenant without rows follows the default.
     #[tokio::test]
     async fn each_tenant_gets_its_own_decision_defaults() {
         let (strict, lenient, untouched) = (tenant(), tenant(), tenant());
@@ -1345,7 +1345,7 @@ mod tests {
             settings.assignment_enforcement(lenient).await.unwrap(),
             AssignmentEnforcement::RecordOnly
         );
-        // 行が無ければ既定（allow / record_only）。⚠ 既定が enforce だと名簿の無い全員が締め出される。
+        // Without rows, the default (allow / record_only). ⚠ If the default were enforce, everyone without a directory entry would be locked out.
         assert_eq!(
             settings.policy_default_effect(untouched).await.unwrap(),
             DefaultPolicyEffect::Allow
@@ -1356,7 +1356,7 @@ mod tests {
         );
     }
 
-    /// 判定の既定 2 キーでも、型に合わない保存値は既定へ黙って落とさずにエラーにする。
+    /// Even for the 2 default decision keys, a stored value not matching its type is an error, not a silent fallback to the default.
     #[tokio::test]
     async fn an_unparsable_decision_default_is_an_error() {
         let t = tenant();

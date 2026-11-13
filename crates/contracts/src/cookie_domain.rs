@@ -1,30 +1,30 @@
-//! `COOKIE_DOMAIN` の起動時検証（ADR-0012 で導入、ADR-0018 決定 4 で用途変更）。
+//! Startup validation of `COOKIE_DOMAIN` (introduced in ADR-0012, repurposed by decision 4 of ADR-0018).
 //!
-//! セッション Cookie は常に host-only で発行されるため、本値は旧 ADR-0012 構成でブラウザに残った
-//! `Domain` 付き Cookie を掃除する削除 Cookie にだけ使う。検証条件（親ドメイン整合・public suffix
-//! 拒否）は削除 Cookie がブラウザに受理されるための条件として同じに保つ。
+//! Session cookies are always issued host-only, so this value is used only for deletion cookies that clean up
+//! `Domain` cookies left in browsers by the old ADR-0012 setup. The validation conditions (parent domain
+//! consistency, public suffix rejection) stay the same as the conditions for browsers to accept the deletion cookie.
 //!
-//! api と web が同一の検証を行う必要があるため、csrf と同様に contracts で共有する。
-//! 検証内容は ADR-0012 §Consequences の 2 点:
+//! api and web must run the same validation, so like csrf it is shared in contracts.
+//! The checks are the two points of ADR-0012 §Consequences:
 //!
-//! 1. `COOKIE_DOMAIN` が `ISSUER`・`PUBLIC_WEB_BASE_URL` 双方のホストの親ドメイン（または同一）で
-//!    あること。そうでない構成はブラウザが `Domain` Cookie を拒否し、ログインループになる。
-//! 2. `COOKIE_DOMAIN` が public suffix（eTLD。例 `com`・`co.uk`）そのものでないこと。public suffix は
-//!    検証 1 を通過しうるが、ブラウザは public suffix への `Domain` Cookie を拒否するため、
-//!    起動は成功するのに Cookie が一切共有されない障害になる（Public Suffix List で判定）。
+//! 1. `COOKIE_DOMAIN` is a parent domain of (or the same as) both the `ISSUER` and `PUBLIC_WEB_BASE_URL`
+//!    hosts. Otherwise browsers reject the `Domain` cookie and you get a login loop.
+//! 2. `COOKIE_DOMAIN` is not itself a public suffix (eTLD, e.g. `com`, `co.uk`). A public suffix can
+//!    pass check 1, but browsers reject `Domain` cookies for public suffixes, so startup succeeds
+//!    while no cookie is ever shared (decided with the Public Suffix List).
 
 use url::Url;
 
-/// `COOKIE_DOMAIN` を検証し、正規化した値（先頭 `.` 除去・小文字）を返す。
+/// Validates `COOKIE_DOMAIN` and returns the normalized value (leading `.` removed, lowercase).
 ///
-/// `origins` には Cookie を共有するサービスの公開オリジン（`ISSUER`・`PUBLIC_WEB_BASE_URL`）を
-/// 渡す。検証失敗時は構成エラーとして起動を中止する想定のメッセージを返す（fail-fast）。
+/// `origins` are the public origins of the services sharing the cookie (`ISSUER`, `PUBLIC_WEB_BASE_URL`).
+/// On validation failure, returns a message meant to abort startup as a configuration error (fail-fast).
 ///
-/// 検証 1・2 に加え、**全オリジンのスキーム一致**も要求する。各サービスは Cookie の `Secure` 属性を
-/// 自身の公開オリジンのスキームから独立に導出するため、https/http が混在すると片側だけが
-/// `Secure` Cookie を発行し、もう片側（http）へブラウザが Cookie を送信せずログインループになる。
+/// Besides checks 1 and 2, **all origins must share the same scheme**. Each service derives the cookie's
+/// `Secure` attribute independently from its own public origin scheme, so mixing https/http makes only one side
+/// issue a `Secure` cookie, and the browser does not send it to the other (http) side: a login loop.
 pub fn validate_cookie_domain(raw: &str, origins: &[&str]) -> Result<String, String> {
-    // RFC 6265 に従い先頭のドットは無視する（`.example.com` と `example.com` は同義）。
+    // Per RFC 6265, a leading dot is ignored (`.example.com` and `example.com` are equivalent).
     let domain = raw.trim().trim_start_matches('.').to_ascii_lowercase();
     if domain.is_empty() {
         return Err("COOKIE_DOMAIN must not be empty".to_string());
@@ -35,13 +35,13 @@ pub fn validate_cookie_domain(raw: &str, origins: &[&str]) -> Result<String, Str
         ));
     }
 
-    // 検証 1: 各公開オリジンのホストの**真の親ドメイン**であること。
+    // Check 1: it is a **proper parent domain** of every public origin's host.
     //
-    // 同一ホストは不可: RFC 6265 §5.3 の Cookie 同一性は (name, domain, path) で決まり host-only
-    // フラグを含まないため、`COOKIE_DOMAIN` がホスト名そのものだと、掃除用の `Domain` 付き削除
-    // Cookie（Max-Age=0）が**同時に発行した host-only セッション Cookie を上書き削除**してしまう
-    // （毎回セッションが消えるログインループ。ADR-0018 決定 4）。
-    // あわせてスキームを収集し、混在（https/http）を拒否する（`Secure` 属性の非対称化を防ぐ）。
+    // The same host is not allowed: RFC 6265 §5.3 cookie identity is (name, domain, path) and excludes the
+    // host-only flag, so if `COOKIE_DOMAIN` is the host name itself, the cleanup `Domain` deletion
+    // cookie (Max-Age=0) **overwrites and deletes the host-only session cookie issued at the same time**
+    // (a login loop where the session vanishes every time; decision 4 of ADR-0018).
+    // Also collect schemes and reject a mix (https/http) (prevents asymmetric `Secure` attributes).
     let mut schemes: Vec<String> = Vec::new();
     for origin in origins {
         let url = Url::parse(origin)
@@ -78,8 +78,8 @@ pub fn validate_cookie_domain(raw: &str, origins: &[&str]) -> Result<String, Str
         ));
     }
 
-    // 検証 2: public suffix そのものではないこと。登録可能ドメイン（eTLD+1）が取れない値は
-    // suffix そのもの（`com`・`co.uk` 等）であり、ブラウザが Domain Cookie を拒否する。
+    // Check 2: it is not itself a public suffix. A value with no registrable domain (eTLD+1) is
+    // a suffix itself (`com`, `co.uk` etc.), and browsers reject the Domain cookie.
     if psl::domain(domain.as_bytes()).is_none() {
         return Err(format!(
             "COOKIE_DOMAIN `{domain}` is a public suffix (eTLD); browsers reject Domain cookies \
@@ -103,7 +103,7 @@ mod tests {
             validate_cookie_domain("example.com", ORIGINS).unwrap(),
             "example.com"
         );
-        // 先頭ドット・大文字は正規化する。
+        // Leading dots and uppercase are normalized.
         assert_eq!(
             validate_cookie_domain(".Example.COM", ORIGINS).unwrap(),
             "example.com"
@@ -112,13 +112,13 @@ mod tests {
 
     #[test]
     fn rejects_domain_equal_to_origin_host() {
-        // ホスト名そのものは不可: RFC 6265 の Cookie 同一性は host-only フラグを含まないため、
-        // 掃除用の Domain 付き削除 Cookie が host-only セッション Cookie を上書き削除してしまう
-        // （ADR-0018 決定 4）。
+        // The host name itself is not allowed: RFC 6265 cookie identity excludes the host-only flag, so
+        // the cleanup Domain deletion cookie would overwrite and delete the host-only session cookie
+        // (decision 4 of ADR-0018).
         let err =
             validate_cookie_domain("idp.example.com", &["https://idp.example.com"]).unwrap_err();
         assert!(err.contains("equals the host"), "{err}");
-        // 入れ子ホスト構成（api が web の子）で web ホストを指定した場合も同様に拒否する。
+        // Likewise rejected when the web host is given in a nested host setup (api is a child of web).
         let err = validate_cookie_domain(
             "idp.example.com",
             &["https://api.idp.example.com", "https://idp.example.com"],
@@ -129,21 +129,21 @@ mod tests {
 
     #[test]
     fn rejects_domain_not_parent_of_an_origin() {
-        // 片方のオリジンだけの親では全ログインフローが壊れる。
+        // A parent of only one origin breaks every login flow.
         let err = validate_cookie_domain("other.com", ORIGINS).unwrap_err();
         assert!(err.contains("not a parent domain"), "{err}");
-        // 部分文字列一致（`ample.com`）は親ドメインではない。
+        // A substring match (`ample.com`) is not a parent domain.
         let err = validate_cookie_domain("ample.com", ORIGINS).unwrap_err();
         assert!(err.contains("not a parent domain"), "{err}");
     }
 
     #[test]
     fn rejects_a_sibling_host_of_the_other_origin() {
-        // 実際に起きやすい取り違え: 片方のホスト名（`api.example.com`）をそのまま COOKIE_DOMAIN に
-        // 設定する構成。同一ホスト拒否（削除 Cookie の自壊防止）に掛かる。
+        // A likely mix-up in practice: setting one host name (`api.example.com`) as COOKIE_DOMAIN as is.
+        // Caught by the same-host rejection (preventing the deletion cookie from destroying itself).
         let err = validate_cookie_domain("api.example.com", ORIGINS).unwrap_err();
         assert!(err.contains("equals the host"), "{err}");
-        // オリジンの順序に依らず、もう片方の親でない値も拒否される。
+        // Regardless of origin order, a value that is not a parent of the other one is also rejected.
         let err =
             validate_cookie_domain("id.example.com", &["https://api.example.com"]).unwrap_err();
         assert!(err.contains("not a parent domain"), "{err}");
@@ -151,7 +151,7 @@ mod tests {
 
     #[test]
     fn rejects_public_suffix() {
-        // `com` は両ホストの親として検証 1 を通るが、public suffix なので拒否する。
+        // `com` passes check 1 as a parent of both hosts, but is rejected as a public suffix.
         let err = validate_cookie_domain("com", ORIGINS).unwrap_err();
         assert!(err.contains("public suffix"), "{err}");
         let err = validate_cookie_domain(
@@ -177,15 +177,15 @@ mod tests {
 
     #[test]
     fn rejects_mixed_schemes_between_shared_cookie_origins() {
-        // https 側だけが Secure Cookie を発行し、http 側へは送信されない（ログインループ）ため、
-        // COOKIE_DOMAIN 設定時のスキーム混在は起動時に拒否する。
+        // Only the https side issues a Secure cookie and it is not sent to the http side (login loop),
+        // so a scheme mix with COOKIE_DOMAIN set is rejected at startup.
         let err = validate_cookie_domain(
             "example.com",
             &["https://api.example.com", "http://id.example.com"],
         )
         .unwrap_err();
         assert!(err.contains("mix schemes"), "{err}");
-        // 同一スキームなら http 同士（ローカル・テスト構成）も https 同士も受理する。
+        // With the same scheme, both http pairs (local/test setups) and https pairs are accepted.
         assert!(validate_cookie_domain(
             "example.com",
             &["http://api.example.com", "http://id.example.com"],

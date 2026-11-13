@@ -1,7 +1,7 @@
 {% extends "console/layout.html" %}
 {% block content %}
-{#- 一覧の 1 セルへ 7 つのボタンを並べていた頃の置き換え（操作列 168px にボタンが縦 7 段、
-    幅の広いものは右端で切れていた）。⚠ **一覧は探す場所、ここは操作する場所**と分ける。 -#}
+{#- Replaces the time when one list cell held 7 buttons (stacked 7 high in the 168px action column,
+    wide ones cut off at the right). ⚠ **The list is where you find; this is where you act.** -#}
 <p class="mb-2"><a href="{{ tenant }}/admin/accounts?kind=user"><i class="fa-solid fa-arrow-left me-1" aria-hidden="true"></i>{{ messages.get("admin-member-detail-back") }}</a></p>
 <h2 class="h4 mb-3">{{ member.email.as_deref().unwrap_or(member.preferred_username.as_deref().unwrap_or("-")) }}</h2>
 {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
@@ -31,8 +31,8 @@
         {% else if member.user_status.is_some() %}<span class="badge text-bg-warning">{{ messages.get("admin-members-user-status-locked") }}</span>
         {% else %}-{% endif %}
       </dd></div>
-    {#- 再発行（ADR-0047）を押す前に対象があるかを見せる（task #83）。数えられるのは refresh token
-        だけで、アクセストークンは DB に行が無い。何を数えたかを説明文で必ず添える。 -#}
+    {#- Show whether there is anything to revoke before pressing reissue (ADR-0047) (task #83). Only refresh tokens
+        can be counted; access tokens have no DB rows. Always state in the description what was counted. -#}
     {% if let Some(tokens) = active_tokens %}
     <div class="col mb-2"><dt class="small text-muted fw-semibold">{{ messages.get("admin-member-active-tokens") }}</dt>
       <dd class="mb-0"><span data-active-refresh-tokens="{{ tokens.active_refresh_tokens }}">{{ messages.get_arg("admin-member-active-tokens-count", "count", tokens.active_refresh_tokens.to_string().as_str()) }}</span>
@@ -42,9 +42,9 @@
   </dl>
 </div>
 
-{#- 管理者メモと使えるアプリは、サービスアカウントの画面と同じ部品（ADR-0065）。
-    メモは HOME / GUEST を問わず書ける（このテナントの管理者の覚え書きであって、ゲストの利用者
-    そのものは変えない）。使えるアプリは `idp.applications:read` を持たない管理者には欄ごと出さない。 -#}
+{#- Admin note and usable apps are the same parts as the service account screen (ADR-0065).
+    Notes can be written for HOME and GUEST alike (they are this tenant's admin memos and do not change the guest
+    user themselves). Usable apps are hidden entirely for admins without `idp.applications:read`. -#}
 {% let account_note = member.note.as_ref() %}
 {% include "console/account_note_card.html" %}
 {% if let Some(apps) = applications %}
@@ -89,7 +89,7 @@
       <button type="submit" class="btn btn-outline-success"><i class="fa-solid fa-lock-open me-1" aria-hidden="true"></i>{{ messages.get("admin-members-unlock-button") }}</button>
     </form>
     {% endif %}
-    {#- 仮登録の人にとってこの操作は「設定リンクを出し直す」こと（パスワードはまだ無い）。名前を合わせる。 -#}
+    {#- For a provisional person this operation means "reissue the setup link" (no password yet). Match the name. -#}
     {% if member.pending_setup %}
     <form method="post" action="{{ tenant }}/admin/members/{{ member.user_id }}/reset-password" data-confirm="{{ messages.get("admin-members-reissue-setup-link-confirm") }}">
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
@@ -115,7 +115,7 @@
   </div>
 </div>
 
-{#- ⚠ **戻せない操作は枠を分ける。** 一覧では削除が「権限を見る」と同じ大きさで並んでいた。 -#}
+{#- ⚠ **Irreversible operations get a separate frame.** In the list, delete was the same size as "View permissions". -#}
 <div class="card border-danger">
   <div class="card-header border-danger">
     <div class="fw-semibold text-danger"><i class="fa-solid fa-triangle-exclamation me-1" aria-hidden="true"></i>{{ messages.get("admin-member-detail-group-danger") }}</div>
@@ -129,8 +129,8 @@
   </div>
 </div>
 {% else %}
-{#- ゲストに対してできるのはメンバーシップの停止・再開・解除だけ（HOME の利用者そのものは
-    所属元テナントの管理者しか触れない。ADR-0009 §3）。 -#}
+{#- For guests only membership suspend/resume/remove is possible (the HOME user themselves can only be touched
+    by admins of their home tenant; ADR-0009 §3). -#}
 <div class="card mb-3">
   <div class="card-header">
     <div class="fw-semibold">{{ messages.get("admin-member-detail-group-fix") }}</div>

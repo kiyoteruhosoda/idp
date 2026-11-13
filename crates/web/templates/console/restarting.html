@@ -1,10 +1,10 @@
-{#- 再起動中の待機画面（ADR-0017）。
+{#- Restart wait screen (ADR-0017).
 
-     共通レイアウト（console/layout.html）を継承しない。この画面を描いた直後に web 自身が停止するため、
-     ナビゲーションのリンクはどれも数秒間つながらず、押せてしまうと「壊れた」ように見える。戻る導線を
-     持たない 1 枚ものにして、`<meta http-equiv="refresh">` で設定画面へ戻すことだけをさせる
-     （JS を使わないのは CSP の `script-src` にインラインを増やさないため）。CSS はブラウザの
-     キャッシュから読める前提で、読めなくても文章として成立するようにしておく。 -#}
+     Does not inherit the shared layout (console/layout.html). web itself stops right after rendering this screen,
+     so every navigation link is unreachable for a few seconds and, if clickable, looks "broken". Make it a single page
+     with no way back, whose only job is returning to the settings screen via `<meta http-equiv="refresh">`
+     (no JS, so as not to add inline scripts to the CSP `script-src`). CSS is assumed to be readable from the browser
+     cache, but the page still works as text if it is not. -#}
 <!DOCTYPE html>
 <html>
 <head>

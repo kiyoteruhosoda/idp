@@ -1,14 +1,14 @@
-//! 外部 IdP 設定の管理ユースケース（AP10。仕様 §13）。
+//! External IdP configuration management use case (AP10. spec §13).
 //!
-//! テナント管理者（`idp.tenant.admin`。`idp.system.admin` は代替として許可）が、テナントで使える
-//! 外部 OpenID Provider を登録・更新・削除する。
+//! A tenant admin (`idp.tenant.admin`; `idp.system.admin` is accepted as an alternative) registers, updates and
+//! deletes the external OpenID Providers usable in the tenant.
 //!
-//! クライアントシークレットは `KEY_ENCRYPTION_KEY` で暗号化して保存し、**読み出す API を持たない**
-//! （復号するのは外部 IdP へトークン要求を出す瞬間だけ）。更新時にシークレットを省略したら
-//! 既存値を維持する（毎回貼り直させると、貼り忘れで連携が壊れる）。
+//! The client secret is stored encrypted with `KEY_ENCRYPTION_KEY`, and **there is no API to read it back**
+//! (it is decrypted only at the moment a token request is sent to the external IdP). If the secret is omitted on update,
+//! the existing value is kept (making admins paste it every time would break the integration when they forget).
 //!
-//! エンドポイント URL は https のみ・内部宛先禁止で検証する。ここを緩めると、assay のサーバに
-//! 任意の URL を叩かせる（SSRF の）踏み台になる。
+//! Endpoint URLs are validated as https only with internal destinations forbidden. Loosening this would make assay's
+//! server a stepping stone that hits arbitrary URLs (SSRF).
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::admin_actor::AdminActor;
@@ -27,9 +27,9 @@ use crate::domain::tenant_context::TenantContext;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// 登録・更新で受け取るプロトコル固有の入力。**どの組み合わせが妥当か**を入口で 1 つに絞る
-/// （ADR-0027）。OIDC の欄と SAML の欄を並べて任意項目にすると、片方だけ埋めた設定を作れて
-/// しまい、誤りがログイン時まで見えない。
+/// Protocol-specific input for register/update. **Which combinations are valid** is narrowed to one at the entrance
+/// (ADR-0027). Putting the OIDC and SAML fields side by side as optional fields would allow a config with only one
+/// side filled, and the mistake wouldn't show until login.
 #[derive(Debug, Clone)]
 pub enum ExternalIdpConfigCommand {
     Oidc {
@@ -37,16 +37,16 @@ pub enum ExternalIdpConfigCommand {
         token_endpoint: String,
         jwks_uri: String,
         client_id: String,
-        /// 平文のクライアントシークレット（public クライアントとして登録するなら `None`）。
+        /// Plaintext client secret (`None` when registering as a public client).
         client_secret: Option<String>,
-        /// 省略時は既定（`openid profile email`）。
+        /// Defaults to `openid profile email` when omitted.
         scopes: Vec<String>,
     },
     Saml {
         sso_url: String,
-        /// 署名検証に使う X.509 証明書（base64 DER）。更新期間には新旧 2 枚を並べる。
+        /// X.509 certificates for signature verification (base64 DER). During a renewal period, old and new are listed side by side.
         certificates: Vec<String>,
-        /// 省略時は `unspecified`。
+        /// `unspecified` when omitted.
         name_id_format: Option<String>,
     },
 }
@@ -70,20 +70,20 @@ pub struct RegisterExternalIdpCommand {
     pub allow_auto_link: bool,
 }
 
-/// 部分更新。`None` のフィールドは変更しない。
+/// Partial update. Fields that are `None` are not changed.
 ///
-/// プロトコル固有の設定は**まとめて差し替える**（`config`）。項目ごとの部分更新にすると
-/// 「OIDC の設定に SAML の SSO URL だけを足す」ような中途半端な状態を作れてしまう。
-/// プロトコルそのものの変更は受け付けない（別プロバイダとして登録し直す）——同じ
-/// `provider_code` のまま切り替えると、既存の連携（`user_external_identities`）が
-/// 別プロトコルの識別子を指したまま残る。
+/// Protocol-specific settings are **replaced as a whole** (`config`). Per-field partial updates would allow
+/// half-baked states like "adding only a SAML SSO URL to an OIDC config".
+/// Changing the protocol itself is not accepted (register it again as a separate provider) ——switching while keeping
+/// the same `provider_code` would leave existing links (`user_external_identities`) pointing at
+/// identifiers of the other protocol.
 #[derive(Debug, Clone, Default)]
 pub struct UpdateExternalIdpCommand {
     pub display_name: Option<String>,
     pub issuer: Option<String>,
     pub config: Option<ExternalIdpConfigCommand>,
-    /// OIDC のみ: `Some(Some(_))` で差し替え、`Some(None)` で削除（public クライアント化）、
-    /// `None` で維持。`config` を差し替えるときは `config` 側の値が優先される。
+    /// OIDC only: `Some(Some(_))` replaces, `Some(None)` deletes (makes it a public client),
+    /// `None` keeps. When `config` is replaced, the value on the `config` side takes precedence.
     pub client_secret: Option<Option<String>>,
     pub enabled: Option<bool>,
     pub allow_auto_link: Option<bool>,
@@ -201,7 +201,7 @@ impl ExternalIdpManagementService {
             validate_display_name(&display_name)?;
             provider.display_name = display_name.trim().to_string();
         }
-        // URL 系は更新時も登録時と同じ検査を通す（登録を通しても更新で差し替えられては意味がない）。
+        // URLs go through the same checks on update as on registration (passing registration is pointless if an update can replace them).
         if let Some(issuer) = cmd.issuer {
             validate_issuer(&issuer, provider.protocol())?;
             provider.issuer = issuer.trim().to_string();
@@ -272,7 +272,7 @@ impl ExternalIdpManagementService {
         Ok(())
     }
 
-    /// 平文のシークレットを暗号化する（空文字は「無し」に正規化する）。
+    /// Encrypts the plaintext secret (an empty string is normalized to "none").
     fn encrypt_secret(
         &self,
         secret: Option<&str>,
@@ -285,8 +285,8 @@ impl ExternalIdpManagementService {
         }
     }
 
-    /// 入力をプロトコル固有の設定へ組み立てる。更新時は `previous` を渡すと、シークレットの
-    /// 省略で既存値を維持できる（毎回貼り直させると、貼り忘れで連携が壊れる）。
+    /// Builds the protocol-specific settings from the input. On update, passing `previous` lets an omitted
+    /// secret keep the existing value (making admins paste it every time would break the integration when they forget).
     fn build_config(
         &self,
         cmd: ExternalIdpConfigCommand,
@@ -329,8 +329,8 @@ impl ExternalIdpManagementService {
                 name_id_format,
             } => {
                 ExternalIdentityProvider::validate_endpoint(&sso_url, "sso_url")?;
-                // 証明書は登録時に読めることを確かめる。壊れた証明書を保存できてしまうと、
-                // 誤りが**利用者のログイン時**に初めて出る（管理者は気づけない）。
+                // Confirm the certificates can be read at registration. If a broken certificate could be saved,
+                // the error would first appear **at a user's login** (the admin wouldn't notice).
                 let certificates: Vec<String> = certificates
                     .into_iter()
                     .map(|c| c.split_whitespace().collect::<String>())
@@ -359,11 +359,11 @@ impl ExternalIdpManagementService {
     }
 }
 
-/// `issuer` の検証はプロトコルで違う。
+/// Validation of `issuer` differs by protocol.
 ///
-/// OIDC の `iss` は必ず https の URL（OIDC Discovery）だが、**SAML の entityID は URL とは
-/// 限らない**（`urn:` 形式も正当な entityID である）。OIDC と同じ検査を掛けると、正しく設定
-/// された IdP を登録できなくなる。
+/// The OIDC `iss` is always an https URL (OIDC Discovery), but **a SAML entityID is not necessarily
+/// a URL** (`urn:` forms are valid entityIDs too). Applying the OIDC checks would make correctly configured
+/// IdPs impossible to register.
 fn validate_issuer(
     issuer: &str,
     protocol: ExternalIdpProtocol,

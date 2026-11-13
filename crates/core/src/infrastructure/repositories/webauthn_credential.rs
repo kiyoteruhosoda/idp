@@ -1,18 +1,18 @@
-//! `WebAuthnCredentialRepository` の sqlx 実装。
+//! sqlx implementation of `WebAuthnCredentialRepository`.
 //!
-//! # 秘密の置き場所
+//! # Where the secret lives
 //!
-//! 公開鍵・署名カウンタ（`passkey_json` 全体）は**認証器の登録簿**
-//! （`user_authenticators.secret_encrypted`）にだけ在る（AP11b。元の表
-//! `user_webauthn_credentials` は migration 0038 で削除した）。
+//! Public keys and signature counters (the whole `passkey_json`) live only in **the authenticator registry**
+//! (`user_authenticators.secret_encrypted`) (AP11b; the original table
+//! `user_webauthn_credentials` was dropped in migration 0038).
 //!
-//! **パスキー 1 本 = 登録簿の 1 行**である。`WebAuthnCredential::id` は登録簿の行 id で、
-//! 移行中にあった「元の表の id か登録簿の id か」という曖昧さは無くなった
-//! （`credential_ref` も 0038 で落としている）。
+//! **One passkey = one registry row**. `WebAuthnCredential::id` is the registry row id, and
+//! the ambiguity during the migration of "original table id or registry id" is gone
+//! (`credential_ref` was also dropped in 0038).
 //!
-//! 行を作るのはこのリポジトリで、状態（`status`）を動かすのは
-//! [`crate::application::authenticator_management`] である。秘密を持つ側が行を作らないと、
-//! 「行はあるが鍵が載っていない」瞬間が生まれる。
+//! This repository creates the rows, and
+//! [`crate::application::authenticator_management`] moves the state (`status`). If the side holding the secret did not create the row,
+//! there would be a moment of "the row exists but has no key".
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::WebAuthnCredentialRepository;
@@ -59,18 +59,18 @@ fn map_row(row: &MySqlRow) -> Result<WebAuthnCredential> {
     })
 }
 
-/// 登録簿の列を `WebAuthnCredential` の語彙へ揃える別名。
+/// Aliases aligning registry columns to the vocabulary of `WebAuthnCredential`.
 const COLUMNS: &str = "id, user_id, credential_id, secret_encrypted AS passkey_json, \
      label AS name, created_at, last_used_at";
 
-/// 「使えるパスキーの行」を絞る条件。失効した行と鍵の載っていない行は見ない。
+/// Condition narrowing to "usable passkey rows". Revoked rows and rows without a key are ignored.
 const USABLE: &str =
     "authenticator_type = 'webauthn' AND status <> 'revoked' AND secret_encrypted IS NOT NULL";
 
 #[async_trait]
 impl WebAuthnCredentialRepository for SqlxWebAuthnCredentialRepository {
-    /// 登録簿へパスキーの行を作る。**登録した瞬間から使える**ので `active`／`confirmed_at` 入りで
-    /// 作る（WebAuthn の登録は attestation の検証まで済んでいて、TOTP のような確認手順が無い）。
+    /// Creates a passkey row in the registry. **It is usable from the moment of registration**, so it is created `active` with
+    /// `confirmed_at` (WebAuthn registration has already verified the attestation, with no confirmation step like TOTP).
     async fn create(&self, cred: &WebAuthnCredential) -> Result<()> {
         sqlx::query(
             "INSERT INTO user_authenticators \
@@ -89,7 +89,7 @@ impl WebAuthnCredentialRepository for SqlxWebAuthnCredentialRepository {
         .execute(&self.pool)
         .await
         .map_err(|e| {
-            // credential ID の一意制約。同じ認証器を二重登録しようとしたときに当たる。
+            // Unique constraint on credential ID. Hit when trying to register the same authenticator twice.
             if matches!(&e, sqlx::Error::Database(db) if db.code().as_deref() == Some("23000")) {
                 DomainError::Conflict("credential is already registered".to_string())
             } else {
@@ -139,7 +139,7 @@ impl WebAuthnCredentialRepository for SqlxWebAuthnCredentialRepository {
         rows.iter().map(map_row).collect()
     }
 
-    /// 署名カウンタを進める。**必ず進めなければならない**（進めないとクローン検知が効かない）。
+    /// Advances the signature counter. **It must always advance** (otherwise clone detection doesn't work).
     async fn update_passkey(
         &self,
         id: Uuid,
@@ -160,9 +160,9 @@ impl WebAuthnCredentialRepository for SqlxWebAuthnCredentialRepository {
         Ok(())
     }
 
-    /// パスキーを 1 本消す。**行は残す**（失効は
-    /// `AuthenticatorManagementService::revoke_webauthn` が `status` で表す）。credential ID も
-    /// 外す: 残すと、消したはずのパスキーが逆引きに当たり続ける。
+    /// Removes one passkey. **The row is kept** (revocation is expressed by
+    /// `AuthenticatorManagementService::revoke_webauthn` via `status`). The credential ID is
+    /// also cleared: otherwise the deleted passkey keeps matching reverse lookups.
     async fn delete(&self, id: Uuid, user_id: Uuid) -> Result<()> {
         sqlx::query(
             "UPDATE user_authenticators \
@@ -177,8 +177,8 @@ impl WebAuthnCredentialRepository for SqlxWebAuthnCredentialRepository {
         Ok(())
     }
 
-    /// 管理者による MFA 解除（MT21）。消し残しは復旧の失敗になるので、鍵をまとめて落とす。
-    /// 返すのは**外した本数**（呼び出し側が表示する）。
+    /// MFA reset by an admin (MT21). Leftovers would make recovery fail, so all keys are dropped together.
+    /// Returns **the number removed** (shown by the caller).
     async fn delete_all_for_user(&self, user_id: Uuid) -> Result<u64> {
         let result = sqlx::query(
             "UPDATE user_authenticators \

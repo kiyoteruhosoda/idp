@@ -1,20 +1,20 @@
-//! 管理コンソールからの再起動（web。`POST /{tenant_id}/admin/restart`。ADR-0017）。
+//! Restart from the admin console (web. `POST /{tenant_id}/admin/restart`. ADR-0017).
 //!
-//! ランタイム設定の DB 上書きは起動時にしか読まれない（ADR-0014）。反映のためだけに運用者を
-//! シェルへ行かせないよう、設定画面から **api → web の順**で再起動できるようにする。
+//! DB overrides of runtime settings are read only at startup (ADR-0014). So that operators need not go
+//! to a shell just to apply them, the settings screen can restart **api first, then web**.
 //!
-//! 順序は逆にできない。web は起動時に api から共有ランタイム設定を受け取る（ADR-0013）ので、
-//! web が先に立ち上がると再起動前の api が配る古い値を掴んでしまう。そのため
+//! The order cannot be reversed. web receives the shared runtime settings from the api at startup (ADR-0013),
+//! so if web came up first it would pick up stale values served by the not-yet-restarted api. Therefore
 //!
-//! 1. api へ再起動を要求し、**受理されたことを確認してから**
-//! 2. 再起動中の画面を返し、
-//! 3. その応答を返し切ったあとに web 自身を停止する
+//! 1. request a restart from the api and **confirm it was accepted**,
+//! 2. return the restarting screen,
+//! 3. stop web itself after that response has been fully sent,
 //!
-//! という順に進める。api の要求が失敗したら web は止めない（web だけ落ちると、api は動いている
-//! のに画面が消えて、再起動を指示する手段そのものが無くなる）。
+//! in that order. If the api request fails, web is not stopped (if only web went down, the screens would
+//! vanish while the api is running, removing the very means of ordering a restart).
 //!
-//! 新しいプロセスを起こすのは配置側の再起動ポリシーである（`service_restart` 参照）。ポリシーが
-//! 無い環境ではサービスが停止したままになるため、画面には実行前に必ずその前提を出す。
+//! Starting the new process is the deployment's restart policy (see `service_restart`). In an environment
+//! without such a policy the service stays stopped, so the screen always states that premise before running.
 
 use super::locale;
 use crate::api_client::AdminApiError;
@@ -38,17 +38,17 @@ use std::time::Duration;
 
 const SETTINGS_SEGMENT: &str = "/admin/settings";
 
-/// 待機画面を返してから web を停止するまでの猶予。
+/// Grace period between returning the waiting screen and stopping web.
 ///
-/// api は受理から約 0.5 秒で停止に入る。web がそれより先に落ちると、待機画面を描き切れないうえ、
-/// 先に起動し直して古い共有設定を掴む恐れがある。api の停止を追い越さない程度に置く。
+/// The api starts stopping about 0.5 s after accepting. If web went down earlier, the waiting screen could not
+/// finish rendering, and web might restart first and pick up stale shared settings. Set it so as not to overtake the api's stop.
 const WEB_SHUTDOWN_DELAY: Duration = Duration::from_secs(2);
 
-/// 待機画面が設定画面へ自動で戻るまでの秒数。両サービスの起動（web は api への再試行を含む）が
-/// 終わる程度に取る。早すぎると「戻ったのにエラー」になり、再起動の失敗と区別が付かない。
+/// Seconds until the waiting screen automatically returns to the settings screen. Long enough for both services
+/// to start (web includes retries to the api). Too short gives "back but erroring", indistinguishable from a failed restart.
 const RETRY_AFTER_SECONDS: u64 = 20;
 
-/// api と web を再起動する。
+/// Restarts the api and web.
 pub async fn restart(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -66,7 +66,7 @@ pub async fn restart(
         return found(&format!("{base}?error=csrf"));
     }
 
-    // 1. api を先に停止させる（受理されるまで web は止めない）。
+    // 1. Stop the api first (web is not stopped until accepted).
     if let Err(e) = state
         .api
         .request_restart(&correlation.0, &tenant.0, &sso)
@@ -82,10 +82,10 @@ pub async fn restart(
         };
     }
 
-    // 2. web 自身の停止を予約する。応答を返し切る前に止めると待機画面が届かない。
+    // 2. Schedule web's own stop. Stopping before the response is fully sent would lose the waiting screen.
     schedule_web_shutdown(state.restart.clone());
 
-    // 3. 待機画面（自動で設定画面へ戻る）。
+    // 3. Waiting screen (automatically returns to the settings screen).
     let messages = Messages::new(locale(&headers));
     Html(render(&Restarting {
         messages: &messages,

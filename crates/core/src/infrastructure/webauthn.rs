@@ -1,14 +1,14 @@
-//! `webauthn-rs` ラッパー。
+//! `webauthn-rs` wrapper.
 //!
-//! `Webauthn` インスタンスの構築と、登録・認証の始終フロー（begin/finish）を一箇所に集約する。
-//! RP ID は web の公開ベース URL（`PUBLIC_WEB_BASE_URL`。未設定時は issuer に追従）のホスト名部分、
-//! RP オリジンはその URL のオリジン（scheme + host + port。パスは落とす）を使う。Passkey の
-//! セレモニー（`navigator.credentials.*`）は web のページ上で実行されるため、RP ID・origin は
-//! web のオリジンに対して成立させる（ADR-0019 決定 2。
-//! issuer＝api のオリジンから導出すると、domain-split では api ホストが web ページの登録可能
-//! サフィックスにならず、セレモニーがブラウザ側で常に失敗する）。
+//! Concentrates building the `Webauthn` instance and the registration/authentication flows (begin/finish) in one place.
+//! The RP ID is the host name of web's public base URL (`PUBLIC_WEB_BASE_URL`; follows the issuer when unset),
+//! and the RP origin is that URL's origin (scheme + host + port; the path is dropped). Passkey
+//! ceremonies (`navigator.credentials.*`) run on web's pages, so the RP ID and origin
+//! are established against web's origin (ADR-0019 decision 2.
+//! Deriving them from the issuer = api's origin would, with a domain split, make the api host not a registrable
+//! suffix of the web page, and the ceremony would always fail in the browser).
 //!
-//! エラー型は `webauthn_rs::WebauthnError` を文字列にしてアプリエラーとして返す。
+//! Errors are returned as app errors with `webauthn_rs::WebauthnError` converted to a string.
 
 use crate::domain::webauthn_port::WebAuthnPort;
 use url::Url;
@@ -32,12 +32,12 @@ impl std::fmt::Debug for WebAuthnService {
 }
 
 impl WebAuthnService {
-    /// `web_base_url`（web の公開ベース URL）から RP ID（ホスト名）と RP オリジンを導出して
-    /// `Webauthn` を構築する。
+    /// Builds `Webauthn` by deriving the RP ID (host name) and RP origin from `web_base_url`
+    /// (web's public base URL).
     ///
     /// # Panics
-    /// `web_base_url` が有効な URL でない場合、またはホスト名がない場合は panic する
-    /// （設定ミスなので起動時に即座に検出する）。
+    /// Panics if `web_base_url` is not a valid URL or has no host name
+    /// (a configuration mistake, so it is detected immediately at startup).
     pub fn new(web_base_url: &str) -> Self {
         let base = Url::parse(web_base_url)
             .unwrap_or_else(|e| panic!("PUBLIC_WEB_BASE_URL is not a valid URL: {e}"));
@@ -55,22 +55,22 @@ impl WebAuthnService {
     }
 }
 
-/// セレモニーの期待オリジン（scheme + host + port のみ）。ブラウザの `clientDataJSON.origin` は
-/// 常にパス無しのオリジンのため、公開ベース URL がパスプレフィクス付き（例
-/// `https://example.com/idp`。`validate_public_base_url` はパスを許容する）でも一致するよう、
-/// パスを落としてから `WebauthnBuilder` へ渡す。
+/// Expected origin of the ceremony (scheme + host + port only). The browser's `clientDataJSON.origin` is
+/// always an origin without a path, so to match even when the public base URL has a path prefix (e.g.
+/// `https://example.com/idp`; `validate_public_base_url` allows paths), the path is dropped
+/// before passing it to `WebauthnBuilder`.
 fn ceremony_origin(base: &Url) -> Url {
     Url::parse(&base.origin().ascii_serialization())
         .unwrap_or_else(|e| panic!("PUBLIC_WEB_BASE_URL has no valid origin: {e}"))
 }
 
 impl WebAuthnPort for WebAuthnService {
-    // ─── 登録 ─────────────────────────────────────────────────────────────
+    // ─── Registration ─────────────────────────────────────────────────────────────
 
-    /// 登録開始: チャレンジと `PasskeyRegistration` 中間状態を返す。
+    /// Begin registration: returns the challenge and the intermediate `PasskeyRegistration` state.
     ///
-    /// `exclude_credentials` には既存登録済みの `Passkey` スライスを渡すことで
-    /// 同一デバイスの二重登録を防ぐ。
+    /// Passing the already-registered `Passkey` slice as `exclude_credentials`
+    /// prevents registering the same device twice.
     fn begin_registration(
         &self,
         user_id: Uuid,
@@ -97,21 +97,21 @@ impl WebAuthnPort for WebAuthnService {
             )
             .map_err(|e| e.to_string())?;
 
-        // **discoverable（resident）な鍵を要求する。**
+        // **Require a discoverable (resident) key.**
         //
-        // webauthn-rs の `start_passkey_registration` は `residentKey: discouraged` を載せる
-        // （`require_resident_key(false)`）。一方こちらの認証は `start_discoverable_authentication`
-        // ——`allowCredentials` を空で出し、認証器が持ち主を名乗る形——**しか持たない**。
-        // 噛み合っていないと、**登録は成功するのにログインには一生使えない鍵**ができる。
-        // ブラウザは該当する鍵を見つけられず `NotAllowedError` を返すので、画面には
-        // 「中止されたか時間切れ」としか出ず、原因に辿り着けない（2026-09-02 に実際に踏んだ）。
+        // webauthn-rs's `start_passkey_registration` sets `residentKey: discouraged`
+        // (`require_resident_key(false)`). Our authentication, on the other hand, **only has**
+        // `start_discoverable_authentication` -- `allowCredentials` sent empty, with the authenticator naming the owner.
+        // If these don't mesh, you get **a key that registers successfully but can never be used to log in**.
+        // The browser can't find a matching key and returns `NotAllowedError`, so the screen only shows
+        // "cancelled or timed out" and the cause can't be traced (actually hit on 2026-09-02).
         //
-        // `mediation` を落としている（`begin_authentication`）のと同じく、ここも webauthn-rs が
-        // 組んだ値を後から直す（`start_passkey_registration` はこの指定を引数に取らない）。
+        // As with dropping `mediation` (`begin_authentication`), the value webauthn-rs built is fixed
+        // afterwards here too (`start_passkey_registration` doesn't take this as an argument).
         //
-        // 無ければ作る。`if let Some(..)` で分岐すると、webauthn-rs が
-        // `authenticatorSelection` を載せなくなった日に**この要求だけが黙って消える**。
-        // 既定は `user_verification: Required` で、webauthn-rs が載せている値と同じ。
+        // Create it if absent. Branching with `if let Some(..)` would make **just this requirement silently vanish**
+        // the day webauthn-rs stops including `authenticatorSelection`.
+        // The default is `user_verification: Required`, the same value webauthn-rs sets.
         let selection = challenge
             .public_key
             .authenticator_selection
@@ -122,7 +122,7 @@ impl WebAuthnPort for WebAuthnService {
         Ok((challenge, state))
     }
 
-    /// 登録完了: レスポンスを検証して `Passkey` を返す。
+    /// Finish registration: verifies the response and returns a `Passkey`.
     fn finish_registration(
         &self,
         credential: &RegisterPublicKeyCredential,
@@ -133,24 +133,24 @@ impl WebAuthnPort for WebAuthnService {
             .map_err(|e| e.to_string())
     }
 
-    // ─── 認証 ─────────────────────────────────────────────────────────────
+    // ─── Authentication ─────────────────────────────────────────────────────────────
 
-    /// 認証開始（discoverable credentials）: チャレンジと `DiscoverableAuthentication` を返す。
+    /// Begin authentication (discoverable credentials): returns the challenge and `DiscoverableAuthentication`.
     ///
-    /// 認証器がユーザーハンドルを送ってくるため、ユーザーを事前に特定する必要がない。
+    /// The authenticator sends the user handle, so the user need not be identified beforehand.
     ///
-    /// **`mediation` は落とす。** `start_discoverable_authentication()` は `conditional-ui`
-    /// フィーチャ有効時に `mediation: Conditional` を載せるが、conditional は
-    /// **入力欄のオートフィルから始まるセレモニー**であり、`autocomplete` に `webauthn` を
-    /// 含む入力欄がページに要る。IdP のログイン画面はどれもボタン押下から
-    /// `navigator.credentials.get()` を呼ぶ作りで、その欄を持たない。この値を載せたままだと
-    /// **1 回目は何も起こらずに保留のまま**（ブラウザはオートフィルの選択を待ち続ける）、
-    /// 2 回目の押下で `A request is already pending` になる。
+    /// **`mediation` is dropped.** `start_discoverable_authentication()` sets `mediation: Conditional`
+    /// when the `conditional-ui` feature is enabled, but conditional is
+    /// **a ceremony started from an input field's autofill**, needing an input on the page whose `autocomplete`
+    /// includes `webauthn`. All of the IdP's login screens call `navigator.credentials.get()` on a button press
+    /// and have no such field. Leaving this value in means
+    /// **the first press does nothing and stays pending** (the browser keeps waiting for an autofill choice),
+    /// and the second press gives `A request is already pending`.
     ///
-    /// `mediation` は `Option::is_none` でスキップ直列化されるため、`None` にすると
-    /// レスポンス JSON からフィールドごと消え、ブラウザは既定のモーダル選択 UI を出す。
-    /// オートフィル体験を足すなら、入力欄に `autocomplete="username webauthn"` を付けて
-    /// **ページ読み込み時に**別途 conditional の `get()` を張るのが筋で、ボタンの経路とは別物。
+    /// `mediation` is skipped in serialization via `Option::is_none`, so setting it to `None`
+    /// removes the field from the response JSON entirely and the browser shows the default modal chooser UI.
+    /// To add an autofill experience, the right way is to put `autocomplete="username webauthn"` on the input and
+    /// separately start a conditional `get()` **on page load**, which is distinct from the button path.
     fn begin_authentication(
         &self,
     ) -> Result<(RequestChallengeResponse, DiscoverableAuthentication), String> {
@@ -162,10 +162,10 @@ impl WebAuthnPort for WebAuthnService {
         Ok((challenge, state))
     }
 
-    /// 認証完了: クレデンシャルを検証して `AuthenticationResult` を返す。
+    /// Finish authentication: verifies the credential and returns an `AuthenticationResult`.
     ///
-    /// `creds` は `&[DiscoverableKey]`。認証レスポンスに含まれる credential ID から
-    /// 対象クレデンシャルを引いた 1 件だけ `Passkey::from` で変換して渡す。
+    /// `creds` is `&[DiscoverableKey]`. Only the one credential looked up by the credential ID in the
+    /// authentication response is converted with `Passkey::from` and passed.
     fn finish_authentication(
         &self,
         credential: &PublicKeyCredential,
@@ -196,16 +196,16 @@ mod tests {
 
     #[test]
     fn builds_from_a_base_url_with_a_path_prefix() {
-        // パス付きの公開ベース URL でも構築でき、RP ID はホスト名になる。
+        // Can be built even with a public base URL that has a path, and the RP ID becomes the host name.
         let _ = WebAuthnService::new("https://idp.example.com/prefix");
     }
 
-    /// ログイン画面へ渡す options に `mediation` を載せない。
+    /// The options passed to the login screen don't carry `mediation`.
     ///
-    /// 載せると conditional（オートフィル）のセレモニーになり、`autocomplete` に `webauthn` を
-    /// 含む入力欄を持たない当該画面ではボタンを押しても何も起きず、2 回目で
-    /// `A request is already pending` になる。ブラウザへ出す JSON で確かめる —— 型の上では
-    /// `Option` の 1 つでも、画面の挙動を決めるのは直列化された結果だからである。
+    /// With it, the ceremony becomes conditional (autofill), and on screens without an input whose `autocomplete`
+    /// includes `webauthn`, pressing the button does nothing, and the second press gives
+    /// `A request is already pending`. Checked on the JSON sent to the browser -- at the type level it is
+    /// just one `Option`, but what determines screen behavior is the serialized result.
     #[test]
     fn the_authentication_options_do_not_ask_for_conditional_mediation() {
         let service = WebAuthnService::new("https://idp.example.com");
@@ -221,9 +221,9 @@ mod tests {
         assert_eq!(json["publicKey"]["rpId"], "idp.example.com");
     }
 
-    /// 登録では **discoverable（resident）な鍵**を要求する（理由は `begin_registration` の注記）。
+    /// Registration requires **a discoverable (resident) key** (see the note in `begin_registration` for why).
     ///
-    /// webauthn-rs の既定は `discouraged` なので、直列化された JSON で上書きを確かめる。
+    /// webauthn-rs defaults to `discouraged`, so the override is checked in the serialized JSON.
     #[test]
     fn the_registration_options_require_a_discoverable_credential() {
         let service = WebAuthnService::new("https://idp.example.com");

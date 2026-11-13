@@ -1,9 +1,9 @@
-//! SAML SP-initiated SSO の統合テスト（DB あり）。
+//! Integration test for SAML SP-initiated SSO (with DB).
 //!
-//! `/{tenant_id}/saml/sso`（Redirect / POST binding）→ web ハンドオフ →
-//! `/internal/saml/resume`（SSO 判定・署名付き SAML Response 発行）の一連を検証する。
+//! Verifies the sequence `/{tenant_id}/saml/sso` (Redirect / POST binding) -> web handoff ->
+//! `/internal/saml/resume` (SSO decision, issuing a signed SAML Response).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test saml_sso
 
 mod support;
@@ -25,11 +25,11 @@ use support::{
 
 const ACS_URL: &str = "https://sp.example.test/acs";
 
-/// 有効な SAML SP をテナントへ直接登録して entity_id を返す。
+/// Registers a valid SAML SP directly into the tenant and returns its entity_id.
 ///
-/// 空の `saml_service_providers` へ複数テストが同時に INSERT すると、UNIQUE 索引のギャップロックで
-/// InnoDB のデッドロック（1213）が起き得るため、デッドロックのみ再試行する（テストデータ生成の都合で、
-/// アプリの挙動検証ではない）。
+/// When several tests INSERT concurrently into an empty `saml_service_providers`, gap locks on the UNIQUE
+/// index can cause an InnoDB deadlock (1213), so only deadlocks are retried (a test data setup concern,
+/// not verification of app behavior).
 async fn insert_service_provider(
     pool: &MySqlPool,
     tenant_id: &str,
@@ -72,7 +72,7 @@ fn authn_request_xml(sp_entity_id: &str, request_id: &str, acs_url: Option<&str>
     )
 }
 
-/// HTTP-Redirect binding のクエリ値（base64(raw DEFLATE(xml)) を URL エンコード）を組み立てる。
+/// Builds the HTTP-Redirect binding query value (base64(raw DEFLATE(xml)), URL-encoded).
 fn redirect_binding_query(xml: &str, relay_state: Option<&str>) -> String {
     let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
     encoder.write_all(xml.as_bytes()).expect("deflate");
@@ -85,7 +85,7 @@ fn redirect_binding_query(xml: &str, relay_state: Option<&str>) -> String {
     serializer.finish()
 }
 
-/// `/internal/saml/resume` を呼ぶ（web の代わり）。
+/// Calls `/internal/saml/resume` (in place of web).
 async fn resume_saml(
     app: &axum::Router,
     tenant: &str,
@@ -123,7 +123,7 @@ async fn full_sso_flow_issues_a_signed_response_after_login() {
     )
     .await;
 
-    // 1. Redirect binding で AuthnRequest を受けると web の /saml/continue へハンドオフする。
+    // 1. Receiving an AuthnRequest via Redirect binding hands off to web's /saml/continue.
     let xml = authn_request_xml(&entity_id, "_it-request-1", Some(ACS_URL));
     let uri = format!(
         "/{}/saml/sso?{}",
@@ -136,7 +136,7 @@ async fn full_sso_flow_issues_a_signed_response_after_login() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::FOUND, "handoff to web");
-    // api はブラウザ Cookie を発行しない（ADR-0018 決定 2 と同方式）。
+    // api does not issue browser cookies (same approach as decision 2 of ADR-0018).
     assert!(
         response
             .headers()
@@ -156,19 +156,19 @@ async fn full_sso_flow_issues_a_signed_response_after_login() {
     );
     let handle = query_param(&redirect, "handle").expect("handle in Location");
 
-    // 2. SSO 未確立の resume はログイン誘導（進行状態 id を返す）。
+    // 2. A resume without established SSO leads to login (returns the progress state id).
     let body = resume_saml(&env.app, &env.root_tenant_id, Some(&handle), None, None).await;
     assert_eq!(body["result"], "login_required", "{body}");
     let saml_request_id = body["saml_request_id"].as_str().expect("saml_request_id");
 
-    // ハンドルは単回使用（再利用は expired）。
+    // The handle is single-use (reuse is expired).
     let body = resume_saml(&env.app, &env.root_tenant_id, Some(&handle), None, None).await;
     assert_eq!(
         body["result"], "expired",
         "handle must be single-use: {body}"
     );
 
-    // 3. ログイン（SSO 確立）後、進行状態 id で再開すると署名付き SAML Response が発行される。
+    // 3. After login (SSO established), resuming with the progress state id issues a signed SAML Response.
     let sso = create_sso_session(&env.pool, &env.root_admin_id).await;
     let body = resume_saml(
         &env.app,
@@ -197,7 +197,7 @@ async fn full_sso_flow_issues_a_signed_response_after_login() {
         response_xml.contains(&format!("<saml:Audience>{entity_id}</saml:Audience>")),
         "audience must be the SP entity id"
     );
-    // NameID は SP 登録の emailAddress Format に従い、seed 管理者のメールになる。
+    // NameID follows the SP registration's emailAddress Format and becomes the seed admin's email.
     assert!(
         response_xml.contains(">admin@example.com</saml:NameID>"),
         "NameID must carry the email: {response_xml}"
@@ -208,7 +208,7 @@ async fn full_sso_flow_issues_a_signed_response_after_login() {
     );
     assert!(response_xml.contains("<ds:SignatureValue>"));
 
-    // 4. 進行状態は応答発行時に削除される（同じ id での再開は expired）。
+    // 4. The progress state is deleted when the response is issued (resuming with the same id is expired).
     let body = resume_saml(
         &env.app,
         &env.root_tenant_id,
@@ -249,7 +249,7 @@ async fn post_binding_hands_off_like_the_redirect_binding() {
     assert_eq!(response.status(), StatusCode::FOUND, "handoff to web");
     let handle = query_param(&location(&response), "handle").expect("handle");
 
-    // persistent Format の NameID は外部公開サブジェクト識別子（sub）で、email ではない。
+    // A persistent-Format NameID is the public subject identifier (sub), not the email.
     let sso = create_sso_session(&env.pool, &env.root_admin_id).await;
     let body = resume_saml(
         &env.app,
@@ -268,7 +268,7 @@ async fn post_binding_hands_off_like_the_redirect_binding() {
         !response_xml.contains(">admin@example.com</saml:NameID>"),
         "persistent NameID must not expose the email as the identifier"
     );
-    // AuthnRequest が ACS を指定しない場合も、登録済み ACS へ送る。
+    // Even when the AuthnRequest does not specify an ACS, it is sent to the registered ACS.
     assert_eq!(body["acs_url"], ACS_URL);
 }
 
@@ -278,7 +278,7 @@ async fn unknown_sp_and_acs_mismatch_are_rejected_without_redirect() {
         return;
     };
 
-    // 未登録 SP → 400（リダイレクトしない）。
+    // Unregistered SP -> 400 (no redirect).
     let xml = authn_request_xml("https://unregistered.example.test/metadata", "_x", None);
     let uri = format!(
         "/{}/saml/sso?{}",
@@ -292,7 +292,7 @@ async fn unknown_sp_and_acs_mismatch_are_rejected_without_redirect() {
     .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST, "unknown SP");
 
-    // ACS 不一致 → 400（登録外の送信先へアサーションを送らない）。
+    // ACS mismatch -> 400 (never send an assertion to an unregistered destination).
     let entity_id = insert_service_provider(
         &env.pool,
         &env.root_tenant_id,
@@ -312,7 +312,7 @@ async fn unknown_sp_and_acs_mismatch_are_rejected_without_redirect() {
     .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST, "ACS mismatch");
 
-    // SAMLRequest 無し → 400。
+    // No SAMLRequest -> 400.
     let response = send(
         &env.app,
         Request::builder()
@@ -380,8 +380,8 @@ async fn resume_requires_the_service_token() {
     );
 }
 
-/// root の下にテナントを 1 つ作り、割り当ての判定の段階（`APPLICATION_ASSIGNMENT_ENFORCEMENT`）を
-/// そのテナントの行として入れる。⚠ 全体の行と root テナントには触らない（並走する他のテストの前提）。
+/// Creates a tenant under root and inserts the assignment decision stage (`APPLICATION_ASSIGNMENT_ENFORCEMENT`)
+/// as that tenant's row. ⚠ The global row and the root tenant are not touched (premise of other parallel tests).
 async fn tenant_with_enforcement(pool: &MySqlPool, root_tenant_id: &str, value: &str) -> String {
     let tenant = uuid::Uuid::now_v7().to_string();
     sqlx::query(
@@ -406,7 +406,7 @@ async fn tenant_with_enforcement(pool: &MySqlPool, root_tenant_id: &str, value: 
     tenant
 }
 
-/// SP を「個別」のアプリとして開き（SAML の binding）、アプリの id を返す。
+/// Opens the SP as an "individual" app (SAML binding) and returns the app id.
 async fn open_service_provider_as_individual_application(
     pool: &MySqlPool,
     tenant_id: &str,
@@ -458,7 +458,7 @@ async fn assign_user(pool: &MySqlPool, application_id: &str, user_id: &str) {
     .expect("assign user");
 }
 
-/// AuthnRequest を受けて、SSO 確立済みの利用者で resume した応答を返す。
+/// Receives an AuthnRequest and returns the response of resuming as a user with established SSO.
 async fn sign_in_to_sp(
     env: &support::TestEnv,
     tenant: &str,
@@ -478,7 +478,7 @@ async fn sign_in_to_sp(
     resume_saml(&env.app, tenant, Some(&handle), None, Some(&sso)).await
 }
 
-/// 割り当ての判定の監査行（`application.access_denied`）の `(result, client_id)`。
+/// `(result, client_id)` of the assignment decision audit row (`application.access_denied`).
 async fn access_denied_rows(pool: &MySqlPool, tenant: &str) -> Vec<(String, String)> {
     sqlx::query_as(
         "SELECT result, client_id FROM audit_log \
@@ -490,10 +490,10 @@ async fn access_denied_rows(pool: &MySqlPool, tenant: &str) -> Vec<(String, Stri
     .expect("read audit")
 }
 
-/// アサーションの発行地点にも割り当ての判定が効く（ADR-0054。task #66）。
+/// The assignment decision also applies where assertions are issued (ADR-0054, task #66).
 ///
-/// `enforce` のテナントでは、名簿に載っていない人へアサーションを出さず（ACS へ送らない）、
-/// 載っている人には出す。`record_only` のテナントでは、載っていない人にも出して記録だけ残す。
+/// In an `enforce` tenant, no assertion is issued to people not on the roster (nothing sent to the ACS),
+/// while people on it get one. In a `record_only` tenant, people not on it also get one, with only a record kept.
 #[tokio::test]
 async fn the_application_assignment_gate_applies_to_saml_assertions() {
     let Some(env) = support::setup("saml sso application gate").await else {
@@ -501,7 +501,7 @@ async fn the_application_assignment_gate_applies_to_saml_assertions() {
     };
     let persistent = "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent";
 
-    // 1. enforce: 載っていない人は断られ、載っている人は通る。
+    // 1. enforce: people not on the roster are refused, people on it pass.
     let enforcing = tenant_with_enforcement(&env.pool, &env.root_tenant_id, "enforce").await;
     let entity_id = insert_service_provider(&env.pool, &enforcing, persistent).await;
     let application_id = open_service_provider_as_individual_application(
@@ -542,7 +542,7 @@ async fn the_application_assignment_gate_applies_to_saml_assertions() {
         "only the outsider is audited, with the SP's entity id"
     );
 
-    // 2. record_only: 載っていない人にも出し、記録だけ残す。
+    // 2. record_only: people not on the roster also get one, with only a record kept.
     let recording = tenant_with_enforcement(&env.pool, &env.root_tenant_id, "record_only").await;
     let entity_id = insert_service_provider(&env.pool, &recording, persistent).await;
     open_service_provider_as_individual_application(

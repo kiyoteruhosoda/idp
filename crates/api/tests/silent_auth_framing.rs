@@ -1,11 +1,11 @@
-//! 画面を出さずに試す往復（`prompt=none`）の 302 だけを、設定した親の枠に入れてよくする
-//! （task #888・ADR-0076）。
+//! Only the 302 of a no-screen round trip (`prompt=none`) may be framed by the configured parent
+//! (task #888, ADR-0076).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test silent_auth_framing
 //!
-//! 各アプリは切れたログインを、見えない枠で `/authorize?prompt=none` へ問い合わせて続ける。
-//! 枠に入れてよいのはその 302 だけで、ほかの応答は今までどおり `X-Frame-Options: DENY`。
+//! Each app keeps an expired login going by querying `/authorize?prompt=none` in a hidden frame.
+//! Only that 302 may be framed; every other response stays `X-Frame-Options: DENY` as before.
 
 mod support;
 
@@ -16,7 +16,7 @@ use support::{send, CODE_CHALLENGE, REDIRECT_URI_ENC};
 const PARENTS: &str = "https://*.nolumia.com";
 
 async fn setup() -> Option<support::TestEnv> {
-    // ⚠ このバイナリの中の試験は全部同じ値を使う（環境変数はプロセスで 1 つ）
+    // ⚠ All tests in this binary use the same value (environment variables are one per process)
     std::env::set_var("SILENT_AUTH_FRAME_ANCESTORS", PARENTS);
     support::setup("silent auth framing").await
 }
@@ -73,7 +73,7 @@ async fn an_ordinary_authorize_is_never_framed() {
     }
 }
 
-/// 400 の本文は描かれるので、`prompt=none` でも枠に入れない。
+/// A 400 body is rendered, so it is not framed even with `prompt=none`.
 #[tokio::test]
 async fn a_refused_silent_authorize_is_not_framed() {
     let Some(env) = setup().await else {

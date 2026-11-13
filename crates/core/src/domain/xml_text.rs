@@ -1,16 +1,16 @@
-//! quick-xml のイベントから文字列を取り出す共通部品。
+//! Shared helpers for extracting strings from quick-xml events.
 //!
-//! quick-xml 0.38 から、テキスト中の実体参照（`&amp;`・`&#xD;` など）は `Event::Text` に含まれず、
-//! 別のイベント `Event::GeneralRef` に割れて届く。`a &amp; b` は `Text("a ")`・`GeneralRef("amp")`・
-//! `Text(" b")` の 3 つになる。テキストを集める側は **両方を同じ入れ物へ足す**——`GeneralRef` を
-//! `_ => {}` で読み捨てると、参照の分だけ文字が黙って欠ける（署名の正準形なら別のバイト列になる）。
+//! Since quick-xml 0.38, entity references in text (`&amp;`, `&#xD;`, etc.) are not part of `Event::Text`
+//! but arrive split into a separate `Event::GeneralRef`. `a &amp; b` becomes `Text("a ")`, `GeneralRef("amp")`,
+//! `Text(" b")`. Code collecting text must **add both to the same buffer** -- discarding `GeneralRef` with
+//! `_ => {}` silently drops the referenced characters (for a signature's canonical form, a different byte sequence).
 //!
-//! 文字列の正規化は XML 1.0 の構文解析器と同じにする（正準化は「構文解析した後の文書」に対して
-//! 定義されているため）:
+//! String normalization matches an XML 1.0 parser (canonicalization is defined on "the document after
+//! parsing"):
 //!
-//! - テキストの改行は `\r\n`・`\r` を `\n` に揃える（XML 1.0 §2.11）。文字参照 `&#xD;` で書かれた
-//!   CR は揃えない（参照は別イベントで来るので、ここを通らない）
-//! - 属性値は空白（`\t`・`\n`・`\r`）を空白 1 つに置き換え、参照を解決する（XML 1.0 §3.3.3）
+//! - Line breaks in text: `\r\n` and `\r` become `\n` (XML 1.0 §2.11). A CR written as the character reference
+//!   `&#xD;` is not normalized (references arrive as separate events and don't pass through here)
+//! - Attribute values: whitespace (`\t`, `\n`, `\r`) becomes a single space and references are resolved (XML 1.0 §3.3.3)
 
 use quick_xml::escape::{resolve_predefined_entity, EscapeError};
 use quick_xml::events::attributes::Attribute;
@@ -18,14 +18,14 @@ use quick_xml::events::{BytesRef, BytesText};
 use quick_xml::XmlVersion;
 use std::borrow::Cow;
 
-/// テキストイベントの中身（改行を揃えた後）。
+/// Content of a text event (after line-break normalization).
 pub(crate) fn text<'a>(e: &BytesText<'a>) -> Result<Cow<'a, str>, quick_xml::Error> {
     Ok(e.xml10_content())
 }
 
-/// 実体参照イベントが表す文字。定義済みの 5 つ（`lt`・`gt`・`amp`・`apos`・`quot`）と文字参照
-/// だけを受け付け、それ以外（DTD で宣言する実体）はエラーにする——DTD は読まないので、
-/// 中身の分からない参照を空文字として通さない。
+/// Character represented by an entity reference event. Accepts only the 5 predefined ones (`lt`, `gt`, `amp`, `apos`, `quot`)
+/// and character references; anything else (entities declared in a DTD) is an error -- the DTD is not read, so
+/// a reference of unknown content is not let through as an empty string.
 pub(crate) fn general_ref(e: &BytesRef<'_>) -> Result<Cow<'static, str>, quick_xml::Error> {
     if let Some(ch) = e.resolve_char_ref()? {
         return Ok(Cow::Owned(ch.to_string()));
@@ -37,7 +37,7 @@ pub(crate) fn general_ref(e: &BytesRef<'_>) -> Result<Cow<'static, str>, quick_x
     }
 }
 
-/// 属性値（参照を解決し、空白を正規化した後）。
+/// Attribute value (after resolving references and normalizing whitespace).
 pub(crate) fn attribute_value<'a>(attr: &Attribute<'a>) -> Result<Cow<'a, str>, quick_xml::Error> {
     attr.normalized_value(XmlVersion::Implicit1_0)
 }
@@ -48,7 +48,7 @@ mod tests {
     use quick_xml::events::Event;
     use quick_xml::reader::Reader;
 
-    /// 要素の中身を、テキストと参照を足し合わせて読む。
+    /// Reads an element's content, adding up text and references.
     fn element_text(xml: &str) -> Result<String, quick_xml::Error> {
         let mut reader = Reader::from_str(xml);
         let mut out = String::new();

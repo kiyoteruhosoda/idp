@@ -1,15 +1,15 @@
-//! 処理中フィードバック用スクリプトの配信。
+//! Serving of the in-progress feedback scripts.
 //!
-//! `assets/button-pending.js`（ボタンへ印を付ける DOM 操作）・`assets/submit-feedback.js`
-//! （フォーム送信を捕まえて前者を呼ぶ）・`assets/theme.js`（配色の適用）を `include_str!` で
-//! web バイナリへ同梱し、自オリジン配信する
-//! （CSP の `script-src 'self'` を維持したまま外部 CDN に依存しない。`assets/app.css`・
-//! `assets/console.js` と同じ方針）。
+//! `assets/button-pending.js` (DOM work marking a button), `assets/submit-feedback.js`
+//! (catches form submission and calls the former) and `assets/theme.js` (applies the color scheme) are
+//! embedded into the web binary with `include_str!` and served from our own origin
+//! (no dependency on an external CDN while keeping CSP `script-src 'self'`; same policy as `assets/app.css`
+//! and `assets/console.js`).
 //!
-//! 中身は「押したボタンにスピナーを出し、処理が終わるまで押せなくする」だけ（ADR-0021）。
-//! 管理コンソール限定の `console.js` と違い、認証系画面（`page.html`）と管理コンソール
-//! （`console/layout.html`）の両方が読み込む。**`button-pending.js` が先**（`submit-feedback.js` と、
-//! fetch でサーバと話す画面スクリプト（`assets/passkey-register.js`）がこれを呼ぶ）。
+//! All they do is "show a spinner on the pressed button and disable it until processing ends" (ADR-0021).
+//! Unlike `console.js`, which is admin-console only, both the auth screens (`page.html`) and the admin console
+//! (`console/layout.html`) load them. **`button-pending.js` comes first** (`submit-feedback.js` and
+//! the screen script that talks to the server via fetch (`assets/passkey-register.js`) call it).
 
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::response::IntoResponse;
@@ -22,8 +22,8 @@ fn javascript(body: &'static str) -> impl IntoResponse {
     (
         [
             (CONTENT_TYPE, "text/javascript; charset=utf-8"),
-            // 参照 URL に `?v={asset_version}` が付きデプロイごとに変わるため長期キャッシュしてよい
-            // （`stylesheet::app_css` と同じ理由）。
+            // The reference URL carries `?v={asset_version}`, which changes per deploy, so long-term caching is fine
+            // (same reason as `stylesheet::app_css`).
             (CACHE_CONTROL, "public, max-age=31536000, immutable"),
         ],
         body,
@@ -34,8 +34,8 @@ pub async fn button_pending_js() -> impl IntoResponse {
     javascript(BUTTON_PENDING_JS)
 }
 
-/// 配色を最初の描画より前に立てるスクリプト（`assets/theme.js`）。選択は `theme` Cookie が
-/// 運ぶため、応答そのものは利用者によらず同じで、長期キャッシュしてよい。
+/// Script that sets the color scheme before the first paint (`assets/theme.js`). The choice is carried by
+/// the `theme` cookie, so the response itself is the same for every user and can be cached long-term.
 pub async fn theme_js() -> impl IntoResponse {
     javascript(THEME_JS)
 }

@@ -1,6 +1,6 @@
-//! インフラ層（ドメイン層トレイトの実装）。
+//! Infrastructure layer (implementations of domain-layer traits).
 //!
-//! sqlx による MariaDB リポジトリ実装、JWT 署名、暗号ユーティリティ、Clock 実装などを収める。
+//! Holds the sqlx MariaDB repository implementations, JWT signing, crypto utilities, the Clock implementation, etc.
 
 pub mod backchannel_logout;
 pub mod breached_password;

@@ -1,12 +1,12 @@
-//! 署名鍵管理エンドポイント（`/admin/signing-keys`、K1）。
+//! Signing key management endpoints (`/admin/signing-keys`, K1).
 //!
-//! 参照は `idp.keys:read`、生成・retire・削除は `idp.keys:write` が要る（`RequirePerms<KeysRead>` / `<KeysWrite>`。
-//! `idp.tenant.admin` は両方を含意する）。秘密鍵・暗号化鍵は返さない。
+//! Reading needs `idp.keys:read`; generate/retire/delete need `idp.keys:write` (`RequirePerms<KeysRead>` / `<KeysWrite>`;
+//! `idp.tenant.admin` implies both). Private keys and encryption keys are never returned.
 //!
-//! ⚠ **署名鍵は全テナントで 1 組**（`signing_keys` にテナント列が無い）なので、口は **root テナントに
-//! 限る**（`require_root_tenant`）。権限の判定だけだと、子テナントの管理者（`idp.tenant.admin` が
-//! `idp.keys:write` を含意する）がテナントを越えて全体の鍵を作り替え・消せてしまう。
-//! 生成アルゴリズムは `RS256`（RSA-2048）または `ES256`（NIST P-256）。
+//! ⚠ **There is one set of signing keys for all tenants** (`signing_keys` has no tenant column), so the endpoints are
+//! **limited to the root tenant** (`require_root_tenant`). With permission checks alone, a child tenant's admin (`idp.tenant.admin`
+//! implies `idp.keys:write`) could cross tenants and replace or delete the global keys.
+//! Generation algorithm is `RS256` (RSA-2048) or `ES256` (NIST P-256).
 
 use crate::application::key_service::KeyManagementError;
 use crate::domain::signing_key::{current_signer_at, SigningKey};
@@ -21,7 +21,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 
-/// 全署名鍵を作成日時の降順で返す。
+/// Returns all signing keys in descending order of creation time.
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/signing-keys",
@@ -45,8 +45,8 @@ pub async fn list_keys(
         .list_keys()
         .await
         .map_err(|e| map_error(e, locale))?;
-    // 「どれが署名しているか」は `status` からは読めない（ACTIVE が複数あり得る）。判定は
-    // `current_signer_at` —— 署名鍵を選ぶのと同じ規則を使い、画面の表示と実際をずらさない。
+    // "Which one is signing" cannot be read from `status` (there may be several ACTIVE). It is decided by
+    // `current_signer_at` -- the same rule used to pick the signing key, so the screen never diverges from reality.
     let now = state.clock.now();
     let signer = current_signer_at(&keys, now).map(|key| key.kid.clone());
     Ok(Json(
@@ -56,7 +56,7 @@ pub async fn list_keys(
     ))
 }
 
-/// 指定アルゴリズムの新規署名鍵を生成して ACTIVE で登録する。
+/// Generates a new signing key with the given algorithm and registers it as ACTIVE.
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/signing-keys",
@@ -81,8 +81,8 @@ pub async fn generate_key(
     let algorithm = SigningAlgorithm::parse(&body.algorithm)
         .map_err(|_| ApiError::BadRequest(ApiMessages::new(locale).get("api-invalid-request")))?;
 
-    // 既定は「公開だけ先にして、署名は猶予のあとから」。`activate_immediately` はその猶予を
-    // 捨てる指定で、鍵の危殆化のように待てないときだけ使う。
+    // The default is "publish first, sign only after a grace period". `activate_immediately` discards
+    // that grace period; use it only when you can't wait, e.g. key compromise.
     let publish_lead = if body.activate_immediately {
         chrono::Duration::zero()
     } else {
@@ -93,7 +93,7 @@ pub async fn generate_key(
         .generate_key(algorithm, publish_lead)
         .await
         .map_err(|e| map_error(e, locale))?;
-    // 生成直後に署名するのは、猶予を置かなかったときだけ。既定では公開のみで、まだ旧鍵が署名する。
+    // Signs right after generation only when no grace period was set. By default it is only published and the old key still signs.
     let now = state.clock.now();
     let signer_kid = key.is_usable_for_signing_at(now).then(|| key.kid.clone());
     Ok((
@@ -102,7 +102,7 @@ pub async fn generate_key(
     ))
 }
 
-/// 指定 kid の署名鍵を RETIRED に変更する（ACTIVE → RETIRED）。
+/// Changes the signing key with the given kid to RETIRED (ACTIVE -> RETIRED).
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/signing-keys/{kid}/retire",
@@ -122,8 +122,8 @@ pub async fn retire_key(
     State(state): State<AppState>,
     Extension(tenant): Extension<ResolvedTenant>,
     locale: ApiLocale,
-    // 先頭のパスセグメントは `{tenant_id}`。署名鍵はテナント横断（グローバル）なので、
-    // 管理ルートは全テナント一律 `/{tenant_id}/admin/...` に置いたうえで root に限る。
+    // The first path segment is `{tenant_id}`. Signing keys are cross-tenant (global), so
+    // admin routes sit uniformly under `/{tenant_id}/admin/...` for all tenants and are then limited to root.
     Path((_tenant_id, kid)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     require_root_tenant(&tenant, locale)?;
@@ -135,7 +135,7 @@ pub async fn retire_key(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// 指定 kid の署名鍵を削除する（RETIRED のみ可）。
+/// Deletes the signing key with the given kid (RETIRED only).
 #[utoipa::path(
     delete,
     path = "/{tenant_id}/admin/signing-keys/{kid}",

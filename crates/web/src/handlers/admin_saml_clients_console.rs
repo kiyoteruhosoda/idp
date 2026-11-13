@@ -1,9 +1,9 @@
-//! SAML SP（クライアント）管理コンソール画面（`/{tenant_id}/admin/saml-clients`）。
+//! SAML SP (client) admin console screen (`/{tenant_id}/admin/saml-clients`).
 //!
-//! 本プロダクト（IdP）が信頼する SP を一覧・追加・変更・削除する。SP メタデータ XML の取り込みで登録
-//! フォームを初期化できる。データ操作は api の `/admin/saml-service-providers` へ SSO Cookie 転送で委譲する
-//! （HTML フォームは PUT/DELETE を送れないため、変更・削除は専用 POST パス `/{id}/update`・`/{id}/delete` を
-//! 経由し、api 側の PUT/DELETE へ変換する）。
+//! Lists, adds, changes and deletes the SPs this product (the IdP) trusts. The registration form can be
+//! prefilled by importing SP metadata XML. Data operations are delegated to the api's `/admin/saml-service-providers`
+//! by forwarding the SSO cookie (HTML forms cannot send PUT/DELETE, so updates and deletes go through the dedicated
+//! POST paths `/{id}/update` and `/{id}/delete` and are converted to PUT/DELETE on the api).
 
 use super::locale;
 use crate::api_client::AdminApiError;
@@ -132,12 +132,12 @@ pub async fn create(
     }
 }
 
-/// アップロードされた SP メタデータファイルを UTF-8 文字列で読む。空なら `Ok(None)`、
-/// サイズ上限超過・非 UTF-8・読み取り失敗は `Err(())`。
+/// Reads an uploaded SP metadata file as a UTF-8 string. `Ok(None)` if empty;
+/// `Err(())` if over the size limit, not UTF-8, or the read fails.
 async fn read_metadata_file(
     field: axum::extract::multipart::Field<'_>,
 ) -> Result<Option<String>, ()> {
-    // メタデータは通常数 KB。リクエスト全体は DefaultBodyLimit でも制限されるが、念のため上限を設ける。
+    // Metadata is normally a few KB. The whole request is also limited by DefaultBodyLimit, but set a cap just in case.
     const MAX_METADATA_BYTES: usize = 1024 * 1024;
     let bytes = field.bytes().await.map_err(|_| ())?;
     if bytes.is_empty() {
@@ -150,8 +150,8 @@ async fn read_metadata_file(
     Ok((!text.trim().is_empty()).then_some(text))
 }
 
-/// SP メタデータを取り込み、登録フォームに初期値を反映して再描画する（PRG は挟まない）。
-/// 取り込み元はファイルアップロード（`metadata_file`）または貼り付け（`metadata_xml`）。ファイルを優先する。
+/// Imports SP metadata, prefills the registration form with it and re-renders (no PRG).
+/// Source is a file upload (`metadata_file`) or pasted text (`metadata_xml`). The file takes priority.
 pub async fn import_metadata(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -165,7 +165,7 @@ pub async fn import_metadata(
     };
     let base = format!("{}/admin/saml-clients", tenant.prefix());
 
-    // multipart から CSRF トークン・貼り付け XML・アップロードファイルを読み取る。
+    // Read the CSRF token, pasted XML and uploaded file from the multipart body.
     let mut csrf_token = String::new();
     let mut pasted_xml = String::new();
     let mut uploaded_xml: Option<String> = None;
@@ -197,7 +197,7 @@ pub async fn import_metadata(
     }
     let sso = crate::cookies::get(&headers, crate::cookies::SSO_SESSION_COOKIE).unwrap_or_default();
 
-    // ファイルがあればその内容を優先し、無ければ貼り付けテキストを使う。
+    // If there is a file, prefer its content; otherwise use the pasted text.
     let metadata_xml = uploaded_xml
         .filter(|s| !s.trim().is_empty())
         .unwrap_or(pasted_xml);
@@ -269,7 +269,7 @@ pub async fn import_metadata(
     .into_response()
 }
 
-/// SP の更新（`POST /{tenant_id}/admin/saml-clients/{id}/update`）。
+/// Updates an SP (`POST /{tenant_id}/admin/saml-clients/{id}/update`).
 pub async fn update(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -326,7 +326,7 @@ pub async fn update(
     }
 }
 
-/// SP の削除（`POST /{tenant_id}/admin/saml-clients/{id}/delete`）。
+/// Deletes an SP (`POST /{tenant_id}/admin/saml-clients/{id}/delete`).
 pub async fn delete(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -357,12 +357,12 @@ pub async fn delete(
     }
 }
 
-/// 管理画面から利用する IdP メタデータのダウンロード URL。
+/// Download URL of the IdP metadata used from the admin screen.
 fn idp_metadata_url(tenant: &WebTenant) -> String {
     format!("{}/admin/saml-clients/idp-metadata", tenant.prefix())
 }
 
-/// api の公開メタデータを取得し、管理画面と同じ web オリジンからファイルとして返す。
+/// Fetches the api's public metadata and returns it as a file from the same web origin as the admin screen.
 pub async fn download_idp_metadata(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -425,7 +425,7 @@ fn error_key_for(error: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
 
-    /// 管理画面のリンクは api を露出せず、web のダウンロードユースケースを指すこと。
+    /// The admin screen link must not expose the api and must point to web's download use case.
     #[test]
     fn idp_metadata_url_points_to_the_web_download_route() {
         let tenant = WebTenant("00000000-0000-7000-8000-000000000001".to_string());

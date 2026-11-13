@@ -1,13 +1,13 @@
-//! 利用者権限の付与・剥奪 API の E2E 統合テスト（Progress A2、ADR-0006、設計仕様 §7）。
+//! E2E integration tests for the user permission grant / revoke API (Progress A2, ADR-0006, design spec §7).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test admin_permissions
 //!
-//! 認可は権限コード（`idp.permissions:read` / `:write`。`idp.tenant.admin`・`idp.system.admin` は
-//! 含意により許可。ADR-0037）。
-//! 初期管理者（seed で root テナントへ `idp.system.admin` 付与済み）の SSO セッションを
-//! 直接作成し、管理トークンへ交換して管理 API を叩く。権限の無い利用者は 403 になること、
-//! 付与・剥奪が `audit_log` に記録されることを検証する。
+//! Authorization is by permission code (`idp.permissions:read` / `:write`; `idp.tenant.admin` and `idp.system.admin`
+//! are allowed by implication; ADR-0037).
+//! Creates the SSO session of the initial admin (granted `idp.system.admin` on the root tenant by seed)
+//! directly, exchanges it for an admin token and calls the admin API. Checks users without permission get 403,
+//! and that grants and revocations are recorded in `audit_log`.
 
 mod support;
 
@@ -22,8 +22,8 @@ use support::{
 
 const ADMIN_PERM: &str = "idp.tenant.admin";
 
-/// actor（user_id）と対象（reason 内の target UUID）で絞った監査行数。
-/// 共有テスト DB では過去実行の行が残るため、この実行で作った target に限定して数える。
+/// Number of audit rows filtered by actor (user_id) and target (target UUID in reason).
+/// The shared test DB keeps rows from past runs, so count only targets created in this run.
 async fn count_audit(pool: &MySqlPool, event_type: &str, actor_id: &str, target_id: &str) -> i64 {
     sqlx::query(
         "SELECT COUNT(*) AS c FROM audit_log \
@@ -47,7 +47,7 @@ async fn admin_can_grant_and_revoke_permissions() {
     let target = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let perms_uri = format!("/{}/admin/users/{target}/permissions", env.root_tenant_id);
 
-    // 未認証（トークン無し）→ 401。
+    // Unauthenticated (no token) → 401.
     let res = send(
         &env.app,
         Request::builder()
@@ -59,13 +59,13 @@ async fn admin_can_grant_and_revoke_permissions() {
     .await;
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "no cookie -> 401");
 
-    // 権限の無い利用者 → 403。SSO セッションは後で交換し直すので取っておく。
+    // User without permission → 403. Keep the SSO session to exchange again later.
     let target_sso = create_sso_session(&env.pool, &target).await;
     let plain_token = exchange_admin_token(&env.app, &env.root_tenant_id, &target_sso).await;
     let res = send(&env.app, get(&plain_token, &perms_uri)).await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "no permission -> 403");
 
-    // user_id が UUID でない → 400。
+    // user_id is not a UUID → 400.
     let res = send(
         &env.app,
         get(
@@ -76,7 +76,7 @@ async fn admin_can_grant_and_revoke_permissions() {
     .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST, "bad user_id -> 400");
 
-    // 不存在の利用者への付与 → 404。
+    // Granting to a nonexistent user → 404.
     let ghost = uuid::Uuid::new_v4();
     let res = send(
         &env.app,
@@ -89,7 +89,7 @@ async fn admin_can_grant_and_revoke_permissions() {
     .await;
     assert_eq!(res.status(), StatusCode::NOT_FOUND, "unknown user -> 404");
 
-    // 未知の権限コード → 400。
+    // Unknown permission code → 400.
     let res = send(
         &env.app,
         post(
@@ -101,13 +101,13 @@ async fn admin_can_grant_and_revoke_permissions() {
     .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST, "unknown code -> 400");
 
-    // 初期状態: 権限なし。
+    // Initial state: no permissions.
     let res = send(&env.app, get(&admin_tok, &perms_uri)).await;
     assert_eq!(res.status(), StatusCode::OK);
     let listed = body_json(res).await;
     assert!(listed["permission_codes"].as_array().unwrap().is_empty());
 
-    // 付与 → 200・一覧に反映・監査 granted 記録。
+    // Grant → 200, reflected in the list, audit granted recorded.
     let res = send(
         &env.app,
         post(
@@ -135,7 +135,7 @@ async fn admin_can_grant_and_revoke_permissions() {
         "granted audit recorded (actor = admin)"
     );
 
-    // 冪等: 再付与しても重複しない。
+    // Idempotent: granting again does not duplicate.
     let res = send(
         &env.app,
         post(
@@ -149,9 +149,9 @@ async fn admin_can_grant_and_revoke_permissions() {
     let granted = body_json(res).await;
     assert_eq!(granted["permission_codes"].as_array().unwrap().len(), 1);
 
-    // 付与**前**に発行したトークンは、付与後も権限を持たないままである（ADR-0037 決定 2）。
-    // 権限の出所はトークンの `perms` クレームで、リクエスト毎に引き直さない。ここが変わったら
-    // 「トークンに権限を載せる」という決定そのものが崩れている。
+    // A token issued **before** the grant still has no permission after the grant (ADR-0037 decision 2).
+    // The source of permissions is the token's `perms` claim and is not re-read per request. If this changes,
+    // the decision "put permissions in the token" itself has broken.
     let res = send(&env.app, get(&plain_token, &perms_uri)).await;
     assert_eq!(
         res.status(),
@@ -159,8 +159,8 @@ async fn admin_can_grant_and_revoke_permissions() {
         "a token minted before the grant keeps the permissions it was minted with"
     );
 
-    // 同じ SSO セッションを交換し直せば新しい権限が載る（管理コンソールがリクエスト毎に
-    // 交換しているのはこのためでもある。付与が次の操作から効く）。
+    // Re-exchanging the same SSO session carries the new permission (this is also why the admin console exchanges
+    // per request; a grant takes effect from the next operation).
     let refreshed_token = exchange_admin_token(&env.app, &env.root_tenant_id, &target_sso).await;
     let res = send(&env.app, get(&refreshed_token, &perms_uri)).await;
     assert_eq!(
@@ -169,7 +169,7 @@ async fn admin_can_grant_and_revoke_permissions() {
         "granted user can now access admin"
     );
 
-    // 剥奪 → 200・一覧空・監査 revoked 記録。
+    // Revoke → 200, empty list, audit revoked recorded.
     let res = send(
         &env.app,
         delete(&admin_tok, &format!("{perms_uri}/{ADMIN_PERM}")),
@@ -190,7 +190,7 @@ async fn admin_can_grant_and_revoke_permissions() {
         "revoked audit recorded"
     );
 
-    // 剥奪は冪等（未保有でも 200）。
+    // Revocation is idempotent (200 even when not held).
     let res = send(
         &env.app,
         delete(&admin_tok, &format!("{perms_uri}/{ADMIN_PERM}")),

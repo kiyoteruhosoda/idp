@@ -1,4 +1,4 @@
-//! SigningKeys エンティティ（設計仕様 §3.6）。
+//! SigningKeys entity (design spec §3.6).
 #![allow(dead_code)]
 
 use crate::domain::values::SigningKeyStatus;
@@ -7,11 +7,11 @@ use chrono::{DateTime, Utc};
 #[derive(Debug, Clone)]
 pub struct SigningKey {
     pub kid: String,
-    /// 署名アルゴリズム。MVP は `RS256` のみ。
+    /// Signing algorithm. The MVP supports only `RS256`.
     pub algorithm: String,
-    /// 公開鍵（JWKS 公開用）。
+    /// Public key (published in JWKS).
     pub public_key: String,
-    /// DB 外の鍵で暗号化した秘密鍵。
+    /// Private key encrypted with a key held outside the DB.
     pub private_key_encrypted: String,
     pub status: SigningKeyStatus,
     pub not_before: DateTime<Utc>,
@@ -21,27 +21,31 @@ pub struct SigningKey {
 }
 
 impl SigningKey {
-    /// 新規署名に使える鍵か（ACTIVE かつ有効期間内）。
+    /// Whether the key can be used for new signatures (ACTIVE and within its validity period).
     pub fn is_usable_for_signing_at(&self, now: DateTime<Utc>) -> bool {
         self.status == SigningKeyStatus::Active && self.not_before <= now && now < self.not_after
     }
 
-    /// **公開済みだが、まだ署名には使われない鍵**（`not_before` が未来の ACTIVE 鍵）。
+    /// **A key that is published but not yet used for signing** (an ACTIVE key whose `not_before`
+    /// is in the future).
     ///
-    /// 鍵の入れ替えでこの状態を経由するのが要点である。JWKS は `not_before` を見ずに公開する
-    /// ので、後継鍵は生成した瞬間から RP に配られる一方、署名は `not_before` が来るまで旧鍵が
-    /// 続ける。**JWKS をキャッシュしている RP が新しい `kid` を取り込む猶予**がここで生まれる。
-    /// 公開と署名開始を同時にすると、キャッシュを持つ RP は TTL が切れるまで検証に失敗する。
+    /// Key rotation passing through this state is the point. JWKS publishes without looking at
+    /// `not_before`, so the successor key reaches RPs the moment it is generated, while the old key
+    /// keeps signing until `not_before` arrives. **This gives RPs caching JWKS time to pick up the
+    /// new `kid`.** If publishing and signing start at once, RPs with a cache fail verification
+    /// until their TTL expires.
     pub fn is_pending_at(&self, now: DateTime<Utc>) -> bool {
         self.status == SigningKeyStatus::Active && now < self.not_before
     }
 }
 
-/// いま署名に使われる鍵を選ぶ（使用可能なもののうち `not_before` が最も新しい 1 本）。
+/// Picks the key currently used for signing (among usable keys, the one with the newest
+/// `not_before`).
 ///
-/// **`SigningKeyRepository::find_active` の SQL と同じ規則**である。管理画面の「署名中」表示と
-/// 実際に署名する鍵は同じ規則で選ばれなければならない —— ずれると、画面で「署名中」と見えている
-/// 鍵を退役させたのに署名が止まらない（あるいはその逆）という、画面からは説明のつかない挙動になる。
+/// **The same rule as the SQL of `SigningKeyRepository::find_active`.** The admin screen's
+/// "signing" label and the key that actually signs must be chosen by the same rule — if they
+/// diverge, retiring the key shown as "signing" would not stop signing (or the reverse), behavior
+/// the screen cannot explain.
 pub fn current_signer_at(keys: &[SigningKey], now: DateTime<Utc>) -> Option<&SigningKey> {
     keys.iter()
         .filter(|key| key.is_usable_for_signing_at(now))
@@ -73,8 +77,9 @@ mod tests {
             .with_timezone(&Utc)
     }
 
-    /// 後継鍵を公開しても、`not_before` が来るまで署名するのは旧鍵のまま。ここが崩れると、
-    /// JWKS を配る猶予が無くなり、キャッシュを持つ RP の検証が落ちる。
+    /// Even after the successor key is published, the old key keeps signing until `not_before`. If
+    /// this breaks, the grace period for distributing JWKS disappears and RPs with a cache fail
+    /// verification.
     #[test]
     fn a_published_successor_does_not_take_over_signing_until_its_not_before() {
         let now = now();
@@ -87,7 +92,7 @@ mod tests {
             current_signer_at(&keys, now).map(|k| k.kid.as_str()),
             Some("old")
         );
-        // `not_before` を過ぎたら、そこで初めて引き継ぐ。
+        // Only once `not_before` has passed does the successor take over.
         let later = now + Duration::hours(25);
         assert!(!keys[1].is_pending_at(later));
         assert_eq!(
@@ -96,14 +101,14 @@ mod tests {
         );
     }
 
-    /// ACTIVE が 2 本並んでも、署名するのは `not_before` が新しい 1 本だけ。
+    /// Even with two ACTIVE keys, only the one with the newer `not_before` signs.
     #[test]
     fn only_one_of_several_active_keys_signs() {
         let now = now();
         let keys = vec![
             key("older", SigningKeyStatus::Active, now - Duration::days(200)),
             key("newer", SigningKeyStatus::Active, now - Duration::days(1)),
-            // 退役済みは候補に入らない（JWKS には残るが署名には使わない）。
+            // Retired keys are not candidates (they remain in JWKS but are not used for signing).
             key(
                 "retired",
                 SigningKeyStatus::Retired,
@@ -116,7 +121,7 @@ mod tests {
         );
     }
 
-    /// 使える鍵が 1 本も無ければ `None`。呼び出し側はこれを「トークン発行が止まる」と読む。
+    /// `None` if there is no usable key. Callers read this as "token issuance stops".
     #[test]
     fn no_usable_key_yields_no_signer() {
         let now = now();

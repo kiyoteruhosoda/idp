@@ -1,8 +1,8 @@
-//! 認証アプリの鍵の登録の確認の画面（task #892・ADR-0077）の web 側。
+//! web side of the authenticator app key registration confirmation screen (task #892, ADR-0077).
 //!
-//! - 「登録する」の送信は発行者のホストの戻り先（`/app/enrolled`）への 302 で終わるので、画面の CSP の
-//!   `form-action` がそのオリジンを許していること（許さないと Chrome がリダイレクトを止め、Auth Tab へ戻らない）
-//! - ログインしていなければ、受付を覚えてログインへ回すこと
+//! - Submitting "Register" ends in a 302 to the issuer host's return target (`/app/enrolled`), so the screen CSP's
+//!   `form-action` must allow that origin (otherwise Chrome stops the redirect and never returns to the Auth Tab)
+//! - If not logged in, remember the request and send to login
 
 mod support;
 

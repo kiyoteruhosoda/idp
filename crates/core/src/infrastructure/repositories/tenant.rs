@@ -1,4 +1,4 @@
-//! `TenantRepository` の sqlx 実装（ADR-0009 §1）。`is_root` は生成列のため入出力しない。
+//! sqlx implementation of `TenantRepository` (ADR-0009 §1). `is_root` is a generated column, so it is not read or written.
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::paging::{Page, PageRequest};
@@ -55,7 +55,7 @@ fn map_row(row: &MySqlRow) -> Result<Tenant> {
     })
 }
 
-/// tenants への INSERT（プール直接実行と provisioning トランザクションで共用する）。
+/// INSERT into tenants (shared by direct pool execution and the provisioning transaction).
 pub(crate) async fn insert_tenant<'e>(
     executor: impl sqlx::Executor<'e, Database = sqlx::MySql>,
     tenant: &Tenant,
@@ -133,8 +133,8 @@ impl TenantRepository for SqlxTenantRepository {
                 .try_get("total")
                 .map_err(repo_err)?;
 
-        // 並びはページ間で安定していなければならない。`created_at` は同一マイクロ秒で並び得るため、
-        // 主キーの `id` を副キーに置く。
+        // The order must be stable across pages. `created_at` can tie within the same microsecond,
+        // so the primary key `id` is used as a secondary key.
         let sql = format!(
             "SELECT {SELECT_COLUMNS} FROM tenants WHERE parent_tenant_id = ? \
              ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?"

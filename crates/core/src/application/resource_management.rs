@@ -1,13 +1,13 @@
-//! 保護リソース（`aud` に入る宛名）の登録・停止・削除（ADR-0042）。
+//! Registering, disabling and deleting protected resources (the audience placed in `aud`) (ADR-0042).
 //!
-//! 「どのサービスアカウントがこの宛名のトークンを取ってよいか」は、ここでは持たない。宛名をアプリの
-//! 名乗りとして結び付け、そのアプリにサービスアカウントを割り当てる（ADR-0059 の決定 6）。
+//! "Which service account may obtain tokens for this audience" is not held here. The audience is bound as
+//! an app's identity, and service accounts are assigned to that app (ADR-0059 decision 6).
 //!
-//! 権限コードの付与（`client_permission_management`）と別サービスにするのは、**判定の材料が違う**
-//! ためである。あちらは「クライアントへ付与してよいコードか」を静的に判断できるが、こちらは
-//! 「その宛名が要求テナントに登録されているか」をリポジトリに問う必要がある。
+//! It is a separate service from permission-code grants (`client_permission_management`) because **the inputs
+//! to the decision differ**. That one can statically decide "may this code be granted to a client", whereas this
+//! one has to ask the repository "is that audience registered in the requested tenant".
 //!
-//! 判定は本 Application 層で行い、Presentation には結果のみ渡す（CLAUDE.md「権限管理」）。
+//! Decisions are made in this Application layer, and only the result is passed to Presentation (CLAUDE.md "Permissions").
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::admin_actor::AdminActor;
@@ -25,11 +25,11 @@ use uuid::Uuid;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ResourceManagementError {
-    /// 宛名が要求テナントに存在しない。
+    /// The audience does not exist in the requested tenant.
     NotFound,
-    /// 入力が不正（空・絶対 URI でない・fragment 付き・予約済みの宛名）。
+    /// Invalid input (empty, not an absolute URI, has a fragment, or a reserved audience).
     Invalid(MessageKey),
-    /// 同じ宛名が既に登録されている。
+    /// The same audience is already registered.
     Conflict(MessageKey),
     Internal(String),
 }
@@ -39,7 +39,7 @@ pub struct ResourceManagementService {
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
     ids: Arc<dyn IdGenerator>,
-    /// テナント接頭辞を付ける前の issuer。予約済みの宛名（`/userinfo`・`/admin`）の判定に使う。
+    /// The issuer before the tenant prefix is added. Used to detect reserved audiences (`/userinfo`, `/admin`).
     base_issuer: String,
 }
 
@@ -61,7 +61,7 @@ impl ResourceManagementService {
         }
     }
 
-    /// 宛名を一覧する（`resource_uri` 昇順）。
+    /// Lists audiences (ascending `resource_uri`).
     pub async fn list(
         &self,
         tenant: TenantContext,
@@ -72,7 +72,7 @@ impl ResourceManagementService {
             .map_err(map_repo_error)
     }
 
-    /// 宛名を登録する。
+    /// Registers an audience.
     pub async fn register(
         &self,
         tenant: TenantContext,
@@ -116,7 +116,7 @@ impl ResourceManagementService {
         Ok(resource)
     }
 
-    /// 宛名の状態を変える（`DISABLED` にすると新しいトークンの宛先に使えなくなる）。
+    /// Changes an audience's status (`DISABLED` makes it unusable as the target of new tokens).
     pub async fn set_status(
         &self,
         tenant: TenantContext,
@@ -126,9 +126,9 @@ impl ResourceManagementService {
         ctx: &RequestContext,
     ) -> Result<ProtectedResource, ResourceManagementError> {
         let resource = self.load(tenant, id).await?;
-        // 戻り値の bool は「不存在」の判定に使わない。MySQL の `rows_affected` は**値が変わった行**
-        // を数えるため、既に同じ状態の行を同じ `updated_at` で更新すると 0 になり、存在する行を
-        // 404 にしてしまう。存在は直前の `load` で、消えた場合は末尾の `load` で拾う。
+        // The returned bool is not used to detect "missing". MySQL's `rows_affected` counts **rows whose values changed**,
+        // so updating a row already in the same state with the same `updated_at` gives 0, turning an existing row
+        // into a 404. Existence is checked by the preceding `load`, and disappearance by the trailing `load`.
         self.resources
             .set_status(tenant.tenant_id(), id, status, self.clock.now())
             .await
@@ -152,11 +152,11 @@ impl ResourceManagementService {
         self.load(tenant, id).await
     }
 
-    /// 宛名を削除する。アプリの名乗り（`application_bindings`）も一緒に消える。
+    /// Deletes an audience. The app identity (`application_bindings`) is deleted with it.
     ///
-    /// **発行済みのトークンは失効しない。** `aud` は署名済みのクレームで、寿命が尽きるまで
-    /// リソースサーバから見て有効なままである。急いで止めたいときは、受け側でその `client_id` を
-    /// 落とすほうが速い。
+    /// **Already issued tokens are not revoked.** `aud` is a signed claim and stays valid from the resource
+    /// server's point of view until its lifetime runs out. To stop it quickly, dropping that `client_id` on the
+    /// receiving side is faster.
     pub async fn delete(
         &self,
         tenant: TenantContext,
@@ -188,30 +188,30 @@ impl ResourceManagementService {
         Ok(())
     }
 
-    /// **この認可サーバ自身の名前空間（issuer 配下）は貸さない。**
+    /// **This authorization server's own namespace (under the issuer) is not lent out.**
     ///
-    /// いま assay 自身が使っている `aud` は `{issuer}/userinfo` と `{issuer}/admin` の 2 つだが、
-    /// 完全一致だけを拒むと `{issuer}/admin/`（末尾スラッシュ）のような**紛らわしい名前が登録できる**。
-    /// エンドポイントが増えるたびに「その名前は貸してよかったか」を考え直すことになるので、
-    /// 接頭辞で丸ごと予約する。
+    /// The `aud` values assay itself uses now are `{issuer}/userinfo` and `{issuer}/admin`, but
+    /// rejecting only exact matches would allow **confusing names** like `{issuer}/admin/` (trailing slash) to be registered.
+    /// Every new endpoint would force rethinking "was it OK to lend that name", so the whole
+    /// prefix is reserved.
     ///
-    /// ⚠ **これは多層防御であって、これが無いと権限が漏れるという話ではない。**
-    /// `{issuer}/admin` を登録できたとしても (1) トークン発行は管理 API の腕が先に当たるので
-    /// この表は読まれず、(2) 仮に読まれても `perms` が付かないトークンでは管理 API の
-    /// `RequirePerms` が 1 つも通らない（保有コードは `perms` クレームから読む）。
-    /// 守っているのは**発行側の分岐の順序という暗黙の前提**であり、並べ替えられた瞬間に
-    /// 崩れる種類のものなので、登録の側でも塞いでおく。
+    /// ⚠ **This is defense in depth, not something without which permissions would leak.**
+    /// Even if `{issuer}/admin` could be registered, (1) token issuance hits the admin API arm first, so
+    /// this table is not read, and (2) even if it were, a token without `perms` passes none of the admin API's
+    /// `RequirePerms` (held codes are read from the `perms` claim).
+    /// What is protected is **the implicit assumption of branch order on the issuing side**, the kind of thing that
+    /// breaks the moment it is reordered, so it is also blocked on the registration side.
     fn ensure_not_reserved(
         &self,
         _tenant: TenantContext,
         resource_uri: &str,
     ) -> Result<(), ResourceManagementError> {
-        // テナント接頭辞を含めない基底 issuer で見る。`{base}/{他テナント}/admin` のような、
-        // 別テナントの名前を騙る登録も同時に塞げる。
+        // Look at the base issuer without the tenant prefix. This also blocks registrations impersonating another
+        // tenant's name, like `{base}/{other tenant}/admin`.
         //
-        // 比較は**大小を無視する**。URI のスキームとホストは RFC 3986 §3.1・§3.2.2 が
-        // 大小同一と定めるため、大小だけを変えた `HTTPS://…/admin` が素通りしてしまう。
-        // 予約領域を広めに取る方向の誤差なので、過剰に弾いても害はない。
+        // The comparison **ignores case**. RFC 3986 §3.1 and §3.2.2 define URI scheme and host as
+        // case-insensitive, so `HTTPS://…/admin`, differing only in case, would slip through.
+        // The error is in the direction of reserving more, so over-rejecting does no harm.
         let base = self.base_issuer.trim_end_matches('/').to_ascii_lowercase();
         let candidate = resource_uri.to_ascii_lowercase();
         let inside_our_namespace = candidate == base || candidate.starts_with(&format!("{base}/"));
@@ -236,7 +236,7 @@ impl ResourceManagementService {
     }
 }
 
-/// 監査ログの `reason`（PII を含めない。宛名と、機械が実行した場合はその `client_id`）。
+/// The audit log `reason` (no PII. The audience and, if a machine performed it, its `client_id`).
 fn audit_reason(resource_uri: &str, actor: &AdminActor) -> String {
     match actor.audit_note() {
         Some(note) => format!("resource={resource_uri} {note}"),

@@ -1,8 +1,8 @@
-//! インメモリのログインレート制限（IP 単位、スライディングウィンドウ）。
+//! In-memory login rate limiting (per IP, sliding window).
 //!
-//! **api は単一インスタンスで動かす前提**（README「スケール前提」・G9）のためプロセス内メモリで
-//! 管理する。api を 2 プロセス以上にすると上限が実質インスタンス数倍に緩む。
-//! スケールアウト時は Redis 等の共有ストア実装に差し替える（`LoginRateLimiter` が DIP 境界）。
+//! **The api is assumed to run as a single instance** (README "scaling assumptions", G9), so state is kept
+//! in process memory. Running 2+ api processes effectively loosens the limit by the instance count.
+//! When scaling out, swap in a shared-store implementation such as Redis (`LoginRateLimiter` is the DIP boundary).
 
 use crate::domain::rate_limit::LoginRateLimiter;
 use chrono::{DateTime, Duration, Utc};
@@ -29,7 +29,7 @@ impl LoginRateLimiter for InMemoryLoginRateLimiter {
     fn check_and_record(&self, key: &str, now: DateTime<Utc>) -> bool {
         let mut map = self.attempts.lock().expect("rate limiter lock poisoned");
         let cutoff = now - self.window;
-        // ウィンドウ外のエントリを掃除する（キー全体の肥大化も防ぐ）。
+        // Purge entries outside the window (also keeps the key set from growing).
         map.retain(|_, times| {
             times.retain(|t| *t > cutoff);
             !times.is_empty()
@@ -57,9 +57,9 @@ mod tests {
         assert!(limiter.check_and_record("203.0.113.1", now));
         assert!(limiter.check_and_record("203.0.113.1", now));
         assert!(!limiter.check_and_record("203.0.113.1", now));
-        // 別キーは独立。
+        // Different keys are independent.
         assert!(limiter.check_and_record("203.0.113.2", now));
-        // ウィンドウ経過後は再び許可される。
+        // Allowed again after the window has elapsed.
         let later = now + Duration::minutes(6);
         assert!(limiter.check_and_record("203.0.113.1", later));
     }

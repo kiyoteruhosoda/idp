@@ -1,55 +1,55 @@
-//! 排他的正準化（Exclusive XML Canonicalization 1.0。`http://www.w3.org/2001/10/xml-exc-c14n#`）。
+//! Exclusive canonicalization (Exclusive XML Canonicalization 1.0, `http://www.w3.org/2001/10/xml-exc-c14n#`).
 //!
-//! XML 署名は「正準化した部分木のバイト列」に対して行う。**受け取った XML を検証する**側では、
-//! 相手が作った任意の XML を正準形へ直せなければ署名を確かめられない（生成側は最初から正準形で
-//! 組み立てれば済むが、それは自分が作る XML にしか使えない。[`crate::domain::saml_response`]）。
+//! XML signatures are made over "the byte sequence of the canonicalized subtree". The side **verifying received XML**
+//! cannot check signatures unless it can turn arbitrary XML made by the other party into canonical form (the generating
+//! side can just build canonical form from the start, but that only works for XML we make; [`crate::domain::saml_response`]).
 //!
-//! 対応するのは SAML の SP に要る組み合わせだけ:
+//! Only the combinations a SAML SP needs are supported:
 //!
-//! - 排他的正準化（`InclusiveNamespaces` の `PrefixList` に対応）
-//! - コメントは出力しない（`#WithComments` ではない方）
-//! - enveloped signature 変換（対象要素の直下にある `ds:Signature` を出力から取り除く）
+//! - Exclusive canonicalization (supports `PrefixList` of `InclusiveNamespaces`)
+//! - Comments are not output (the non-`#WithComments` variant)
+//! - The enveloped signature transform (removes the `ds:Signature` directly under the target element from the output)
 //!
-//! # 排他的である、とは
+//! # What "exclusive" means
 //!
-//! 通常の正準化は、祖先で宣言された名前空間をすべて部分木の先頭へ書き出す。排他的正準化は
-//! **その部分木で実際に使われている**接頭辞だけを書き出す。だから部分木を別の文書へ移しても
-//! バイト列が変わらない——SAML のアサーションは Response ごと運ばれたり単体で保存されたりする
-//! ので、この性質が要る。
+//! Regular canonicalization writes every namespace declared in ancestors at the top of the subtree. Exclusive canonicalization
+//! writes only prefixes **actually used in that subtree**. So moving the subtree into another document does not
+//! change its bytes -- SAML assertions are carried inside a Response or stored on their own,
+//! so this property is needed.
 //!
-//! 「実際に使われている（visibly utilized）」のは、要素自身の接頭辞と、その属性の接頭辞である。
-//! 属性値やテキストの中に書かれた QName（例 `xsi:type="saml:Foo"`）は**見えない**ため、それを
-//! 使う相手のために `PrefixList` で明示的に含める道が用意されている。
+//! "Visibly utilized" means the element's own prefix and the prefixes of its attributes.
+//! QNames written inside attribute values or text (e.g. `xsi:type="saml:Foo"`) are **not visible**, so
+//! `PrefixList` provides a way to include them explicitly for consumers that use them.
 //!
-//! # 同じ `ID` を持つ要素が複数ある文書は拒否する
+//! # Documents with multiple elements sharing the same `ID` are rejected
 //!
-//! 署名参照（`Reference URI="#x"`）の解決先が一意でない文書は、署名ラッピング（XSW）の
-//! 足がかりそのものである。対象要素を見つけても走査を止めず、**文書全体で数えて**複数なら
-//! エラーにする。
+//! A document where the signature reference (`Reference URI="#x"`) does not resolve uniquely is itself a foothold for
+//! signature wrapping (XSW). Scanning does not stop at finding the target element; **counting over the whole document**,
+//! more than one is an error.
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::xml_text;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 
-/// XML 署名の名前空間。
+/// XML signature namespace.
 pub const NS_XMLDSIG: &str = "http://www.w3.org/2000/09/xmldsig#";
-/// 排他的正準化のアルゴリズム識別子。
+/// Algorithm identifier of exclusive canonicalization.
 pub const ALGORITHM_EXC_C14N: &str = "http://www.w3.org/2001/10/xml-exc-c14n#";
-/// `xml` 接頭辞は宣言せずに使える（XML 名前空間仕様）。宣言を探しにいかない。
+/// The `xml` prefix may be used without declaration (XML Namespaces spec). Don't look for a declaration.
 const XML_NAMESPACE: &str = "http://www.w3.org/XML/1998/namespace";
 
-/// 何を正準化するか。どちらも「`ID` 属性が一致する要素」を起点にする（enveloped signature は
-/// 署名対象の中に置かれるため、対象要素が決まれば署名も決まる）。
+/// What to canonicalize. Both start from "the element whose `ID` attribute matches" (an enveloped signature is
+/// placed inside the signed target, so once the target element is fixed, so is the signature).
 #[derive(Debug, Clone, Copy)]
 pub enum Target<'a> {
-    /// `ID` が一致する要素。その**直下の** `ds:Signature` は出力しない（enveloped 変換）。
+    /// The element with the matching `ID`. Its **direct child** `ds:Signature` is not output (enveloped transform).
     SignedElement(&'a str),
-    /// 上記要素の直下 `ds:Signature` の中の `ds:SignedInfo`。
+    /// `ds:SignedInfo` inside the `ds:Signature` directly under the element above.
     SignedInfoOf(&'a str),
 }
 
-/// 出力済みの名前空間（排他的正準化の「rendered」集合）。
+/// Namespaces already output (the "rendered" set of exclusive canonicalization).
 #[derive(Default, Clone)]
 struct Rendered(Vec<(String, String)>);
 
@@ -67,10 +67,10 @@ impl Rendered {
     }
 }
 
-/// 指定した部分木を排他的正準形のバイト列にする。
+/// Turns the given subtree into exclusive canonical form bytes.
 ///
-/// `inclusive_prefixes` は `InclusiveNamespaces/@PrefixList`（空白区切りを分解したもの）。
-/// `#default` は既定名前空間を表す。
+/// `inclusive_prefixes` is `InclusiveNamespaces/@PrefixList` (split on whitespace).
+/// `#default` stands for the default namespace.
 pub fn canonicalize(
     xml: &str,
     target: Target<'_>,
@@ -107,27 +107,27 @@ struct Walker<'a> {
     reader: Reader<&'a [u8]>,
     target: Target<'a>,
     inclusive_prefixes: &'a [String],
-    /// 文書全体の名前空間スタック（1 要素 = その要素で宣言された (接頭辞, URI)）。
+    /// Namespace stack for the whole document (1 entry = (prefix, URI) pairs declared on that element).
     scopes: Vec<Vec<(String, String)>>,
-    /// 出力中の rendered スタック（部分木の中だけ）。
+    /// Rendered stack during output (only inside the subtree).
     rendered: Vec<Rendered>,
-    /// 出力中の要素名スタック（終了タグを書くため）。
+    /// Element name stack during output (for writing end tags).
     open_names: Vec<String>,
     out: Vec<u8>,
-    /// 出力対象の部分木に入った深さ（`None` なら未突入・脱出済み）。
+    /// Depth entered into the output subtree (`None` if not yet entered or already left).
     emitting_from: Option<usize>,
-    /// 出力から取り除く部分木に入った深さ。
+    /// Depth entered into a subtree removed from the output.
     skipping_from: Option<usize>,
-    /// `ID` 一致要素の深さ（最初の 1 つ）。
+    /// Depth of the `ID`-matching element (the first one).
     matched_depth: Option<usize>,
-    /// 対象要素の直下 `ds:Signature` の深さ。
+    /// Depth of the `ds:Signature` directly under the target element.
     signature_depth: Option<usize>,
-    /// `ID` が一致した要素の数（文書全体）。
+    /// Number of elements whose `ID` matched (whole document).
     matches: usize,
-    /// 対象要素の直下で見つけた `ds:Signature` の数。
+    /// Number of `ds:Signature` found directly under the target element.
     direct_signatures: usize,
     depth: usize,
-    /// 一度でも出力したか（対象が見つかったか）。
+    /// Whether anything was ever output (whether the target was found).
     emitted: bool,
 }
 
@@ -175,7 +175,7 @@ impl<'a> Walker<'a> {
                     self.on_start(&owned)?;
                 }
                 Event::Empty(e) => {
-                    // 空要素タグは正準形では開始・終了タグの対になる。
+                    // An empty-element tag becomes a start/end tag pair in canonical form.
                     let owned = e.into_owned();
                     self.on_start(&owned)?;
                     self.on_end();
@@ -188,7 +188,7 @@ impl<'a> Walker<'a> {
                         escape_text(&text, &mut self.out);
                     }
                 }
-                // 実体参照は解決した文字として書き出す（正準形は参照を残さない）。
+                // Entity references are written as the resolved characters (canonical form keeps no references).
                 Event::GeneralRef(e) => {
                     if self.is_emitting() {
                         let text = xml_text::general_ref(&e)
@@ -198,11 +198,11 @@ impl<'a> Walker<'a> {
                 }
                 Event::CData(e) => {
                     if self.is_emitting() {
-                        // CDATA は正準形では通常のテキストとして書き出す。
+                        // CDATA is written as regular text in canonical form.
                         escape_text(&e.into_inner(), &mut self.out);
                     }
                 }
-                // コメントは出力しない（`#WithComments` ではないため）。宣言・DOCTYPE も同様。
+                // Comments are not output (not `#WithComments`). Same for declarations and DOCTYPE.
                 Event::Comment(_) | Event::Decl(_) | Event::DocType(_) => {}
                 Event::PI(e) => {
                     if self.is_emitting() {
@@ -229,7 +229,7 @@ impl<'a> Walker<'a> {
         let (prefix, local) = split_name(e.name().as_ref())?;
         let in_dsig = self.resolve(&prefix).as_deref() == Some(NS_XMLDSIG);
 
-        // 対象要素（`ID` 一致）。見つけても走査は止めず、文書全体で数える。
+        // Target element (`ID` match). Scanning continues after finding it, counting over the whole document.
         if let Some(id) = element_id(e)? {
             if id == self.target_id() {
                 self.matches += 1;
@@ -242,7 +242,7 @@ impl<'a> Walker<'a> {
             }
         }
 
-        // 対象要素の直下 `ds:Signature`（enveloped signature）。
+        // The `ds:Signature` directly under the target element (enveloped signature).
         if in_dsig && local == "Signature" && self.matched_depth == Some(depth - 1) {
             self.direct_signatures += 1;
             if self.signature_depth.is_none() {
@@ -256,7 +256,7 @@ impl<'a> Walker<'a> {
             }
         }
 
-        // その `ds:Signature` の直下 `ds:SignedInfo`。
+        // The `ds:SignedInfo` directly under that `ds:Signature`.
         if in_dsig
             && local == "SignedInfo"
             && matches!(self.target, Target::SignedInfoOf(_))
@@ -301,8 +301,8 @@ impl<'a> Walker<'a> {
         self.depth -= 1;
     }
 
-    /// 接頭辞（`""` は既定名前空間）を URI へ解決する。既定名前空間の解除（`xmlns=""`）は
-    /// `Some("")` ではなく `None` として扱う。
+    /// Resolves a prefix (`""` = default namespace) to a URI. Undeclaring the default namespace (`xmlns=""`)
+    /// is treated as `None`, not `Some("")`.
     fn resolve(&self, prefix: &str) -> Option<String> {
         if prefix == "xml" {
             return Some(XML_NAMESPACE.to_string());
@@ -325,8 +325,8 @@ impl<'a> Walker<'a> {
         let qname = e.name().as_ref().to_string();
         let mut rendered = self.rendered.last().cloned().unwrap_or_default();
 
-        // 1. 出力する名前空間宣言（visibly utilized な接頭辞 + PrefixList）。
-        //    `xml` は宣言せずに使えるので出力しない。
+        // 1. Namespace declarations to output (visibly utilized prefixes + PrefixList).
+        //    `xml` can be used without declaration, so it is not output.
         let mut wanted: Vec<String> = Vec::new();
         if prefix != "xml" {
             wanted.push(prefix.to_string());
@@ -354,7 +354,7 @@ impl<'a> Walker<'a> {
         let mut declarations: Vec<(String, String)> = Vec::new();
         for p in &wanted {
             if p.is_empty() {
-                // 既定名前空間は、要素自身が接頭辞を持たないときだけ「使われている」。
+                // The default namespace is "used" only when the element itself has no prefix.
                 if !prefix.is_empty() && !default_is_inclusive {
                     continue;
                 }
@@ -366,8 +366,8 @@ impl<'a> Walker<'a> {
                 continue;
             }
             let Some(uri) = self.resolve(p) else {
-                // PrefixList に「この部分木では宣言されていない接頭辞」が並ぶのは普通なので
-                // 読み飛ばす。要素・属性で実際に使われている未宣言の接頭辞は下で弾かれる。
+                // It is normal for PrefixList to list prefixes not declared in this subtree, so
+                // skip them. Undeclared prefixes actually used by elements/attributes are rejected below.
                 if self.inclusive_prefixes.iter().any(|v| v == p) && p != prefix {
                     continue;
                 }
@@ -383,8 +383,8 @@ impl<'a> Walker<'a> {
         declarations.sort_by(|a, b| a.0.cmp(&b.0));
         declarations.dedup_by(|a, b| a.0 == b.0);
 
-        // 2. 属性は (名前空間 URI, ローカル名) の辞書順。接頭辞の無い属性は名前空間に属さない
-        //    （URI は空）ので先に来る。
+        // 2. Attributes in lexicographic order of (namespace URI, local name). Unprefixed attributes belong to no namespace
+        //    (empty URI), so they come first.
         let mut attributes: Vec<(String, String, String, String)> = Vec::new();
         for attr in e.attributes() {
             let attr =
@@ -408,7 +408,7 @@ impl<'a> Walker<'a> {
         }
         attributes.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
 
-        // 3. 書き出す。
+        // 3. Write out.
         self.out.push(b'<');
         self.out.extend_from_slice(qname.as_bytes());
         for (p, uri) in &declarations {
@@ -436,7 +436,7 @@ impl<'a> Walker<'a> {
     }
 }
 
-/// 属性値の正準化エスケープ（C14N 1.0 §Attribute Nodes）。
+/// Canonical escaping of attribute values (C14N 1.0 §Attribute Nodes).
 fn escape_attribute(value: &str, out: &mut Vec<u8>) {
     for ch in value.chars() {
         match ch {
@@ -451,7 +451,7 @@ fn escape_attribute(value: &str, out: &mut Vec<u8>) {
     }
 }
 
-/// テキストノードの正準化エスケープ（C14N 1.0 §Text Nodes）。
+/// Canonical escaping of text nodes (C14N 1.0 §Text Nodes).
 fn escape_text(value: &str, out: &mut Vec<u8>) {
     for ch in value.chars() {
         match ch {
@@ -469,7 +469,7 @@ fn push_char(ch: char, out: &mut Vec<u8>) {
     out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
 }
 
-/// 要素で宣言された名前空間を集める。
+/// Collects namespaces declared on an element.
 fn collect_namespace_declarations(e: &BytesStart<'_>) -> Result<Vec<(String, String)>> {
     let mut declared = Vec::new();
     for attr in e.attributes() {
@@ -492,7 +492,7 @@ fn collect_namespace_declarations(e: &BytesStart<'_>) -> Result<Vec<(String, Str
     Ok(declared)
 }
 
-/// `ID` 型の属性値（SAML は `ID`、XMLDSIG は `Id`）。接頭辞付きの属性は見ない。
+/// `ID`-typed attribute value (SAML uses `ID`, XMLDSIG `Id`). Prefixed attributes are ignored.
 fn element_id(e: &BytesStart<'_>) -> Result<Option<String>> {
     for attr in e.attributes() {
         let attr =
@@ -510,7 +510,7 @@ fn element_id(e: &BytesStart<'_>) -> Result<Option<String>> {
     Ok(None)
 }
 
-/// `prefix:local` を分ける（接頭辞が無ければ空文字）。
+/// Splits `prefix:local` (empty string if there is no prefix).
 fn split_name(name: &str) -> Result<(String, String)> {
     Ok(match name.split_once(':') {
         Some((p, l)) => (p.to_string(), l.to_string()),
@@ -526,7 +526,7 @@ mod tests {
         String::from_utf8(canonicalize(xml, target, &[]).expect("canonicalize")).unwrap()
     }
 
-    /// 祖先で宣言された名前空間のうち、部分木で**使われているものだけ**を書き出す。
+    /// Of the namespaces declared in ancestors, writes **only those used** in the subtree.
     #[test]
     fn only_visibly_utilized_namespaces_are_rendered() {
         let xml = r#"<r xmlns:a="urn:a" xmlns:b="urn:b"><a:e ID="x"><a:c/></a:e></r>"#;
@@ -536,8 +536,8 @@ mod tests {
         );
     }
 
-    /// 実体参照・文字参照は解決してから正準形の決まりで書き直す。参照の分の文字を落とさない。
-    /// 改行の `\r\n` は構文解析の段で `\n` に揃い、参照で書かれた CR だけが `&#xD;` で残る。
+    /// Entity and character references are resolved, then rewritten per canonical-form rules. No referenced characters are dropped.
+    /// `\r\n` line breaks become `\n` at parse time; only CRs written as references remain as `&#xD;`.
     #[test]
     fn references_are_resolved_and_re_escaped() {
         let xml =
@@ -548,7 +548,7 @@ mod tests {
         );
     }
 
-    /// 空要素タグは開始・終了タグの対になる。属性は (名前空間, ローカル名) 順。
+    /// An empty-element tag becomes a start/end tag pair. Attributes in (namespace, local name) order.
     #[test]
     fn empty_tags_expand_and_attributes_are_sorted() {
         let xml = r#"<e ID="x" xmlns:z="urn:z" b="2" a="1" z:k="3"/>"#;
@@ -558,7 +558,7 @@ mod tests {
         );
     }
 
-    /// 既定名前空間は、接頭辞の無い要素でだけ書き出す。祖先で外されていれば `xmlns=""`。
+    /// The default namespace is written only on unprefixed elements. `xmlns=""` if undeclared in an ancestor.
     #[test]
     fn the_default_namespace_follows_the_element_prefix() {
         let xml = r#"<r xmlns="urn:d"><e ID="x"><f xmlns=""><g/></f></e></r>"#;
@@ -568,7 +568,7 @@ mod tests {
         );
     }
 
-    /// enveloped 変換: 対象要素の直下の `ds:Signature` は出力しない。
+    /// Enveloped transform: the `ds:Signature` directly under the target element is not output.
     #[test]
     fn the_enveloped_signature_is_removed_from_the_signed_element() {
         let xml = concat!(
@@ -580,7 +580,7 @@ mod tests {
         assert!(out.contains("<d>keep</d>"), "{out}");
     }
 
-    /// `SignedInfo` は、対象要素の直下 `ds:Signature` の中のものだけを取る。
+    /// `SignedInfo` is taken only from inside the `ds:Signature` directly under the target element.
     #[test]
     fn signed_info_is_taken_from_the_enveloped_signature() {
         let xml = concat!(
@@ -594,14 +594,14 @@ mod tests {
         );
     }
 
-    /// 同じ `ID` の要素が 2 つある文書は拒否する（参照の解決先が一意でない = XSW の足がかり）。
+    /// Documents with 2 elements sharing the same `ID` are rejected (reference not unique = XSW foothold).
     #[test]
     fn duplicate_ids_are_rejected() {
         let xml = r#"<r><e ID="x"><q/></e><e ID="x"><q/></e></r>"#;
         assert!(canonicalize(xml, Target::SignedElement("x"), &[]).is_err());
     }
 
-    /// テキスト・属性値のエスケープは正準形の規則に従う（`>` はテキストだけ、`"` は属性だけ）。
+    /// Escaping of text and attribute values follows canonical-form rules (`>` only in text, `"` only in attributes).
     #[test]
     fn escaping_follows_the_canonical_rules() {
         let xml = r#"<e ID="x" a="&quot;&amp;&lt;&#9;">a &amp; b &gt; c</e>"#;
@@ -611,7 +611,7 @@ mod tests {
         );
     }
 
-    /// `PrefixList` に挙げた接頭辞は、見た目に使われていなくても書き出す。
+    /// Prefixes listed in `PrefixList` are written even if not visibly used.
     #[test]
     fn inclusive_prefixes_are_rendered_even_when_not_visibly_utilized() {
         let xml = r#"<r xmlns:xs="urn:xs"><e ID="x">v</e></r>"#;

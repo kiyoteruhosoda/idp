@@ -1,13 +1,13 @@
-//! 表示設定（言語・配色）の保存は POST + CSRF だけ（task #79）。
+//! Saving display preferences (language, color scheme) is POST + CSRF only (task #79).
 //!
-//! 以前は `?lang=` / `?theme=` を付けた**どの GET でも**、ログイン中ならユーザー設定
-//! （`users.language` / `users.theme`）へ保存していた。SSO Cookie は `SameSite=Lax` なので
-//! 外部のリンクや RP のログイン導線（トップレベル遷移）にも載り、他人のリンクで保存済みの設定を
-//! 書き換えられた。いまは GET は一時切替（その画面の表示と Cookie）だけで、保存は
-//! `POST /{tenant_id}/settings/display`（CSRF トークン付き）に限る。
+//! Previously **any GET** with `?lang=` / `?theme=` saved to the user settings while logged in
+//! (`users.language` / `users.theme`). The SSO Cookie is `SameSite=Lax`, so it is sent on
+//! external links and RP login flows (top-level navigation), letting someone else's link rewrite saved
+//! settings. Now GET is only a temporary switch (that screen's display and the Cookie); saving is
+//! limited to `POST /{tenant_id}/settings/display` (with a CSRF token).
 //!
-//! web は DB を持たない（保存は api の `/internal/account/update-*` 越し）ので、「DB へ保存
-//! されない」は「api の保存口が呼ばれない」で確かめる。
+//! web has no DB (saving goes via the api's `/internal/account/update-*`), so "not saved to the DB"
+//! is checked as "the api's save endpoint is not called".
 
 mod support;
 
@@ -33,12 +33,12 @@ fn sso_cookie() -> String {
     format!("{SSO_SESSION_COOKIE}={}", sso())
 }
 
-/// この SSO セッションのフォームに埋まる CSRF トークン。
+/// CSRF token embedded in this SSO session's forms.
 fn csrf() -> String {
     assay_web::csrf::console_csrf_token(&sso(), TEST_CSRF_SECRET)
 }
 
-/// ログイン中の利用者（日本語・ライトを保存済み）と、表示設定の保存口のスタブ。
+/// A logged-in user (Japanese and light saved) and stubs for the display preference save endpoint.
 async fn mount_signed_in_user(env: &WebEnv) {
     Mock::given(method("POST"))
         .and(path(PROFILE))
@@ -69,7 +69,7 @@ async fn mount_signed_in_user(env: &WebEnv) {
         .await;
 }
 
-/// api のスタブが受けた、指定の経路への要求の数。
+/// Number of requests to the given path received by the api stub.
 async fn calls_to(env: &WebEnv, target: &str) -> usize {
     env.api
         .received_requests()
@@ -80,10 +80,10 @@ async fn calls_to(env: &WebEnv, target: &str) -> usize {
         .count()
 }
 
-// ── GET は一時切替だけ ────────────────────────────────────────────────────────
+// ── GET is only a temporary switch ──────────────────────────────────────────────
 
-/// **外部のリンク（`?lang=` / `?theme=` 付きの GET）では保存されない。** 以前はログイン中なら
-/// どの画面でも保存していた（この試験は修正前に落ちる）。画面の表示と Cookie には効く。
+/// **External links (GET with `?lang=` / `?theme=`) do not save.** Previously it saved on any screen while
+/// logged in (this test fails before the fix). It does affect the screen's display and the Cookie.
 #[tokio::test]
 async fn a_get_with_lang_or_theme_does_not_save_the_users_settings() {
     let env = setup().await;
@@ -98,7 +98,7 @@ async fn a_get_with_lang_or_theme_does_not_save_the_users_settings() {
             ),
         )
         .await;
-        // 一時切替として Cookie には書く（その端末のこの後の未ログイン画面にも効く）。
+        // Written to the Cookie as a temporary switch (affects later logged-out screens on this device too).
         assert_eq!(
             set_cookie(&response, "lang").as_deref(),
             Some("en"),
@@ -122,7 +122,7 @@ async fn a_get_with_lang_or_theme_does_not_save_the_users_settings() {
     );
 }
 
-/// 一時切替はその画面の表示にも効く（設定画面は英語で描かれ、配色のセレクタも切替後を指す）。
+/// The temporary switch also affects that screen's display (the settings screen renders in English, and the scheme selector points to the new value).
 #[tokio::test]
 async fn a_get_with_lang_still_switches_the_screen_temporarily() {
     let env = setup().await;
@@ -143,7 +143,7 @@ async fn a_get_with_lang_still_switches_the_screen_temporarily() {
     assert!(html.contains(r#"<option value="dark" selected>"#), "{html}");
 }
 
-/// **未ログインの一時切替は Cookie だけで働く。** api の保存口もプロフィールも呼ばない。
+/// **A logged-out temporary switch works with the Cookie only.** Neither the api's save endpoint nor profile is called.
 #[tokio::test]
 async fn a_signed_out_visitor_switches_with_the_cookie_only() {
     let env = setup().await;
@@ -155,7 +155,7 @@ async fn a_signed_out_visitor_switches_with_the_cookie_only() {
     let html = body_text(response).await;
     assert!(html.contains(r#"<html lang="en">"#), "{html}");
 
-    // 次の画面は `?lang=` 無しでも Cookie で英語のまま。
+    // The next screen stays English via the Cookie even without `?lang=`.
     let response = send(
         &env.app,
         get_with_cookies(&format!("{}/login", env.prefix()), "lang=en"),
@@ -169,8 +169,8 @@ async fn a_signed_out_visitor_switches_with_the_cookie_only() {
     assert_eq!(calls_to(&env, PROFILE).await, 0);
 }
 
-/// **`ui_locales` の採用は Cookie に残さない**（RP の希望を利用者の選択として残さない）。
-/// 画面は RP の要求した英語で描くが、`lang` Cookie も保存口も触らない。
+/// **Adopting `ui_locales` is not kept in the Cookie** (an RP's wish is not stored as the user's choice).
+/// The screen renders in the English the RP requested, but neither the `lang` Cookie nor the save endpoint is touched.
 #[tokio::test]
 async fn ui_locales_is_not_kept_in_the_cookie() {
     let env = setup().await;
@@ -204,10 +204,10 @@ async fn ui_locales_is_not_kept_in_the_cookie() {
     assert_eq!(calls_to(&env, UPDATE_LANGUAGE).await, 0);
 }
 
-// ── 保存は POST + CSRF ───────────────────────────────────────────────────────
+// ── Saving is POST + CSRF ───────────────────────────────────────────────────────
 
-/// 正しいトークンの POST は保存し（別端末へ追随する）、Cookie も揃えて元の画面へ 303 で戻す。
-/// 戻り先に残っていた一時切替（`lang` / `theme`）は落とす。
+/// A POST with the correct token saves (followed on other devices), aligns the Cookie, and returns to the original screen with 303.
+/// Leftover temporary switches (`lang` / `theme`) in the return target are dropped.
 #[tokio::test]
 async fn a_post_with_the_right_token_saves_the_language_and_returns() {
     let env = setup().await;
@@ -249,7 +249,7 @@ async fn a_post_with_the_right_token_saves_the_language_and_returns() {
     assert_eq!(calls_to(&env, UPDATE_THEME).await, 0, "theme was not sent");
 }
 
-/// 配色も同じ。設定画面から送れば設定画面へ戻る（管理コンソール発の文脈も保つ）。
+/// Color scheme too. Submitting from the settings screen returns to it (keeping the admin-console context).
 #[tokio::test]
 async fn a_post_with_the_right_token_saves_the_theme() {
     let env = setup().await;
@@ -284,7 +284,7 @@ async fn a_post_with_the_right_token_saves_the_theme() {
     assert_eq!(calls_to(&env, UPDATE_LANGUAGE).await, 0);
 }
 
-/// **トークンが無い・合わない POST は保存しない。** 設定画面へ戻してバナーで伝える。
+/// **A POST with a missing or mismatching token does not save.** Back to the settings screen with a banner.
 #[tokio::test]
 async fn a_post_without_the_right_token_saves_nothing() {
     let env = setup().await;
@@ -318,8 +318,8 @@ async fn a_post_without_the_right_token_saves_nothing() {
             "{token:?}"
         );
         assert!(set_cookie(&response, "lang").is_none(), "{token:?}");
-        // 配色 Cookie は保存済みの値（light）へ揃うことはあっても（middleware が DB に追いつく）、
-        // 送られた値にはならない。
+        // The scheme Cookie may align to the saved value (light) (the middleware catches up with the DB),
+        // but never becomes the submitted value.
         assert_ne!(
             set_cookie(&response, "theme").as_deref(),
             Some("dark"),
@@ -329,7 +329,7 @@ async fn a_post_without_the_right_token_saves_nothing() {
     assert_eq!(calls_to(&env, UPDATE_LANGUAGE).await, 0);
     assert_eq!(calls_to(&env, UPDATE_THEME).await, 0);
 
-    // バナーが出る。
+    // The banner appears.
     let response = send(
         &env.app,
         get_with_cookies(
@@ -342,7 +342,7 @@ async fn a_post_without_the_right_token_saves_nothing() {
     assert!(html.contains(r#"class="alert alert-danger""#), "{html}");
 }
 
-/// 戻り先は**このテナント配下のパスだけ**（オープンリダイレクトにしない）。外れたら設定画面。
+/// Return targets are **only paths under this tenant** (no open redirect). Otherwise the settings screen.
 #[tokio::test]
 async fn the_return_path_is_restricted_to_this_tenant() {
     let env = setup().await;
@@ -372,7 +372,7 @@ async fn the_return_path_is_restricted_to_this_tenant() {
     }
 }
 
-/// 未ログインの POST はログインへ送る（保存先が無い）。
+/// A logged-out POST goes to login (nowhere to save).
 #[tokio::test]
 async fn a_post_without_a_session_goes_to_sign_in() {
     let env = setup().await;
@@ -392,9 +392,9 @@ async fn a_post_without_a_session_goes_to_sign_in() {
     assert_eq!(calls_to(&env, UPDATE_LANGUAGE).await, 0);
 }
 
-// ── 画面のフォーム ────────────────────────────────────────────────────────────
+// ── The screen's forms ───────────────────────────────────────────────────────────
 
-/// 設定画面の言語・配色のセレクタは、CSRF トークン付きで保存口へ POST する（GET ではない）。
+/// The settings screen's language/scheme selectors POST to the save endpoint with a CSRF token (not GET).
 #[tokio::test]
 async fn the_settings_page_posts_the_display_preferences_with_a_token() {
     let env = setup().await;
@@ -410,7 +410,7 @@ async fn the_settings_page_posts_the_display_preferences_with_a_token() {
         r#"<form method="post" action="{}/settings/display""#,
         env.prefix()
     );
-    // 言語と配色は 1 つのフォームでまとめて保存する（保存ボタンは 1 つ）。
+    // Language and scheme are saved together with one form (one save button).
     assert_eq!(
         html.matches(&action).count(),
         1,
@@ -419,8 +419,8 @@ async fn the_settings_page_posts_the_display_preferences_with_a_token() {
     assert!(html.contains(r#"name="lang""#), "{html}");
     assert!(html.contains(r#"name="theme""#), "{html}");
     assert!(!html.contains(r#"<form method="get""#), "{html}");
-    // 表示名・表示（言語と配色）・パスワード・ログアウトの 4 つのフォームすべてにトークン
-    // （task #118・#143 と共通）。
+    // Tokens in all 4 forms: display name, display (language and scheme), password, logout
+    // (shared with task #118, #143).
     assert_eq!(
         html.matches(&format!(
             r#"<input type="hidden" name="csrf_token" value="{}">"#,

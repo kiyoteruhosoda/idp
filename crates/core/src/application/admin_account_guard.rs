@@ -1,17 +1,17 @@
-//! 細粒度コードの持ち主から、管理者の口座と管理者の権限を守る（task #579。ADR-0037 の約束）。
+//! Protects admin accounts and admin permissions from holders of fine-grained codes (task #579; ADR-0037's promise).
 //!
-//! 細粒度コード（`idp.users:write` など）は「テナントの中の分担」のためのもので、集めても
-//! `idp.tenant.admin` / `idp.system.admin` には届かない、というのが約束である。ところが口ごとの
-//! 判定は「その口のコードを持つか」だけだったので、次の 2 つで約束が破れていた。
+//! Fine-grained codes (`idp.users:write` etc.) are for "division of work within a tenant", and the
+//! promise is that collecting them never reaches `idp.tenant.admin` / `idp.system.admin`. But each
+//! route only checked "does the caller hold this route's code", so the promise was broken in two ways.
 //!
-//! - **口座の操作**: `idp.users:write` だけで管理者のパスワード再発行・MFA 解除ができ、
-//!   返ってきた設定リンクでなりすませた
-//! - **権限の付与**: `idp.permissions:write` / `idp.clients:write` だけで、自分の持たないコード
-//!   （`idp.tenant.admin` など）を誰にでも付けられた
+//! - **Account operations**: `idp.users:write` alone could reissue an admin's password or reset MFA,
+//!   and the returned setup link allowed impersonation
+//! - **Granting permissions**: `idp.permissions:write` / `idp.clients:write` alone could attach codes the
+//!   caller did not hold (`idp.tenant.admin` etc.) to anyone
 //!
-//! 本サービスは各口の前に呼ぶ「もう 1 枚」で、判定そのものは `domain::permission` の
-//! [`permission::may_assign`] / [`permission::may_manage_account`] が単一の出所である。
-//! 呼び出し元の保有コードは管理トークンの `perms`（`RequirePerms` の判定と同じ材料）を使う。
+//! This service is "one more layer" called before each route; the decision itself has a single source in
+//! `domain::permission`'s [`permission::may_assign`] / [`permission::may_manage_account`].
+//! The caller's held codes are the admin token's `perms` (the same input as the `RequirePerms` check).
 
 use crate::domain::account::AccountRef;
 use crate::domain::permission::{self, HeldByTarget, TargetScope};
@@ -25,7 +25,7 @@ use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AdminAccountGuardError {
-    /// 呼び出し元より強い口座・権限に触れようとした。
+    /// Tried to touch an account or permission stronger than the caller.
     #[error("forbidden")]
     Forbidden,
     #[error("internal error: {0}")]
@@ -60,19 +60,19 @@ impl AdminAccountGuard {
         }
     }
 
-    /// 権限コード `code` の付与・剥奪の前に呼ぶ（利用者へもクライアントへも）。
+    /// Call before granting or revoking permission code `code` (to users and to clients).
     ///
-    /// 剥奪も同じ判定にする ——自分の持たないコードを外せると、細粒度コードの持ち主が
-    /// 管理者から `idp.tenant.admin` を外して締め出せる。
+    /// Revocation uses the same decision: if codes the caller lacks could be removed, a fine-grained code
+    /// holder could remove `idp.tenant.admin` from an admin and lock them out.
     pub fn ensure_may_assign(
         &self,
         held: &[String],
         code: &str,
         tenant_is_root: bool,
     ) -> Result<(), AdminAccountGuardError> {
-        // `idp.system.admin` は保有者しか扱えない、という判定は付与の本体が持ち、理由も言い分ける
-        // （`PermissionManagementService::ensure_system_admin_change_allowed`。クライアントへはそもそも
-        // 付けられない）。ここで先に落とすと、その言い分けが届かなくなる。
+        // The rule that only holders may handle `idp.system.admin` lives in the grant itself, which also
+        // distinguishes the reasons (`PermissionManagementService::ensure_system_admin_change_allowed`; it can
+        // never be attached to clients). Rejecting here first would keep that distinction from being reached.
         if code == permission::SYSTEM_ADMIN || permission::may_assign(held, code, tenant_is_root) {
             Ok(())
         } else {
@@ -80,11 +80,11 @@ impl AdminAccountGuard {
         }
     }
 
-    /// 口座の操作（パスワード・MFA の再発行、状態・プロフィール・ログイン識別子の変更、削除など）の
-    /// 前に呼ぶ。対象が持つ権限を**すべての scope で**見る（ゲストとして他のテナントで持つものを含む）。
+    /// Call before account operations (reissuing password/MFA, changing status, profile or login
+    /// identifier, deletion etc.). Looks at the target's permissions **in every scope** (including ones held as a guest in other tenants).
     ///
-    /// ⚠ 対象が要求テナントの所属でない・存在しないときは何もしない。それは操作の側が 404 にする
-    /// ——ここで 403 を返すと、テナントを越えて「その ID の利用者が居る」と分かってしまう。
+    /// ⚠ Does nothing when the target is not in the requested tenant or does not exist. The operation returns 404 for that:
+    /// a 403 here would reveal across tenants that "a user with that ID exists".
     pub async fn ensure_may_manage_account(
         &self,
         tenant: TenantContext,
@@ -106,7 +106,7 @@ impl AdminAccountGuard {
             .list_scoped_codes_for_user(target)
             .await
             .map_err(|e| AdminAccountGuardError::Internal(e.to_string()))?;
-        // root の権限を持つゲストを見分ける（ADR-0070）。見分けが付かないときは操作させない。
+        // Identify guests holding root permissions (ADR-0070). If they cannot be identified, do not allow the operation.
         let root = self
             .tenants
             .find_root()
@@ -130,16 +130,16 @@ impl AdminAccountGuard {
         self.decide(held, &held_by_target, tenant_is_root)
     }
 
-    /// クライアントの更新（鍵・認証方式を含む）・秘密の作り直し・削除の前に呼ぶ（task #756）。
+    /// Call before updating a client (including keys and auth method), regenerating its secret, or deleting it (task #756).
     ///
-    /// 秘密を作り直せる・公開鍵を差し替えられれば、そのクライアントの権限を行使できる。口座と同じく
-    /// **対象の権限を全部、呼び出し元が付与できる**ときだけ許す。クライアントの権限の scope は所属
-    /// テナントだけ（`client_permissions` に scope 列は無い）。
+    /// Being able to regenerate the secret or replace the public key means exercising that client's permissions. As
+    /// with accounts, it is allowed only when **the caller can grant every permission of the target**. A client's
+    /// permission scope is only its own tenant (`client_permissions` has no scope column).
     ///
-    /// アプリに割り当てられたサービスアカウントも同じで、鍵を差し替えればそのアプリへ届く。割り当てを
-    /// 決められる `idp.applications:write` を持つときだけ許す（task #787）。
+    /// The same goes for service accounts assigned to apps: replacing the key reaches that app. Allowed only
+    /// when holding `idp.applications:write`, which decides assignments (task #787).
     ///
-    /// ⚠ 対象が要求テナントに無いときは何もしない。それは操作の側が 404 にする。
+    /// ⚠ Does nothing when the target is not in the requested tenant. The operation returns 404 for that.
     pub async fn ensure_may_manage_client(
         &self,
         tenant: TenantContext,
@@ -187,8 +187,8 @@ impl AdminAccountGuard {
         }
     }
 
-    /// メンバーシップの操作（停止・解除）の前に呼ぶ。見るのは**要求テナントの scope の**権限だけ
-    /// （ゲストの所属元の権限は、参加先の管理者には関わりが無い。ADR-0009 §3）。
+    /// Call before membership operations (suspend, remove). Only permissions **in the requested tenant's scope** are
+    /// considered (a guest's home tenant permissions are no concern of the host's admins; ADR-0009 §3).
     pub async fn ensure_may_manage_membership(
         &self,
         tenant: TenantContext,

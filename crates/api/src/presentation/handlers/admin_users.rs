@@ -1,11 +1,11 @@
-//! 利用者検索・取得の管理 API（`/admin/users`）。管理コンソール（web）の権限画面が用いる支援 API。
+//! Admin API for searching and getting users (`/admin/users`). A support API used by the admin console (web) permission screens.
 //!
-//! 権限は操作ごとに細かく分けてある（ADR-0037）。検索・取得・有効なトークンの本数は利用者の読み取り
-//! （`idp.users:read`。`RequirePerms<UsersRead>`）、作成・状態変更・プロフィール更新・削除・パスワード
-//! 再発行・MFA 解除・トークンの再発行・ロック解除は書き込み（`idp.users:write`。`RequirePerms<UsersWrite>`）
-//! が要る。`idp.tenant.admin` は両方を含意するので、テナント管理者はすべて行える。パスワードハッシュ等の
-//! 機微情報は返さない。
-//! 権限の一覧・付与・剥奪は `admin_permissions` にある。
+//! Permissions are split finely per operation (ADR-0037). Search, get and the count of active tokens need user read
+//! (`idp.users:read`, `RequirePerms<UsersRead>`); create, status change, profile update, delete, password
+//! reissue, MFA reset, token reissue and unlock need write (`idp.users:write`, `RequirePerms<UsersWrite>`).
+//! `idp.tenant.admin` implies both, so tenant admins can do everything. Sensitive information such as password hashes
+//! is never returned.
+//! Listing, granting and revoking permissions live in `admin_permissions`.
 
 use crate::application::user_lifecycle::{UpdateUserProfileCommand, UserLifecycleError};
 use crate::application::user_management::{CreateUserCommand, UserManagementError};
@@ -31,17 +31,17 @@ use axum::Json;
 use serde::Deserialize;
 use uuid::Uuid;
 
-/// `GET /admin/users` のクエリ。
+/// Query of `GET /admin/users`.
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct UserSearchQuery {
-    /// メールアドレス（`@` を含むとき）またはユーザー名。1 人に解決する（部分一致の検索ではない）。空なら 404。
+    /// Email address (when it contains `@`) or username. Resolves to one person (not a partial-match search). 404 if empty.
     #[serde(default)]
     pub q: Option<String>,
 }
 
-/// 所属元が当該テナントの利用者を作成する（`POST /{tenant_id}/admin/users`）。パスワードは自動生成し、
-/// `must_change_password` を付与する。本人へ渡す**アカウント設定リンク**（`setup_url`）を
-/// その応答でのみ返す（ADR-0062。生成パスワードは返さない）。
+/// Creates a user whose home is this tenant (`POST /{tenant_id}/admin/users`). The password is auto-generated and
+/// `must_change_password` is set. The **account setup link** (`setup_url`) to hand to the user is
+/// returned only in this response (ADR-0062; the generated password is not returned).
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/users",
@@ -96,7 +96,7 @@ pub async fn create_user(
     ))
 }
 
-/// メール／ユーザー名で利用者を検索する（`GET /admin/users?q=`）。該当なしは 404。
+/// Searches for a user by email / username (`GET /admin/users?q=`). 404 if none.
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/users",
@@ -136,7 +136,7 @@ pub async fn search_user(
     }
 }
 
-/// 内部 ID（UUID）で利用者を取得する（`GET /admin/users/{user_id}`）。
+/// Gets a user by internal ID (UUID) (`GET /admin/users/{user_id}`).
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/users/{user_id}",
@@ -167,8 +167,8 @@ pub async fn get_user(
     Ok(Json(summary(&user)))
 }
 
-/// 利用者の状態を変更する（`PATCH /{tenant_id}/admin/users/{user_id}`）。所属元が当該テナントの
-/// 利用者のみ。自分自身は変更できない。無効化時は全セッション・トークンを失効させる。
+/// Changes a user's status (`PATCH /{tenant_id}/admin/users/{user_id}`). Only users whose home is this
+/// tenant. Cannot change oneself. Disabling revokes all sessions and tokens.
 #[utoipa::path(
     patch,
     path = "/{tenant_id}/admin/users/{user_id}",
@@ -227,12 +227,12 @@ pub async fn update_user_status(
     Ok(Json(summary(&user)))
 }
 
-/// 利用者のプロフィール（メール・表示名・ログイン識別子）を編集する
-/// （`PATCH /{tenant_id}/admin/users/{user_id}/profile`。MT25）。所属元が当該テナントの利用者のみ。
+/// Edits a user's profile (email, display name, login identifier)
+/// (`PATCH /{tenant_id}/admin/users/{user_id}/profile`, MT25). Only users whose home is this tenant.
 ///
-/// 状態変更（`PATCH /admin/users/{user_id}`）と分けているのは認可の粒度が違うため:
-/// プロフィール編集はロックアウトを招かないので**自分自身も対象にできる**（状態変更・削除・
-/// パスワード再発行・MFA 解除は自己操作禁止）。
+/// It is separate from the status change (`PATCH /admin/users/{user_id}`) because the authorization granularity differs:
+/// profile editing can't cause a lockout, so **oneself can be a target too** (status change, delete,
+/// password reissue and MFA reset forbid self-operation).
 #[utoipa::path(
     patch,
     path = "/{tenant_id}/admin/users/{user_id}/profile",
@@ -294,8 +294,8 @@ pub async fn update_user_profile(
     Ok(Json(summary(&updated)))
 }
 
-/// 利用者を削除する（`DELETE /{tenant_id}/admin/users/{user_id}`）。所属元が当該テナントの
-/// 利用者のみ。自分自身は削除できない。関連行は DB の FK CASCADE / SET NULL で後始末される。
+/// Deletes a user (`DELETE /{tenant_id}/admin/users/{user_id}`). Only users whose home is this
+/// tenant. Cannot delete oneself. Related rows are cleaned up by the DB's FK CASCADE / SET NULL.
 #[utoipa::path(
     delete,
     path = "/{tenant_id}/admin/users/{user_id}",
@@ -342,9 +342,9 @@ pub async fn delete_user(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// 利用者のパスワードを再発行する（`POST /{tenant_id}/admin/users/{user_id}/password-reset`）。
-/// 32 文字以上のランダムパスワードを自動生成して `must_change_password` を設定し、
-/// 本人へ渡す**アカウント設定リンク**（`setup_url`）をこの応答でのみ返す（ADR-0062）。
+/// Reissues a user's password (`POST /{tenant_id}/admin/users/{user_id}/password-reset`).
+/// Auto-generates a random password of 32+ characters, sets `must_change_password`, and
+/// returns the **account setup link** (`setup_url`) to hand to the user only in this response (ADR-0062).
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/users/{user_id}/password-reset",
@@ -395,10 +395,10 @@ pub async fn reset_user_password(
     }))
 }
 
-/// 利用者の MFA（TOTP・Passkey）を解除する（`POST /{tenant_id}/admin/users/{user_id}/mfa-reset`。MT21）。
-/// 端末を失って本人では解除できない状態からの復旧手段。TOTP と Passkey を両方外し、当該利用者の
-/// セッション・トークンも失効させる（紛失端末が生きたセッションを保持している可能性があるため）。
-/// MFA 未設定でも成功する（何も外さなかったことが応答で分かる）。
+/// Resets a user's MFA (TOTP, passkeys) (`POST /{tenant_id}/admin/users/{user_id}/mfa-reset`, MT21).
+/// A recovery path when the user lost their device and can't reset it themselves. Removes both TOTP and passkeys and also
+/// revokes the user's sessions and tokens (the lost device may hold a live session).
+/// Succeeds even without MFA configured (the response shows that nothing was removed).
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/users/{user_id}/mfa-reset",
@@ -449,12 +449,12 @@ pub async fn reset_user_mfa(
     }))
 }
 
-/// 利用者へ発行済みの refresh token をまとめて失効させる
-/// （`POST /{tenant_id}/admin/users/{user_id}/token-reissue`。ADR-0047）。
+/// Revokes all refresh tokens issued to a user
+/// (`POST /{tenant_id}/admin/users/{user_id}/token-reissue`, ADR-0047).
 ///
-/// 本人がセキュリティ画面から押すのと同じ操作を、管理者が対象を指定して行う。落とすのは
-/// トークンだけで、セッション・認証器・パスワードには触れない。アプリは次の更新で SSO 越しに
-/// 取り直すため、多くの利用者には何も起きない。自分自身にも実行できる（締め出しにならない）。
+/// The same operation the user can press on their security screen, done by an admin on a specified target. Only
+/// tokens are dropped; sessions, authenticators and passwords are untouched. Apps re-obtain them through SSO on
+/// the next refresh, so for most users nothing happens. Can be run on oneself too (no lockout).
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/users/{user_id}/token-reissue",
@@ -504,13 +504,13 @@ pub async fn reissue_user_tokens(
     }))
 }
 
-/// 利用者のいま有効な refresh token の本数を返す
-/// （`GET /{tenant_id}/admin/users/{user_id}/active-tokens`。task #83）。
+/// Returns the number of the user's currently active refresh tokens
+/// (`GET /{tenant_id}/admin/users/{user_id}/active-tokens`, task #83).
 ///
-/// 再発行（`token-reissue`）を押す前に「この人にいま何本生きているか」を管理者へ見せる。
-/// 権限は利用者の読み取り（`idp.users:read`）に揃える。対象は再発行と同じく所属元が当該
-/// テナントの利用者だけで、他テナントの利用者は不存在と同じ 404 にする。アクセストークンは
-/// DB に行が無いので数に含まない。
+/// Shows admins "how many are alive for this person now" before pressing reissue (`token-reissue`).
+/// The permission matches user read (`idp.users:read`). As with reissue, targets are only users whose home is this
+/// tenant; users of other tenants get the same 404 as nonexistent ones. Access tokens
+/// have no DB rows, so they are not counted.
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/users/{user_id}/active-tokens",
@@ -543,10 +543,10 @@ pub async fn count_user_active_tokens(
     }))
 }
 
-/// アカウントロックを即時解除する（`POST /{tenant_id}/admin/users/{user_id}/unlock`。AP6）。
+/// Unlocks an account immediately (`POST /{tenant_id}/admin/users/{user_id}/unlock`, AP6).
 ///
-/// ロック期限のクリアと失敗回数のリセットを同時に行う（片方だけだと次の 1 回で再ロックされる）。
-/// ロックされていない利用者へ実行しても成功する（冪等。`was_locked` で区別できる）。
+/// Clears the lock expiry and resets the failure count together (with only one, the next attempt would lock again).
+/// Succeeds for users that aren't locked too (idempotent; distinguishable via `was_locked`).
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/users/{user_id}/unlock",

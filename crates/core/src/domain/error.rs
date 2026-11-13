@@ -1,4 +1,4 @@
-//! ドメインエラーと OAuth 2.0 / OIDC エラーコード。
+//! Domain errors and OAuth 2.0 / OIDC error codes.
 #![allow(dead_code)]
 
 use thiserror::Error;
@@ -17,7 +17,7 @@ pub enum DomainError {
     Repository(String),
 }
 
-/// OAuth 2.0 / OIDC のエラーコード（authorize / token レスポンスで用いる）。
+/// OAuth 2.0 / OIDC error codes (used in authorize / token responses).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OAuthErrorCode {
     InvalidRequest,
@@ -29,15 +29,15 @@ pub enum OAuthErrorCode {
     InvalidScope,
     AccessDenied,
     ServerError,
-    /// `prompt=none` でログインが必要な場合（OIDC Core 3.1.2.6）。
+    /// Login is required under `prompt=none` (OIDC Core 3.1.2.6).
     LoginRequired,
-    /// `prompt=none` で同意が必要な場合（OIDC Core 3.1.2.6）。
+    /// Consent is required under `prompt=none` (OIDC Core 3.1.2.6).
     ConsentRequired,
-    /// `prompt=none` でインタラクションが必要な場合（OIDC Core 3.1.2.6）。
+    /// Interaction is required under `prompt=none` (OIDC Core 3.1.2.6).
     InteractionRequired,
-    /// 要求された `resource`（RFC 8707 §2）が不正・未知・許可されていない場合。
+    /// The requested `resource` (RFC 8707 §2) is malformed, unknown, or not allowed.
     InvalidTarget,
-    /// DPoP の証明が無い・正しくない（RFC 9449 §5・§12.3。ADR-0075）。
+    /// The DPoP proof is missing or invalid (RFC 9449 §5, §12.3; ADR-0075).
     InvalidDpopProof,
 }
 

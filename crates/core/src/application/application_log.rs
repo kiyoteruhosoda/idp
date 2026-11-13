@@ -1,12 +1,12 @@
-//! アプリケーションログ（`log`）の取り込み・参照・掃除のユースケース（CLAUDE.md「ログ」）。
+//! Use cases for ingesting, viewing and cleaning up the application log (`log`) (CLAUDE.md "Logging").
 //!
-//! 取り込み元は 2 つある。どちらも同じ [`ApplicationLogPayload`] で届き、ここで唯一の変換を通る。
+//! There are two sources. Both arrive as the same [`ApplicationLogPayload`] and pass the single conversion here.
 //!
-//! - api 自身: `tracing` 取り込み層 → チャネル → 書き込みタスク
-//! - web: `tracing` 取り込み層 → `POST /internal/logs`（web は DB を持たないため api に書いてもらう）
+//! - api itself: `tracing` ingestion layer -> channel -> writer task
+//! - web: `tracing` ingestion layer -> `POST /internal/logs` (web has no DB, so api writes for it)
 //!
-//! 参照は管理コンソールのエラー・警告ログ画面から。テナント横断の運用情報のため、閲覧は
-//! `idp.system.admin`（root）に限る（呼び出し側 = Presentation の extractor が強制する）。
+//! Viewed from the admin console's error/warning log screen. Being cross-tenant operational data,
+//! viewing is limited to `idp.system.admin` (root) (enforced by the caller, the Presentation extractor).
 
 use crate::domain::application_log::{
     ApplicationLogEntry, ApplicationLogFilter, ApplicationLogRecord, LogLevel, LogService,
@@ -19,12 +19,12 @@ use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// 1 ページの既定件数。
+/// Default number of rows per page.
 pub const DEFAULT_LIMIT: i64 = 50;
-/// 1 ページの上限件数（過大な取得を防ぐ）。
+/// Maximum rows per page (prevents oversized fetches).
 pub const MAX_LIMIT: i64 = 200;
 
-/// 検索パラメータ（Presentation から受け取る素の値。`limit`/`offset` は未クランプ）。
+/// Search parameters (raw values from Presentation; `limit`/`offset` are not clamped).
 #[derive(Debug, Clone, Default)]
 pub struct ApplicationLogQueryParams {
     pub level: Option<String>,
@@ -52,11 +52,11 @@ impl ApplicationLogService {
         Self { sink, logs, clock }
     }
 
-    /// 取り込み。解釈できない行（未知のレベル・サービス・日時）は捨てて残りを書く。
-    /// 書き込めた件数を返す。
+    /// Ingestion. Rows that cannot be interpreted (unknown level, service or timestamp) are dropped and the rest written.
+    /// Returns the number of rows written.
     ///
-    /// **ここでは失敗をログに出さない**。ログ書き込みの失敗ログがまた書き込みを誘発するため、
-    /// 呼び出し側（書き込みタスク・`/internal/logs` ハンドラ）が扱う。
+    /// **Failures are not logged here.** A log of a log-write failure would trigger another write,
+    /// so the callers (the writer task and the `/internal/logs` handler) handle them.
     pub async fn ingest(&self, payloads: &[ApplicationLogPayload]) -> Result<usize, DomainError> {
         let records: Vec<ApplicationLogRecord> = payloads
             .iter()
@@ -70,7 +70,7 @@ impl ApplicationLogService {
         Ok(records.len())
     }
 
-    /// 検索（新しい順）。
+    /// Search (newest first).
     pub async fn search(
         &self,
         params: ApplicationLogQueryParams,
@@ -88,7 +88,7 @@ impl ApplicationLogService {
         self.logs.search(&filter).await
     }
 
-    /// 保持期間を過ぎた行を削除し、削除件数を返す。`retention_days` が 0 のときは無効（何もしない）。
+    /// Deletes rows past the retention period and returns the count. Disabled (no-op) when `retention_days` is 0.
     pub async fn purge_expired(&self, retention_days: u32) -> Result<u64, DomainError> {
         if retention_days == 0 {
             return Ok(0);
@@ -98,7 +98,7 @@ impl ApplicationLogService {
     }
 }
 
-/// 受信した 1 件を保存形へ変換する。必須項目が解釈できなければ `None`（その行だけ捨てる）。
+/// Converts one received record into the stored form. `None` if a required field cannot be parsed (only that row is dropped).
 fn to_record(payload: &ApplicationLogPayload) -> Option<ApplicationLogRecord> {
     Some(ApplicationLogRecord {
         occurred_at: DateTime::parse_from_rfc3339(&payload.occurred_at)
@@ -117,7 +117,7 @@ fn to_record(payload: &ApplicationLogPayload) -> Option<ApplicationLogRecord> {
     })
 }
 
-/// `limit` を 1..=MAX_LIMIT に収める。未指定・非正値は既定値。
+/// Clamps `limit` to 1..=MAX_LIMIT. Missing or non-positive values use the default.
 fn clamp_limit(limit: Option<i64>) -> i64 {
     match limit {
         Some(l) if l > 0 => l.min(MAX_LIMIT),
@@ -125,7 +125,7 @@ fn clamp_limit(limit: Option<i64>) -> i64 {
     }
 }
 
-/// 空文字列を `None` に正規化する（クエリ未指定の `?level=` を無視するため）。
+/// Normalizes an empty string to `None` (to ignore a bare `?level=` in the query).
 fn normalize(value: Option<String>) -> Option<String> {
     value
         .map(|v| v.trim().to_string())
@@ -155,7 +155,7 @@ mod tests {
         assert_eq!(record.level, LogLevel::Error);
         assert_eq!(record.service, LogService::Web);
         assert_eq!(record.occurred_at.to_rfc3339(), "2026-07-27T01:02:03+00:00");
-        // 空白だけの correlation_id は未指定として扱う。
+        // A whitespace-only correlation_id is treated as unspecified.
         assert_eq!(record.correlation_id, None);
         assert!(record.tenant_id.is_some());
     }

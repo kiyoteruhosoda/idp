@@ -1,7 +1,7 @@
-//! SAML SP（クライアント）登録・SP メタデータ取り込みの統合テスト（DB あり）。
-//! `idp.tenant.admin` 必須。
+//! Integration tests (with DB) for SAML SP (client) registration and SP metadata import.
+//! Requires `idp.tenant.admin`.
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test saml_service_providers
 
 mod support;
@@ -31,12 +31,12 @@ async fn admin_can_register_and_list_saml_clients_but_others_cannot() {
     };
     let uri = format!("/{}/admin/saml-service-providers", env.root_tenant_id);
     let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
-    // このテストは登録した SP を消さずに終わる（一覧に出ることまでが検証対象）。
-    // `entity_id` は `UNIQUE (tenant_id, entity_id)` なので、固定値だと**同じ DB への 2 回目の
-    // 実行が 409 で落ちる**。実行ごとに変える。
+    // This test ends without deleting the registered SP (appearing in the list is part of what is checked).
+    // `entity_id` is `UNIQUE (tenant_id, entity_id)`, so with a fixed value **a second run against the same DB
+    // fails with 409**. Change it per run.
     let entity_id = format!("urn:sp:example:{}", support::unique());
 
-    // 権限の無い利用者 → 403。
+    // User without permission → 403.
     let plain_user_id = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let plain_token = admin_token(&env.app, &env.pool, &env.root_tenant_id, &plain_user_id).await;
     let res = send(
@@ -55,7 +55,7 @@ async fn admin_can_register_and_list_saml_clients_but_others_cannot() {
     .await;
     assert_eq!(res.status(), StatusCode::FORBIDDEN, "no perms -> 403");
 
-    // 管理者は登録できる（NameID 未指定は既定 persistent）。
+    // Admins can register (NameID unspecified defaults to persistent).
     let res = send(
         &env.app,
         post(
@@ -78,7 +78,7 @@ async fn admin_can_register_and_list_saml_clients_but_others_cannot() {
         "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent"
     );
 
-    // ACS URL が非 HTTPS → 400。
+    // Non-HTTPS ACS URL → 400.
     let res = send(
         &env.app,
         post(
@@ -99,7 +99,7 @@ async fn admin_can_register_and_list_saml_clients_but_others_cannot() {
         "non-https acs -> 400"
     );
 
-    // 一覧に登録済みが含まれる。
+    // The list includes the registered one.
     let res = send(&env.app, get(&admin_tok, &uri)).await;
     assert_eq!(res.status(), StatusCode::OK);
     let list = body_json(res).await;
@@ -122,11 +122,11 @@ async fn admin_can_update_and_delete_saml_client() {
     };
     let base = format!("/{}/admin/saml-service-providers", env.root_tenant_id);
     let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
-    // 最後に削除するので固定値でも通るが、**途中で落ちると行が残り、以降このテストは
-    // 二度と通らなくなる**（失敗が次の実行の失敗を呼ぶ）。ここも実行ごとに変える。
+    // It is deleted at the end, so a fixed value would pass, but **if it fails midway the row remains and this test
+    // never passes again** (one failure causes the next run's failure). Change it per run here too.
     let entity_id = format!("urn:sp:editable:{}", support::unique());
 
-    // 登録して id を得る。
+    // Register and get the id.
     let res = send(
         &env.app,
         post(
@@ -146,7 +146,7 @@ async fn admin_can_update_and_delete_saml_client() {
     let id = created["id"].as_str().expect("id").to_string();
     let item_uri = format!("{base}/{id}");
 
-    // 更新: 表示名・ACS・enabled を変更。
+    // Update: change display name, ACS and enabled.
     let res = send(
         &env.app,
         put(
@@ -170,7 +170,7 @@ async fn admin_can_update_and_delete_saml_client() {
     assert_eq!(updated["enabled"], false);
     assert_eq!(updated["x509_certificate"], "MIICERT==");
 
-    // 非 HTTPS ACS への更新は 400。
+    // Updating to a non-HTTPS ACS is 400.
     let res = send(
         &env.app,
         put(
@@ -191,7 +191,7 @@ async fn admin_can_update_and_delete_saml_client() {
         "non-https update -> 400"
     );
 
-    // 権限の無い利用者は削除できない → 403。
+    // Users without permission cannot delete → 403.
     let plain_user_id = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let plain_token = admin_token(&env.app, &env.pool, &env.root_tenant_id, &plain_user_id).await;
     let res = send(&env.app, delete(&plain_token, &item_uri)).await;
@@ -201,11 +201,11 @@ async fn admin_can_update_and_delete_saml_client() {
         "no perms delete -> 403"
     );
 
-    // 管理者は削除できる → 204。
+    // Admins can delete → 204.
     let res = send(&env.app, delete(&admin_tok, &item_uri)).await;
     assert_eq!(res.status(), StatusCode::NO_CONTENT, "admin delete -> 204");
 
-    // 二重削除・存在しない id は 404。
+    // Double deletion and nonexistent ids are 404.
     let res = send(&env.app, delete(&admin_tok, &item_uri)).await;
     assert_eq!(res.status(), StatusCode::NOT_FOUND, "delete missing -> 404");
     let res = send(
@@ -224,7 +224,7 @@ async fn admin_can_update_and_delete_saml_client() {
     .await;
     assert_eq!(res.status(), StatusCode::NOT_FOUND, "update missing -> 404");
 
-    // 一覧に含まれない。
+    // Not included in the list.
     let res = send(&env.app, get(&admin_tok, &base)).await;
     let list = body_json(res).await;
     let entities: Vec<&str> = list
@@ -261,7 +261,7 @@ async fn admin_can_import_sp_metadata() {
     assert_eq!(parsed["acs_url"], "https://sp.example.test/acs");
     assert_eq!(parsed["x509_certificate"], "MIIBspCERT==");
 
-    // IdP メタデータ（ACS 無し）を SP として取り込もうとすると 400。
+    // Trying to import IdP metadata (no ACS) as an SP is 400.
     let idp_only = r#"<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="urn:idp">
   <IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
     <SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.test/sso"/>

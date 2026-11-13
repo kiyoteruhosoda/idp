@@ -1,4 +1,4 @@
-//! `UserAuthenticatorRepository` の sqlx 実装（AP9）。
+//! sqlx implementation of `UserAuthenticatorRepository` (AP9).
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::UserAuthenticatorRepository;
@@ -90,7 +90,7 @@ impl UserAuthenticatorRepository for SqlxUserAuthenticatorRepository {
         .execute(&self.pool)
         .await
         .map_err(|e| {
-            // 同じ WebAuthn credential ID の二重登録は一意制約で弾かれる。
+            // Registering the same WebAuthn credential ID twice is rejected by the unique constraint.
             if e.as_database_error()
                 .is_some_and(|d| d.is_unique_violation())
             {
@@ -131,7 +131,7 @@ impl UserAuthenticatorRepository for SqlxUserAuthenticatorRepository {
         authenticator_type: Option<AuthenticatorType>,
         now: DateTime<Utc>,
     ) -> Result<Vec<UserAuthenticator>> {
-        // 種別の絞り込みは値ではなく句の有無で分ける（`? IS NULL OR type = ?` は索引が効かない）。
+        // Type filtering is split by presence of the clause, not by value (`? IS NULL OR type = ?` can't use the index).
         let type_clause = if authenticator_type.is_some() {
             " AND authenticator_type = ?"
         } else {
@@ -160,10 +160,10 @@ impl UserAuthenticatorRepository for SqlxUserAuthenticatorRepository {
         status: AuthenticatorStatus,
         at: DateTime<Utc>,
     ) -> Result<bool> {
-        // `user_id` を条件に含めるのは所有者チェック（他人の認証器の id を持ち込んでも動かさない）。
+        // Including `user_id` in the condition is the owner check (bringing in someone else's authenticator id changes nothing).
         let revoked_at = (status == AuthenticatorStatus::Revoked).then(|| at.naive_utc());
         let confirmed_clause = if status == AuthenticatorStatus::Active {
-            // 確認前（pending）から有効化した行にだけ確認時刻を入れる（再開では上書きしない）。
+            // Set the confirmation time only on rows activated from unconfirmed (pending) (not overwritten on resume).
             ", confirmed_at = COALESCE(confirmed_at, ?)"
         } else {
             ""
@@ -216,8 +216,8 @@ impl UserAuthenticatorRepository for SqlxUserAuthenticatorRepository {
         secret_hash: &str,
         now: DateTime<Utc>,
     ) -> Result<Option<UserAuthenticator>> {
-        // 「使える行を失効させる」を 1 文で行い、更新できた場合だけ読み直す（authorization code の
-        // one-time 消費と同じ方式）。読んでから更新すると、同じコードの同時提示で両方通る。
+        // "Revoke a usable row" in one statement and re-read only if the update succeeded (same approach as the
+        // one-time consumption of authorization codes). Reading then updating would let concurrent presentations of the same code both pass.
         let claimed = sqlx::query(
             "UPDATE user_authenticators \
              SET status = 'revoked', revoked_at = ?, last_used_at = ? \
@@ -277,8 +277,8 @@ impl UserAuthenticatorRepository for SqlxUserAuthenticatorRepository {
         authenticator_type: AuthenticatorType,
         at: DateTime<Utc>,
     ) -> Result<u64> {
-        // 期限のある行だけ（＝発行済みのワンタイムコード）。寿命の無い登録行（SMS OTP の
-        // 登録済み電話番号）は残す。
+        // Only rows with an expiry (= issued one-time codes). Registration rows without a lifetime (the SMS OTP
+        // registered phone number) are kept.
         let result = sqlx::query(
             "UPDATE user_authenticators SET status = 'revoked', revoked_at = ? \
              WHERE user_id = ? AND authenticator_type = ? AND status <> 'revoked' \
@@ -300,8 +300,8 @@ impl UserAuthenticatorRepository for SqlxUserAuthenticatorRepository {
         secret_hash: &str,
         now: DateTime<Utc>,
     ) -> Result<Option<UserAuthenticator>> {
-        // 更新できた場合だけ読み直す（`consume_single_use` と同じ方式）。確認済みにした行から
-        // コードと期限を落とす: 期限が残ると GC がこの行を削除し、確認した登録が消える。
+        // Re-read only if the update succeeded (same approach as `consume_single_use`). Drop the code and expiry
+        // from rows being confirmed: if an expiry remains, GC deletes the row and the confirmed registration vanishes.
         let claimed = sqlx::query(
             "UPDATE user_authenticators \
              SET status = 'active', confirmed_at = ?, secret_encrypted = NULL, expires_at = NULL \
@@ -335,10 +335,10 @@ impl UserAuthenticatorRepository for SqlxUserAuthenticatorRepository {
     }
 
     async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64> {
-        // 期限を持つのは使い捨てのコードだけ。TOTP・WebAuthn の行は `expires_at IS NULL` なので
-        // この条件には掛からない（登録簿ごと消えてしまわない）。
-        // ⚠ 期限が切れても窓の間は残す。OTP を送った数はこの行から数える（task #749）。
-        //   期限切れのコードが使えないのは、照合の側が `expires_at` を見ているから。
+        // Only single-use codes have an expiry. TOTP and WebAuthn rows have `expires_at IS NULL`, so
+        // they don't match this condition (the registry isn't wiped).
+        // ⚠ Even after expiry, rows are kept for the window. The number of OTPs sent is counted from these rows (task #749).
+        //   Expired codes can't be used because the verifying side checks `expires_at`.
         let keep_until = now - chrono::Duration::seconds(OTP_SEND_WINDOW_SECS);
         let result = sqlx::query(
             "DELETE FROM user_authenticators WHERE expires_at IS NOT NULL AND expires_at <= ?",

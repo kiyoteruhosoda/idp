@@ -1,4 +1,4 @@
-//! 外部 IdP 連携（AP10）の sqlx 実装。プロバイダ設定・利用者との対応・進行状態の 3 表を扱う。
+//! sqlx implementation of external IdP federation (AP10). Handles 3 tables: provider settings, user links and in-progress state.
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::external_idp::{
@@ -29,7 +29,7 @@ fn parse_uuid(value: &str, column: &str) -> Result<Uuid> {
         .map_err(|e| DomainError::Repository(format!("invalid UUID in `{column}`: {e}")))
 }
 
-// ── プロバイダ設定 ───────────────────────────────────────────────────────────
+// ── Provider settings ───────────────────────────────────────────────────────────
 
 pub struct SqlxExternalIdentityProviderRepository {
     pool: Db,
@@ -46,16 +46,16 @@ const PROVIDER_COLUMNS: &str = "id, tenant_id, provider_code, display_name, prot
      scopes, saml_sso_url, saml_certificates, saml_name_id_format, enabled, allow_auto_link, \
      created_at, updated_at";
 
-/// プロトコル固有の列を enum へ組み立てる（ADR-0027）。
+/// Assembles protocol-specific columns into an enum (ADR-0027).
 ///
-/// 使わない側の列は NULL なので、**どの組み合わせが妥当か**を知っているのはここだけである。
-/// `protocol = 'saml'` なのに SSO URL が NULL という行は読み出しで失敗させる——黙って既定へ
-/// 落とすと、設定の誤りがログイン時まで見えない。
+/// The unused side's columns are NULL, so only this place knows **which combinations are valid**.
+/// A row with `protocol = 'saml'` but a NULL SSO URL fails on read -- silently falling back to a default
+/// would hide the misconfiguration until login time.
 fn map_config(row: &MySqlRow) -> Result<ExternalIdpConfig> {
     let protocol: String = row.try_get("protocol").map_err(repo_err)?;
     match ExternalIdpProtocol::parse(&protocol)? {
         ExternalIdpProtocol::Oidc => {
-            // MariaDB の JSON カラムは sqlx では BLOB として返るため、バイト列で受けて parse する。
+            // MariaDB JSON columns come back as BLOB in sqlx, so receive bytes and parse.
             let scopes: Vec<u8> = row.try_get("scopes").map_err(repo_err)?;
             Ok(ExternalIdpConfig::Oidc(OidcProviderConfig {
                 authorization_endpoint: required(row, "authorization_endpoint")?,
@@ -93,7 +93,7 @@ fn map_config(row: &MySqlRow) -> Result<ExternalIdpConfig> {
     }
 }
 
-/// そのプロトコルで必須の列。NULL なら行が壊れている（設定の取り違え）ので読み出しで落とす。
+/// A column required for that protocol. If NULL the row is broken (settings mixed up), so reading fails.
 fn required(row: &MySqlRow, column: &str) -> Result<String> {
     row.try_get::<Option<String>, _>(column)
         .map_err(repo_err)?
@@ -121,8 +121,8 @@ fn map_provider(row: &MySqlRow) -> Result<ExternalIdentityProvider> {
     })
 }
 
-/// プロトコル固有の 8 つのプレースホルダ（OIDC 4 + シークレット + scopes + SAML 3）を埋める。
-/// INSERT と UPDATE で同じ順に並べてあるので、1 か所で書ける。
+/// Fills the 8 protocol-specific placeholders (OIDC 4 + secret + scopes + SAML 3).
+/// INSERT and UPDATE list them in the same order, so it can be written in one place.
 type ProviderQuery<'q> = sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments>;
 
 fn bind_config<'q>(
@@ -146,7 +146,7 @@ fn bind_config<'q>(
             .bind(None::<String>)
             .bind(None::<String>)
             .bind(None::<String>)
-            // `scopes` は NOT NULL のまま（OIDC 用の既定値を持つ列）。SAML では空配列を置く。
+            // `scopes` stays NOT NULL (a column with an OIDC default). For SAML an empty array is stored.
             .bind(Some("[]".to_string()))
             .bind(Some(saml.sso_url.as_str()))
             .bind(Some(
@@ -297,7 +297,7 @@ impl ExternalIdentityProviderRepository for SqlxExternalIdentityProviderReposito
     }
 }
 
-// ── 利用者との対応 ───────────────────────────────────────────────────────────
+// ── User links ───────────────────────────────────────────────────────────
 
 pub struct SqlxExternalIdentityRepository {
     pool: Db,
@@ -347,7 +347,7 @@ impl ExternalIdentityRepository for SqlxExternalIdentityRepository {
         .execute(&self.pool)
         .await
         .map_err(|e| {
-            // 同じ外部アカウントの二重連携・同じプロバイダの重複連携はどちらも一意制約違反。
+            // Linking the same external account twice and duplicate links to the same provider are both unique-constraint violations.
             if e.as_database_error()
                 .is_some_and(|d| d.is_unique_violation())
             {
@@ -414,7 +414,7 @@ impl ExternalIdentityRepository for SqlxExternalIdentityRepository {
     }
 }
 
-// ── 進行状態 ─────────────────────────────────────────────────────────────────
+// ── In-progress state ─────────────────────────────────────────────────────────────────
 
 pub struct SqlxExternalLoginRequestRepository {
     pool: Db,
@@ -490,7 +490,7 @@ impl ExternalLoginRequestRepository for SqlxExternalLoginRequestRepository {
     }
 
     async fn consume(&self, id: Uuid) -> Result<bool> {
-        // 削除できた側だけが処理を続けられる（単回使用の原子的クレーム）。
+        // Only the side that managed to delete can continue (atomic single-use claim).
         let result = sqlx::query("DELETE FROM external_login_requests WHERE id = ?")
             .bind(id.to_string())
             .execute(&self.pool)

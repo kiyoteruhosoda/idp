@@ -1,10 +1,10 @@
-//! リフレッシュトークンの内省（introspection）が返す `sub` は公開の値（task #593）。
+//! The `sub` returned by refresh token introspection is the public value (task #593).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test introspection_public_sub
 //!
-//! 以前はリフレッシュトークンの経路だけ内部の利用者 ID を返していた（アクセストークンの経路は公開の
-//! `sub`）。内部 ID が RP へ漏れ、同じ人が経路によって違う `sub` に見えていた。
+//! Previously only the refresh token path returned the internal user ID (the access token path returned the public
+//! `sub`). The internal ID leaked to RPs, and the same person looked like a different `sub` depending on the path.
 
 mod support;
 

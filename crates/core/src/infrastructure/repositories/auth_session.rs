@@ -1,4 +1,4 @@
-//! `AuthSessionRepository` の sqlx 実装。
+//! sqlx implementation of `AuthSessionRepository`.
 
 use crate::domain::auth_session::{
     AuthSession, AuthSessionIdHash, AuthSessionParts, AuthenticationCompletion, HandoffExchange,
@@ -43,7 +43,7 @@ fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
 }
 
 fn map_row(row: &MySqlRow) -> Result<AuthSession> {
-    // MariaDB の JSON カラムは sqlx では BLOB として返るため、バイト列で受けて parse する。
+    // MariaDB JSON columns come back as BLOB in sqlx, so receive bytes and parse.
     let tenant_id: String = row.try_get("tenant_id").map_err(repo_err)?;
     let scope: Vec<u8> = row.try_get("scope").map_err(repo_err)?;
     let ccm: String = row.try_get("code_challenge_method").map_err(repo_err)?;
@@ -174,9 +174,9 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
     }
 
     async fn save_handoff_exchange(&self, exchange: &HandoffExchange) -> Result<bool> {
-        // WHERE に handle_hash を含めることで単回使用を原子的に強制する。並行する交換は
-        // 片方だけが 1 行更新に成功し、負けた側（および再利用）は 0 行 = false になる。
-        // 同じ文で id_hash も差し替える（勝った側だけが新しい id を得る）。
+        // Including handle_hash in the WHERE enforces single use atomically. Of concurrent exchanges
+        // only one succeeds in updating 1 row; the loser (and any reuse) gets 0 rows = false.
+        // The same statement also replaces id_hash (only the winner gets the new id).
         let rotation = exchange.rotation();
         let result = sqlx::query(
             "UPDATE auth_sessions \
@@ -193,8 +193,8 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
     }
 
     async fn save_password_verification(&self, verification: &PasswordVerification) -> Result<()> {
-        // 前の認証（auth_time・sid・方式）は同じ文で消す。残すと、第二段を済ませていない利用者の
-        // 行が「認証済み」に読める。
+        // The previous authentication (auth_time, sid, methods) is cleared in the same statement. Leaving it would make the row of
+        // a user who hasn't finished the second step read as "authenticated".
         let rotation = verification.rotation();
         sqlx::query(
             "UPDATE auth_sessions \
@@ -213,8 +213,8 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
     }
 
     async fn save_authentication(&self, completion: &AuthenticationCompletion) -> Result<()> {
-        // id の再生成を同じ UPDATE に含める（SEC7）。別文に分けると、認証済みフラグは立っているのに
-        // 旧 id がまだ引ける瞬間ができる。
+        // The id regeneration is part of the same UPDATE (SEC7). Splitting it into another statement would create a moment where
+        // the authenticated flag is set but the old id still resolves.
         let rotation = completion.rotation();
         let authentication = completion.authentication();
         sqlx::query(

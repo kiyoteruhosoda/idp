@@ -1,4 +1,4 @@
-//! トークンエンドポイント（`POST /token`、設計仕様 §4.4）。
+//! Token endpoint (`POST /token`, design spec §4.4).
 
 use crate::application::token::{TokenCommand, TokenError};
 use crate::domain::error::OAuthErrorCode;
@@ -15,8 +15,8 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Form, Json};
 
-/// トークン発行。confidential client は登録した方式（`client_secret_basic` / `client_secret_post`）、
-/// public client は認証なし。
+/// Issues tokens. Confidential clients authenticate with their registered method (`client_secret_basic` / `client_secret_post`),
+/// public clients without authentication.
 #[utoipa::path(
     post,
     path = "/{tenant_id}/token",
@@ -63,7 +63,7 @@ pub async fn token(
         refresh_token: body.refresh_token,
         scope: body.scope,
         resource: body.resource,
-        // RFC 9449。証明が無ければ今までどおり Bearer で出す（ADR-0075 決定 1）。
+        // RFC 9449. Without a proof, issue as Bearer as before (ADR-0075 decision 1).
         dpop_proof: headers
             .get("dpop")
             .and_then(|v| v.to_str().ok())
@@ -72,14 +72,14 @@ pub async fn token(
 
     match state.token.exchange(tenant.context(), command, &ctx).await {
         Ok(tokens) => (
-            // トークンレスポンスはキャッシュ禁止（設計仕様 §4.4）。
+            // Token responses must not be cached (design spec §4.4).
             [
                 (header::CACHE_CONTROL, "no-store"),
                 (header::PRAGMA, "no-cache"),
             ],
             Json(TokenResponse {
                 access_token: tokens.access_token,
-                // 鍵に結び付けたトークンは `DPoP`（RFC 9449 §5）。
+                // Tokens bound to a key are `DPoP` (RFC 9449 §5).
                 token_type: if tokens.bound_to_key {
                     "DPoP"
                 } else {
@@ -103,7 +103,7 @@ fn error_response(e: TokenError) -> Response {
         error_description: Some(e.description),
     });
     match e.code {
-        // RFC 6749 §5.2: invalid_client は 401 + WWW-Authenticate。
+        // RFC 6749 §5.2: invalid_client is 401 + WWW-Authenticate.
         OAuthErrorCode::InvalidClient => (
             StatusCode::UNAUTHORIZED,
             [(header::WWW_AUTHENTICATE, "Basic realm=\"token\"")],

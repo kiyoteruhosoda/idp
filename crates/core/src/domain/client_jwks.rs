@@ -1,50 +1,50 @@
-//! クライアントが登録する検証鍵（JWK Set）の検証・正規化（ADR-0030 決定 3・4）。
+//! Validation and normalization of verification keys (JWK Set) registered by clients (ADR-0030 decisions 3, 4).
 //!
-//! `private_key_jwt` の client assertion を検証するための公開鍵は、`clients.jwks` に保存した
-//! この集合**だけ**を見る。クライアントの `jwks_uri` は取りに行かない —— 認証経路に
-//! クライアント側のホスティング障害と、任意 URL への送信（SSRF）を持ち込まないため。
+//! Public keys for verifying `private_key_jwt` client assertions are looked up **only** in this set stored in
+//! `clients.jwks`. The client's `jwks_uri` is not fetched, so as not to bring client-side hosting failures
+//! and requests to arbitrary URLs (SSRF) into the authentication path.
 //!
-//! 取り込めない鍵は**登録の時点で**失敗させ、`/token` の時刻には持ち込まない。認証の最中に
-//! 「保存されているが使えない鍵」が出てくると、失敗の原因がクライアントの署名なのか登録内容なのかを
-//! その場で切り分けられない。
+//! Keys that cannot be imported fail **at registration time** and are not carried to `/token` time. If
+//! "stored but unusable keys" show up mid-authentication, it cannot be determined on the spot whether the failure
+//! is caused by the client's signature or by the registration.
 //!
-//! 鍵ローテーションはこの集合に新旧を並べることで行う（IdP 側に移行期間の概念を持たせない）。
+//! Key rotation is done by listing old and new keys side by side in this set (the IdP has no notion of a transition period).
 
 use crate::domain::jwt::{decoding_key_from_jwk, Jwk, Jwks};
 use crate::domain::message::MessageKey;
 
-/// 1 つのクライアントが登録できる鍵の本数。ローテーション（新旧の並存）に要るのは 2 本で、
-/// 複数の呼び出し元へ別々の鍵を配る運用を見込んでも 8 本あれば足りる。上限を置くのは、
-/// 検証時に `kid` 無しの assertion が来たときの走査と、保存する JSON の大きさを抑えるため。
+/// Number of keys one client can register. Rotation (old and new side by side) needs 2, and
+/// 8 is enough even allowing for distributing separate keys to several callers. The limit exists to
+/// bound the scan when an assertion without `kid` arrives at verification, and the size of the stored JSON.
 pub const MAX_CLIENT_JWKS_KEYS: usize = 8;
 
-/// 検証済み・正規化済みのクライアント JWK Set（公開鍵のみ）。
+/// A validated, normalized client JWK Set (public keys only).
 ///
-/// 生成経路は [`parse_registration_jwks`]（管理経路の入力）と [`from_storage`]（DB からの読み戻し）
-/// の 2 つだけで、どちらも同じ検証を通る。「検証していない JWK Set」がこの型になることはない。
+/// There are only two ways to create one, [`parse_registration_jwks`] (admin path input) and [`from_storage`] (read back from the DB),
+/// and both go through the same validation. An "unvalidated JWK Set" never becomes this type.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClientJwks {
     keys: Vec<Jwk>,
 }
 
-/// 登録された JWK Set が使えない理由。利用者へ返すため翻訳キーを持つ。
+/// Why a registered JWK Set is unusable. Carries translation keys because it is returned to users.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientJwksError {
-    /// JSON として読めない。
+    /// Cannot be read as JSON.
     Malformed,
-    /// 鍵が 1 つも無い。
+    /// No keys at all.
     Empty,
-    /// 鍵が多すぎる。
+    /// Too many keys.
     TooManyKeys,
-    /// 対応しない鍵種別（RSA / EC P-256 以外）。
+    /// Unsupported key type (other than RSA / EC P-256).
     UnsupportedKeyType,
-    /// 必須フィールド（`kid` や鍵成分）が欠けている。
+    /// A required field (`kid` or key components) is missing.
     MissingField,
-    /// 秘密鍵成分を含んでいる。
+    /// Contains private key components.
     PrivateKeyMaterial,
-    /// 同じ `kid` が 2 つ以上ある。
+    /// The same `kid` appears more than once.
     DuplicateKid,
-    /// 鍵成分が鍵として読めない（base64url として壊れている等）。
+    /// Key components cannot be read as a key (broken as base64url, etc.).
     InvalidKeyMaterial,
 }
 
@@ -63,20 +63,20 @@ impl ClientJwksError {
     }
 }
 
-/// 登録時に受け取る JWK（クライアントが書いたままの形）。
+/// The JWK received at registration (as written by the client).
 ///
-/// `use` と `alg` は省く実装が多いため任意で受け、正規化のときに補う。秘密鍵成分
-/// （`d` / `p` / `q` / `dp` / `dq` / `qi`）は**受け取らないのではなく明示的に拒否する**ため、
-/// フィールドとして持って存在を検査する（黙って捨てると、秘密鍵を貼り付けた登録者に
-/// 「登録できた」と伝わってしまう）。
+/// Many implementations omit `use` and `alg`, so they are optional and filled in during normalization. Private key components
+/// (`d` / `p` / `q` / `dp` / `dq` / `qi`) are **explicitly rejected rather than just not accepted**, so they are
+/// held as fields to check for presence (silently discarding them would tell a registrant who pasted a private key
+/// that "registration succeeded").
 #[derive(Debug, Clone, serde::Deserialize)]
 struct SubmittedJwk {
     kty: String,
     kid: Option<String>,
     #[serde(rename = "use")]
     use_: Option<String>,
-    // `alg` は受け取っても使わない（未知フィールドとして黙って捨てられる）。検証アルゴリズムは
-    // 鍵種別から決めるため、クライアントの自己申告を持ち回らない（ADR-0030 決定 7）。
+    // `alg` is accepted but not used (silently discarded as an unknown field). The verification algorithm is decided
+    // from the key type, so the client's self-declaration is not carried around (ADR-0030 decision 7).
     n: Option<String>,
     e: Option<String>,
     crv: Option<String>,
@@ -105,13 +105,13 @@ impl SubmittedJwk {
             || self.qi.is_some()
     }
 
-    /// 公開鍵成分だけを持つ [`Jwk`] へ正規化する。`use` は `sig`、`alg` は鍵種別から補う。
+    /// Normalizes into a [`Jwk`] holding only public key components. `use` becomes `sig`; `alg` is filled from the key type.
     fn normalize(self) -> Result<Jwk, ClientJwksError> {
         if self.has_private_material() {
             return Err(ClientJwksError::PrivateKeyMaterial);
         }
-        // `kid` は必須。ローテーション中に複数の鍵が並ぶとき、assertion がどれで署名されたかを
-        // 決められるのは `kid` だけである（無い鍵が混じると総当たりになる）。
+        // `kid` is required. When several keys are listed during rotation, only `kid` can determine
+        // which one signed the assertion (a key without one would force brute force).
         let kid = self.kid.filter(|k| !k.is_empty());
         let Some(kid) = kid else {
             return Err(ClientJwksError::MissingField);
@@ -128,8 +128,8 @@ impl SubmittedJwk {
                     kty: "RSA".to_string(),
                     use_: self.use_.unwrap_or_else(|| "sig".to_string()),
                     kid,
-                    // assay が検証に使う RSA アルゴリズムは RS256 のみ（ADR-0030 決定 7）。
-                    // クライアントが別の `alg` を書いていても、検証は登録済み鍵種別から決める。
+                    // The only RSA algorithm assay uses for verification is RS256 (ADR-0030 decision 7).
+                    // Even if the client wrote a different `alg`, verification is decided from the registered key type.
                     alg: "RS256".to_string(),
                     n: Some(n),
                     e: Some(e),
@@ -139,7 +139,7 @@ impl SubmittedJwk {
                 })
             }
             "EC" => {
-                // 対応する曲線は P-256 のみ（署名鍵の `SigningAlgorithm` と揃える）。
+                // The only supported curve is P-256 (aligned with the signing key's `SigningAlgorithm`).
                 if self.crv.as_deref() != Some("P-256") {
                     return Err(ClientJwksError::UnsupportedKeyType);
                 }
@@ -166,7 +166,7 @@ impl SubmittedJwk {
     }
 }
 
-/// 管理経路が受け取った JWK Set（JSON 文字列）を検証・正規化する。
+/// Validates and normalizes a JWK Set (JSON string) received by the admin path.
 pub fn parse_registration_jwks(raw: &str) -> Result<ClientJwks, ClientJwksError> {
     let submitted: SubmittedJwks =
         serde_json::from_str(raw).map_err(|_| ClientJwksError::Malformed)?;
@@ -186,17 +186,17 @@ fn build(submitted: SubmittedJwks) -> Result<ClientJwks, ClientJwksError> {
         .map(SubmittedJwk::normalize)
         .collect::<Result<Vec<_>, _>>()?;
 
-    // 鍵成分が実際に鍵として読めることまで登録時に確かめる。形だけ整った鍵（`n` が base64url
-    // として壊れている等）を通すと、失敗するのは `/token` の時刻になり、しかも理由が
-    // 「登録鍵が見つからない」になって、クライアントの署名の問題と切り分けられない。
+    // Check at registration that key components can actually be read as a key. Letting through keys that are only well-shaped
+    // (e.g. `n` broken as base64url) makes the failure happen at `/token` time, with the reason being
+    // "registered key not found", which cannot be told apart from a problem with the client's signature.
     for key in &keys {
         if decoding_key_from_jwk(key).is_err() {
             return Err(ClientJwksError::InvalidKeyMaterial);
         }
     }
 
-    // `kid` が重複すると「どちらの鍵で検証したか」がリクエストからは決まらない。失効させたはずの
-    // 鍵と同じ `kid` で新しい鍵を足す運用を、静かに成立させないため登録時に弾く。
+    // With a duplicate `kid`, "which key verified it" cannot be decided from the request. Rejected at registration so that
+    // adding a new key with the same `kid` as a supposedly revoked key does not silently work.
     for (i, key) in keys.iter().enumerate() {
         if keys[i + 1..].iter().any(|other| other.kid == key.kid) {
             return Err(ClientJwksError::DuplicateKid);
@@ -206,17 +206,17 @@ fn build(submitted: SubmittedJwks) -> Result<ClientJwks, ClientJwksError> {
 }
 
 impl ClientJwks {
-    /// DB に保存された JSON から読み戻す。保存時と同じ検証を通す。
+    /// Reads back from JSON stored in the DB. Goes through the same validation as when saving.
     ///
-    /// 保存済みの値を無検査で信じないのは、DB を直接編集された行・古い形式で保存された行が
-    /// 検証経路へ素通りしないようにするため（fail-closed）。
+    /// Stored values are not trusted unchecked so that rows edited directly in the DB or saved in an old format
+    /// do not slip into the verification path (fail-closed).
     pub fn from_storage(raw: &str) -> Result<Self, ClientJwksError> {
         parse_registration_jwks(raw)
     }
 
-    /// DB へ保存する JSON 文字列（正規化済み）。
+    /// The JSON string stored in the DB (normalized).
     pub fn to_storage_json(&self) -> String {
-        // 正規化済みの `Jwk` だけを含むため、シリアライズは失敗しない。
+        // Contains only normalized `Jwk`s, so serialization does not fail.
         serde_json::to_string(&Jwks {
             keys: self.keys.clone(),
         })
@@ -227,11 +227,11 @@ impl ClientJwks {
         &self.keys
     }
 
-    /// assertion のヘッダ `kid` に対応する鍵を選ぶ。
+    /// Selects the key matching the assertion header's `kid`.
     ///
-    /// `kid` の無い assertion は、登録鍵が 1 本のときだけその鍵で検証する。複数あるなら
-    /// 選びようがないので `None`（＝検証失敗）にする —— 総当たりで通してしまうと、
-    /// ローテーションで並べた古い鍵が「まだ有効」であることを黙って隠す。
+    /// An assertion without `kid` is verified with the registered key only when there is exactly one. If there are several,
+    /// there is no way to choose, so `None` (= verification fails): letting brute force pass would
+    /// silently hide that an old key listed for rotation is "still valid".
     pub fn select(&self, kid: Option<&str>) -> Option<&Jwk> {
         match kid {
             Some(kid) => self.keys.iter().find(|k| k.kid == kid),
@@ -261,7 +261,7 @@ mod tests {
         let jwks = parse_registration_jwks(&rsa_jwks("k1")).unwrap();
         let key = &jwks.keys()[0];
         assert_eq!(key.kid, "k1");
-        // `use` と `alg` は省かれていても補う。
+        // `use` and `alg` are filled in even if omitted.
         assert_eq!(key.use_, "sig");
         assert_eq!(key.alg, "RS256");
         assert_eq!(key.e.as_deref(), Some("AQAB"));
@@ -324,7 +324,7 @@ mod tests {
         );
     }
 
-    /// 形だけ整っていて鍵として読めない値は登録時に弾く（`/token` の時刻へ持ち込まない）。
+    /// Values that are well-shaped but unreadable as keys are rejected at registration (not carried to `/token` time).
     #[test]
     fn keys_whose_components_are_not_readable_are_rejected() {
         assert_eq!(

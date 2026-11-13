@@ -1,13 +1,13 @@
-//! アカウント（人とサービスアカウント）の管理画面（web。ADR-0065）。
+//! Account (people and service accounts) management screens (web. ADR-0065).
 //!
-//! - `GET /{tenant_id}/admin/accounts` —— 人とサービスアカウントを 1 つに並べた一覧
-//! - `GET /{tenant_id}/admin/service-accounts/{client_id}` —— サービスアカウント 1 件の画面
-//!   （人の画面 `/admin/members/{user_id}` と同じ骨組み）
+//! - `GET /{tenant_id}/admin/accounts` —— a list combining people and service accounts
+//! - `GET /{tenant_id}/admin/service-accounts/{client_id}` —— the screen for one service account
+//!   (same skeleton as the person screen `/admin/members/{user_id}`)
 //!
-//! 管理者メモと「使えるアプリ」の出し入れは、人の画面の操作もここの共通処理
-//! （[`write_note`]・[`change_assignment`]）を通す ——種別で入口は違っても、書き方は 1 つにする。
+//! Admin notes and adding/removing "available apps" go through the shared processing here also for the person screen
+//! ([`write_note`], [`change_assignment`]) — the entry points differ by kind, but there is one way of writing.
 //!
-//! 旧来の一覧（`/admin/members`・`/admin/service-accounts`）は、種別を絞ったこの一覧へ転送する。
+//! The legacy lists (`/admin/members`, `/admin/service-accounts`) redirect to this list filtered by kind.
 
 use super::locale;
 use crate::admin_dto::AccountListView;
@@ -34,13 +34,13 @@ use axum::Form;
 use serde::Deserialize;
 
 const ACCOUNTS_SEGMENT: &str = "/admin/accounts";
-/// 種別の値（api の `?kind=` と同じ綴り）。
+/// Kind values (same spelling as the api's `?kind=`).
 const KIND_USER: &str = "user";
 const KIND_SERVICE_ACCOUNT: &str = "service_account";
 
 #[derive(Debug, Default, Deserialize)]
 pub struct ListQuery {
-    /// `user` / `service_account`。未指定は「読めるものすべて」。
+    /// `user` / `service_account`. Unspecified means "everything readable".
     #[serde(default)]
     pub kind: Option<String>,
     #[serde(default)]
@@ -53,10 +53,10 @@ pub struct ListQuery {
     pub notice: Option<String>,
 }
 
-/// アカウント一覧（`GET /{tenant_id}/admin/accounts`）。
+/// Account list (`GET /{tenant_id}/admin/accounts`).
 ///
-/// 絞り込み・ページング・**読める種別の判定**は api 側で行う。web は種別・検索語・ページ位置を
-/// 引き継ぎ、応答の `readable_kinds` から種別の選択肢を組み立てるだけ。
+/// Filtering, paging and **deciding the readable kinds** are done by the api. web carries over the kind, search term and
+/// page position, and only builds the kind options from `readable_kinds` in the response.
 pub async fn list(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -69,7 +69,7 @@ pub async fn list(
         AdminResolution::Reject(resp) => return resp,
     };
     let term = query.q.clone().unwrap_or_default().trim().to_string();
-    // 未知の種別は「すべて」として扱う（画面の URL を手で直した人を 400 で止めない）。
+    // Unknown kinds are treated as "all" (do not stop someone who hand-edited the screen URL with a 400).
     let kind = match query.kind.as_deref() {
         Some(KIND_USER) => KIND_USER,
         Some(KIND_SERVICE_ACCOUNT) => KIND_SERVICE_ACCOUNT,
@@ -107,7 +107,7 @@ pub async fn list(
     }
 }
 
-/// 旧来のメンバー一覧（`GET /admin/members`）。人に絞ったアカウントの一覧へ転送する。
+/// Legacy member list (`GET /admin/members`). Redirects to the account list filtered to people.
 pub async fn members_list(
     Extension(tenant): Extension<WebTenant>,
     Query(query): Query<ListQuery>,
@@ -115,8 +115,8 @@ pub async fn members_list(
     found(&list_href(&tenant, KIND_USER, &query))
 }
 
-/// 旧来のサービスアカウント一覧（`GET /admin/service-accounts`）。サービスアカウントに絞った
-/// アカウントの一覧へ転送する。
+/// Legacy service account list (`GET /admin/service-accounts`). Redirects to the account list filtered to
+/// service accounts.
 pub async fn service_accounts_list(
     Extension(tenant): Extension<WebTenant>,
     Query(query): Query<ListQuery>,
@@ -124,7 +124,7 @@ pub async fn service_accounts_list(
     found(&list_href(&tenant, KIND_SERVICE_ACCOUNT, &query))
 }
 
-/// 種別を絞った一覧の URL（検索語・通知は持ち越す）。
+/// URL of the list filtered by kind (search term and notices are carried over).
 fn list_href(tenant: &WebTenant, kind: &str, query: &ListQuery) -> String {
     let mut href = format!("{}{ACCOUNTS_SEGMENT}?kind={kind}", tenant.prefix());
     for (key, value) in [
@@ -147,7 +147,7 @@ pub struct DetailQuery {
     pub notice: Option<String>,
 }
 
-/// サービスアカウント 1 件の画面（`GET /{tenant_id}/admin/service-accounts/{client_id}`）。
+/// Screen for one service account (`GET /{tenant_id}/admin/service-accounts/{client_id}`).
 pub async fn service_account_detail(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -160,7 +160,7 @@ pub async fn service_account_detail(
         AdminResolution::Ok(a) => a,
         AdminResolution::Reject(resp) => return resp,
     };
-    // ⚠ `Messages` は `Send` ではないので、`await` をまたいで持たない（api 呼び出しの後に作る）。
+    // ⚠ `Messages` is not `Send`, so do not hold it across an `await` (create it after the api calls).
     let sso = sso(&headers);
     let account = match state
         .api
@@ -170,7 +170,7 @@ pub async fn service_account_detail(
         Ok(account) => account,
         Err(AdminApiError::Unauthorized) => return redirect_to_login(&tenant),
         Err(AdminApiError::Forbidden) => return forbidden_response(&headers),
-        // 他テナント・連携先・削除済みを区別しない。一覧へ戻す。
+        // Other tenants, federation peers and deleted ones are not distinguished. Return to the list.
         Err(AdminApiError::NotFound) => {
             return found(&format!(
                 "{}{ACCOUNTS_SEGMENT}?kind={KIND_SERVICE_ACCOUNT}&error=notfound",
@@ -182,8 +182,8 @@ pub async fn service_account_detail(
             return internal_error(&messages, &tenant, &admin);
         }
     };
-    // 接続の設定（認証方式・種別）と管理権限。読めなければ画面ごと失敗させる ——権限の一覧が空なのか
-    // 読めなかったのかを取り違えると、付いているはずの権限を誤って付け直しかねない（ADR-0037）。
+    // Connection settings (auth method, kind) and admin permissions. If unreadable, fail the whole screen — confusing
+    // an empty permission list with an unreadable one could lead to wrongly re-granting permissions that are already there (ADR-0037).
     let client = state
         .api
         .get_client(&correlation.0, &tenant.0, &sso, &client_id)
@@ -202,7 +202,7 @@ pub async fn service_account_detail(
             return internal_error(&messages, &tenant, &admin);
         }
     };
-    // 付与の候補。取れなくても画面は描く（保有権限の確認・剥奪は続けられる）。
+    // Grant candidates. The screen is drawn even if they cannot be fetched (checking/revoking held permissions can continue).
     let (grantable, permissions_load_failed) = match state
         .api
         .client_grantable_permissions(&correlation.0, &tenant.0, &sso)
@@ -220,7 +220,7 @@ pub async fn service_account_detail(
             (Vec::new(), true)
         }
     };
-    // 使えるアプリは `idp.applications:read` が要る。持たない管理者には画面ごと断らず、欄だけ出さない。
+    // Available apps need `idp.applications:read`. Admins without it are not refused the whole screen; only the section is hidden.
     let applications = state
         .api
         .list_service_account_applications(&correlation.0, &tenant.0, &sso, &client_id)
@@ -228,7 +228,7 @@ pub async fn service_account_detail(
         .ok();
     let messages = Messages::new(locale(&headers));
     let error_key = query.error.as_deref().and_then(|e| {
-        // 権限の付与・剥奪（`/admin/clients/{id}/permissions/*`）から戻ってきた結果もここで出す。
+        // Results returning from granting/revoking permissions (`/admin/clients/{id}/permissions/*`) are also shown here.
         error_key_for(e).or_else(|| permission_error_key(e))
     });
     Html(render(&ServiceAccountDetail {
@@ -248,7 +248,7 @@ pub async fn service_account_detail(
     .into_response()
 }
 
-/// サービスアカウントの管理者メモを書く（`POST .../service-accounts/{client_id}/note`）。
+/// Writes a service account's admin note (`POST .../service-accounts/{client_id}/note`).
 pub async fn update_service_account_note(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -268,8 +268,8 @@ pub async fn update_service_account_note(
     .await
 }
 
-/// このサービスアカウントをアプリへ割り当てる
-/// （`POST .../service-accounts/{client_id}/applications/{application_id}/assign`）。
+/// Assigns this service account to an app
+/// (`POST .../service-accounts/{client_id}/applications/{application_id}/assign`).
 pub async fn assign_service_account_application(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -291,8 +291,8 @@ pub async fn assign_service_account_application(
     .await
 }
 
-/// このサービスアカウントの割り当てを外す
-/// （`POST .../service-accounts/{client_id}/applications/{application_id}/unassign`）。
+/// Removes this service account's assignment
+/// (`POST .../service-accounts/{client_id}/applications/{application_id}/unassign`).
 pub async fn unassign_service_account_application(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -314,7 +314,7 @@ pub async fn unassign_service_account_application(
     .await
 }
 
-/// 操作の相手（経路の値）。
+/// The target of the operation (path values).
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum AccountTarget<'a> {
     User(&'a str),
@@ -322,7 +322,7 @@ pub(crate) enum AccountTarget<'a> {
 }
 
 impl AccountTarget<'_> {
-    /// 1 件の画面の URL（テナント込み）。操作の後はここへ戻す。
+    /// URL of the single-item screen (including the tenant). Return here after an operation.
     fn href(&self, tenant: &WebTenant) -> String {
         match self {
             Self::User(user_id) => format!("{}/admin/members/{user_id}", tenant.prefix()),
@@ -332,7 +332,7 @@ impl AccountTarget<'_> {
         }
     }
 
-    /// 見つからなかったときの戻り先（種別を絞った一覧）。
+    /// Where to return when not found (the list filtered by kind).
     fn not_found_href(&self, tenant: &WebTenant) -> String {
         let kind = match self {
             Self::User(_) => KIND_USER,
@@ -345,9 +345,9 @@ impl AccountTarget<'_> {
     }
 }
 
-/// 管理者メモを書く（人・サービスアカウント共通。ADR-0063 / ADR-0065）。
+/// Writes an admin note (shared by people and service accounts. ADR-0063 / ADR-0065).
 ///
-/// 書いたら同じ 1 件の画面へ戻す（一覧へ戻すと、続けて読み返せない）。
+/// After writing, return to the same single-item screen (returning to the list would prevent re-reading right away).
 pub(crate) async fn write_note(
     state: &WebState,
     correlation: &CorrelationId,
@@ -386,17 +386,17 @@ pub(crate) async fn write_note(
         Err(AdminApiError::Unauthorized) => redirect_to_login(tenant),
         Err(AdminApiError::Forbidden) => found(&format!("{back}?error=forbidden-write")),
         Err(AdminApiError::NotFound) => found(&target.not_found_href(tenant)),
-        // 長すぎる（画面の maxlength を外して送られたとき）。
+        // Too long (when sent with the screen's maxlength removed).
         Err(AdminApiError::Validation(_)) => found(&format!("{back}?error=note-too-long")),
         Err(_) => found(&format!("{back}?error=internal")),
     }
 }
 
-/// アプリへの割り当てを出し入れする（人・サービスアカウント共通）。
+/// Adds/removes assignments to apps (shared by people and service accounts).
 ///
-/// アプリの詳細画面と同じ API（`/admin/applications/{id}/assignments`）を呼ぶ。入口がアカウントの
-/// 側にあるだけで、規則（メンバーであること・サービスアカウントであること・冪等）は api の 1 か所に
-/// しか無い。
+/// Calls the same API as the app details screen (`/admin/applications/{id}/assignments`). Only the entry point is on the
+/// account side; the rules (being a member, being a service account, idempotency) exist only in one place in
+/// the api.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn change_assignment(
     state: &WebState,
@@ -460,7 +460,7 @@ pub(crate) async fn change_assignment(
     }
 }
 
-/// 一覧の描画（種別の選択肢・ページャのリンク組み立てを含む）。
+/// Renders the list (including the kind options and building the pager links).
 #[allow(clippy::too_many_arguments)]
 fn render_list(
     messages: &Messages,
@@ -482,7 +482,7 @@ fn render_list(
         page.total,
     );
     let readable = |k: &str| page.readable_kinds.iter().any(|r| r == k);
-    // 種別の選択肢は、読める種別が 2 つ以上あるときだけ意味がある（テンプレートが件数で出し分ける）。
+    // The kind options only make sense when two or more kinds are readable (the template decides by count).
     let mut kind_tabs = vec![AccountKindTab {
         label: "admin-accounts-kind-all",
         href: with_query(&base, &[("q", term)]),
@@ -522,7 +522,7 @@ fn render_list(
     })
 }
 
-/// 空でない値だけをクエリに付ける。
+/// Adds only non-empty values to the query.
 fn with_query(base: &str, pairs: &[(&str, &str)]) -> String {
     let query: Vec<String> = pairs
         .iter()
@@ -536,7 +536,7 @@ fn with_query(base: &str, pairs: &[(&str, &str)]) -> String {
     }
 }
 
-/// クエリ値のエンコード（英数と `-_.~` 以外を %XX にする）。
+/// Encodes a query value (everything except alphanumerics and `-_.~` becomes %XX).
 fn encode(value: &str) -> String {
     value
         .bytes()
@@ -635,7 +635,7 @@ pub(crate) mod tests {
         )
     }
 
-    /// 人だけを読める管理者の一覧（メンバーの画面の試験が使う）。
+    /// List for an admin who can read only people (used by the member screen tests).
     pub(crate) fn render_accounts(accounts: Vec<AccountView>, notice_key: Option<&str>) -> String {
         render_with(accounts, &[KIND_USER], "", notice_key)
     }
@@ -675,7 +675,7 @@ pub(crate) mod tests {
         )));
     }
 
-    /// 読める種別が 2 つのときだけ種別の選択肢を出す。
+    /// Kind options are shown only when two kinds are readable.
     #[test]
     fn kind_tabs_appear_only_when_there_is_a_choice() {
         let messages = Messages::new(Locale::Ja);
@@ -693,12 +693,12 @@ pub(crate) mod tests {
         assert!(!one.contains("?kind=service_account"), "{one}");
         assert!(
             !one.contains("/admin/service-accounts/new"),
-            "人しか読めない管理者にサービスアカウントの登録を出さない: {one}"
+            "do not offer service account registration to an admin who can read only people: {one}"
         );
     }
 
-    /// 検索欄は打つだけで絞り込む（`assets/live-search.js`）。差し替える領域と、語が空のときに
-    /// 隠す「消去」を描いていること。スクリプトが無くても送れるよう、ボタンは残す。
+    /// The search box filters just by typing (`assets/live-search.js`). It renders the region to replace and the
+    /// "clear" hidden when the term is empty. The button stays so it can be submitted without the script.
     #[test]
     fn the_search_box_filters_as_you_type() {
         let html = render_with(Vec::new(), &[KIND_USER, KIND_SERVICE_ACCOUNT], "", None);
@@ -765,7 +765,7 @@ pub(crate) mod tests {
         })
     }
 
-    /// 人の画面と同じ骨組み: メモの欄・名乗り・管理権限・直す・危険が揃う。
+    /// Same skeleton as the person screen: note section, identity, admin permissions, edit and danger zone are all there.
     #[test]
     fn the_detail_has_the_same_skeleton_as_a_member() {
         let mut sa = service_account("夜間同期");
@@ -790,8 +790,8 @@ pub(crate) mod tests {
         assert!(html.contains("/admin/clients/c0ffee/delete"), "{html}");
     }
 
-    /// 共通のメモ・アプリの欄の送り先は構造体のメソッドが組み立てる（テンプレートの静的検査が
-    /// 追えない）。代わりにここで、組み立てた先が web のルートであることを確かめる。
+    /// The destinations of the shared note/app sections are built by struct methods (the template's static check
+    /// cannot follow them). Instead, verify here that the built destinations are web routes.
     #[test]
     fn card_actions_are_routes_this_service_serves() {
         let routes = crate::router::declared_route_paths();
@@ -838,11 +838,11 @@ pub(crate) mod tests {
             member_page.assignment_action("{application_id}", "unassign"),
         ] {
             let path = crate::router::collapse_params(&action);
-            assert!(routes.contains(&path), "{action} は web のルートではない");
+            assert!(routes.contains(&path), "{action} is not a web route");
         }
     }
 
-    /// ⚠ 「全員」のアプリにサービスアカウントは含まれない ——出し入れの口をモードを問わず出す。
+    /// ⚠ Service accounts are not included in "everyone" apps — the add/remove controls are shown regardless of mode.
     #[test]
     fn service_accounts_can_be_assigned_even_to_everyone_applications() {
         let apps = AccountApplicationListView {
@@ -865,7 +865,7 @@ pub(crate) mod tests {
         assert!(html.contains(&messages.get("admin-service-account-applications-mode-everyone")));
         assert!(
             !html.contains(&messages.get("admin-member-applications-record-only")),
-            "人のログインの段階導入はサービスアカウントに関係ない: {html}"
+            "staged rollout of people's login is irrelevant to service accounts: {html}"
         );
     }
 }

@@ -1,10 +1,10 @@
-//! システム用クライアントへの管理権限の付与・剥奪・参照（ADR-0037）。
+//! Granting, revoking and listing admin permissions for system clients (ADR-0037).
 //!
-//! 利用者への付与（`permission_management`）と別サービスにするのは、**付与できるコードの集合が
-//! 違う**ためである。クライアントには包括的な管理権限（`idp.system.admin` / `idp.tenant.admin`）を
-//! 付与させない。1 つのサービスに両方を通すと、この違いが `if` の分岐として埋もれる。
+//! It is a separate service from granting to users (`permission_management`) because **the set of grantable
+//! codes differs**. Clients are never granted blanket admin permissions (`idp.system.admin` / `idp.tenant.admin`).
+//! Routing both through one service would bury this difference in an `if` branch.
 //!
-//! 判定は本 Application 層で行い、Presentation には結果のみ渡す（CLAUDE.md「権限管理」）。
+//! Decisions are made in this Application layer; Presentation only gets the result (CLAUDE.md "Permission management").
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::admin_actor::AdminActor;
@@ -19,9 +19,9 @@ use std::sync::Arc;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ClientPermissionError {
-    /// 対象クライアントが要求テナントに存在しない（削除済みを含む）。
+    /// The target client does not exist in the requested tenant (including deleted ones).
     NotFound,
-    /// 権限コードが不正（空・未知・クライアントへ付与できないコード）。
+    /// Invalid permission code (empty, unknown, or a code that cannot be granted to clients).
     Invalid(MessageKey),
     Internal(String),
 }
@@ -48,7 +48,7 @@ impl ClientPermissionManagementService {
         }
     }
 
-    /// 対象クライアントが保有する権限コードを一覧する（昇順）。
+    /// Lists the permission codes held by the target client (ascending).
     pub async fn list(
         &self,
         tenant: TenantContext,
@@ -64,11 +64,11 @@ impl ClientPermissionManagementService {
         Ok(codes)
     }
 
-    /// 権限コードを付与する（冪等）。付与後の保有コード一覧を返す。
+    /// Grants a permission code (idempotent). Returns the held codes after granting.
     ///
-    /// `tenant_is_root` は**要求テナントが root か**。root の中にしか存在し得ないコードを、
-    /// テナントの中から配らせないために要る（`permission::is_grantable_in_tenant`）。
-    /// 真偽値で受けるのは、この層がテナントの表を引かない（引くと境界が増える）ためである。
+    /// `tenant_is_root` is **whether the requested tenant is root**. Needed so codes that can only exist
+    /// in root cannot be handed out from inside a tenant (`permission::is_grantable_in_tenant`).
+    /// Taken as a bool because this layer does not look up the tenants table (doing so adds a boundary).
     pub async fn grant(
         &self,
         tenant: TenantContext,
@@ -81,17 +81,17 @@ impl ClientPermissionManagementService {
         let code = parse_code(raw_code)?;
         let client = self.load_client(tenant, client_id).await?;
 
-        // 包括的な管理権限はクライアントへ付与しない（DB の CHECK 制約と二重防御）。
-        // ここで落とすのは、DB 制約違反を利用者向けの文言に翻訳するためでもある。
+        // Blanket admin permissions are not granted to clients (defense in depth with the DB CHECK constraint).
+        // Rejecting here also translates the DB constraint violation into user-facing wording.
         if !permission::is_grantable_to_client(code.as_str()) {
             return Err(ClientPermissionError::Invalid(MessageKey::new(
                 "api-client-permission-not-grantable",
             )));
         }
 
-        // root の中にしか存在し得ないコードは、テナントの中から配らせない（ADR-0009 §4）。
-        // ⚠ **`is_grantable_to_client` とは別の軸である。** あちらは「機械に渡してよい粒度か」、
-        //   こちらは「そのテナントに、その範囲の権限が存在し得るか」を見ている。
+        // Codes that can only exist in root are not handed out from inside a tenant (ADR-0009 §4).
+        // ⚠ **This is a different axis from `is_grantable_to_client`.** That one checks "is the granularity OK for a machine";
+        //   this one checks "can a permission of that scope exist in that tenant".
         if !permission::is_grantable_in_tenant(code.as_str(), tenant_is_root) {
             return Err(ClientPermissionError::Invalid(MessageKey::new(
                 "api-client-permission-not-grantable",
@@ -109,7 +109,7 @@ impl ClientPermissionManagementService {
                 AuditResult::Success,
                 Some(tenant.tenant_id()),
                 actor.user_id(),
-                // `client_id` 列は操作対象のクライアント。実行主体が機械のときは理由欄へ回す。
+                // The `client_id` column is the client being operated on. When the actor is a machine, it goes in the reason field.
                 Some(&client.client_id),
                 Some(&audit_reason(code.as_str(), actor)),
                 ctx,
@@ -118,7 +118,7 @@ impl ClientPermissionManagementService {
         self.list(tenant, client_id).await
     }
 
-    /// 権限コードを剥奪する（未保有でもエラーにしない）。剥奪後の保有コード一覧を返す。
+    /// Revokes a permission code (no error if not held). Returns the held codes after revoking.
     pub async fn revoke(
         &self,
         tenant: TenantContext,
@@ -149,7 +149,7 @@ impl ClientPermissionManagementService {
         self.list(tenant, client_id).await
     }
 
-    /// 要求テナント内で有効なクライアントを解決する。他テナントの `client_id` は解決しない。
+    /// Resolves an active client in the requested tenant. Another tenant's `client_id` is not resolved.
     async fn load_client(
         &self,
         tenant: TenantContext,
@@ -160,8 +160,8 @@ impl ClientPermissionManagementService {
             .find_by_client_id(tenant.tenant_id(), client_id)
             .await
         {
-            // 論理削除済み（ADR-0035）は「無い」として扱う。権限だけ付け替えられると、
-            // 削除したはずのクライアントが復活したときに知らない権限を持っている。
+            // Logically deleted ones (ADR-0035) are treated as "absent". If only permissions were reassigned,
+            // a supposedly deleted client would come back holding permissions nobody knew about.
             Ok(Some(client)) if !client.is_deleted() => Ok(client),
             Ok(_) => Err(ClientPermissionError::NotFound),
             Err(e) => Err(ClientPermissionError::Internal(e.to_string())),
@@ -175,7 +175,7 @@ fn parse_code(raw: &str) -> Result<PermissionCode, ClientPermissionError> {
     })
 }
 
-/// 監査ログの `reason`（PII を含めない。権限コードと、機械が実行した場合はその `client_id`）。
+/// `reason` for the audit log (no PII: the permission codes and, when a machine performed it, its `client_id`).
 fn audit_reason(code: &str, actor: &AdminActor) -> String {
     match actor.audit_note() {
         Some(note) => format!("permission={code} {note}"),
@@ -185,7 +185,7 @@ fn audit_reason(code: &str, actor: &AdminActor) -> String {
 
 fn map_repo_error(e: DomainError) -> ClientPermissionError {
     match e {
-        // 未知の権限コード（FK 違反）・CHECK 違反はいずれも入力の誤り。
+        // An unknown permission code (FK violation) or a CHECK violation is an input error either way.
         DomainError::InvalidValue(_) => {
             ClientPermissionError::Invalid(MessageKey::new("api-client-permission-not-grantable"))
         }

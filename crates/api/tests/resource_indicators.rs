@@ -1,15 +1,15 @@
-//! リソース指標（RFC 8707）の統合テスト（ADR-0042）。
+//! Integration tests for resource indicators (RFC 8707) (ADR-0042).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test resource_indicators
 //!
-//! 検証の要:
-//! - 登録され、**あるアプリの名乗り**であり、要求元のサービスアカウントが**そのアプリに割り当て
-//!   られている**宛名だけが `aud` に載ること（ADR-0059 の決定 6）。
-//! - ⚠ 「全員（`EVERYONE`）」のアプリでも、サービスアカウントは個別に割り当てない限り取れないこと。
-//! - 未登録・停止中・未許可を**応答で区別しない**こと（区別すると登録の有無を総当たりで探れる）。
-//! - 宛名のトークンに `perms` が載らないこと。何をしてよいかはリソースサーバが決める（ADR-0033）。
-//! - 管理 API 向けのトークン（ADR-0037）が従来どおりであること。
+//! Key points checked:
+//! - Only audiences that are registered, are **some app's identity**, and whose app **the requesting service account
+//!   is assigned to** go into `aud` (ADR-0059 decision 6).
+//! - ⚠ Even for an "Everyone" (`EVERYONE`) app, a service account cannot get it unless individually assigned.
+//! - Unregistered, suspended and not permitted are **not distinguished in the response** (otherwise registration could be probed by brute force).
+//! - Audience tokens carry no `perms`. What may be done is decided by the resource server (ADR-0033).
+//! - Tokens for the admin API (ADR-0037) work as before.
 
 mod support;
 
@@ -20,9 +20,9 @@ use base64::Engine as _;
 use serde_json::{json, Value};
 use support::{admin_token, body_json, delete, post, put, send, unique};
 
-/// `ACCESS_TOKEN_TTL_SECS` の既定。宛名のトークンは通常のアクセストークンと同じ寿命で出る。
+/// Default of `ACCESS_TOKEN_TTL_SECS`. Audience tokens are issued with the same lifetime as normal access tokens.
 const ACCESS_TOKEN_TTL_SECS: u64 = 900;
-/// `MANAGEMENT_TOKEN_TTL_SECS` の既定（ADR-0037）。
+/// Default of `MANAGEMENT_TOKEN_TTL_SECS` (ADR-0037).
 const MANAGEMENT_TOKEN_TTL_SECS: u64 = 300;
 
 fn basic(client_id: &str, secret: &str) -> String {
@@ -59,7 +59,7 @@ async fn request_token(
     .await
 }
 
-/// アクセストークン（JWT）のクレームを読む。署名は他のテストが見ているので、ここでは載る値だけを見る。
+/// Reads the claims of an access token (JWT). Signatures are checked by other tests; here only the values are looked at.
 fn claims(access_token: &str) -> Value {
     let payload = access_token.split('.').nth(1).expect("payload segment");
     let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -68,7 +68,7 @@ fn claims(access_token: &str) -> Value {
     serde_json::from_slice(&decoded).expect("claims json")
 }
 
-/// アプリを「個別」で作り、その id を返す。
+/// Creates an app as "Individual" and returns its id.
 async fn create_application(app: &axum::Router, admin_tok: &str, tenant_id: &str) -> String {
     let res = send(
         app,
@@ -83,7 +83,7 @@ async fn create_application(app: &axum::Router, admin_tok: &str, tenant_id: &str
     body_json(res).await["id"].as_str().unwrap().to_string()
 }
 
-/// 宛名を登録して、その id を返す。
+/// Registers an audience and returns its id.
 async fn register_resource(
     app: &axum::Router,
     admin_tok: &str,
@@ -119,14 +119,14 @@ async fn only_an_audience_of_an_application_the_service_account_is_assigned_to_r
         async move { request_token(&app, &tenant, &client_id, &secret, Some(&resource)).await }
     };
 
-    // 登録前は断る。
+    // Refused before registration.
     let res = token(audience.clone()).await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     assert_eq!(body_json(res).await["error"], "invalid_target");
 
     register_resource(&env.app, &admin_tok, &env.root_tenant_id, &audience).await;
 
-    // 登録しただけでは出ない（どのアプリの宛名でもない）。
+    // Registering alone does not issue it (it is no app's audience).
     let res = token(audience.clone()).await;
     assert_eq!(
         res.status(),
@@ -135,7 +135,7 @@ async fn only_an_audience_of_an_application_the_service_account_is_assigned_to_r
     );
     assert_eq!(body_json(res).await["error"], "invalid_target");
 
-    // アプリの名乗りにしても、割り当てが無ければ出ない。
+    // Even as an app identity, it is not issued without an assignment.
     let application_id = create_application(&env.app, &admin_tok, &env.root_tenant_id).await;
     let detail_uri = format!(
         "/{}/admin/applications/{application_id}",
@@ -162,7 +162,7 @@ async fn only_an_audience_of_an_application_the_service_account_is_assigned_to_r
         "bound but not assigned must not be issued"
     );
 
-    // ⚠ 「全員」に含まれるのは人だけ。サービスアカウントには効かない。
+    // ⚠ "Everyone" includes only people. It does not apply to service accounts.
     let set_mode = |mode: &'static str| {
         let app = env.app.clone();
         let admin_tok = admin_tok.clone();
@@ -194,7 +194,7 @@ async fn only_an_audience_of_an_application_the_service_account_is_assigned_to_r
     );
     set_mode("INDIVIDUAL").await;
 
-    // 割り当てると、宛名が `aud` に載る。
+    // Once assigned, the audience goes into `aud`.
     let res = send(
         &env.app,
         post(
@@ -224,16 +224,16 @@ async fn only_an_audience_of_an_application_the_service_account_is_assigned_to_r
     assert_eq!(claims["aud"], json!(audience), "aud is the registered name");
     assert_eq!(claims["client_id"], json!(client_id));
     assert_eq!(claims["sub_type"], json!("client"));
-    // 何をしてよいかは載らない（ADR-0033）。ここに権限が載り始めると、アプリの権限モデルを
-    // 直すたびに idp を触ることになる。
+    // What may be done is not included (ADR-0033). If permissions started appearing here, idp would need changes
+    // every time an app's permission model is fixed.
     assert!(
         claims.get("perms").is_none_or(Value::is_null),
         "a resource token must not carry perms: {claims}"
     );
 
-    // ⚠ `aud` に載るのは**登録された綴り**であること。`resources.resource_uri` の照合順序は
-    // 大小を区別しない（`utf8mb4_unicode_ci`）ので、綴りを変えた要求でも同じ行が引ける。
-    // 要求された綴りをそのまま返すと、登録値と完全一致で比べるリソースサーバ側で外れる。
+    // ⚠ What goes into `aud` must be **the registered spelling**. The collation of `resources.resource_uri` is
+    // case-insensitive (`utf8mb4_unicode_ci`), so requests with a different spelling find the same row.
+    // Returning the requested spelling as is would fail at resource servers comparing exactly with the registered value.
     let shouted = audience.to_uppercase();
     assert_ne!(
         shouted, audience,
@@ -245,7 +245,7 @@ async fn only_an_audience_of_an_application_the_service_account_is_assigned_to_r
         StatusCode::OK,
         "the row is found case-insensitively"
     );
-    // `claims` は上で束縛済みなので、関数はパスで呼ぶ。
+    // `claims` is already bound above, so the function is called by path.
     let shouted_claims = crate::claims(
         body_json(res).await["access_token"]
             .as_str()
@@ -257,7 +257,7 @@ async fn only_an_audience_of_an_application_the_service_account_is_assigned_to_r
         "aud must be the registered spelling, not the requested one"
     );
 
-    // 止めたアプリの宛名は出ない。
+    // Audiences of suspended apps are not issued.
     let detail = body_json(send(&env.app, support::get(&admin_tok, &detail_uri)).await).await;
     let res = send(
         &env.app,
@@ -282,7 +282,7 @@ async fn only_an_audience_of_an_application_the_service_account_is_assigned_to_r
     set_mode("INDIVIDUAL").await;
     assert_eq!(token(audience.clone()).await.status(), StatusCode::OK);
 
-    // 割り当てを外すと、次のトークンからは出なくなる（発行済みは TTL まで有効）。
+    // Removing the assignment stops it from the next token (issued ones stay valid until TTL).
     let res = send(
         &env.app,
         delete(
@@ -297,7 +297,7 @@ async fn only_an_audience_of_an_application_the_service_account_is_assigned_to_r
     assert_eq!(body_json(res).await["error"], "invalid_target");
 }
 
-/// ⚠ サービスアカウントとして割り当てられるのは `client_credentials` だけの client。
+/// ⚠ Only `client_credentials`-only clients can be assigned as service accounts.
 #[tokio::test]
 async fn only_a_service_account_can_be_assigned_as_one() {
     let Some(env) = support::setup("resource indicators not a service account").await else {
@@ -309,7 +309,7 @@ async fn only_a_service_account_can_be_assigned_as_one() {
         "/{}/admin/applications/{application_id}/assignments",
         env.root_tenant_id
     );
-    // `authorization_code` も持つ client（ログインに使える）。
+    // A client that also has `authorization_code` (usable for login).
     let (mixed, _) = support::insert_m2m_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
     let res = send(
         &env.app,
@@ -322,7 +322,7 @@ async fn only_a_service_account_can_be_assigned_as_one() {
     .await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 
-    // 種類を指さない・種類に合わない欄だけの要求も 400。
+    // Requests without a kind or with only fields not fitting the kind are 400 too.
     let (service_account, _) =
         support::insert_service_account(&env.pool, &env.root_tenant_id).await;
     let res = send(
@@ -379,7 +379,7 @@ async fn a_disabled_audience_stops_new_tokens_without_losing_the_assignment() {
         assert_eq!(res.status(), StatusCode::OK, "{uri}");
     }
 
-    // 停止する。
+    // Suspend.
     let res = send(
         &env.app,
         support::patch(
@@ -406,7 +406,7 @@ async fn a_disabled_audience_stops_new_tokens_without_losing_the_assignment() {
         "a disabled audience must not be issued"
     );
 
-    // 名乗りと割り当ては消えていない——再開すればそのまま出る（停止は削除の代わりに使える）。
+    // Identities and assignments are not gone — resuming issues it as is (suspension can be used instead of deletion).
     let res = send(
         &env.app,
         support::patch(
@@ -438,8 +438,8 @@ async fn the_management_audience_stays_separate_from_registered_ones() {
         support::insert_m2m_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
     let management_aud = format!("{}/{}/admin", env.issuer, env.root_tenant_id);
 
-    // 管理 API の `aud` は登録できない。登録できると、`perms` の付かない管理宛のトークンを
-    // 誰にでも出せてしまう（`aud` だけを見る相手はそれを通す）。
+    // The admin API `aud` cannot be registered. If it could, admin-addressed tokens without `perms` could be
+    // issued to anyone (counterparts looking only at `aud` would let them through).
     let res = send(
         &env.app,
         post(
@@ -455,8 +455,8 @@ async fn the_management_audience_stays_separate_from_registered_ones() {
         "the management audience must be reserved"
     );
 
-    // 完全一致だけを拒むと `…/admin/` のような紛らわしい名前が登録できてしまう。issuer 配下は
-    // 丸ごと予約する（いま実害があるからではなく、貸してよい理由が無いため）。
+    // Rejecting only exact matches would allow confusing names like `…/admin/`. Everything under the issuer
+    // is reserved (not because of present harm, but because there is no reason to lend it).
     for near_miss in [
         format!("{management_aud}/"),
         format!("{}/{}/userinfo", env.issuer, env.root_tenant_id),
@@ -478,7 +478,7 @@ async fn the_management_audience_stays_separate_from_registered_ones() {
         );
     }
 
-    // 従来どおり、権限を付けたクライアントには短命の管理トークンが出る。
+    // As before, clients with permissions get short-lived admin tokens.
     let res = send(
         &env.app,
         post(
@@ -511,7 +511,7 @@ async fn the_management_audience_stays_separate_from_registered_ones() {
     assert_eq!(claims["perms"], json!("idp.users:read"));
 }
 
-/// アプリの状態を倒す（表示名・割り当てのモードは今の値のまま）。
+/// Flips the app state (display name and assignment mode keep their current values).
 async fn set_application_status(
     app: &axum::Router,
     admin_tok: &str,
@@ -535,12 +535,12 @@ async fn set_application_status(
     assert_eq!(res.status(), StatusCode::OK, "set status {status}");
 }
 
-/// ⚠ **アプリを止めると、その名乗りのサービスアカウントも止まる**（ADR-0060）。
+/// ⚠ **Suspending an app also stops the service account of its identity** (ADR-0060).
 ///
-/// - 既定のトークンも、**他のアプリの宛名**のトークンも出ない（`unauthorized_client`）
-/// - ⚠ **管理トークンは出るが、権限コードは載らない。** 通るのは自分の名簿（self）だけで、
-///   名簿は「全員 `blocked`」と答える ——ここを塞ぐと RP は止まったことを定期照合で知れない
-/// - 名乗り・割り当て・権限コードは消えない。再開すればそのまま戻る
+/// - Neither default tokens nor tokens for **other apps' audiences** are issued (`unauthorized_client`)
+/// - ⚠ **An admin token is issued, but without permission codes.** Only its own roster (self) passes, and
+///   the roster answers "everyone `blocked`" — blocking this would keep RPs from learning of the suspension via periodic reconciliation
+/// - Identities, assignments and permission codes are not removed. Resuming restores them as they were
 #[tokio::test]
 async fn disabling_an_application_stops_the_service_account_it_is_named_by() {
     let Some(env) = support::setup("resource indicators own application disabled").await else {
@@ -562,7 +562,7 @@ async fn disabling_an_application_stops_the_service_account_it_is_named_by() {
         .await
         .expect("grant permission");
 
-    // 名乗りのアプリ（mp3play にあたる）。
+    // The identity's app (corresponds to mp3play).
     let own_id = create_application(&env.app, &admin_tok, &env.root_tenant_id).await;
     let own_uri = format!("/{}/admin/applications/{own_id}", env.root_tenant_id);
     let res = send(
@@ -576,7 +576,7 @@ async fn disabling_an_application_stops_the_service_account_it_is_named_by() {
     .await;
     assert_eq!(res.status(), StatusCode::OK, "bind the service account");
 
-    // 使う側のアプリ（blobshare にあたる）。サービスアカウントは使う主体として割り当ててある。
+    // The using app (corresponds to blobshare). The service account is assigned as a using principal.
     let audience = format!("api://blob-{}", unique());
     register_resource(&env.app, &admin_tok, &env.root_tenant_id, &audience).await;
     let other_id = create_application(&env.app, &admin_tok, &env.root_tenant_id).await;
@@ -613,7 +613,7 @@ async fn disabling_an_application_stops_the_service_account_it_is_named_by() {
             .to_string()
     };
 
-    // 動いているあいだは、どれも出る。
+    // While running, all are issued.
     let res = request_token(&env.app, &env.root_tenant_id, &client_id, &secret, None).await;
     assert_eq!(res.status(), StatusCode::OK, "default token while active");
     let res = request_token(
@@ -634,7 +634,7 @@ async fn disabling_an_application_stops_the_service_account_it_is_named_by() {
         "permission works while active"
     );
 
-    // 名乗りのアプリを止める。
+    // Suspend the identity's app.
     set_application_status(&env.app, &admin_tok, &own_uri, "DISABLED").await;
 
     let res = request_token(&env.app, &env.root_tenant_id, &client_id, &secret, None).await;
@@ -677,7 +677,7 @@ async fn disabling_an_application_stops_the_service_account_it_is_named_by() {
         "the roster stays readable so the RP learns that everyone is blocked"
     );
 
-    // 再開すれば、名乗り・割り当て・権限コードはそのまま戻る。
+    // On resuming, identities, assignments and permission codes come back as they were.
     set_application_status(&env.app, &admin_tok, &own_uri, "ACTIVE").await;
     let res = request_token(
         &env.app,

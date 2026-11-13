@@ -1,7 +1,7 @@
 {% extends "console/layout.html" %}
 {% block content %}
-{#- 締め出し得る値へ変える前の確認（ADR-0058）。JavaScript の確認ダイアログに頼らず、1 画面挟んで
-    送り直させる（スマホでも同じに動き、api も `confirmed` が無ければ保存しない）。 -#}
+{#- Confirmation before changing to a value that could lock people out (ADR-0058). Instead of relying on a JavaScript
+    confirmation dialog, insert one screen and resend (works the same on phones; the api also refuses to save without `confirmed`). -#}
 <div class="mb-4">
   <p class="text-muted text-uppercase fw-bold small mb-1">{{ messages.get("admin-nav-settings") }}</p>
   <h2 class="h3 mb-1">{{ messages.get("admin-tenant-value-confirm-title") }}</h2>

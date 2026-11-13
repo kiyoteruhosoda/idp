@@ -1,18 +1,18 @@
-//! `/revoke` は、トークンの持ち主クライアントからの要求だけを受ける（ADR-0046。RFC 7009 §2.1）。
+//! `/revoke` accepts requests only from the client owning the token (ADR-0046; RFC 7009 §2.1).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' \
 //!     cargo test --test revocation_is_bound_to_the_owning_client
 //!
-//! 以前は認証済みクライアントを `_client` として捨てており、リポジトリ側も `token_hash` だけで
-//! 消していたため、**登録さえされていれば他のクライアントに発行されたトークンを消せた**。
+//! The authenticated client used to be discarded as `_client`, and the repository deleted by `token_hash` alone,
+//! so **any registered client could delete tokens issued to other clients**.
 //!
-//! 分けているものが 2 つある。
+//! Two things are kept apart.
 //!
-//! - **持ち主違いは断る**（`unauthorized_client`）。§2.1 が「トークンがそのクライアントへ
-//!   発行されたものか検証し、失敗したら要求を拒む」と定めている。
-//! - **不存在は 200 のまま**（§2.2: 無効なトークンはエラーにしない）。ここを一緒くたに
-//!   エラーへ倒すと、**存在するかどうかを問い合わせる口**になる。
+//! - **A different owner is refused** (`unauthorized_client`). §2.1 says to "verify the token was issued to that
+//!   client and refuse the request if it fails".
+//! - **Nonexistent stays 200** (§2.2: invalid tokens are not errors). Lumping it into an error
+//!   would create **an endpoint for asking whether a token exists**.
 
 mod support;
 
@@ -62,12 +62,12 @@ async fn register_user(app: &axum::Router, tenant: &str, username: &str) {
     assert_eq!(response.status(), StatusCode::CREATED, "user registration");
 }
 
-/// `offline_access` でログインして refresh token を得る。
+/// Signs in with `offline_access` and gets a refresh token.
 async fn refresh_token_for(env: &TestEnv, client_id: &str, secret: &str, username: &str) -> String {
     tokens_for(env, client_id, secret, username).await.1
 }
 
-/// `offline_access` でログインして `(access_token, refresh_token)` を得る。
+/// Signs in with `offline_access` and gets `(access_token, refresh_token)`.
 async fn tokens_for(
     env: &TestEnv,
     client_id: &str,
@@ -217,7 +217,7 @@ async fn refresh_works(env: &TestEnv, client_id: &str, secret: &str, token: &str
     response.status() == StatusCode::OK
 }
 
-/// **他のクライアントのトークンは消せない。**
+/// **Other clients' tokens cannot be deleted.**
 #[tokio::test]
 async fn another_client_cannot_revoke_a_token_it_was_not_issued() {
     let Some(env) = support::setup("revocation client binding").await else {
@@ -241,23 +241,23 @@ async fn another_client_cannot_revoke_a_token_it_was_not_issued() {
 
     let token = refresh_token_for(&env, &owner_id, &owner_secret, &username).await;
 
-    // 別のクライアント（正しく認証はできる）が消しにくる。
+    // Another client (that can authenticate correctly) tries to delete it.
     let (status, body) = revoke_as(&env, &other_id, &other_secret, &token).await;
     assert_eq!(
         status,
         StatusCode::BAD_REQUEST,
-        "他のクライアントのトークンを消せてしまっている"
+        "another client's token could be deleted"
     );
     assert_eq!(body["error"], "unauthorized_client");
 
-    // 消えていないこと（断ったのに消していたら意味が無い）。
+    // It is not deleted (refusing while deleting anyway would be pointless).
     assert!(
         refresh_works(&env, &owner_id, &owner_secret, &token).await,
-        "断ったのにトークンが失効している"
+        "refused, yet the token was revoked"
     );
 }
 
-/// 持ち主からの要求はこれまでどおり通る。
+/// Requests from the owner pass as before.
 #[tokio::test]
 async fn the_owning_client_can_still_revoke() {
     let Some(env) = support::setup("revocation by the owner").await else {
@@ -276,17 +276,17 @@ async fn the_owning_client_can_still_revoke() {
     let token = refresh_token_for(&env, &owner_id, &owner_secret, &username).await;
 
     let (status, _) = revoke_as(&env, &owner_id, &owner_secret, &token).await;
-    assert_eq!(status, StatusCode::OK, "持ち主の失効要求");
+    assert_eq!(status, StatusCode::OK, "revocation request by the owner");
     assert!(
         !refresh_works(&env, &owner_id, &owner_secret, &token).await,
-        "失効させたのにまだ使える"
+        "revoked but still usable"
     );
 }
 
-/// **存在しないトークンは 200 のまま**（RFC 7009 §2.2）。
+/// **Nonexistent tokens stay 200** (RFC 7009 §2.2).
 ///
-/// ここを `unauthorized_client` に倒すと、「エラーが返る＝そのトークンは実在して他人のもの」と
-/// いう情報が漏れる。持ち主違いと不存在は別の扱いにする。
+/// Turning this into `unauthorized_client` would leak "an error means that token exists and belongs to someone else".
+/// A different owner and nonexistence are handled differently.
 #[tokio::test]
 async fn an_unknown_token_is_still_accepted_silently() {
     let Some(env) = support::setup("revocation of an unknown token").await else {
@@ -300,7 +300,7 @@ async fn an_unknown_token_is_still_accepted_silently() {
     .await;
 
     let (status, _) = revoke_as(&env, &client_id, &secret, "not-a-real-token").await;
-    assert_eq!(status, StatusCode::OK, "不存在のトークンはエラーにしない");
+    assert_eq!(status, StatusCode::OK, "nonexistent tokens are not errors");
 }
 
 async fn userinfo_status(env: &TestEnv, access_token: &str) -> StatusCode {
@@ -324,7 +324,7 @@ async fn revoked_jti_count(env: &TestEnv, jti: &str) -> i64 {
         .expect("count revoked jti")
 }
 
-/// JWT のペイロードの `jti`（署名は見ない。試験の中で自分が発行したトークンを読むだけ）。
+/// The `jti` of a JWT payload (the signature is not checked; only reads a token the test itself issued).
 fn jti_of(access_token: &str) -> String {
     let payload = access_token.split('.').nth(1).expect("payload");
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -334,8 +334,8 @@ fn jti_of(access_token: &str) -> String {
     claims["jti"].as_str().expect("jti").to_string()
 }
 
-/// **署名の無い JWT で失効リストを膨らませられない**（T41）。形だけ整えた値は、不存在と同じく
-/// 200 を返し（RFC 7009 §2.2）、`revoked_access_tokens` に何も入れない。
+/// **Unsigned JWTs cannot inflate the revocation list** (T41). A merely well-shaped value returns 200
+/// like a nonexistent one (RFC 7009 §2.2) and puts nothing into `revoked_access_tokens`.
 #[tokio::test]
 async fn a_forged_access_token_is_not_added_to_the_revocation_list() {
     let Some(env) = support::setup("revocation of a forged access token").await else {
@@ -355,15 +355,15 @@ async fn a_forged_access_token_is_not_added_to_the_revocation_list() {
     );
 
     let (status, _) = revoke_with_hint(&env, &client_id, &secret, &forged, "access_token").await;
-    assert_eq!(status, StatusCode::OK, "無効なトークンはエラーにしない");
+    assert_eq!(status, StatusCode::OK, "invalid tokens are not errors");
     assert_eq!(
         revoked_jti_count(&env, &jti).await,
         0,
-        "署名を確かめずに失効リストへ入れている"
+        "it is put into the revocation list without checking the signature"
     );
 }
 
-/// 持ち主のクライアントなら、アクセストークンを失効させられる（`/userinfo` で使えなくなる）。
+/// The owning client can revoke access tokens (they become unusable at `/userinfo`).
 #[tokio::test]
 async fn the_owning_client_can_revoke_an_access_token() {
     let Some(env) = support::setup("revocation of an access token by the owner").await else {
@@ -389,16 +389,16 @@ async fn the_owning_client_can_revoke_an_access_token() {
         "access_token",
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "持ち主の失効要求");
+    assert_eq!(status, StatusCode::OK, "revocation request by the owner");
     assert_eq!(revoked_jti_count(&env, &jti_of(&access_token)).await, 1);
     assert_eq!(
         userinfo_status(&env, &access_token).await,
         StatusCode::UNAUTHORIZED,
-        "失効させたのにまだ使える"
+        "revoked but still usable"
     );
 }
 
-/// **他のクライアントのアクセストークンは消せない**（refresh token 側と同じ。ADR-0046）。
+/// **Other clients' access tokens cannot be deleted** (same as for refresh tokens; ADR-0046).
 #[tokio::test]
 async fn another_client_cannot_revoke_an_access_token_it_was_not_issued() {
     let Some(env) = support::setup("revocation of another client's access token").await else {
@@ -417,7 +417,7 @@ async fn another_client_cannot_revoke_an_access_token_it_was_not_issued() {
     support::mark_email_verified(&env.pool, &env.root_tenant_id, &username).await;
     let (access_token, _) = tokens_for(&env, &owner_id, &owner_secret, &username).await;
 
-    // hint が無くても（refresh token として探して外れても）同じく断る。
+    // Even without a hint (looked up as a refresh token and missed), it is refused the same way.
     for hint in ["access_token", ""] {
         let (status, body) =
             revoke_with_hint(&env, &other_id, &other_secret, &access_token, hint).await;
@@ -428,6 +428,6 @@ async fn another_client_cannot_revoke_an_access_token_it_was_not_issued() {
     assert_eq!(
         userinfo_status(&env, &access_token).await,
         StatusCode::OK,
-        "断ったのにトークンが失効している"
+        "refused, yet the token was revoked"
     );
 }

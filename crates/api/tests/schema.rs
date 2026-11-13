@@ -1,13 +1,13 @@
-//! マイグレーション整合の統合テスト。
+//! Integration test for migration consistency.
 //!
-//! `TEST_DATABASE_URL` を必須として実行する（未設定は失敗。ローカルで意図的に省略する場合のみ `IDP_ALLOW_DB_TEST_SKIP=1`）。
-//! ローカルでは docker-compose の MariaDB を使い、例えば次のように実行する:
+//! Requires `TEST_DATABASE_URL` (fails if unset; set `IDP_ALLOW_DB_TEST_SKIP=1` only to skip it deliberately locally).
+//! Locally, use the docker-compose MariaDB and run, for example:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test schema
 //!
-//! マルチテナント基盤（ADR-0009 MT1/MT2）の DB レベル保証もここで検証する:
-//!   * root テナントが「高々 1 行」であること（is_root 番兵列 + UNIQUE）
-//!   * `idp.system.admin` が root scope でしか存在できないこと（投入時付与の CHECK 制約）
-//!   * email 一意性がテナント内に限られること（テナント跨ぎの同一 email は許容）
+//! DB-level guarantees of the multi-tenant foundation (ADR-0009 MT1/MT2) are also verified here:
+//!   * the root tenant is "at most 1 row" (is_root sentinel column + UNIQUE)
+//!   * `idp.system.admin` can exist only in root scope (CHECK constraint on grants)
+//!   * email uniqueness is per tenant (the same email across tenants is allowed)
 
 use sqlx::mysql::MySqlPoolOptions;
 use sqlx::{MySqlPool, Row};
@@ -47,9 +47,9 @@ const EXPECTED_TABLES: &[&str] = &[
     "tenant_settings",
 ];
 
-/// 「bearer credential を平文で置いていない」ことを列の形で固定する（SEC6）。
-/// `(table, column)` は SHA-256 の 16 進 64 文字だけを入れる列で、平文が入る余地の無い
-/// `CHAR(64)` であること・平文時代の列名が残っていないことを検証する。
+/// Pins "no bearer credential is stored in plain text" in terms of column shape (SEC6).
+/// Verifies each `(table, column)`, a column holding only 64 hex chars of SHA-256, is `CHAR(64)` with
+/// no room for plain text, and that no column name from the plain-text era remains.
 const HASHED_CREDENTIAL_COLUMNS: &[(&str, &str)] = &[
     ("auth_sessions", "id_hash"),
     ("saml_sso_requests", "id_hash"),
@@ -60,12 +60,12 @@ const HASHED_CREDENTIAL_COLUMNS: &[(&str, &str)] = &[
     ("refresh_tokens", "token_hash"),
 ];
 
-/// contract 済み（DROP マイグレーション適用後）で存在してはならないテーブル。
-/// 追記型マイグレーションでは down で復活しうるため、up 適用後の状態を明示的に固定する。
+/// Tables that must not exist once contracted (after the DROP migration is applied).
+/// Append-only migrations can revive them on down, so the post-up state is pinned explicitly.
 const DROPPED_TABLES: &[&str] = &[
     "saml_identity_providers",
-    // 認証器の秘密は登録簿（`user_authenticators`）へ一本化した（AP11b。migration 0038）。
-    // 残っていると「どちらが本物か」が曖昧なまま読まれる余地が戻る。
+    // Authenticator secrets were consolidated into the registry (`user_authenticators`) (AP11b, migration 0038).
+    // If it remained, reads with an ambiguous "which one is real" would become possible again.
     "user_totp_secrets",
     "user_webauthn_credentials",
 ];
@@ -78,7 +78,7 @@ async fn count(pool: &MySqlPool, sql: &str) -> i64 {
         .get::<i64, _>(0)
 }
 
-/// UUIDv7 の正準文字列（36 文字・version ニブル '7'・variant ニブル 8〜b）であること。
+/// Is a canonical UUIDv7 string (36 chars, version nibble '7', variant nibble 8..b).
 fn assert_uuid_v7(id: &str, label: &str) {
     assert_eq!(id.len(), 36, "{label}: length");
     assert_eq!(
@@ -135,7 +135,7 @@ async fn migrations_apply_and_multi_tenant_guarantees_hold() {
         assert_eq!(n, 0, "table `{table}` must be dropped after migration");
     }
 
-    // --- SEC6: 秘密値の列はハッシュ（CHAR(64)）で、平文列は残っていない --------------
+    // --- SEC6: secret columns are hashes (CHAR(64)); no plain-text column remains --------------
     for (table, column) in HASHED_CREDENTIAL_COLUMNS {
         let row = sqlx::query(
             "SELECT column_type FROM information_schema.columns \
@@ -175,7 +175,7 @@ async fn migrations_apply_and_multi_tenant_guarantees_hold() {
         );
     }
 
-    // --- seed: root テナント（固定 UUID。ADR-0011） --------------------
+    // --- seed: root tenant (fixed UUID; ADR-0011) --------------------
     let root: String = sqlx::query("SELECT id FROM tenants WHERE parent_tenant_id IS NULL")
         .fetch_one(&pool)
         .await
@@ -187,7 +187,7 @@ async fn migrations_apply_and_multi_tenant_guarantees_hold() {
         "root tenant must use the fixed UUID (ADR-0011)"
     );
 
-    // --- seed: 初期管理者（root 所属・HOME メンバーシップ・system.admin。ADR-0009 Phase 1-5）
+    // --- seed: initial admin (in root, HOME membership, system.admin; ADR-0009 Phase 1-5)
     let admin_row = sqlx::query(
         "SELECT id, sub, must_change_password FROM users \
          WHERE tenant_id = ? AND email = 'admin@example.com'",
@@ -242,7 +242,7 @@ async fn migrations_apply_and_multi_tenant_guarantees_hold() {
         assert_eq!(n, 1, "permission code `{code}` must be seeded");
     }
 
-    // --- 保証 1: root は高々 1 行（is_root 番兵列 + UNIQUE。ADR-0009 §1） ----------
+    // --- Guarantee 1: root is at most 1 row (is_root sentinel column + UNIQUE; ADR-0009 §1) ----------
     let second_root = uuid::Uuid::new_v4().to_string();
     let err = sqlx::query(
         "INSERT INTO tenants (id, parent_tenant_id, name) VALUES (?, NULL, 'evil root')",
@@ -257,7 +257,7 @@ async fn migrations_apply_and_multi_tenant_guarantees_hold() {
         "second root must be rejected by tenants_single_root_uk, got: {err}"
     );
 
-    // --- 保証 2: idp.system.admin は root scope でしか存在できない（CHECK。ADR-0009 §4）
+    // --- Guarantee 2: idp.system.admin can exist only in root scope (CHECK; ADR-0009 §4)
     assert_eq!(
         count(
             &pool,
@@ -293,7 +293,7 @@ async fn migrations_apply_and_multi_tenant_guarantees_hold() {
         "non-root idp.system.admin must be rejected by the CHECK constraint, got: {err}"
     );
 
-    // 対照: idp.tenant.admin は任意テナント scope で付与できる。
+    // Contrast: idp.tenant.admin can be granted in any tenant scope.
     sqlx::query(
         "INSERT INTO user_permissions (user_id, permission_code, tenant_id) \
          VALUES (?, 'idp.tenant.admin', ?)",
@@ -304,7 +304,7 @@ async fn migrations_apply_and_multi_tenant_guarantees_hold() {
     .await
     .expect("idp.tenant.admin with a non-root scope must be allowed");
 
-    // --- 保証 3: email はテナント内一意（テナント跨ぎの同一 email は許容。ADR-0009 §2）
+    // --- Guarantee 3: email is unique per tenant (same email across tenants allowed; ADR-0009 §2)
     let dup_in_root = sqlx::query(
         "INSERT INTO users (id, tenant_id, sub, email, password_hash) VALUES (?, ?, ?, 'admin@example.com', 'x')",
     )
@@ -332,7 +332,7 @@ async fn migrations_apply_and_multi_tenant_guarantees_hold() {
     .await
     .expect("same email in a different tenant must be allowed");
 
-    // --- 後片付け（このテストが作った行のみ。seed は残す） -------------------------
+    // --- Cleanup (only rows this test created; the seed stays) -------------------------
     sqlx::query("DELETE FROM users WHERE id = ?")
         .bind(&guest_in_child)
         .execute(&pool)

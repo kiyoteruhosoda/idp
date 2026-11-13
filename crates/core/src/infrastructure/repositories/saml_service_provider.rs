@@ -1,4 +1,4 @@
-//! `SamlServiceProviderRepository` の sqlx 実装。
+//! sqlx implementation of `SamlServiceProviderRepository`.
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::SamlServiceProviderRepository;
@@ -147,8 +147,8 @@ impl SamlServiceProviderRepository for SqlxSamlServiceProviderRepository {
         .await;
 
         match result {
-            // find_by_id 後・UPDATE 前に別管理者が削除した競合では 0 行更新になる。
-            // それを成功扱いにすると未永続の内容で 200 を返してしまうため、行数で not-found を判定する。
+            // If another admin deletes the row between find_by_id and UPDATE, 0 rows are updated.
+            // Treating that as success would return 200 for unpersisted content, so decide not-found by row count.
             Ok(r) => Ok(r.rows_affected() > 0),
             Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
                 Err(DomainError::Conflict(

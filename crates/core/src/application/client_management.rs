@@ -1,11 +1,11 @@
-//! クライアント（RP）登録・管理のユースケース（設計仕様 §9.3、Progress A1）。
+//! Client (RP) registration and management use case (design spec §9.3, Progress A1).
 //!
-//! テナント管理者（`idp.tenant.admin`。`idp.system.admin` は代替として許可）のみが実行する。`client_id` は自動採番、`client_secret` は confidential
-//! クライアントに対して発行し**初回（および再発行時）のみ平文を返す**。DB には argon2 ハッシュのみ
-//! 保存する（既存 `PasswordHasher` を流用）。全ての変更操作は `audit_log` に記録する。
+//! Only tenant admins (`idp.tenant.admin`; `idp.system.admin` accepted as an alternative) run it. `client_id` is assigned automatically; `client_secret` is issued
+//! for confidential clients and **the plaintext is returned only the first time (and on reissue)**. The DB stores only an argon2 hash
+//! (reusing the existing `PasswordHasher`). Every change is recorded in `audit_log`.
 //!
-//! redirect URI は完全一致・複数登録に対応し、フラグメント／ワイルドカードを禁止する（§2.3）。
-//! 要求 scope の部分集合判定に用いる `Clients.scopes` は、対応する OIDC scope の集合に限定する。
+//! Redirect URIs support exact matching and multiple registrations; fragments and wildcards are forbidden (§2.3).
+//! `Clients.scopes`, used for the subset check of requested scopes, is limited to the set of supported OIDC scopes.
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::account::AccountRef;
@@ -32,13 +32,13 @@ use crate::domain::values::{
 };
 use std::sync::Arc;
 
-/// 発行する client_id のバイト長（小文字 16 進で 2 倍の文字数になる）。
+/// Byte length of an issued client_id (twice as many characters in lowercase hex).
 const CLIENT_ID_BYTES: usize = 16;
-/// 発行する client_secret のバイト長（256bit）。
+/// Byte length of an issued client_secret (256 bits).
 const CLIENT_SECRET_BYTES: usize = 32;
-/// クライアント一覧 1 ページの既定件数（G7）。
+/// Default number of items per page of the client list (G7).
 pub const DEFAULT_PAGE_LIMIT: i64 = 50;
-/// クライアント一覧 1 ページの上限件数（過大な取得を防ぐ）。
+/// Maximum number of items per page of the client list (prevents oversized fetches).
 pub const MAX_PAGE_LIMIT: i64 = 200;
 
 #[derive(Debug, Clone)]
@@ -47,51 +47,51 @@ pub struct RegisterClientCommand {
     pub client_type: ClientType,
     pub redirect_uris: Vec<String>,
     pub scopes: Vec<String>,
-    /// 省略時は既定（true）。public は PKCE 必須のため false を指定しても true に矯正する。
-    /// サーバ間（M2M）連携で `client_credentials` grant を使えるようにするか（G4。既定 false）。
-    /// public client は資格情報を秘匿できないため、指定されても無効のまま登録する。
+    /// Defaults to true when omitted. Public clients require PKCE, so false is coerced to true.
+    /// Whether server-to-server (M2M) integration may use the `client_credentials` grant (G4. default false).
+    /// Public clients can't keep credentials secret, so it stays disabled even if requested.
     pub allow_client_credentials: bool,
-    /// confidential client のクライアント認証方式（G3）。`None` は既定の `private_key_jwt`
-    /// （ADR-0036）。ただし `jwks` も `None` の要求は「認証手段を持たないクライアント」に
-    /// なるため、既定へ落とさず 400 で止める。public client には適用しない（常に `none`）。
+    /// Client authentication method for confidential clients (G3). `None` means the default `private_key_jwt`
+    /// (ADR-0036). However, a request with `jwks` also `None` would be "a client with no means of authentication",
+    /// so it is stopped with a 400 instead of falling back to the default. Not applied to public clients (always `none`).
     pub token_endpoint_auth_method: Option<TokenEndpointAuthMethod>,
-    /// `private_key_jwt` の検証鍵（JWK Set の JSON。ADR-0030）。同方式を選ぶ場合は必須で、
-    /// それ以外の方式では指定できない。
+    /// Verification keys for `private_key_jwt` (JWK Set JSON. ADR-0030). Required when choosing that method,
+    /// and cannot be specified with other methods.
     pub jwks: Option<String>,
-    /// RP-initiated logout 後のリダイレクト先（任意）。F4。
+    /// Redirect destinations after RP-initiated logout (optional). F4.
     pub post_logout_redirect_uris: Vec<String>,
-    /// front-channel logout URI（任意）。F4。
+    /// front-channel logout URI (optional). F4.
     pub frontchannel_logout_uri: Option<String>,
-    /// back-channel logout URI（任意）。F4。
+    /// back-channel logout URI (optional). F4.
     pub backchannel_logout_uri: Option<String>,
-    /// 管理者メモ（任意。ADR-0065）。⚠ **サービスアカウントにだけ書ける** ——メモはアカウントの
-    /// 経緯であって、連携先の設定ではない。空（空白だけ）はメモ無し。
+    /// Admin note (optional. ADR-0065). ⚠ **Only service accounts can have one** ——a note is the account's
+    /// history, not a setting of the integration. Empty (whitespace only) means no note.
     pub note: Option<String>,
 }
 
-/// 部分更新コマンド。`None` のフィールドは変更しない。
+/// Partial update command. Fields that are `None` are not changed.
 #[derive(Debug, Clone, Default)]
 pub struct UpdateClientCommand {
     pub app_name: Option<String>,
     pub redirect_uris: Option<Vec<String>>,
     pub scopes: Option<Vec<String>>,
     pub status: Option<ClientStatus>,
-    /// RP-initiated logout 後のリダイレクト先（`Some(vec![])` で削除）。F4。
+    /// Redirect destinations after RP-initiated logout (`Some(vec![])` deletes). F4.
     pub post_logout_redirect_uris: Option<Vec<String>>,
-    /// front-channel logout URI（`Some(None)` で削除）。F4。
+    /// front-channel logout URI (`Some(None)` deletes). F4.
     pub frontchannel_logout_uri: Option<Option<String>>,
-    /// back-channel logout URI（`Some(None)` で削除）。F4。
+    /// back-channel logout URI (`Some(None)` deletes). F4.
     pub backchannel_logout_uri: Option<Option<String>>,
-    /// `client_credentials` grant の許可（G4）。public client には適用しない。
+    /// Allowing the `client_credentials` grant (G4). Not applied to public clients.
     pub allow_client_credentials: Option<bool>,
-    /// クライアント認証方式の変更（G3）。confidential client のみ。
+    /// Change of client authentication method (G3). Confidential clients only.
     pub token_endpoint_auth_method: Option<TokenEndpointAuthMethod>,
-    /// `private_key_jwt` の検証鍵の差し替え（ADR-0030）。鍵ローテーションはこの集合へ
-    /// 新旧を並べて行う。
+    /// Replacement of the `private_key_jwt` verification keys (ADR-0030). Key rotation is done by listing
+    /// old and new in this set.
     pub jwks: Option<String>,
 }
 
-/// 登録結果。`client_secret` は confidential のときのみ平文で返る（保存はハッシュのみ）。
+/// Registration result. `client_secret` is returned in plaintext only for confidential clients (only the hash is stored).
 pub struct RegisteredClient {
     pub client: Client,
     pub client_secret: Option<String>,
@@ -111,9 +111,9 @@ pub enum ClientManagementError {
 
 pub struct ClientManagementService {
     clients: Arc<dyn ClientRepository>,
-    /// 登録した RP をアプリへ開くために使う（ADR-0054）。
+    /// Used to open the registered RP as an application (ADR-0054).
     applications: Arc<dyn ApplicationRepository>,
-    /// サービスアカウントの作成と同時に管理者メモを書く（ADR-0065）。
+    /// Writes the admin note at the same time as creating the service account (ADR-0065).
     notes: Arc<dyn AccountNoteRepository>,
     hasher: Arc<dyn PasswordHasher>,
     audit: Arc<AuditService>,
@@ -150,20 +150,20 @@ impl ClientManagementService {
         ctx: &RequestContext,
     ) -> Result<RegisteredClient, ClientManagementError> {
         let app_name = validate_app_name(cmd.app_name)?;
-        // システム用（利用者不在）だけが redirect_uri を持たずに登録できる（ADR-0032）。ブラウザの
-        // リダイレクト先が無い呼び出し元に、使いもしない URL を 1 つ捏造させないための例外である。
+        // Only system clients (no user) can register without a redirect_uri (ADR-0032). This exception exists so a
+        // caller with no browser redirect destination isn't forced to make up a URL it never uses.
         let system_client =
             cmd.allow_client_credentials && cmd.client_type == ClientType::Confidential;
         let redirect_uris = validate_redirect_uris(&cmd.redirect_uris, system_client)?;
         validate_single_usage(system_client, &redirect_uris)?;
         let scopes = validate_scopes(&cmd.scopes)?;
-        // ログアウト系 URI も redirect URI と同じ検査を通す（SEC2）。
+        // Logout URIs go through the same checks as redirect URIs (SEC2).
         let post_logout_redirect_uris =
             validate_post_logout_redirect_uris(&cmd.post_logout_redirect_uris)?;
         let frontchannel_logout_uri =
             validate_frontchannel_logout_uri(cmd.frontchannel_logout_uri)?;
         let backchannel_logout_uri = validate_backchannel_logout_uri(cmd.backchannel_logout_uri)?;
-        // メモの検証は client を作る**前に**行う（長すぎれば何も作らない。利用者の作成と同じ。ADR-0063）。
+        // The note is validated **before** creating the client (if too long, nothing is created; same as user creation. ADR-0063).
         let note = match cmd.note.as_deref() {
             Some(raw) => normalize_account_note(raw).map_err(ClientManagementError::Validation)?,
             None => None,
@@ -174,13 +174,13 @@ impl ClientManagementService {
             )));
         }
 
-        // client 種別に応じて認証方式・secret を決める。
-        // public: 認証なし・secret なし。confidential: secret 発行 + 提示方式の選択（G3）。
-        // PKCE（S256）は種別によらず `/authorize`・`/token` が無条件に要求する（クライアント単位の
-        // 設定は持たない。SEC12 で「実際には参照されない設定」を削除した）。
-        // `private_key_jwt` は共有秘密を持たない（ADR-0030）。secret を発行しないのは、
-        // 使われない秘密を DB に置かないためであると同時に、「登録は private_key_jwt だが
-        // secret でも通る」という併存を作らないためでもある。
+        // Decide the authentication method and secret according to the client type.
+        // public: no authentication, no secret. confidential: issue a secret + choose how it is presented (G3).
+        // PKCE (S256) is required unconditionally by `/authorize` and `/token` regardless of type (there's no per-client
+        // setting; SEC12 removed "settings that are never actually read").
+        // `private_key_jwt` has no shared secret (ADR-0030). Not issuing a secret both avoids keeping an unused
+        // secret in the DB and avoids the coexistence of "registered as private_key_jwt but a secret also
+        // works".
         let (auth_method, secret_plain, secret_hash, jwks) = match cmd.client_type {
             ClientType::Public => {
                 if cmd.jwks.is_some() {
@@ -191,9 +191,9 @@ impl ClientManagementService {
                 (TokenEndpointAuthMethod::None, None, None, None)
             }
             ClientType::Confidential => {
-                // 方式も検証鍵も無い要求は、既定の `private_key_jwt` では認証手段を持たない
-                // クライアントになる。ここで「検証鍵が必要」とだけ返すと、`private_key_jwt` と
-                // 書いた覚えの無い呼び出し元には理由が伝わらないので、既定を含めて返す（ADR-0036）。
+                // A request with neither method nor verification keys would, with the default `private_key_jwt`, become a client
+                // with no means of authentication. Returning only "verification keys required" here wouldn't explain the reason to a
+                // caller who never wrote `private_key_jwt`, so the default is included in the response (ADR-0036).
                 if cmd.token_endpoint_auth_method.is_none() && cmd.jwks.is_none() {
                     return Err(ClientManagementError::Validation(MessageKey::new(
                         "api-client-auth-method-unspecified",
@@ -223,8 +223,8 @@ impl ClientManagementService {
             client_type: cmd.client_type,
             client_status: ClientStatus::Active,
             app_name,
-            // ブラウザ経由の利用者ログインは Authorization Code Flow のみ（設計仕様 §5）。
-            // `client_credentials` は M2M 用の追加許可で、confidential のみ受け付ける（G4）。
+            // User login via the browser is Authorization Code Flow only (design spec §5).
+            // `client_credentials` is an additional permission for M2M, accepted only for confidential clients (G4).
             grant_types: grant_types_for(
                 cmd.client_type,
                 cmd.allow_client_credentials,
@@ -243,7 +243,7 @@ impl ClientManagementService {
         };
 
         self.clients.create(&client).await.map_err(|e| match e {
-            // DB の一意制約違反はテナント内の client_id 重複しかない（他の一意キーを持たない）。
+            // The only DB unique constraint violation is a duplicate client_id within the tenant (no other unique keys).
             DomainError::Conflict(_) => {
                 ClientManagementError::Conflict(MessageKey::new("api-client-id-conflict"))
             }
@@ -262,8 +262,8 @@ impl ClientManagementService {
             )
             .await;
 
-        // 管理者メモ（ADR-0065）。アカウントの画面から書くのと同じ行・同じ監査の形にする
-        // （中身は監査に残さない）。
+        // Admin note (ADR-0065). Same row and same audit shape as writing it from the account screen
+        // (the content is not kept in the audit).
         if let Some(text) = note.as_deref() {
             self.notes
                 .save(
@@ -298,18 +298,18 @@ impl ClientManagementService {
         })
     }
 
-    /// 登録した RP を**アプリ 1 件 ＋ OIDC binding 1 件**として開く（ADR-0054）。移行
-    /// （`0054_applications`）が既存の 23 件へしたことと、同じ形を新しい RP にもする。
+    /// Opens the registered RP as **one application + one OIDC binding** (ADR-0054). The same shape the migration
+    /// (`0054_applications`) gave the existing 23 is applied to new RPs too.
     ///
-    /// ⚠ **開かないと、その RP は「誰が使ってよいか」の外に落ちる。** 判定はアプリを持たない
-    /// client を素通しするので、登録しただけの RP は**全員に開いたまま**になり、しかも
-    /// 開いていることが画面のどこにも出ない ——ADR-0054 が既定を「個別」にしてまで避けた形である。
+    /// ⚠ **If not opened, the RP falls outside "who may use it".** The check lets clients without an application
+    /// pass through, so a merely registered RP would stay **open to everyone**, and that it's open would show nowhere
+    /// on screen ——the very shape ADR-0054 avoided even by making "individual" the default.
     ///
-    /// 開くのは**利用者がブラウザで入る RP だけ**。`client_credentials` のサービスアカウント
-    /// （ADR-0038）には入る利用者が居らず、判定も走らない ——空の名簿を持つアプリが並ぶだけになる。
+    /// Only **RPs that users enter through a browser** are opened. `client_credentials` service accounts
+    /// (ADR-0038) have no users entering and the check never runs ——it would just add applications with empty rosters.
     ///
-    /// ⚠ **失敗しても登録は成功として返す。** client は既に作られていて、ここで失敗を返すと
-    /// 「エラーなのに RP は存在する」になる。アプリは画面から後で作れる。
+    /// ⚠ **Even on failure, registration is returned as successful.** The client is already created, and returning a failure
+    /// here would mean "an error, yet the RP exists". The application can be created later from the screen.
     async fn open_as_application(
         &self,
         tenant: TenantContext,
@@ -326,7 +326,7 @@ impl ClientManagementService {
             tenant_id: tenant.tenant_id(),
             display_name: client.app_name.clone(),
             status: ApplicationStatus::Active,
-            // ⚠ 既定は「個別」（ADR-0054 の決定 3）。絞り忘れが全員に開いたままにならないようにする。
+            // ⚠ The default is "individual" (ADR-0054 decision 3). So forgetting to restrict doesn't leave it open to everyone.
             assignment_mode: AssignmentMode::Individual,
             created_at: now,
             updated_at: now,
@@ -352,8 +352,8 @@ impl ClientManagementService {
                 "failed to bind the registered client to its application");
             return;
         }
-        // 作った本人を割り当てる。⚠ ここを落とすと、登録した直後は**誰も入れない**アプリになる。
-        // 機械が登録したときは割り当てる相手が居ないので何もしない（名簿は画面から足す）。
+        // Assign the person who created it. ⚠ Without this, the application would admit **nobody** right after registration.
+        // When a machine registers it, there's no one to assign, so nothing is done (the roster is filled from the screen).
         if let Some(user_id) = actor.user_id() {
             if let Err(e) = self
                 .applications
@@ -389,14 +389,14 @@ impl ClientManagementService {
             .map_err(|e| ClientManagementError::Internal(e.to_string()))
     }
 
-    /// 登録済みクライアントを 1 ページ分返す（G7）。`limit` / `offset` は未検証の要求値を
-    /// 受け取り、許容範囲へ収めたうえで**適用値**を結果に添える。
-    /// 1 ページ分と総件数を返す。`grant_type` はコンソールの一覧を「連携先」と
-    /// 「サービスアカウント」へ分けるための絞り込み（ADR-0038）。
+    /// Returns one page of registered clients (G7). `limit` / `offset` take unvalidated requested values,
+    /// clamp them into the allowed range and attach the **applied values** to the result.
+    /// Returns one page and the total count. `grant_type` is a filter that splits the console list into
+    /// "integrations" and "service accounts" (ADR-0038).
     ///
-    /// 用途そのものを引数にしないのは、ADR-0032 の「用途は api のモデルには無い」を保つため。
-    /// `authorization_code` と `client_credentials` は 1 つのクライアントに同居しないので
-    /// （ADR-0032 Revised）、grant 1 つで排他に分かれる。
+    /// The purpose itself isn't an argument, to keep ADR-0032's "the purpose is not in the api model".
+    /// `authorization_code` and `client_credentials` never coexist in one client
+    /// (ADR-0032 Revised), so a single grant splits them exclusively.
     pub async fn list_page(
         &self,
         tenant: TenantContext,
@@ -421,14 +421,14 @@ impl ClientManagementService {
         self.load(tenant, client_id).await
     }
 
-    /// クライアントを論理削除する（ADR-0035）。
+    /// Logically deletes a client (ADR-0035).
     ///
-    /// 実体は残し、状態を `DELETED` にする。発行済みの認可コード・トークン・同意・監査ログが
-    /// `client_id` で紐づいているため、実体を消すと監査で「どのアプリだったか」を追えなくなる。
-    /// **削除の目的は使えなくすることであって、記録を消すことではない。**
+    /// The entity is kept and its state set to `DELETED`. Issued authorization codes, tokens, consents and audit logs are
+    /// linked by `client_id`, so deleting the entity would make it impossible to trace "which app it was" in the audit.
+    /// **The purpose of deletion is to make it unusable, not to erase records.**
     ///
-    /// 使えなくなるのは状態を変えた時点で即座である —— 認可・トークン・introspection は
-    /// `is_active()` で門番をしているので、`DELETED` は `DISABLED` と同じく弾かれる。
+    /// It becomes unusable immediately when the state changes —— authorization, tokens and introspection are
+    /// gated by `is_active()`, so `DELETED` is rejected just like `DISABLED`.
     pub async fn delete(
         &self,
         tenant: TenantContext,
@@ -466,15 +466,15 @@ impl ClientManagementService {
         ctx: &RequestContext,
     ) -> Result<Client, ClientManagementError> {
         let mut client = self.load(tenant, client_id).await?;
-        // 認証方式の**切り替え**にだけ課す前提条件（secret / 検証鍵の有無）を判定するために覚えておく。
-        // 方式を変えていない更新（app_name の修正など）で資格情報を書き換えないためでもある。
+        // Remember this to check the preconditions (secret / verification keys present) imposed only on **switching** the method.
+        // Also so updates that don't change the method (fixing app_name etc.) don't rewrite credentials.
         let method_before = client.token_endpoint_auth_method;
 
         if let Some(app_name) = cmd.app_name {
             client.app_name = validate_app_name(app_name)?;
         }
-        // redirect_uri を空にできるかは `client_credentials` の可否で決まるので、更新後の姿で判定する
-        // （この更新で許可を外しつつ URI も消す、という組み合わせを通さないため）。ADR-0032。
+        // Whether redirect_uri may be empty depends on whether `client_credentials` is allowed, so judge by the post-update shape
+        // (so the combination of removing the permission and also clearing the URIs in this update doesn't pass). ADR-0032.
         let allows_client_credentials = cmd
             .allow_client_credentials
             .unwrap_or_else(|| client.allows_client_credentials())
@@ -483,9 +483,9 @@ impl ClientManagementService {
             client.redirect_uris =
                 validate_redirect_uris(&redirect_uris, allows_client_credentials)?;
         } else {
-            // URI を触らない更新でも、更新後の姿で成り立つかは見る。`client_credentials` を外す
-            // だけの更新で、redirect_uri も持たない「何もできないクライアント」にしないため
-            // （grant_types が空になる）。ADR-0032 決定 2。
+            // Even updates that don't touch URIs check whether the post-update shape holds. So an update that only removes
+            // `client_credentials` doesn't leave "a client that can do nothing" without a redirect_uri either
+            // (grant_types would become empty). ADR-0032 decision 2.
             validate_redirect_uris(&client.redirect_uris, allows_client_credentials)?;
         }
         validate_single_usage(allows_client_credentials, &client.redirect_uris)?;
@@ -493,9 +493,9 @@ impl ClientManagementService {
             client.scopes = validate_scopes(&scopes)?;
         }
         if let Some(status) = cmd.status {
-            // 論理削除は専用の削除経路（`delete`）だけが行う（ADR-0035）。ここを素通しすると
-            // `client.deleted` の監査記録を残さないまま、取り消せない削除ができてしまう
-            // （削除済みは `load` が落とすため、以後この更新経路にも戻ってこられない）。
+            // Logical deletion is only done by the dedicated delete path (`delete`) (ADR-0035). Passing it through here
+            // would allow an irreversible deletion without leaving the `client.deleted` audit record
+            // (deleted clients are dropped by `load`, so this update path couldn't come back to them either).
             if status == ClientStatus::Deleted {
                 return Err(ClientManagementError::Validation(MessageKey::new(
                     "api-client-status-invalid",
@@ -503,7 +503,7 @@ impl ClientManagementService {
             }
             client.client_status = status;
         }
-        // 更新時も登録時と同じ検査を通す（SEC2。登録を通しても更新で差し替えられては意味がない）。
+        // Updates go through the same checks as registration (SEC2; passing registration is pointless if an update can replace it).
         if let Some(uris) = cmd.post_logout_redirect_uris {
             client.post_logout_redirect_uris = validate_post_logout_redirect_uris(&uris)?;
         }
@@ -513,16 +513,16 @@ impl ClientManagementService {
         if let Some(uri) = cmd.backchannel_logout_uri {
             client.backchannel_logout_uri = validate_backchannel_logout_uri(uri)?;
         }
-        // grant_types は登録内容から導出する値であって、独立に持つ設定ではない（ADR-0032）。
-        // 更新のたびに引き直すことで、redirect_uri を消したのに `authorization_code` が残る、
-        // といった実態と合わない組み合わせが生まれない。
+        // grant_types is a value derived from the registration, not an independent setting (ADR-0032).
+        // Recomputing it on every update prevents combinations that don't match reality, such as
+        // `authorization_code` remaining after redirect_uri was cleared.
         client.grant_types = grant_types_for(
             client.client_type,
             allows_client_credentials,
             !client.redirect_uris.is_empty(),
         );
-        // 認証方式の変更は confidential のみ（G3）。public は secret を持たないため `none` 固定で、
-        // 指定は黙って無視せず拒否する（「変えたつもりで変わっていない」状態を作らない）。
+        // Changing the authentication method is confidential-only (G3). Public clients have no secret, so it is fixed to `none`,
+        // and a request is refused rather than silently ignored (no "thought I changed it but it didn't" state).
         if let Some(method) = cmd.token_endpoint_auth_method {
             if client.client_type != ClientType::Confidential {
                 return Err(ClientManagementError::Validation(MessageKey::new(
@@ -531,7 +531,7 @@ impl ClientManagementService {
             }
             client.token_endpoint_auth_method = validate_confidential_auth_method(Some(method))?;
         }
-        // 検証鍵の差し替え（ADR-0030）。方式の変更と同時に指定できるよう、方式の反映後に見る。
+        // Replacing verification keys (ADR-0030). Checked after applying the method so it can be specified together with a method change.
         if let Some(raw) = cmd.jwks.as_deref() {
             if client.token_endpoint_auth_method != TokenEndpointAuthMethod::PrivateKeyJwt {
                 return Err(ClientManagementError::Validation(MessageKey::new(
@@ -543,22 +543,22 @@ impl ClientManagementService {
         let switched = client.token_endpoint_auth_method != method_before;
         match client.token_endpoint_auth_method {
             TokenEndpointAuthMethod::PrivateKeyJwt => {
-                // 検証鍵が無いまま `private_key_jwt` にすると、そのクライアントはどの資格情報でも
-                // 認証できなくなる。鍵は既存でも今回の指定でもよい。
+                // Switching to `private_key_jwt` without verification keys would leave the client unable to authenticate
+                // with any credential. The keys may be existing ones or the ones specified now.
                 if client.jwks.is_none() {
                     return Err(ClientManagementError::Validation(MessageKey::new(
                         "api-client-jwks-required",
                     )));
                 }
-                // 切り替えた時点で、以後読まれない共有秘密を落とす。secret 方式へ戻すときは
-                // `rotate_secret` で再発行する。方式を変えていない更新では触らない
-                // （切り替えの前準備として再発行しておいた secret を、無関係な更新で消さないため）。
+                // On switching, drop the shared secret that will no longer be read. To go back to a secret method,
+                // reissue with `rotate_secret`. Updates that don't change the method don't touch it
+                // (so a secret reissued in preparation for switching isn't erased by an unrelated update).
                 if switched {
                     client.client_secret_hash = None;
                 }
             }
-            // secret 方式へ切り替えるなら照合できる secret が要る。無いまま切り替えると認証
-            // できなくなるため、先に再発行（`rotate_secret`）してから切り替えてもらう。
+            // Switching to a secret method needs a secret to check against. Switching without one would make authentication
+            // impossible, so they must reissue (`rotate_secret`) first and then switch.
             TokenEndpointAuthMethod::ClientSecretBasic
             | TokenEndpointAuthMethod::ClientSecretPost => {
                 if switched && client.client_secret_hash.is_none() {
@@ -566,10 +566,10 @@ impl ClientManagementService {
                         "api-client-auth-method-needs-secret",
                     )));
                 }
-                // secret 方式では検証鍵を持たない（読まれない鍵を残さない）。
+                // Secret methods hold no verification keys (don't leave keys that are never read).
                 client.jwks = None;
             }
-            // public（`none`）。資格情報を持たない。
+            // public (`none`). Holds no credentials.
             TokenEndpointAuthMethod::None => client.jwks = None,
         }
 
@@ -593,7 +593,7 @@ impl ClientManagementService {
         Ok(client)
     }
 
-    /// client_secret を再発行する（confidential のみ）。新しい平文を返し、DB はハッシュのみ更新する。
+    /// Reissues client_secret (confidential only). Returns the new plaintext; the DB only updates the hash.
     pub async fn rotate_secret(
         &self,
         tenant: TenantContext,
@@ -635,10 +635,10 @@ impl ClientManagementService {
         Ok((client, plain))
     }
 
-    /// 管理操作の対象を読む。**論理削除済みは「無い」ものとして扱う**（ADR-0035）。
+    /// Reads the target of an admin operation. **Logically deleted ones are treated as absent** (ADR-0035).
     ///
-    /// ここで一度だけ落とすことで、取得・更新・secret 再発行・削除のすべてが 404 になる。
-    /// 経路ごとに `is_deleted()` を書くと、書き忘れた経路だけ削除済みを操作できてしまう。
+    /// Dropping them once here makes get, update, secret reissue and delete all return 404.
+    /// Writing `is_deleted()` per path would let only the paths that forgot it operate on deleted clients.
     async fn load(
         &self,
         tenant: TenantContext,
@@ -653,13 +653,13 @@ impl ClientManagementService {
     }
 }
 
-/// confidential client のクライアント認証方式を検証する（G3）。
+/// Validates the client authentication method of a confidential client (G3).
 ///
-/// 省略時は `private_key_jwt`（ADR-0036）。OIDC Registration 1.0 の既定は `client_secret_basic`
-/// だが、そちらに倒すと「方式を書かなかった登録」が黙って共有秘密のクライアントになる。強いほうを
-/// 既定にし、弱いほうを選ぶときだけ明示させる。`none`（＝認証なし）は confidential では選べない
-/// —— 選べてしまうと secret を持ったまま誰でも `/token` を叩けるクライアントが管理画面から
-/// 作れてしまう。
+/// Defaults to `private_key_jwt` when omitted (ADR-0036). OIDC Registration 1.0's default is `client_secret_basic`,
+/// but falling back to that would silently turn "registrations that didn't state a method" into shared-secret clients. The
+/// stronger one is the default, and choosing the weaker one must be explicit. `none` (= no authentication) can't be chosen
+/// for confidential —— if it could, a client that anyone can call `/token` with while holding a secret could be created
+/// from the admin UI.
 fn validate_confidential_auth_method(
     requested: Option<TokenEndpointAuthMethod>,
 ) -> Result<TokenEndpointAuthMethod, ClientManagementError> {
@@ -678,10 +678,10 @@ fn validate_confidential_auth_method(
     }
 }
 
-/// 登録時の検証鍵を、選ばれた認証方式と突き合わせる（ADR-0030）。
+/// Matches the verification keys at registration against the chosen authentication method (ADR-0030).
 ///
-/// `private_key_jwt` では必須、それ以外では指定を拒否する（黙って捨てると、鍵を登録したつもりの
-/// 管理者に「登録できた」と伝わってしまう）。
+/// Required for `private_key_jwt`, refused otherwise (silently discarding them would tell an admin who thought they
+/// registered keys that "it was registered").
 fn validate_jwks_for_method(
     method: TokenEndpointAuthMethod,
     raw: Option<&str>,
@@ -702,16 +702,16 @@ fn parse_jwks(raw: &str) -> Result<ClientJwks, ClientManagementError> {
     parse_registration_jwks(raw).map_err(|e| ClientManagementError::Validation(e.message_key()))
 }
 
-/// 1 つのクライアントに 2 つの用途を持たせない（ADR-0032 決定 3）。
+/// Don't give one client two purposes (ADR-0032 decision 3).
 ///
-/// `client_credentials` と redirect_uri を両立させると、画面の「用途」がその状態を表せなくなり、
-/// コンソールで開いて保存しただけで片方が黙って消える。表せない状態を作らせないことで、
-/// 用途は登録内容から一意に決まる。用途ごとに分ければ、事故時の失効範囲と監査の粒度も分かれる。
+/// If `client_credentials` and redirect_uri coexist, the screen's "purpose" can't represent that state,
+/// and merely opening and saving in the console would silently drop one. By not allowing unrepresentable states,
+/// the purpose is uniquely determined by the registration. Separating per purpose also separates revocation scope and audit granularity in incidents.
 ///
-/// **登録・更新のどちらでも無条件に拒む。** ADR-0032 は「既に両立している行は更新を通す」という
-/// 猶予を `update` に置いていたが（漏洩したクライアントを DISABLED にできなくなるため）、
-/// 対象の行が prod・stg のどちらにも存在しないことを確認したうえで 2026-08-27 に削除した
-/// （ADR-0032 Revised）。猶予を残すと、判定が「今の姿」にも依存し続ける。
+/// **Refused unconditionally on both registration and update.** ADR-0032 had put a grace in `update` that "lets updates
+/// through for rows where both already coexist" (otherwise a leaked client couldn't be set to DISABLED),
+/// but it was removed on 2026-08-27 after confirming no such rows exist in either prod or stg
+/// (ADR-0032 Revised). Keeping the grace would keep the check dependent on "the current shape".
 fn validate_single_usage(
     allows_client_credentials: bool,
     redirect_uris: &[String],
@@ -724,19 +724,19 @@ fn validate_single_usage(
     Ok(())
 }
 
-/// クライアントへ付与する grant_type の集合を決める（G4）。
+/// Decides the set of grant_types given to a client (G4).
 ///
-/// `authorization_code` は全クライアント共通の基本許可。`client_credentials` は confidential かつ
-/// 管理者が明示的に有効化したときだけ足す（public client は指定されても付けない）。`refresh_token`
-/// は `offline_access` scope の同意で制御しており grant_types では絞らない（従来どおり）。
+/// `authorization_code` is the basic permission shared by all clients. `client_credentials` is added only for confidential
+/// clients when an admin explicitly enables it (not added for public clients even if requested). `refresh_token`
+/// is controlled by consent to the `offline_access` scope and not narrowed by grant_types (as before).
 fn grant_types_for(
     client_type: ClientType,
     allow_client_credentials: bool,
     has_redirect_uris: bool,
 ) -> Vec<String> {
     let mut grants = Vec::new();
-    // redirect_uri を持たないクライアントで認可フローは成立しない（`/authorize` は要求された
-    // redirect_uri を登録値と突き合わせる）。付けても使えない許可が残るだけなので付けない。
+    // The authorization flow can't work for a client without redirect_uri (`/authorize` matches the requested
+    // redirect_uri against the registered values). Adding it would only leave an unusable permission, so it isn't added.
     if has_redirect_uris {
         grants.push(GrantType::AuthorizationCode.as_str().to_string());
     }
@@ -756,14 +756,14 @@ fn validate_app_name(app_name: String) -> Result<String, ClientManagementError> 
     Ok(trimmed)
 }
 
-/// redirect URI 群を検証する。1 件以上・重複なし・各 URI が §2.3 の制約を満たすこと。
+/// Validates redirect URIs. At least one, no duplicates, and each URI satisfies the constraints of §2.3.
 fn validate_redirect_uris(
     uris: &[String],
     system_client: bool,
 ) -> Result<Vec<String>, ClientManagementError> {
     if uris.is_empty() {
-        // システム用以外で空を許すと、認可フローも `client_credentials` も使えない
-        // 「何もできないクライアント」ができる。
+        // Allowing empty for non-system clients would create "a client that can do nothing", usable for neither
+        // the authorization flow nor `client_credentials`.
         return if system_client {
             Ok(Vec::new())
         } else {
@@ -787,10 +787,10 @@ fn validate_redirect_uris(
     Ok(out)
 }
 
-/// URI 種別ごとの検証エラーの翻訳キー束。
+/// Bundle of translation keys for validation errors per URI kind.
 ///
-/// `MessageKey` のキーは静的文字列に限る（動的キーは訳の抜けを静かに増やす）ため、
-/// 検証ロジックを共有しつつ文言だけを種別ごとに差し替える。
+/// `MessageKey` keys are limited to static strings (dynamic keys silently increase missing translations), so
+/// the validation logic is shared while only the wording is swapped per kind.
 struct UriMessageKeys {
     invalid: &'static str,
     scheme: &'static str,
@@ -807,8 +807,8 @@ const REDIRECT_URI_KEYS: UriMessageKeys = UriMessageKeys {
     duplicate: "api-client-redirect-uri-duplicate",
 };
 
-/// ログアウト系 URI（`post_logout_redirect_uris` / `frontchannel_logout_uri` /
-/// `backchannel_logout_uri`）用のキー束。
+/// Key bundle for logout URIs (`post_logout_redirect_uris` / `frontchannel_logout_uri` /
+/// `backchannel_logout_uri`).
 const LOGOUT_URI_KEYS: UriMessageKeys = UriMessageKeys {
     invalid: "api-client-logout-uri-invalid",
     scheme: "api-client-logout-uri-scheme",
@@ -817,12 +817,12 @@ const LOGOUT_URI_KEYS: UriMessageKeys = UriMessageKeys {
     duplicate: "api-client-logout-uri-duplicate",
 };
 
-/// 単一 redirect URI の制約（設計仕様 §2.3）: 絶対 http(s) URL・フラグメント禁止・ワイルドカード禁止。
+/// Constraints on a single redirect URI (design spec §2.3): absolute http(s) URL, no fragment, no wildcard.
 fn validate_redirect_uri(uri: &str) -> Result<(), ClientManagementError> {
     validate_absolute_web_uri(uri, &REDIRECT_URI_KEYS).map(|_| ())
 }
 
-/// 絶対 http(s) URL・フラグメント禁止・ワイルドカード禁止を検証し、解析済み URL を返す。
+/// Validates absolute http(s) URL, no fragment, no wildcard, and returns the parsed URL.
 fn validate_absolute_web_uri(
     uri: &str,
     keys: &UriMessageKeys,
@@ -851,10 +851,10 @@ fn validate_absolute_web_uri(
     Ok(parsed)
 }
 
-/// `post_logout_redirect_uris` を検証する（SEC2）。0 件は許容（機能を使わない）。
+/// Validates `post_logout_redirect_uris` (SEC2). Zero entries are allowed (feature not used).
 ///
-/// ブラウザのリダイレクト先であり `redirect_uris` と同じ危険（オープンリダイレクト・
-/// スキーム悪用）を持つため、同じ制約を課す。
+/// They are browser redirect destinations with the same risks as `redirect_uris` (open redirect,
+/// scheme abuse), so the same constraints apply.
 fn validate_post_logout_redirect_uris(
     uris: &[String],
 ) -> Result<Vec<String>, ClientManagementError> {
@@ -877,10 +877,10 @@ fn validate_post_logout_redirect_uris(
     Ok(out)
 }
 
-/// `frontchannel_logout_uri` を検証する（SEC2）。空文字は「未設定」として扱う。
+/// Validates `frontchannel_logout_uri` (SEC2). An empty string is treated as "not set".
 ///
-/// ブラウザが iframe で読み込む URL なので、リダイレクト先と同じ制約で足りる
-/// （IdP のサーバからは接続しないため SSRF にはならない）。
+/// It is a URL the browser loads in an iframe, so the same constraints as redirect destinations suffice
+/// (the IdP's server doesn't connect to it, so it's not SSRF).
 fn validate_frontchannel_logout_uri(
     uri: Option<String>,
 ) -> Result<Option<String>, ClientManagementError> {
@@ -891,15 +891,15 @@ fn validate_frontchannel_logout_uri(
     Ok(Some(uri))
 }
 
-/// `backchannel_logout_uri` を検証する（SEC2）。空文字は「未設定」として扱う。
+/// Validates `backchannel_logout_uri` (SEC2). An empty string is treated as "not set".
 ///
-/// **api がサーバ側から POST する唯一の外向き URI** であり、テナント管理者権限で任意の宛先を
-/// 登録できると認証済み blind SSRF（クラウドメタデータ・内部管理 API への到達）になる。
-/// リダイレクト先と同じ形式制約に加え、プライベート・ループバック・リンクローカル等の
-/// アドレスリテラルを拒否する。
+/// **It is the only outbound URI the api POSTs to from the server side**, and if a tenant admin could register any
+/// destination it would be an authenticated blind SSRF (reaching cloud metadata or internal admin APIs).
+/// In addition to the same format constraints as redirect destinations, address literals such as private, loopback
+/// and link-local are refused.
 ///
-/// なお、これは登録時の検査であり、名前解決の結果が内部アドレスになる DNS 由来の到達
-/// （DNS rebinding を含む）までは防げない。閉じたい配置では前段プロキシの egress 制御を併用する。
+/// Note this is a check at registration time and can't prevent reaching internal addresses via DNS resolution
+/// (including DNS rebinding). Deployments that need it closed should also use egress control at the front proxy.
 fn validate_backchannel_logout_uri(
     uri: Option<String>,
 ) -> Result<Option<String>, ClientManagementError> {
@@ -916,7 +916,7 @@ fn validate_backchannel_logout_uri(
     Ok(Some(uri))
 }
 
-/// scope 群を検証する。1 件以上・既知の OIDC scope のみ・`openid` を含み・重複なしであること。
+/// Validates scopes. At least one, only known OIDC scopes, including `openid`, and no duplicates.
 fn validate_scopes(scopes: &[String]) -> Result<Vec<String>, ClientManagementError> {
     if scopes.is_empty() {
         return Err(ClientManagementError::Validation(MessageKey::new(
@@ -967,7 +967,7 @@ mod tests {
 
     #[test]
     fn rejects_empty_and_duplicate_redirect_uris() {
-        // 利用者ログインをするクライアントでは 1 つ以上必要（空では認可フローが成立しない）。
+        // Clients doing user login need at least one (the authorization flow can't work with none).
         assert!(validate_redirect_uris(&[], false).is_err());
         assert!(validate_redirect_uris(
             &[
@@ -979,42 +979,42 @@ mod tests {
         .is_err());
     }
 
-    /// ADR-0032: システム用（利用者不在）はブラウザのリダイレクト先を持たないので空を許す。
+    /// ADR-0032: system clients (no user) have no browser redirect destination, so empty is allowed.
     #[test]
     fn system_clients_may_omit_redirect_uris() {
         assert_eq!(
             validate_redirect_uris(&[], true).expect("empty is ok"),
             Vec::<String>::new()
         );
-        // 例外は「空を許す」だけで、指定された URI の検査は緩めない。
+        // The exception only "allows empty"; checks on specified URIs aren't loosened.
         assert!(validate_redirect_uris(&["not-a-url".to_string()], true).is_err());
     }
 
-    /// ADR-0032 決定 3: 1 つのクライアントに 2 つの用途を持たせない。
+    /// ADR-0032 decision 3: don't give one client two purposes.
     #[test]
     fn a_client_cannot_be_both_a_login_client_and_a_system_client() {
         let uris = vec!["https://a.example.com/cb".to_string()];
-        // 利用者ログインのみ・システム用のみは通る。
+        // User-login-only and system-only pass.
         assert!(validate_single_usage(false, &uris).is_ok());
         assert!(validate_single_usage(true, &[]).is_ok());
-        // 両立は拒否する —— 画面の「用途」で表せない状態を作らせない。
+        // Both together are refused —— don't allow a state the screen's "purpose" can't represent.
         assert!(validate_single_usage(true, &uris).is_err());
     }
 
-    /// grant_types は「実際にできること」から導出する（ADR-0032）。
+    /// grant_types are derived from "what can actually be done" (ADR-0032).
     #[test]
     fn grant_types_follow_what_the_client_can_actually_do() {
-        // 利用者ログインのみ。
+        // User login only.
         assert_eq!(
             grant_types_for(ClientType::Confidential, false, true),
             vec!["authorization_code".to_string()]
         );
-        // システム用のみ —— redirect_uri が無いので `authorization_code` は付かない。
+        // System only —— no redirect_uri, so `authorization_code` isn't added.
         assert_eq!(
             grant_types_for(ClientType::Confidential, true, false),
             vec!["client_credentials".to_string()]
         );
-        // 両方。
+        // Both.
         assert_eq!(
             grant_types_for(ClientType::Confidential, true, true),
             vec![
@@ -1022,7 +1022,7 @@ mod tests {
                 "client_credentials".to_string()
             ]
         );
-        // public は秘密を秘匿できないため、許可されていても `client_credentials` は付かない。
+        // Public clients can't keep secrets, so `client_credentials` isn't added even if allowed.
         assert_eq!(
             grant_types_for(ClientType::Public, true, true),
             vec!["authorization_code".to_string()]
@@ -1032,9 +1032,9 @@ mod tests {
     #[test]
     fn scopes_must_be_known_include_openid_and_unique() {
         assert!(validate_scopes(&["openid".to_string(), "email".to_string()]).is_ok());
-        assert!(validate_scopes(&["email".to_string()]).is_err()); // openid 無し
-        assert!(validate_scopes(&["openid".to_string(), "admin".to_string()]).is_err()); // 未知
-        assert!(validate_scopes(&["openid".to_string(), "openid".to_string()]).is_err()); // 重複
+        assert!(validate_scopes(&["email".to_string()]).is_err()); // no openid
+        assert!(validate_scopes(&["openid".to_string(), "admin".to_string()]).is_err()); // unknown
+        assert!(validate_scopes(&["openid".to_string(), "openid".to_string()]).is_err()); // duplicate
         assert!(validate_scopes(&[]).is_err());
     }
 
@@ -1044,11 +1044,11 @@ mod tests {
         assert!(validate_app_name("   ".to_string()).is_err());
     }
 
-    // ── SEC2: ログアウト系 URI の検証 ────────────────────────────────────────
+    // ── SEC2: validating logout URIs ────────────────────────────────────────
 
     #[test]
     fn post_logout_redirect_uris_follow_the_redirect_uri_rules() {
-        // 0 件は「機能を使わない」なので許容する。空文字は無視する。
+        // Zero entries mean "feature not used", so allowed. Empty strings are ignored.
         assert!(validate_post_logout_redirect_uris(&[]).unwrap().is_empty());
         assert!(validate_post_logout_redirect_uris(&["  ".to_string()])
             .unwrap()
@@ -1093,7 +1093,7 @@ mod tests {
             Some("https://app.example.com/fc".to_string())
         );
         assert!(validate_frontchannel_logout_uri(Some("file:///etc/passwd".to_string())).is_err());
-        // ブラウザが読み込むだけなので、プライベート宛でも SSRF にはならない（拒否しない）。
+        // The browser only loads it, so even a private destination isn't SSRF (not refused).
         assert!(
             validate_frontchannel_logout_uri(Some("http://127.0.0.1:9000/fc".to_string())).is_ok()
         );
@@ -1106,11 +1106,11 @@ mod tests {
             validate_backchannel_logout_uri(Some("https://rp.example.com/bc".to_string())).unwrap(),
             Some("https://rp.example.com/bc".to_string())
         );
-        // 点の無い名前（同じネットワークのサービス名）は字面で内部と分かるので断る（task #585）。
+        // Dotless names (service names on the same network) are recognizably internal, so refused (task #585).
         assert!(validate_backchannel_logout_uri(Some("http://rp:3000/bc".to_string())).is_err());
 
         for bad in [
-            // クラウドのインスタンスメタデータ（link-local）。
+            // Cloud instance metadata (link-local).
             "http://169.254.169.254/latest/meta-data/",
             "http://127.0.0.1:8080/internal",
             "http://localhost/internal",

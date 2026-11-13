@@ -1,9 +1,9 @@
-//! web 共通スタイルシートと、assay の印の配信。
+//! Serving of web's shared stylesheet and the assay mark.
 //!
-//! `assets/app.css` を `include_str!` で web バイナリへ同梱し、`/assets/app.css` として
-//! 自オリジン配信する。これにより CSP の `style-src 'self'` を維持したまま、外部 CDN に
-//! 依存せず全画面へ共通デザインを適用できる。各テンプレートの <head> から
-//! <link rel="stylesheet" href="/assets/app.css"> で読み込む。
+//! `assets/app.css` is embedded into the web binary with `include_str!` and served from our own origin
+//! as `/assets/app.css`. This applies a shared design to every screen without depending on an external
+//! CDN while keeping CSP `style-src 'self'`. Each template loads it from its <head> via
+//! <link rel="stylesheet" href="/assets/app.css">.
 
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::response::IntoResponse;
@@ -18,33 +18,33 @@ pub async fn app_css() -> impl IntoResponse {
     (
         [
             (CONTENT_TYPE, "text/css; charset=utf-8"),
-            // テンプレートは `?v={asset_version}` 付き URL で参照し、デプロイごとに URL 自体が
-            // 変わる（キャッシュバスティング）。そのため長期キャッシュしてよい。
-            // revalidate 方式は中間 CDN（Cloudflare）が max-age を上書きするため機能しない。
+            // Templates reference it by URL with `?v={asset_version}`, so the URL itself changes on every
+            // deploy (cache busting). Long-term caching is therefore fine.
+            // Revalidation does not work because the intermediate CDN (Cloudflare) overrides max-age.
             (CACHE_CONTROL, "public, max-age=31536000, immutable"),
         ],
         APP_CSS,
     )
 }
 
-/// タブとアプリアイコンの印（`<link rel="icon">`）。SVG 1 枚で全サイズを賄うので、
-/// サイズ別の PNG は置かない。CSP の `img-src 'self'` のまま自オリジンから配る。
+/// The tab and app icon mark (`<link rel="icon">`). A single SVG covers all sizes, so
+/// no per-size PNGs are provided. Served from our own origin under CSP `img-src 'self'`.
 pub async fn assay_svg() -> impl IntoResponse {
     (
         [
             (CONTENT_TYPE, "image/svg+xml; charset=utf-8"),
-            // app.css と同じく `?v={asset_version}` 付きで参照するため長期キャッシュしてよい。
+            // Referenced with `?v={asset_version}` like app.css, so long-term caching is fine.
             (CACHE_CONTROL, "public, max-age=31536000, immutable"),
         ],
         ASSAY_SVG,
     )
 }
 
-/// ホーム画面のアイコン（管理コンソールのマニフェストが指す。`handlers::web_app_manifest`）。
+/// Home screen icon (pointed to by the admin console manifest; `handlers::web_app_manifest`).
 ///
-/// タブの印は SVG 1 枚で足りるが、⚠ **Chrome のインストール条件は 192px と 512px の PNG**
-/// で、SVG だけでは「このアプリはインストールできません」になる。絵は `assets/assay.svg` と
-/// 同じ（Chrome の headless で描き出した）。maskable は地を全面に塗り、印を安全領域へ縮めたもの。
+/// A single SVG suffices for the tab mark, but ⚠ **Chrome's install criteria require 192px and 512px PNGs**,
+/// and with SVG only it says "this app cannot be installed". The picture is the same as `assets/assay.svg`
+/// (rendered with headless Chrome). The maskable one fills the whole background and shrinks the mark into the safe zone.
 pub async fn assay_192_png() -> impl IntoResponse {
     png(ASSAY_192_PNG)
 }
@@ -61,7 +61,7 @@ fn png(bytes: &'static [u8]) -> impl IntoResponse {
     (
         [
             (CONTENT_TYPE, "image/png"),
-            // マニフェストが `?v={asset_version}` 付きで指すので長期キャッシュしてよい。
+            // The manifest points to it with `?v={asset_version}`, so long-term caching is fine.
             (CACHE_CONTROL, "public, max-age=31536000, immutable"),
         ],
         bytes,

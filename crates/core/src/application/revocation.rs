@@ -1,10 +1,10 @@
-//! Token 失効エンドポイントのユースケース（F5: RFC 7009 Token Revocation）。
+//! Use case for the token revocation endpoint (F5: RFC 7009 Token Revocation).
 //!
-//! - `refresh_token`: DB の `revoked_at` を設定して失効させる。
-//! - `access_token`: JWT の jti を `revoked_access_tokens` テーブルに追加して即時失効を実現する。
-//! - RFC 7009 §2.2: 失効済み・不存在でも 200 を返す（呼び出し側は常に成功扱い）。
-//! - confidential client は認証が必要（方式はクライアントの登録値。`client_secret_basic` /
-//!   `client_secret_post`）。public client は認証なし。
+//! - `refresh_token`: revoked by setting `revoked_at` in the DB.
+//! - `access_token`: immediate revocation by adding the JWT's jti to the `revoked_access_tokens` table.
+//! - RFC 7009 §2.2: returns 200 even if already revoked or missing (callers always treat it as success).
+//! - Confidential clients require authentication (method is the client's registered value: `client_secret_basic` /
+//!   `client_secret_post`). Public clients have no authentication.
 
 use crate::application::access_token_verification::{AccessTokenRejection, AccessTokenVerifier};
 use crate::application::audit::{AuditService, RequestContext};
@@ -24,7 +24,7 @@ use crate::domain::revoked_access_token::RevokedAccessToken;
 use crate::domain::tenant_context::TenantContext;
 use std::sync::Arc;
 
-/// `/revoke` のエラー（RFC 7009 §2.2.1 に準じる）。
+/// Errors of `/revoke` (following RFC 7009 §2.2.1).
 #[derive(Debug)]
 pub struct RevocationError {
     pub code: OAuthErrorCode,
@@ -44,7 +44,7 @@ pub struct RevocationService {
     clients: Arc<dyn ClientRepository>,
     refresh_tokens: Arc<dyn RefreshTokenRepository>,
     revoked_access_tokens: Arc<dyn RevokedAccessTokenRepository>,
-    /// 失効させる前に「このテナントが発行したアクセストークンか」を確かめる（T41）。
+    /// Before revoking, checks "is this an access token issued by this tenant" (T41).
     access_tokens: Arc<AccessTokenVerifier>,
     client_auth: Arc<ClientAuthenticator>,
     audit: Arc<AuditService>,
@@ -72,7 +72,7 @@ impl RevocationService {
         }
     }
 
-    /// トークンを失効させる。RFC 7009 §2.2: 常に 200 を返す想定（エラーは client 認証失敗のみ）。
+    /// Revokes a token. RFC 7009 §2.2: always expected to return 200 (the only error is client authentication failure).
     pub async fn revoke(
         &self,
         tenant: TenantContext,
@@ -85,7 +85,7 @@ impl RevocationService {
             return Ok(());
         }
 
-        // Client 認証（フローのテナントに属する client のみ解決する）。
+        // Client authentication (resolves only clients belonging to the flow's tenant).
         let client = match self.load_client(tenant, credentials, ctx).await {
             Ok(c) => c,
             Err(e) => return Err(e),
@@ -93,7 +93,7 @@ impl RevocationService {
 
         let now = self.clock.now();
 
-        // token_type_hint に従って試みるが、どちらでも試す（RFC 7009 §2.1）。
+        // Tries according to token_type_hint, but tries both kinds (RFC 7009 §2.1).
         match token_type_hint {
             Some("access_token") => {
                 if !self
@@ -105,7 +105,7 @@ impl RevocationService {
                 }
             }
             _ => {
-                // hint なし or "refresh_token": refresh_token から試みる。
+                // No hint or "refresh_token": try refresh_token first.
                 if !self
                     .try_revoke_refresh_token(tenant, token, now, &client)
                     .await?
@@ -131,20 +131,20 @@ impl RevocationService {
         Ok(())
     }
 
-    /// refresh_token の失効を試みる。失効させたら `Ok(true)`。
+    /// Tries to revoke a refresh_token. Returns `Ok(true)` if revoked.
     ///
-    /// **該当行が無かった場合は `Ok(false)`**。ここで `true` を返すと、`token_type_hint` を伴わない
-    /// access_token の失効要求が「refresh_token として失効済み」と誤判定され、access_token 側の
-    /// 失効が一度も試されないまま 200 が返る（RFC 7009 §2.1 は hint が外れたら他の種別も試すことを
-    /// 求めている）。
+    /// **Returns `Ok(false)` if no matching row**. Returning `true` here would misjudge an access_token revocation
+    /// request without `token_type_hint` as "already revoked as a refresh_token", returning 200 without
+    /// ever trying the access_token side (RFC 7009 §2.1 requires trying other types if the hint is
+    /// wrong).
     ///
-    /// **持ち主のクライアントでなければ断る**（ADR-0046。RFC 7009 §2.1）。以前はここが
-    /// `_client` として捨てられており、認証さえ通れば**他のクライアントに発行されたトークンでも
-    /// 消せた**。リポジトリ側も `token_hash` だけで消す作りなので、この層で確かめるほかない。
+    /// **Refuses unless it is the owning client** (ADR-0046. RFC 7009 §2.1). Previously this was
+    /// discarded as `_client`, and as long as authentication passed, **tokens issued to other clients
+    /// could be deleted**. The repository also deletes by `token_hash` alone, so this layer is the only place to check.
     ///
-    /// 不存在と持ち主違いを分けるのは意図的である。**不存在は 200**（RFC 7009 §2.2:
-    /// 無効なトークンはエラーにしない）、**持ち主違いは `unauthorized_client`**（§2.1:
-    /// 検証に失敗したら要求を拒み、その旨を伝える）。
+    /// Distinguishing missing from wrong-owner is intentional. **Missing is 200** (RFC 7009 §2.2:
+    /// invalid tokens are not an error), **wrong owner is `unauthorized_client`** (§2.1:
+    /// if validation fails, reject the request and say so).
     async fn try_revoke_refresh_token(
         &self,
         tenant: TenantContext,
@@ -153,15 +153,15 @@ impl RevocationService {
         client: &Client,
     ) -> Result<bool, RevocationError> {
         let hash = crypto::sha256_hex(token);
-        // 失効させる前に持ち主を確かめる。`find_by_hash` は発行テナントも見るので、
-        // 他テナント発行のトークンはここで `None` に落ちる（＝不存在と同じ扱い）。
+        // Check the owner before revoking. `find_by_hash` also looks at the issuing tenant, so
+        // tokens issued by other tenants fall to `None` here (= treated the same as missing).
         let stored = match self
             .refresh_tokens
             .find_by_hash(tenant.tenant_id(), &hash)
             .await
         {
             Ok(Some(t)) => t,
-            // 見つからない＝refresh_token ではない（access_token かもしれない）。
+            // Not found = not a refresh_token (might be an access_token).
             Ok(None) => return Ok(false),
             Err(e) => {
                 tracing::warn!(error = %e, "failed to look up refresh token for revocation");
@@ -188,17 +188,17 @@ impl RevocationService {
         }
     }
 
-    /// access_token（JWT）の失効を試みる。失効させたら `Ok(true)`。
+    /// Tries to revoke an access_token (JWT). Returns `Ok(true)` if revoked.
     ///
-    /// **署名と発行者を確かめてから**失効リストへ入れる（T41）。確かめずに `jti` を取り出していた
-    /// ころは、JWT の形をしたでたらめな値で失効リストを誰でも膨らませられ、期限（`exp`）も言い値を
-    /// 信じていたので掃除にも掛からなかった。
+    /// Puts it on the revocation list **after verifying signature and issuer** (T41). Back when `jti` was extracted
+    /// without verification, anyone could bloat the revocation list with garbage values shaped like JWTs, and since the
+    /// expiry (`exp`) was also taken at face value, cleanup never caught them.
     ///
-    /// - このテナントが発行したアクセストークンでない（形・署名・発行者が違う）→ `Ok(false)`
-    ///   （refresh token かもしれない。RFC 7009 §2.2: 無効なトークンはエラーにしない）
-    /// - 期限切れ → `Ok(true)`（もう使えないので失効させるものが無い。リストにも入れない）
-    /// - **持ち主のクライアントでない → `unauthorized_client`**（refresh token 側と同じ。ADR-0046。
-    ///   RFC 7009 §2.1）
+    /// - Not an access token issued by this tenant (shape, signature, or issuer differs) -> `Ok(false)`
+    ///   (might be a refresh token. RFC 7009 §2.2: invalid tokens are not an error)
+    /// - Expired -> `Ok(true)` (no longer usable, so nothing to revoke. Not added to the list either)
+    /// - **Not the owning client -> `unauthorized_client`** (same as the refresh token side. ADR-0046.
+    ///   RFC 7009 §2.1)
     async fn try_revoke_access_token(
         &self,
         tenant: TenantContext,
@@ -240,10 +240,10 @@ impl RevocationService {
         }
     }
 
-    /// Client を検索し、confidential client の場合は secret を検証する。
+    /// Looks up the client, and verifies the secret for confidential clients.
     ///
-    /// 照合する secret の選択（Basic か body か）は登録された `token_endpoint_auth_method` に
-    /// 従う（`client_authentication` に集約。G3）。
+    /// Which secret to check (Basic or body) follows the registered `token_endpoint_auth_method`
+    /// (consolidated in `client_authentication`. G3).
     async fn load_client(
         &self,
         tenant: TenantContext,
@@ -280,13 +280,13 @@ impl RevocationService {
             ));
         }
 
-        // 資格情報の照合は `client_authentication` へ集約してある（G3・ADR-0030）。
+        // Credential checking is consolidated in `client_authentication` (G3, ADR-0030).
         match self
             .client_auth
             .authenticate(tenant, &client, credentials)
             .await
         {
-            // public client は認証なしで通す（RFC 7009 §2.1）。
+            // Public clients pass without authentication (RFC 7009 §2.1).
             Ok(ClientAuthOutcome::NotRequired | ClientAuthOutcome::Authenticated) => {}
             Err(ClientAuthError::Failed(_)) => {
                 self.record_auth_failure(tenant, &client.client_id, ctx)
@@ -297,7 +297,7 @@ impl RevocationService {
                 ));
             }
             Err(ClientAuthError::Internal(message)) => {
-                // 内部エラーの詳細はクライアントへ出さない（`CLAUDE.md`「国際化」の翻訳対象外）。
+                // Internal error details are not shown to the client (outside the translation scope of `CLAUDE.md` "i18n").
                 tracing::error!(error = %message, "client authentication internal error");
                 return Err(RevocationError::new(
                     OAuthErrorCode::ServerError,

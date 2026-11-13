@@ -1,17 +1,17 @@
-//! AP15b: 主たるログイン識別子を登録簿へ移し終えた状態（AP8 の contract フェーズ 後半）。
+//! AP15b: the state after moving primary login identifiers into the registry (second half of AP8's contract phase).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' \
 //!     cargo test --test primary_login_identifier
 //!
-//! この移行の失敗は「利用者がユーザー名でログインできなくなる」形で出る。前半は「両方に在る」
-//! ことを固定していた。後半で `users.preferred_username` を落としたので、ここで固定するのは
-//! **登録簿だけで完結している**という一点である:
+//! A failure of this migration shows up as "users can no longer sign in with their username". The first half pinned
+//! "present in both". The second half dropped `users.preferred_username`, so what is pinned here is the single point
+//! that **the registry alone is self-contained**:
 //!
-//! 1. 利用者を作ると主識別子が登録簿の行になり、その値で解決できる。
-//! 2. プロフィールで名前を変えると登録簿が追随し、古い名前では解決しない。
-//! 3. 主識別子は識別子単位で無効化・削除できない（できるとログインできなくなる）。
-//! 4. 他人が使っている値は**拒否される**（前半は諦めて `users` 側で解決し続けていた）。
+//! 1. Creating a user makes the primary identifier a registry row, and it resolves by that value.
+//! 2. Changing the name in the profile makes the registry follow, and the old name no longer resolves.
+//! 3. The primary identifier cannot be disabled or deleted per identifier (otherwise sign-in would break).
+//! 4. Values used by someone else are **rejected** (the first half gave up and kept resolving on the `users` side).
 
 mod support;
 
@@ -25,7 +25,7 @@ use assay_api::infrastructure::repositories::user_login_identifier::SqlxUserLogi
 use sqlx::MySqlPool;
 use uuid::Uuid;
 
-/// 登録簿に載っている主識別子（表示値）。
+/// The primary identifier on the registry (display value).
 async fn registry_primary(pool: &MySqlPool, user_id: Uuid) -> Option<String> {
     sqlx::query_scalar(
         "SELECT display_value FROM user_login_identifiers WHERE user_id = ? AND primary_of_user IS NOT NULL",
@@ -60,7 +60,7 @@ fn new_user(tenant_id: TenantId, username: &str) -> User {
     }
 }
 
-/// 作成とプロフィール編集のどちらでも、登録簿の主識別子行が「今ログインに使える値」になる。
+/// Both on creation and profile edit, the registry's primary identifier row becomes "the value usable for sign-in now".
 #[tokio::test]
 async fn the_primary_identifier_is_a_registry_row_that_follows_profile_edits() {
     let Some(env) = support::setup("ap15b primary registry").await else {
@@ -76,9 +76,9 @@ async fn the_primary_identifier_is_a_registry_row_that_follows_profile_edits() {
     assert_eq!(
         registry_primary(&env.pool, user.id).await.as_deref(),
         Some(username.as_str()),
-        "主識別子は登録簿の行として在る"
+        "the primary identifier exists as a registry row"
     );
-    // 読み出した利用者にも同じ値が載る（`preferred_username` クレーム・一覧の表示はここを見る）。
+    // The fetched user carries the same value (the `preferred_username` claim and list display look here).
     assert_eq!(
         users
             .find_by_id(user.id)
@@ -90,8 +90,8 @@ async fn the_primary_identifier_is_a_registry_row_that_follows_profile_edits() {
         Some(username.as_str())
     );
 
-    // 名前を変えると登録簿が追随する。追随しないと、古い名前でログインできてしまうか、
-    // 新しい名前でログインできないかのどちらかになる。
+    // Renaming makes the registry follow. Otherwise either the old name could still sign in,
+    // or the new name could not.
     let renamed = format!("{username}-renamed");
     users
         .update_profile(user.id, &user.email, Some(&renamed), Some("Renamed"))
@@ -100,10 +100,10 @@ async fn the_primary_identifier_is_a_registry_row_that_follows_profile_edits() {
     assert_eq!(
         registry_primary(&env.pool, user.id).await.as_deref(),
         Some(renamed.as_str()),
-        "登録簿が古い名前を指したままにならない"
+        "the registry does not keep pointing at the old name"
     );
 
-    // どちらの名前でも「新しい名前だけが解決する」。
+    // With either name, "only the new name resolves".
     let resolved = users
         .find_by_login_identifier(tenant_id, &renamed)
         .await
@@ -115,10 +115,10 @@ async fn the_primary_identifier_is_a_registry_row_that_follows_profile_edits() {
             .await
             .expect("resolve")
             .is_taken(),
-        "古い名前は解決せず、予約も残さない（残っていると別人の登録を邪魔する）"
+        "the old name does not resolve and leaves no reservation (if left, it would block someone else's registration)"
     );
 
-    // 主識別子を外すと登録簿からも消える。
+    // Removing the primary identifier also removes it from the registry.
     users
         .update_profile(user.id, &user.email, None, None)
         .await
@@ -126,7 +126,7 @@ async fn the_primary_identifier_is_a_registry_row_that_follows_profile_edits() {
     assert_eq!(registry_primary(&env.pool, user.id).await, None);
 }
 
-/// 主識別子は識別子単位で止められない・消せない（止めるならアカウントの無効化）。
+/// The primary identifier cannot be stopped or deleted per identifier (to stop it, disable the account).
 #[tokio::test]
 async fn the_primary_identifier_cannot_be_disabled_or_deleted_as_an_identifier() {
     let Some(env) = support::setup("ap15b primary is protected").await else {
@@ -153,22 +153,22 @@ async fn the_primary_identifier_cannot_be_disabled_or_deleted_as_an_identifier()
             .set_active(primary.id, user.id, false)
             .await
             .expect("set_active"),
-        "主識別子は無効化できない"
+        "the primary identifier cannot be disabled"
     );
     assert!(
         !identifiers
             .delete(primary.id, user.id)
             .await
             .expect("delete"),
-        "主識別子は削除できない"
+        "the primary identifier cannot be deleted"
     );
     assert_eq!(
         registry_primary(&env.pool, user.id).await.as_deref(),
         Some(username.as_str()),
-        "弾かれた操作で行が消えたり無効になったりしない"
+        "rejected operations do not delete or disable the row"
     );
 
-    // 追加の識別子は従来どおり止められる・消せる。
+    // Additional identifiers can be stopped and deleted as before.
     let now = chrono::Utc::now();
     let extra_value = format!("ap15-extra-{}", Uuid::new_v4().simple());
     let extra = UserLoginIdentifier {
@@ -192,12 +192,12 @@ async fn the_primary_identifier_cannot_be_disabled_or_deleted_as_an_identifier()
     assert!(identifiers.delete(extra.id, user.id).await.expect("delete"));
 }
 
-/// 他人が既に使っている値は主識別子にできない。
+/// A value someone else already uses cannot become a primary identifier.
 ///
-/// 前半（expand）はここで諦めて `users.preferred_username` 側を正としていた。列を落とした今、
-/// 諦めると**そのユーザー名でログインできない利用者を黙って作る**ことになるので、`Conflict` で
-/// 操作ごと失敗させる。衝突の検出は DB の一意制約（tenant × 正規化値。migration 0041 で種別に
-/// 依存しない）まで届く。
+/// The first half (expand) gave up here and treated `users.preferred_username` as authoritative. Now that the column is
+/// gone, giving up would **silently create a user who cannot sign in with that username**, so the whole operation
+/// fails with `Conflict`. Collision detection reaches the DB unique constraint (tenant × normalized value; independent
+/// of kind since migration 0041).
 #[tokio::test]
 async fn a_value_another_user_already_owns_is_rejected() {
     let Some(env) = support::setup("ap15b primary conflict").await else {
@@ -213,7 +213,7 @@ async fn a_value_another_user_already_owns_is_rejected() {
         &format!("ap15b-owner-{}", Uuid::new_v4().simple()),
     );
     users.create(&owner).await.expect("create owner");
-    // 所有者は**追加の**識別子としてこの値を持つ（主識別子の一意制約だけでは防げない形）。
+    // The owner holds this value as an **additional** identifier (a shape the primary identifier's unique constraint alone cannot prevent).
     let now = chrono::Utc::now();
     identifiers
         .create(&UserLoginIdentifier {
@@ -232,7 +232,7 @@ async fn a_value_another_user_already_owns_is_rejected() {
         .await
         .expect("create extra identifier");
 
-    // 作成でぶつかると、利用者ごと作られない。
+    // On a collision at creation, the user is not created at all.
     let newcomer = new_user(tenant_id, &taken);
     let err = users
         .create(&newcomer)
@@ -244,10 +244,10 @@ async fn a_value_another_user_already_owns_is_rejected() {
     );
     assert!(
         users.find_by_id(newcomer.id).await.expect("find").is_none(),
-        "失敗した作成の残骸が残らない"
+        "no leftovers from the failed creation remain"
     );
 
-    // 既存利用者の改名でも同じ。
+    // The same for renaming an existing user.
     let other = new_user(
         tenant_id,
         &format!("ap15b-other-{}", Uuid::new_v4().simple()),
@@ -262,7 +262,7 @@ async fn a_value_another_user_already_owns_is_rejected() {
         "expected a conflict, got {err:?}"
     );
 
-    // 所有者の側は無傷（黙って書き換えられていない）。
+    // The owner's side is intact (not silently rewritten).
     assert_eq!(
         users
             .find_by_login_identifier(tenant_id, &taken)

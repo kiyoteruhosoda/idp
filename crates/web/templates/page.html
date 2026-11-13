@@ -1,20 +1,20 @@
 <!DOCTYPE html>
-{#- 表示言語（ADR-0048）。`assets/local-time.js` はこの属性の言語で日時を整形する —— 無いと
-    ブラウザの言語で出て、利用者が選んだ画面の言語と食い違う。言語を決めるのは web
-    （`Messages` と同じ出所）。`Messages` を持たない画面（`MessagePage` / `ErrorPage` /
-    `ApplicationNotPermittedPage`）は、決めた言語を `lang` で受け取ってこの block を上書きする。 -#}
+{#- Display language (ADR-0048). `assets/local-time.js` formats dates in this attribute's language -- without it
+    they use the browser's language and disagree with the screen language the user chose. web decides the language
+    (same source as `Messages`). Screens without `Messages` (`MessagePage` / `ErrorPage` /
+    `ApplicationNotPermittedPage`) receive the decided language as `lang` and override this block. -#}
 <html lang="{% block html_lang %}{{ messages.lang() }}{% endblock %}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-{#- 配色は最初の描画より前に確定させる（`assets/theme.js`）。`defer` を付けず、スタイルシートより
-    先に置く —— 遅らせると白い画面が描かれてから黒へ塗り替わる。 -#}
+{#- Settle the color scheme before the first paint (`assets/theme.js`). No `defer`, and place it before the
+    stylesheets -- delaying it paints a white screen and then repaints it black. -#}
 <script src="/assets/theme.js?v={{ crate::templates::asset_version() }}"></script>
 <meta name="color-scheme" content="light dark">
 <link rel="stylesheet" href="/assets/vendor/bootstrap.min.css?v={{ crate::templates::asset_version() }}">
 <link rel="stylesheet" href="/assets/vendor/fontawesome/css/all.min.css?v={{ crate::templates::asset_version() }}">
 <link rel="stylesheet" href="/assets/app.css?v={{ crate::templates::asset_version() }}">
-{#- タブとアプリアイコンの印（`assets/assay.svg`）。SVG 1 枚で全サイズを賄う。 -#}
+{#- Tab and app icon mark (`assets/assay.svg`). One SVG covers every size. -#}
 <link rel="icon" href="/assets/assay.svg?v={{ crate::templates::asset_version() }}" type="image/svg+xml">
 {% block head %}{% endblock %}
 <title>{% block title %}assay{% endblock %}</title>
@@ -22,9 +22,9 @@
 <body class="d-flex flex-column min-vh-100">
 <nav class="navbar bg-body-tertiary border-bottom">
   <div class="container-fluid">
-    {#- 左上の名乗り。既定は動かない文字だけにしておく（ログイン・同意のように、
-        フローの途中で外へ出す動線を置いてはいけない画面があるため）。ホームへ戻す
-        リンクや、テナント名を出したい画面が `brand` を上書きする。 -#}
+    {#- Top-left label. By default it is static text only (some screens, like login and consent, must not
+        offer a way out in the middle of a flow). Screens that want a link back home
+        or the tenant name override `brand`. -#}
     {% block brand %}<span class="navbar-brand mb-0 h1">assay</span>{% endblock %}
   </div>
 </nav>
@@ -32,8 +32,8 @@
   <div class="container-fluid my-auto py-4 d-flex align-items-center justify-content-center auth-content">
     <div class="row w-100">
       <div class="{% block column %}col-md-6 col-lg-4 mx-auto{% endblock %}">
-{#- 印。ログイン画面の主役はテナント（左上の名乗り）なので、assay はここと
-    フッターに小さく出るだけにする。 -#}
+{#- The mark. The tenant (top-left label) is the star of the login screen, so assay appears only small here
+    and in the footer. -#}
 {% include "assay_mark.html" %}
 {% block content %}{% endblock %}
       </div>
@@ -42,16 +42,16 @@
 </main>
 {% include "footer.html" %}
 <script src="/assets/vendor/bootstrap.bundle.min.js?v={{ crate::templates::asset_version() }}"></script>
-{#- 処理中の目印。フォーム送信（submit-feedback.js）と、fetch でサーバと話す画面
-    スクリプト（passkey-register.js）が呼ぶため、どちらよりも先に読み込む。 -#}
+{#- Busy marker. Called by form submission (submit-feedback.js) and by page scripts talking to the server via
+    fetch (passkey-register.js), so it is loaded before both. -#}
 <script src="/assets/button-pending.js?v={{ crate::templates::asset_version() }}"></script>
-{#- 画面固有のスクリプト。確認ダイアログ（`assets/console.js`）は送信中の目印より**先**に
-    読み込む必要があるため、`submit-feedback.js` の前に置く（取り消された送信へ印を付けないため。
-    `console/layout.html` と同じ順序）。 -#}
+{#- Page-specific scripts. The confirmation dialog (`assets/console.js`) must load **before** the submitting
+    marker, so it is placed before `submit-feedback.js` (so cancelled submissions are not marked;
+    same order as `console/layout.html`). -#}
 {% block scripts %}{% endblock %}
 <script src="/assets/submit-feedback.js?v={{ crate::templates::asset_version() }}"></script>
-{#- 時刻を閲覧者のタイムゾーンで描き直す（ADR-0048）。差し替え前でも読める値が
-    入っているので、後回しでよい（defer）。 -#}
+{#- Redraws times in the viewer's time zone (ADR-0048). Values readable before replacement are
+    already in place, so it can come later (defer). -#}
 <script src="/assets/local-time.js?v={{ crate::templates::asset_version() }}" defer></script>
 {% include "react_bootstrap.html" %}
 </body>

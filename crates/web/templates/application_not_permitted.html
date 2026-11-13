@@ -7,8 +7,8 @@
     <h1 class="h4 mb-0">{{ title }}</h1>
   </div>
   <div class="card-body p-4">
-    {#- 「入れたのに弾かれた」に見える画面なので、まず**サインインは通っている**ことを言う。
-        ここを省くと、利用者は資格情報を疑って何度もやり直すことになる。 -#}
+    {#- This screen looks like "I got in and then got rejected", so first say that **sign-in succeeded**.
+        Without it, users doubt their credentials and retry again and again. -#}
     <p class="mb-3">{{ signed_in }}</p>
     <p class="mb-0">{{ next_step }}</p>
 {%- if !back_href.is_empty() %}

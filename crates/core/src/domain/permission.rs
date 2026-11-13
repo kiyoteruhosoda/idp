@@ -1,26 +1,30 @@
-//! 利用者・クライアントが保有する権限（permission code）の値表現と含意関係（ADR-0006 / ADR-0037）。
+//! Value representation of permissions (permission codes) held by users and clients, and their
+//! implications (ADR-0006 / ADR-0037).
 //!
-//! OIDC scope（`domain::values::Scope`、claim 制御）とは**別軸**の「主体が保有する権限」。
-//! 権限コードは運用に応じて増える**マスタ駆動＝データ**のため、Rust の固定 enum にはしない
-//! （ADR-0006 §5）。値オブジェクトは `String` ラッパとし、名前空間付きコードを表す。
+//! "Permissions held by a principal", on a **separate axis** from OIDC scopes
+//! (`domain::values::Scope`, claim control). Permission codes grow with operations and are
+//! **master-driven = data**, so they are not a fixed Rust enum (ADR-0006 §5). The value object is a
+//! `String` wrapper representing a namespaced code.
 //!
-//! 一方で**コード同士の含意**（`idp.tenant.admin` は `idp.users:read` を含む、`:write` は `:read` を
-//! 含む）は判定ロジックであってデータではない。DB に含意表を持たせると判定が DB とアプリの 2 か所に
-//! 分かれるため、本モジュールを単一の出所とする（ADR-0037）。
+//! On the other hand, **implications between codes** (`idp.tenant.admin` includes `idp.users:read`,
+//! `:write` includes `:read`) are decision logic, not data. Holding an implication table in the DB
+//! would split decisions between the DB and the app, so this module is the single source
+//! (ADR-0037).
 #![allow(dead_code)]
 
 use crate::domain::error::DomainError;
 
-/// テナント管理権限コード（scope = 当該テナント）。管理コンソールへのログインと管理操作に必要。
-/// 細粒度コード（[`TENANT_MANAGEMENT_CODES`]）をすべて含意する上位コード。
+/// Tenant management permission code (scope = that tenant). Needed to log in to the admin console
+/// and for admin operations. The higher code implying all fine-grained codes
+/// ([`TENANT_MANAGEMENT_CODES`]).
 pub const TENANT_ADMIN: &str = "idp.tenant.admin";
-/// システム管理権限コード（scope = root テナントのみ）。root テナント自身の管理を含み、
-/// すべての権限コードを含意する（ADR-0009 §4）。
+/// System management permission code (scope = root tenant only). Includes managing the root tenant
+/// itself, and implies every permission code (ADR-0009 §4).
 pub const SYSTEM_ADMIN: &str = "idp.system.admin";
 
-/// 読み取り操作を表す動作サフィックス（`idp.users:read` の `read`）。
+/// Action suffix for read operations (`read` in `idp.users:read`).
 pub const ACTION_READ: &str = "read";
-/// 変更操作を表す動作サフィックス（`idp.users:write` の `write`）。`:read` を含意する。
+/// Action suffix for write operations (`write` in `idp.users:write`). Implies `:read`.
 pub const ACTION_WRITE: &str = "write";
 
 pub const USERS_READ: &str = "idp.users:read";
@@ -46,35 +50,40 @@ pub const SAML_SERVICE_PROVIDERS_READ: &str = "idp.saml-service-providers:read";
 pub const SAML_SERVICE_PROVIDERS_WRITE: &str = "idp.saml-service-providers:write";
 pub const RESOURCES_READ: &str = "idp.resources:read";
 pub const RESOURCES_WRITE: &str = "idp.resources:write";
-/// 管理者の口座を扱う（task #579）。
+/// Manage admin accounts (task #579).
 ///
-/// 細粒度コードだけでは、**呼び出し元が含意しない権限を持つ口座**（管理者の口座）は扱えず、
-/// 呼び出し元が含意しないコードは付与・剥奪できない（[`may_assign`] / [`may_manage_account`]）。
-/// このコードはその範囲を名指しで渡す: `idp.tenant.admin` までの口座の操作と、`idp.tenant.admin` 以下の
-/// 付与・剥奪ができる。⚠ `idp.system.admin` の持ち主の口座と、その付与には届かない。
-/// クライアントへも付けられる（break-glass の機械が非常用口座を作り直すため）。
+/// With fine-grained codes alone, **accounts holding permissions the caller does not imply** (admin
+/// accounts) cannot be managed, and codes the caller does not imply cannot be granted or revoked
+/// ([`may_assign`] / [`may_manage_account`]). This code grants that range by name: operating on
+/// accounts up to `idp.tenant.admin`, and granting / revoking up to `idp.tenant.admin`. ⚠ It does
+/// not reach accounts holding `idp.system.admin` or granting it. It can also be given to clients
+/// (so the break-glass machine can recreate emergency accounts).
 pub const ADMINS_WRITE: &str = "idp.admins:write";
-/// 組織の SSH の公開鍵の一覧を読む（task #885。ADR-0072）。配る機械（`host-sshkeys`）のためのコード。
+/// Read the organization's list of SSH public keys (task #885; ADR-0072). A code for the
+/// distributing machine (`host-sshkeys`).
 ///
-/// `idp.tenant.admin` が含意する（テナント管理者がクライアントへ付けられる）が、⚠ 口
-/// （`GET /{tenant}/admin/ssh-keys`）は**クライアントのトークンしか通さない**。人の管理トークンでは、
-/// このコードを含意していても読めない。
+/// Implied by `idp.tenant.admin` (tenant admins can give it to clients), but ⚠ the endpoint
+/// (`GET /{tenant}/admin/ssh-keys`) **only accepts client tokens**. A human's admin token cannot
+/// read it even if it implies this code.
 pub const SSH_KEYS_READ: &str = "idp.ssh-keys:read";
-/// メール送信（SMTP）設定の参照。scope のテナントのメールの経路を読む（root の scope なら全体の経路も）。
+/// Read mail sending (SMTP) settings. Reads the mail route of the scope's tenant (and the global
+/// route if scoped to root).
 ///
-/// ⚠ ADR-0051 §3 は「root scope でしか持てない」としていたが、ADR-0058 §8 で覆した。根拠だった
-/// 「`system_settings` はテナント列を持たない全体の表だから、テナントの中で配ると全テナントの経路を
-/// 変えられる」が、テナントごとの経路（`tenant_settings`）で消えたためである。テナントの scope で
-/// 持っても届くのは**そのテナントの経路だけ**で、全体の経路の口は使う側で root を課し続ける。
+/// ⚠ ADR-0051 §3 said "only holdable in the root scope", but ADR-0058 §8 overturned it. The reason
+/// given, "`system_settings` is a global table without a tenant column, so granting it within a
+/// tenant would let every tenant's route be changed", disappeared with per-tenant routes
+/// (`tenant_settings`). Held in a tenant's scope it reaches **only that tenant's route**, and the
+/// global route's endpoint keeps requiring root on the using side.
 pub const SMTP_READ: &str = "idp.smtp:read";
-/// メール送信（SMTP）設定の変更。範囲は [`SMTP_READ`] と同じ。
+/// Change mail sending (SMTP) settings. Same range as [`SMTP_READ`].
 pub const SMTP_WRITE: &str = "idp.smtp:write";
 
-/// `idp.tenant.admin` が含意する細粒度コードの集合（ADR-0037）。
+/// The set of fine-grained codes implied by `idp.tenant.admin` (ADR-0037).
 ///
-/// **システム管理操作（テナントの作成・削除、システム設定、再起動、テナント横断のログ参照）は
-/// ここに含めない。** それらは引き続き `idp.system.admin` の完全一致だけが通る。細粒度化の目的は
-/// 「テナントの中の運用を分担させること」であって、root の権限を切り売りすることではない。
+/// **System management operations (creating / deleting tenants, system settings, restart,
+/// cross-tenant log viewing) are not included here.** Those still pass only on an exact match of
+/// `idp.system.admin`. The purpose of fine-graining is "to divide operations within a tenant", not
+/// to sell off root's authority piece by piece.
 pub const TENANT_MANAGEMENT_CODES: &[&str] = &[
     USERS_READ,
     USERS_WRITE,
@@ -103,28 +112,29 @@ pub const TENANT_MANAGEMENT_CODES: &[&str] = &[
     SSH_KEYS_READ,
 ];
 
-/// root テナントの中でしか意味を持たないコード（全テナント共通の資源を扱う）。
+/// Codes that only make sense inside the root tenant (they handle resources shared by all tenants).
 ///
-/// 署名鍵は全テナントで 1 組（`signing_keys` にテナント列が無い。ADR-0009）なので、子テナントの
-/// 管理者が持つと**テナントを越えて全体の鍵を作り替え・消せてしまう**。`idp.tenant.admin` の
-/// 含意には残す（root の管理者は今までどおり扱える）が、root 以外では付与させず、行使もさせない
-/// （口は使う側で root を課す。SMTP の全体の経路と同じ形）。
+/// There is one set of signing keys for all tenants (`signing_keys` has no tenant column;
+/// ADR-0009), so if a child tenant's admin held it they could **recreate or delete the global keys
+/// across tenants**. It stays in the implication of `idp.tenant.admin` (root admins can handle it
+/// as before), but outside root it is neither grantable nor usable (the endpoint requires root on
+/// the using side, the same shape as SMTP's global route).
 pub const ROOT_SCOPED_CODES: &[&str] = &[KEYS_READ, KEYS_WRITE];
 
-/// `code` が [`ROOT_SCOPED_CODES`] に入るか。
+/// Whether `code` is in [`ROOT_SCOPED_CODES`].
 pub fn is_root_scoped(code: &str) -> bool {
     ROOT_SCOPED_CODES.contains(&code)
 }
 
-/// 保有コード `held` が要求コード `required` を満たすか（含意関係。ADR-0037）。
+/// Whether held code `held` satisfies required code `required` (implication; ADR-0037).
 ///
-/// 1. 完全一致
-/// 2. `idp.system.admin` はすべてを含意する（root scope でしか存在し得ない）
-/// 3. `idp.tenant.admin` は [`TENANT_MANAGEMENT_CODES`] を含意する
-/// 4. 同一リソースの `:write` は `:read` を含意する
+/// 1. Exact match
+/// 2. `idp.system.admin` implies everything (it can only exist in the root scope)
+/// 3. `idp.tenant.admin` implies [`TENANT_MANAGEMENT_CODES`]
+/// 4. `:write` of the same resource implies `:read`
 ///
-/// `idp.tenant.admin` が `idp.system.admin` を含意しないことが本関数の要である。含意を
-/// 「上位コードなら何でも通す」と書くと、テナント管理者が root 操作へ届いてしまう。
+/// The crux of this function is that `idp.tenant.admin` does not imply `idp.system.admin`. Writing
+/// implication as "a higher code passes anything" would let tenant admins reach root operations.
 pub fn implies(held: &str, required: &str) -> bool {
     if held == required {
         return true;
@@ -135,8 +145,8 @@ pub fn implies(held: &str, required: &str) -> bool {
     if held == TENANT_ADMIN {
         return TENANT_MANAGEMENT_CODES.contains(&required);
     }
-    // 同一リソースの :write → :read。`split_once` で「最後の 1 つ」ではなく最初の `:` を境にする
-    // （リソース名に `:` を含めない前提。マスタもその形で seed している）。
+    // :write → :read of the same resource. `split_once` splits at the first `:`, not "the last one"
+    // (assuming resource names contain no `:`; the master is seeded that way too).
     match (held.split_once(':'), required.split_once(':')) {
         (Some((held_resource, ACTION_WRITE)), Some((required_resource, ACTION_READ))) => {
             held_resource == required_resource
@@ -145,24 +155,27 @@ pub fn implies(held: &str, required: &str) -> bool {
     }
 }
 
-/// 保有コード集合のいずれかが要求コードを満たすか（[`implies`] の集合版）。
+/// Whether any code in the held set satisfies the required code (set version of [`implies`]).
 pub fn satisfies<S: AsRef<str>>(held: &[S], required: &str) -> bool {
     held.iter().any(|code| implies(code.as_ref(), required))
 }
 
-/// 呼び出し元の保有コード `held` で、`code` を付与・剥奪してよいか（task #579・ADR-0037）。
+/// Whether the caller, with held codes `held`, may grant / revoke `code` (task #579, ADR-0037).
 ///
-/// 細粒度コードは集めても管理者に届かない、という約束を付与の側で守る。許すのは次のどちらか:
+/// Keeps on the granting side the promise that collecting fine-grained codes never reaches admin.
+/// Allowed if either:
 ///
-/// 1. 呼び出し元が `code` を含意する（自分が持っている範囲を配る）
-/// 2. 呼び出し元が [`ADMINS_WRITE`] を持ち、`code` が `idp.tenant.admin` の範囲に収まる
+/// 1. The caller implies `code` (handing out a range it holds itself)
+/// 2. The caller holds [`ADMINS_WRITE`] and `code` fits within the range of `idp.tenant.admin`
 ///
-/// ⚠ これだけで「付与してよい」にはならない。付与の口そのもの（`idp.permissions:write` /
-/// `idp.clients:write`）・`idp.system.admin` の扱い・テナントの範囲（[`is_grantable_in_tenant`]）は別に見る。
+/// ⚠ This alone does not make "may grant". The granting endpoint itself (`idp.permissions:write` /
+/// `idp.clients:write`), the handling of `idp.system.admin`, and the tenant range
+/// ([`is_grantable_in_tenant`]) are checked separately.
 ///
-/// 3. root でないテナントでは、テナント管理者がそのテナントのメール経路の権限（`idp.smtp:*`）も配れる。
-///    `idp.tenant.admin` が SMTP を含意しないのは root で全体の経路へ届かせないためで（ADR-0051）、
-///    子テナントでは届くのがそのテナントの経路だけになる（ADR-0058 §8）。
+/// 3. In non-root tenants, tenant admins can also hand out that tenant's mail route permissions
+///    (`idp.smtp:*`). `idp.tenant.admin` does not imply SMTP so that it cannot reach the global
+///    route in root (ADR-0051); in child tenants what it reaches is only that tenant's route
+///    (ADR-0058 §8).
 pub fn may_assign<S: AsRef<str>>(held: &[S], code: &str, tenant_is_root: bool) -> bool {
     satisfies(held, code)
         || (satisfies(held, ADMINS_WRITE) && implies(TENANT_ADMIN, code))
@@ -171,37 +184,39 @@ pub fn may_assign<S: AsRef<str>>(held: &[S], code: &str, tenant_is_root: bool) -
             && satisfies(held, TENANT_ADMIN))
 }
 
-/// [`HeldByTarget`] の権限の scope が、要求テナントから見てどこか。
+/// Where the scope of a [`HeldByTarget`] permission is, as seen from the requested tenant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetScope {
-    /// 要求テナント（root を含む）。
+    /// The requested tenant (including root).
     RequestedTenant,
-    /// root テナント（要求テナントは root でない）。
+    /// The root tenant (the requested tenant is not root).
     RootTenant,
-    /// 上のどちらでもない子テナント。
+    /// A child tenant that is neither of the above.
     OtherTenant,
 }
 
-/// 口座の操作（パスワード・MFA の再発行、プロフィール・ログイン識別子の変更、停止・削除）の対象が
-/// 持つ権限 1 つ。
+/// One permission held by the target of an account operation (reissuing password / MFA, changing
+/// profile / login identifiers, suspending / deleting).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldByTarget {
     pub code: String,
     pub scope: TargetScope,
 }
 
-/// 呼び出し元の保有コード `held`（要求テナントの scope）で、`target` の権限を持つ口座を
-/// 操作してよいか（task #579）。
+/// Whether the caller, with held codes `held` (in the requested tenant's scope), may operate on an
+/// account holding the permissions in `target` (task #579).
 ///
-/// 口座を操作できれば、その口座の権限を行使できる（パスワードを決め直してなりすませる）。
-/// したがって**対象の権限を全部、呼び出し元が付与できる**ときだけ許す:
+/// Being able to operate on an account means being able to use its permissions (reset the password
+/// and impersonate). So it is allowed **only when the caller could grant all of the target's
+/// permissions**:
 ///
-/// - 要求テナントの権限は [`may_assign`] で見る（自分が含意するか、[`ADMINS_WRITE`] の範囲か）
-/// - 他の子テナントの権限（ゲストとして持つもの）は、要求テナントの scope では含意しようがないので、
-///   [`ADMINS_WRITE`] の範囲（`idp.tenant.admin` まで）だけ許す
-/// - root の権限（ゲストとして持つもの）は許さない。子テナントの管理者が root の管理に届いてしまう
-///   （ADR-0070。root を管理する口座は root を所属元にする）
-/// - `idp.system.admin` の持ち主は、`idp.system.admin` の持ち主しか扱えない
+/// - Permissions in the requested tenant are checked with [`may_assign`] (implied by the caller, or
+///   within [`ADMINS_WRITE`])
+/// - Permissions in other child tenants (held as a guest) cannot be implied in the requested
+///   tenant's scope, so only the range of [`ADMINS_WRITE`] (up to `idp.tenant.admin`) is allowed
+/// - Root permissions (held as a guest) are not allowed. A child tenant's admin would reach root
+///   administration (ADR-0070; accounts administering root have root as their home)
+/// - Holders of `idp.system.admin` can only be handled by holders of `idp.system.admin`
 pub fn may_manage_account<S: AsRef<str>>(
     held: &[S],
     target: &[HeldByTarget],
@@ -222,38 +237,40 @@ pub fn may_manage_account<S: AsRef<str>>(
     })
 }
 
-/// クライアント（システム用クライアント）へ付与してよいコードか（ADR-0037）。
+/// Whether a code may be granted to a client (system client) (ADR-0037).
 ///
-/// 包括的な管理権限（`idp.system.admin` / `idp.tenant.admin`）は付与させない。機械の資格情報は
-/// 人の資格情報より寿命が長く失効の導線も弱いため、「とりあえず上位コードを付ける」を塞いで
-/// 細粒度コードを選ばせる。DB 側にも同じ CHECK 制約があり、判定は二重に効く。
+/// Comprehensive admin permissions (`idp.system.admin` / `idp.tenant.admin`) cannot be granted.
+/// Machine credentials live longer than human ones and have weaker revocation paths, so "just
+/// attach the higher code" is blocked to force choosing fine-grained codes. The DB has the same
+/// CHECK constraint, so the check works twice.
 pub fn is_grantable_to_client(code: &str) -> bool {
     code != SYSTEM_ADMIN && code != TENANT_ADMIN
 }
 
-/// 要求テナントで**そもそも付与し得る**コードか（ADR-0009 §4）。
+/// Whether the code **can be granted at all** in the requested tenant (ADR-0009 §4).
 ///
-/// `idp.system.admin` は root scope でしか存在できない（DB の CHECK 制約
-/// `user_permissions_system_admin_scope_chk` とアプリ層の二重防御）。したがって非 root テナントでは、
-/// 実行者が誰であっても付与できない。**選べないものを見せない**（ADR-0032）ため、付与フォームの
-/// 選択肢はこの判定で落とす。落とさないと、選べるのに必ず 403 になる選択肢が残る。
+/// `idp.system.admin` can only exist in the root scope (double defense by the DB CHECK constraint
+/// `user_permissions_system_admin_scope_chk` and the app layer). So in non-root tenants it cannot
+/// be granted by anyone. **Do not show what cannot be chosen** (ADR-0032), so the grant form's
+/// options are filtered by this check. Otherwise options that always end in 403 would remain.
 ///
-/// ⚠ `idp.smtp:*` は ADR-0058 §8 でテナントの中でも配れるようにした（そのテナントの経路にしか届かない）。
-/// ⚠ [`ROOT_SCOPED_CODES`]（署名鍵）も root の中でしか配れない（全テナント共通の資源のため）。
+/// ⚠ `idp.smtp:*` became grantable within tenants by ADR-0058 §8 (it only reaches that tenant's
+/// route). ⚠ [`ROOT_SCOPED_CODES`] (signing keys) are also grantable only within root (resources
+/// shared by all tenants).
 pub fn is_grantable_in_tenant(code: &str, tenant_is_root: bool) -> bool {
     tenant_is_root || (code != SYSTEM_ADMIN && !is_root_scoped(code))
 }
 
-/// 名前空間付き権限コード（例: `idp.tenant.admin`, `idp.clients:read`）。
+/// Namespaced permission code (e.g. `idp.tenant.admin`, `idp.clients:read`).
 ///
-/// 許可値の単一出所は `permissions` マスタテーブル（seed マイグレーション）であり、
-/// この型は「空でない文字列」という最小限の不変条件のみを保証する。存在検証は
-/// リポジトリ（`UserPermissionRepository`）と FK 制約が担う。
+/// The single source of allowed values is the `permissions` master table (seed migrations);
+/// this type guarantees only the minimal invariant "non-empty string". Existence is checked by
+/// the repository (`UserPermissionRepository`) and FK constraints.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PermissionCode(String);
 
 impl PermissionCode {
-    /// 文字列から権限コードを構築する。空文字列は拒否する。
+    /// Builds a permission code from a string. Empty strings are rejected.
     pub fn parse(s: impl Into<String>) -> Result<Self, DomainError> {
         let s = s.into();
         if s.trim().is_empty() {
@@ -307,32 +324,34 @@ mod tests {
         }
     }
 
-    /// 既存の `idp.tenant.admin` 保有者は、細粒度化後も管理 API を今までどおり通る。
+    /// Existing holders of `idp.tenant.admin` pass the admin API as before even after
+    /// fine-graining.
     #[test]
     fn smtp_codes_are_not_reachable_from_tenant_admin() {
-        // ⚠ **テナント管理者からは届かない。** 届くようにすると、root のテナント管理者が
-        //   全体のメール経路へ届く（ADR-0051。ADR-0058 §8 でもこの点は変えていない）。
+        // ⚠ **Not reachable from tenant admins.** If it were, root's tenant admins would
+        //   reach the global mail route (ADR-0051; ADR-0058 §8 did not change this point).
         assert!(!implies(TENANT_ADMIN, SMTP_READ));
         assert!(!implies(TENANT_ADMIN, SMTP_WRITE));
         assert!(!TENANT_MANAGEMENT_CODES.contains(&SMTP_READ));
         assert!(!TENANT_MANAGEMENT_CODES.contains(&SMTP_WRITE));
-        // system 管理者からは届く（含意の 2 番）。書きは読みを含む（4 番）。
+        // Reachable from system admins (implication rule 2). Write includes read (rule 4).
         assert!(implies(SYSTEM_ADMIN, SMTP_WRITE));
         assert!(implies(SMTP_WRITE, SMTP_READ));
         assert!(!implies(SMTP_READ, SMTP_WRITE));
     }
 
-    /// ADR-0058 §8: テナントごとに経路を持てるので、SMTP のコードはどのテナントでも配れる。
-    /// 届く範囲は scope のテナントの経路だけで、全体の経路の口は使う側で root を課す。
+    /// ADR-0058 §8: each tenant can have its own route, so SMTP codes are grantable in any tenant.
+    /// What they reach is only the scope tenant's route; the global route's endpoint requires root
+    /// on the using side.
     #[test]
     fn smtp_codes_are_grantable_inside_any_tenant() {
         for code in [SMTP_READ, SMTP_WRITE] {
             assert!(is_grantable_in_tenant(code, true), "{code}");
             assert!(is_grantable_in_tenant(code, false), "{code}");
-            // 機械から入れるための口である以上、クライアントにも配れる。
+            // Since it is an endpoint for machines to set it, it can be given to clients too.
             assert!(is_grantable_to_client(code), "{code}");
         }
-        // ⚠ `idp.system.admin` だけは今までどおり root の中でしか配れない。
+        // ⚠ Only `idp.system.admin` is still grantable only within root, as before.
         assert!(!is_grantable_in_tenant(SYSTEM_ADMIN, false));
         assert!(is_grantable_in_tenant(SYSTEM_ADMIN, true));
     }
@@ -344,7 +363,7 @@ mod tests {
         }
     }
 
-    /// 本モジュールの要: テナント管理者は root 操作へ届かない。
+    /// The crux of this module: tenant admins do not reach root operations.
     #[test]
     fn tenant_admin_does_not_imply_system_admin() {
         assert!(!implies(TENANT_ADMIN, SYSTEM_ADMIN));
@@ -354,9 +373,9 @@ mod tests {
     fn write_implies_read_of_the_same_resource() {
         assert!(implies(USERS_WRITE, USERS_READ));
         assert!(implies(CLIENTS_WRITE, CLIENTS_READ));
-        // 別リソースへは及ばない。
+        // It does not extend to other resources.
         assert!(!implies(USERS_WRITE, CLIENTS_READ));
-        // 逆向き（read → write）は含意しない。
+        // The reverse (read → write) is not implied.
         assert!(!implies(USERS_READ, USERS_WRITE));
     }
 
@@ -380,7 +399,8 @@ mod tests {
 
     #[test]
     fn system_admin_is_not_grantable_outside_the_root_tenant() {
-        // 非 root では CHECK 制約が行の存在自体を拒むので、選択肢に出してはならない。
+        // In non-root, the CHECK constraint refuses the row's very existence, so it must not appear
+        // as an option.
         assert!(!is_grantable_in_tenant(SYSTEM_ADMIN, false));
         assert!(is_grantable_in_tenant(SYSTEM_ADMIN, true));
     }
@@ -398,7 +418,8 @@ mod tests {
         }
     }
 
-    /// 署名鍵は全テナント共通なので、子テナントでは配れない（root の中だけ）。
+    /// Signing keys are shared by all tenants, so they are not grantable in child tenants (only
+    /// within root).
     #[test]
     fn signing_key_codes_are_grantable_only_in_the_root_tenant() {
         for code in [KEYS_READ, KEYS_WRITE] {
@@ -406,7 +427,7 @@ mod tests {
             assert!(!is_grantable_in_tenant(code, false), "{code}");
             assert!(is_grantable_in_tenant(code, true), "{code}");
         }
-        // root の管理者は今までどおり含意で持つ。
+        // Root admins hold it via implication as before.
         assert!(implies(TENANT_ADMIN, KEYS_WRITE));
         assert!(!is_root_scoped(USERS_WRITE));
     }
@@ -432,7 +453,7 @@ mod tests {
         }
     }
 
-    /// 細粒度コードは、自分が含意しないコードを配れない（task #579 の (b)(c)）。
+    /// Fine-grained codes cannot hand out codes they do not imply (task #579 (b)(c)).
     #[test]
     fn fine_grained_holders_cannot_assign_what_they_do_not_hold() {
         let permissions_writer = [PERMISSIONS_WRITE];
@@ -443,7 +464,8 @@ mod tests {
         let clients_writer = [CLIENTS_WRITE];
         assert!(!may_assign(&clients_writer, USERS_WRITE, true));
         assert!(may_assign(&clients_writer, CLIENTS_READ, true));
-        // テナント管理者は今までどおり、テナントの中の権限を全部配れる。⚠ system.admin と SMTP は別。
+        // Tenant admins can hand out all permissions within the tenant as before. ⚠ system.admin
+        // and SMTP are separate.
         assert!(may_assign(&[TENANT_ADMIN], TENANT_ADMIN, true));
         assert!(may_assign(&[TENANT_ADMIN], USERS_WRITE, true));
         assert!(may_assign(&[TENANT_ADMIN], ADMINS_WRITE, true));
@@ -451,8 +473,8 @@ mod tests {
         assert!(!may_assign(&[TENANT_ADMIN], SMTP_WRITE, true));
     }
 
-    /// 子テナントでは、テナント管理者がそのテナントのメール経路の権限も配れる（ADR-0058 §8）。
-    /// root では配れない（全体の経路へ届くため。ADR-0051）。
+    /// In child tenants, tenant admins can also hand out that tenant's mail route permissions
+    /// (ADR-0058 §8). Not in root (it would reach the global route; ADR-0051).
     #[test]
     fn tenant_admin_assigns_smtp_codes_only_outside_the_root_tenant() {
         assert!(may_assign(&[TENANT_ADMIN], SMTP_WRITE, false));
@@ -461,7 +483,8 @@ mod tests {
         assert!(!may_assign(&[PERMISSIONS_WRITE], SMTP_WRITE, false));
     }
 
-    /// `idp.admins:write` は idp.tenant.admin の範囲までを名指しで渡す（break-glass の機械）。
+    /// `idp.admins:write` grants by name the range up to idp.tenant.admin (the break-glass
+    /// machine).
     #[test]
     fn admins_write_reaches_tenant_admin_but_not_system_admin() {
         let breakglass = [USERS_WRITE, PERMISSIONS_WRITE, ADMINS_WRITE];
@@ -474,7 +497,7 @@ mod tests {
         assert!(!implies(ADMINS_WRITE, USERS_WRITE));
     }
 
-    /// `idp.users:write` だけでは管理者の口座を扱えない（task #579 の (a)）。
+    /// `idp.users:write` alone cannot handle admin accounts (task #579 (a)).
     #[test]
     fn users_writer_cannot_manage_an_administrator() {
         let users_writer = [USERS_WRITE];
@@ -495,7 +518,7 @@ mod tests {
             &[here(PERMISSIONS_WRITE)],
             true
         ));
-        // ゲストとして他のテナントで持つ権限も守る。
+        // Permissions held as a guest in other tenants are protected too.
         assert!(!may_manage_account(
             &users_writer,
             &[elsewhere(USERS_READ)],
@@ -530,8 +553,9 @@ mod tests {
         ));
     }
 
-    /// 子テナントの管理者は、root のゲスト管理者の口座を扱えない（task #757・ADR-0070）。
-    /// ⚠ 他の子テナントのゲストは今までどおり（所属元の管理者が口座を治める。ADR-0009 §3）。
+    /// A child tenant's admin cannot handle the accounts of root's guest admins (task #757,
+    /// ADR-0070). ⚠ Guests from other child tenants are as before (their home tenant's admin
+    /// governs the account; ADR-0009 §3).
     #[test]
     fn a_child_tenant_cannot_manage_a_guest_administrator_of_the_root() {
         for held in [&[TENANT_ADMIN][..], &[USERS_WRITE, ADMINS_WRITE][..]] {
@@ -548,8 +572,9 @@ mod tests {
         }
     }
 
-    /// テナントの設定の権限は、全体の設定へ届かない（ADR-0058 §11。付与の側の防御）。
-    /// 全体の設定の口は `idp.system.admin` の完全一致でしか通らず、SMTP の口も別の 1 枚である。
+    /// Tenant setting permissions do not reach global settings (ADR-0058 §11; defense on the
+    /// granting side). The global settings endpoint passes only on an exact match of
+    /// `idp.system.admin`, and the SMTP endpoint is a separate one.
     #[test]
     fn tenant_settings_codes_do_not_reach_the_whole_idp_settings() {
         for held in [TENANT_SETTINGS_READ, TENANT_SETTINGS_WRITE] {

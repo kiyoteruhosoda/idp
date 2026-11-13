@@ -1,15 +1,15 @@
-//! G6: Prometheus メトリクス（`GET /internal/metrics`）の統合テスト。
+//! G6: integration tests for Prometheus metrics (`GET /internal/metrics`).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test metrics
 //!
-//! 検証するのは 3 点:
+//! Three things are checked:
 //!
-//! 1. **内部面にある**（サービストークン必須）。メトリクスは「誰がいつ何回失敗したか」を
-//!    集約した情報で、公開面に出す値ではない。
-//! 2. 監査イベントがカウンタに出る（ログイン成功率・トークン発行レートの土台）。
-//! 3. **ラベルの基数が有限**である。テナント ID・利用者 ID・実 URL がラベル値に混ざると、
-//!    監視側の時系列が利用者数に比例して増える。ここが崩れると本番で初めて分かるため固定する。
+//! 1. **It is on the internal surface** (service token required). Metrics aggregate "who failed when and how often",
+//!    which is not something to expose on the public surface.
+//! 2. Audit events show up in counters (the basis for login success rate and token issuance rate).
+//! 3. **Label cardinality is bounded**. If tenant IDs, user IDs or real URLs got into label values,
+//!    time series on the monitoring side would grow in proportion to users. Breakage here would first show in production, so it is pinned.
 
 mod support;
 
@@ -37,7 +37,7 @@ async fn metrics_are_served_only_on_the_internal_surface() {
     assert_eq!(
         res.status(),
         StatusCode::UNAUTHORIZED,
-        "サービストークン無しでは読めない"
+        "cannot be read without the service token"
     );
 
     let res = send(&env.app, scrape(Some("wrong-token"))).await;
@@ -53,12 +53,12 @@ async fn metrics_are_served_only_on_the_internal_surface() {
         .to_string();
     assert!(
         content_type.starts_with("text/plain"),
-        "Prometheus のテキスト形式で返す: {content_type}"
+        "returned in Prometheus text format: {content_type}"
     );
 }
 
-/// 監査イベント（ここでは管理 API 越しのクライアント登録）がカウンタに現れ、
-/// HTTP の所要時間ヒストグラムがルート雛形で記録される。
+/// Audit events (here client registration via the admin API) appear in counters, and
+/// the HTTP duration histogram is recorded with route templates.
 #[tokio::test]
 async fn audit_events_and_request_durations_are_recorded() {
     let Some(env) = support::setup("metrics recording").await else {
@@ -66,7 +66,7 @@ async fn audit_events_and_request_durations_are_recorded() {
     };
     let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
 
-    // 監査イベントを発生させる（client.registered / result=success）。
+    // Cause an audit event (client.registered / result=success).
     let res = send(
         &env.app,
         support::post(
@@ -83,7 +83,7 @@ async fn audit_events_and_request_durations_are_recorded() {
     .await;
     assert_eq!(res.status(), StatusCode::CREATED);
 
-    // 一覧も 1 回叩いて、ルート雛形付きのヒストグラムを確実に出す。
+    // Also call the list once to make sure a histogram with a route template appears.
     let res = send(
         &env.app,
         get(
@@ -98,26 +98,26 @@ async fn audit_events_and_request_durations_are_recorded() {
 
     assert!(
         body.contains("idp_audit_events_total"),
-        "監査イベントのカウンタが出ていない:\n{body}"
+        "the audit event counter is missing:\n{body}"
     );
     assert!(
         body.contains(r#"event_type="client.registered""#),
-        "event_type ラベルが付いていない:\n{body}"
+        "the event_type label is missing:\n{body}"
     );
     assert!(
         body.contains("idp_http_request_duration_seconds"),
-        "所要時間ヒストグラムが出ていない:\n{body}"
+        "the duration histogram is missing:\n{body}"
     );
     assert!(
         body.contains(r#"route="/{tenant_id}/admin/clients""#),
-        "route ラベルがルート雛形になっていない:\n{body}"
+        "the route label is not a route template:\n{body}"
     );
 }
 
-/// ラベルの基数を有限に保つ（G6 の運用上の要）。
+/// Keeps label cardinality bounded (an operational essential of G6).
 ///
-/// 実 URL・テナント ID・利用者 ID・相関 ID がラベル値に現れないことを確かめる。ここを外すと、
-/// 監視側の時系列が利用者数・テナント数に比例して増え、Prometheus が落ちる形で初めて気づく。
+/// Checks that real URLs, tenant IDs, user IDs and correlation IDs do not appear in label values. If this slips,
+/// monitoring time series grow with the number of users and tenants, first noticed when Prometheus falls over.
 #[tokio::test]
 async fn labels_never_carry_unbounded_values() {
     let Some(env) = support::setup("metrics cardinality").await else {
@@ -125,7 +125,7 @@ async fn labels_never_carry_unbounded_values() {
     };
     let admin_tok = admin_token(&env.app, &env.pool, &env.root_tenant_id, &env.root_admin_id).await;
 
-    // テナント ID をパスに含む要求を出す（雛形へ畳まれることの確認）。
+    // Send a request containing a tenant ID in the path (to check it is folded into the template).
     let res = send(
         &env.app,
         get(
@@ -139,10 +139,10 @@ async fn labels_never_carry_unbounded_values() {
     let body = body_text(send(&env.app, scrape(Some(SERVICE_TOKEN))).await).await;
     assert!(
         !body.contains(&env.root_tenant_id),
-        "テナント ID がラベル値に漏れている（時系列がテナント数に比例して増える）:\n{body}"
+        "a tenant ID leaked into a label value (time series grow with the number of tenants):\n{body}"
     );
     assert!(
         !body.contains(&env.root_admin_id),
-        "利用者 ID がラベル値に漏れている:\n{body}"
+        "a user ID leaked into a label value:\n{body}"
     );
 }

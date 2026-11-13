@@ -51,20 +51,20 @@
       <tr>
         <td data-label="{{ messages.get("admin-login-identifiers-col-type") }}">{{ i.type_label }}</td>
         <td data-label="{{ messages.get("admin-login-identifiers-col-value") }}">{{ i.display_value }}{% if i.is_primary %} <span class="badge text-bg-primary">{{ messages.get("admin-login-identifiers-primary") }}</span>{% endif %}{% if i.is_primary_email %} <span class="badge text-bg-primary">{{ messages.get("admin-login-identifiers-primary-email") }}</span>{% endif %}</td>
-        {# 照合キーを併記する。登録した値と実際に一致する値がずれていても、片方しか見えないと
-           設定ミスに気づけない（電話番号のように書き方が揺れる識別子で起きる）。 #}
+        {# Show the match key alongside. If the registered value and the actually matched value drift, seeing only one
+           hides the misconfiguration (happens with identifiers written in varying ways, like phone numbers). #}
         <td data-label="{{ messages.get("admin-login-identifiers-col-normalized") }}"><code>{{ i.normalized_value }}</code></td>
         <td data-label="{{ messages.get("admin-login-identifiers-col-state") }}">{% if i.is_active %}<span class="badge text-bg-success">{{ messages.get("admin-login-identifiers-state-active") }}</span>{% else %}<span class="badge text-bg-secondary">{{ messages.get("admin-login-identifiers-state-inactive") }}</span>{% endif %}</td>
         <td data-label="{{ messages.get("admin-signing-keys-col-actions") }}">
-          {# 主たる識別子と主メールは、ここからは操作できない。変えるならプロフィール編集、
-             止めるならアカウントの無効化（api も同じ理由で拒否する）。
-             ⚠ **行の有無ではなく役割で判定する。** AP15b で主識別子も登録簿の行になったので
-             `id` は常に在り、`id` だけで出し分けると押しても必ず失敗するボタンが並ぶ。 #}
+          {# The primary identifier and primary email cannot be operated on here. To change them, edit the profile;
+             to stop them, disable the account (the api rejects for the same reason).
+             ⚠ **Decide by role, not by whether a row exists.** Since AP15b the primary identifier is also a registry row, so
+             `id` is always present, and deciding by `id` alone shows buttons that always fail when pressed. #}
           {% if !i.is_primary && !i.is_primary_email %}{% if let Some(id) = i.id %}
           <div class="d-flex flex-wrap gap-2">
-            {# 主メールへの昇格はメール種別の行にだけ出す。昇格は入れ替えで、いまの主メール行が
-               降格して普通の別名になる（ADR-0052）。通知の宛先も一緒に動くので確認を挟む。
-               ⚠ **訳文ではなく種別コードで判定する。** 訳で見ると言語を変えたとたんに消える。 #}
+            {# Promote-to-primary-email is shown only on email-type rows. Promotion is a swap: the current primary email row
+               is demoted to an ordinary alias (ADR-0052). The notification address moves too, so confirm first.
+               ⚠ **Decide by the kind code, not the translated label.** By label it vanishes as soon as the language changes. #}
             {% if i.identifier_type == "email" %}
             <form method="post" action="{{ tenant }}/admin/users/{{ user_id }}/login-identifiers/{{ id }}/primary-email" class="d-inline" data-confirm="{{ messages.get("admin-login-identifiers-promote-email-confirm") }}">
               <input type="hidden" name="csrf_token" value="{{ csrf }}">

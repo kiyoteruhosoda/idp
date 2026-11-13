@@ -1,14 +1,14 @@
-//! セルフサービス・パスワードリセット画面（web。MT18）。
+//! Self-service password reset screens (web. MT18).
 //!
-//! - `GET/POST /{tenant_id}/forgot-password`: メールアドレスを入力してリセットを要求する。
-//!   応答はアカウントの有無を問わず同じ完了表示（列挙防止は api / Application 層の責務で、
-//!   web はその応答をそのまま写す）。
-//! - `GET/POST /{tenant_id}/password-reset?token=...`: リセットメールのリンクから開き、
-//!   新パスワードを設定する。成功後はログイン画面へ誘導する。
+//! - `GET/POST /{tenant_id}/forgot-password`: enter an email address to request a reset.
+//!   The response is the same completion view whether or not the account exists (preventing enumeration
+//!   is the api / Application layer's job; web just mirrors its response).
+//! - `GET/POST /{tenant_id}/password-reset?token=...`: opened from the reset email link to
+//!   set a new password. On success it leads to the login screen.
 //!
-//! いずれも未ログイン経路（SSO 不要）。フォームはセッションを持たないため CSRF トークンは
-//! 付けない（要求はメール送信のみ・実行はトークン所持が本人性の根拠であり、第三者が強制しても
-//! 得られる状態変化がない）。実体は api の `/internal/password-reset/*` に委ねる。
+//! Both are unauthenticated paths (no SSO). The forms have no session, so no CSRF token is
+//! attached (the request only sends an email, and execution relies on token possession as identity; a third
+//! party forcing it gains no state change). The actual work is delegated to the api's `/internal/password-reset/*`.
 
 use super::internal_call_status;
 use crate::client_ip::ClientIp;
@@ -46,7 +46,7 @@ pub struct ResetForm {
     pub new_password_confirm: String,
 }
 
-/// リセット要求フォーム（`GET /{tenant_id}/forgot-password`）。
+/// Reset request form (`GET /{tenant_id}/forgot-password`).
 pub async fn forgot_page(headers: HeaderMap) -> Response {
     let messages = Messages::new(locale(&headers));
     Html(render(&ForgotPassword {
@@ -57,7 +57,7 @@ pub async fn forgot_page(headers: HeaderMap) -> Response {
     .into_response()
 }
 
-/// リセット要求の送信（`POST /{tenant_id}/forgot-password`）。
+/// Submits a reset request (`POST /{tenant_id}/forgot-password`).
 pub async fn forgot_submit(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -98,8 +98,8 @@ pub async fn forgot_submit(
         Err(e) => {
             tracing::error!(error = %e, "password reset request call to api failed");
             match internal_call_status(&e) {
-                // テナントを解決できないなら、この画面自体が存在しない。フォームを描き直さず
-                // 共通の 404 ページへ倒す（MT28）。
+                // If the tenant cannot be resolved, this screen itself does not exist. Instead of re-rendering
+                // the form, fall back to the shared 404 page (MT28).
                 StatusCode::NOT_FOUND => StatusCode::NOT_FOUND.into_response(),
                 status => forgot_error(&messages, "admin-error-internal", status),
             }
@@ -107,7 +107,7 @@ pub async fn forgot_submit(
     }
 }
 
-/// 再設定フォーム（`GET /{tenant_id}/password-reset?token=...`）。
+/// New password form (`GET /{tenant_id}/password-reset?token=...`).
 pub async fn reset_page(
     Extension(tenant): Extension<WebTenant>,
     headers: HeaderMap,
@@ -137,7 +137,7 @@ pub async fn reset_page(
     )
 }
 
-/// 再設定の実行（`POST /{tenant_id}/password-reset`）。
+/// Performs the reset (`POST /{tenant_id}/password-reset`).
 pub async fn reset_submit(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -208,7 +208,7 @@ pub async fn reset_submit(
         Err(e) => {
             tracing::error!(error = %e, "password reset complete call to api failed");
             match internal_call_status(&e) {
-                // 同上（MT28）。
+                // Same as above (MT28).
                 StatusCode::NOT_FOUND => StatusCode::NOT_FOUND.into_response(),
                 status => reset_view(
                     &messages,

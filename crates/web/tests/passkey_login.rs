@@ -1,8 +1,8 @@
-//! パスキーでのログイン完了（3 経路）の応答をルータ経由で確かめる。
+//! Checks responses of passkey login completion (3 routes) through the router.
 //!
-//! 見たいのは「api が返した結果が、**画面が文言に写せる形で**ブラウザまで届くか」である。
-//! スクリプトは `#passkey-error` の data 属性からしか文言を引かないので、対応する属性が
-//! 画面に無いコードは既定文言へ落ちる —— 応答だけを見ても、画面だけを見ても気づけない。
+//! What we want to see is "whether the result the api returned reaches the browser **in a form the screen can map to text**".
+//! The script reads messages only from `#passkey-error` data attributes, so a code without a matching attribute
+//! on screen falls back to the default text -- neither the response alone nor the screen alone reveals it.
 
 mod support;
 
@@ -47,7 +47,7 @@ async fn complete(env: &WebEnv) -> Value {
     serde_json::from_str(&body_text(response).await).expect("json")
 }
 
-/// 認可フローのパスキーログインもレート制限に当たる（T39。直接ログインと同じ枠を消費する）。
+/// Passkey login in the authorization flow is also rate-limited (T39; consumes the same budget as direct login).
 #[tokio::test]
 async fn a_rate_limited_passkey_login_reports_a_code_the_screen_can_translate() {
     let env = setup().await;

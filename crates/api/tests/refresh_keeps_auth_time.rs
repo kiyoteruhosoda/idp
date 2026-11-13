@@ -1,10 +1,10 @@
-//! リフレッシュで出す ID Token の `auth_time` は、元のログインの時刻のまま（task #584）。
+//! The `auth_time` of ID Tokens issued on refresh stays the original login time (task #584).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test refresh_keeps_auth_time
 //!
-//! 以前は refresh のたびに「今」になっていたので、RP が `auth_time` で課す「N 分以内に再認証」を、
-//! 更新を繰り返すだけですり抜けられた。
+//! It used to become "now" on every refresh, so an RP's "re-authenticate within N minutes" based on `auth_time`
+//! could be bypassed just by refreshing repeatedly.
 
 mod support;
 
@@ -36,7 +36,7 @@ async fn refresh(env: &TestEnv, client_id: &str, secret: &str, token: &str) -> V
     body_json(res).await
 }
 
-/// ID Token の本文（署名は見ない。値の中身だけを読む）。
+/// The ID Token body (the signature is not checked; only the values are read).
 fn id_token_claims(tokens: &Value) -> Value {
     let id_token = tokens["id_token"].as_str().expect("id_token");
     let payload = id_token.split('.').nth(1).expect("payload");
@@ -55,7 +55,7 @@ async fn refreshing_does_not_move_the_time_of_the_last_sign_in() {
         support::insert_confidential_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
     let user_id = create_plain_user(&env.pool, &env.root_tenant_id).await;
 
-    // 3 時間前にログインして出たリフレッシュトークン。
+    // A refresh token issued from a login 3 hours ago.
     let plain = format!("rt-{}", uuid::Uuid::now_v7().simple());
     sqlx::query(
         "INSERT INTO refresh_tokens \
@@ -70,7 +70,7 @@ async fn refreshing_does_not_move_the_time_of_the_last_sign_in() {
     .execute(&env.pool)
     .await
     .expect("insert refresh token");
-    // 列は UTC の DATETIME。秒へは Rust 側で直す（DB の UNIX_TIMESTAMP はセッションのタイムゾーンに依る）。
+    // The column is a UTC DATETIME. Convert to seconds on the Rust side (the DB's UNIX_TIMESTAMP depends on the session time zone).
     let signed_in: chrono::NaiveDateTime =
         sqlx::query_scalar("SELECT auth_time FROM refresh_tokens WHERE token_hash = ?")
             .bind(assay_api::infrastructure::crypto::sha256_hex(&plain))
@@ -87,7 +87,7 @@ async fn refreshing_does_not_move_the_time_of_the_last_sign_in() {
         "the token is issued now, the sign-in was 3 hours ago: {claims}"
     );
 
-    // 更新を重ねても動かない（rotation で引き継ぐ）。
+    // It does not move across repeated refreshes (carried over by rotation).
     let rotated = first["refresh_token"].as_str().expect("rotated");
     let second = refresh(&env, &client_id, &secret, rotated).await;
     assert_eq!(

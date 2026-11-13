@@ -1,7 +1,7 @@
-//! テナント経路（`/{tenant_id}/...`）から tenant_id を取り出す（ADR-0009 §6・§8、MT13）。
+//! Extracts tenant_id from tenant routes (`/{tenant_id}/...`) (ADR-0009 §6, §8, MT13).
 //!
-//! web は DB を持たないため実在確認は行わない（UUID 形式のみ検証。存在確認・`ACTIVE` 判定は
-//! api 呼び出し側の 404/403 に委ねる。api 側の `TenantResolver` が最終防御線）。
+//! web has no DB, so existence is not checked (only the UUID format is validated; existence and `ACTIVE` checks are
+//! left to 404/403 from the api calls; the api's `TenantResolver` is the last line of defense).
 
 use axum::extract::{Path, Request};
 use axum::http::StatusCode;
@@ -10,40 +10,40 @@ use axum::response::{IntoResponse, Response};
 use std::collections::HashMap;
 
 tokio::task_local! {
-    /// 処理中のリクエストの、テナント配下のパス（`/admin/accounts` など）。
+    /// The tenant-relative path of the request being processed (e.g. `/admin/accounts`).
     static TENANT_RELATIVE_PATH: String;
 }
 
-/// 処理中のリクエストの、テナント配下のパス（`/{tenant_id}` を除いたもの）。
+/// The tenant-relative path of the request being processed (without `/{tenant_id}`).
 ///
-/// 管理コンソールの共通レイアウトが、開いている画面をメニューとタブ名に示すために読む
-/// （`templates::current_console_nav_item`）。画面ごとのテンプレート構造体や
-/// `resolve_admin` の引数で持ち回らないのは、値が**リクエストの属性**であって画面ごとの
-/// 入力ではないから —— 100 か所を超える呼び出し側のどこか 1 つが渡し忘れると、その画面
-/// だけ印が出ない。[`capture_tenant`] を通らない描画（テンプレートの単体テストなど）では `None`。
+/// Read by the admin console's shared layout to mark the open screen in the menu and tab title
+/// (`templates::current_console_nav_item`). It is not carried via each screen's template struct or
+/// `resolve_admin` arguments because the value is a **request attribute**, not per-screen
+/// input -- if any one of 100+ call sites forgot to pass it, that screen alone would
+/// lack the marker. `None` for renders that do not go through [`capture_tenant`] (e.g. template unit tests).
 pub fn current_relative_path() -> Option<String> {
     TENANT_RELATIVE_PATH.try_with(|path| path.clone()).ok()
 }
 
-/// 指定のパスを開いているものとして描画する（テンプレートのテスト用）。
+/// Renders as if the given path were open (for template tests).
 #[cfg(test)]
 pub(crate) fn with_relative_path<R>(path: &str, render: impl FnOnce() -> R) -> R {
     TENANT_RELATIVE_PATH.sync_scope(path.to_string(), render)
 }
 
-/// 経路から解決した tenant_id（`Extension` として注入される）。
+/// tenant_id resolved from the route (injected as an `Extension`).
 #[derive(Debug, Clone)]
 pub struct WebTenant(pub String);
 
 impl WebTenant {
-    /// パス組み立て用の `/{tenant_id}` プレフィクス。
+    /// `/{tenant_id}` prefix for building paths.
     pub fn prefix(&self) -> String {
         format!("/{}", self.0)
     }
 }
 
-/// テナント経路 middleware 本体。ネストしたルートは複数のパスパラメータを持ちうるため、
-/// `tenant_id` を名前で取り出す（api の `resolve_tenant` と同じ方式）。
+/// The tenant route middleware itself. Nested routes may have several path parameters, so
+/// `tenant_id` is extracted by name (same approach as the api's `resolve_tenant`).
 pub async fn capture_tenant(
     Path(params): Path<HashMap<String, String>>,
     mut request: Request,
@@ -63,10 +63,10 @@ pub async fn capture_tenant(
     TENANT_RELATIVE_PATH.scope(path, next.run(request)).await
 }
 
-/// リクエストのパスから `/{tenant_id}` を除く。
+/// Removes `/{tenant_id}` from the request path.
 ///
-/// `nest("/{tenant_id}", …)` の内側では axum が既に外しているのでそのまま返る。外側へ付け替えても
-/// 同じ値になるよう、付いていれば外す。
+/// Inside `nest("/{tenant_id}", …)` axum has already stripped it, so it is returned as is. Strip it if present
+/// so the value is the same even if moved outside.
 fn relative_path(path: &str, tenant_id: &str) -> String {
     let prefix = format!("/{tenant_id}");
     match path.strip_prefix(prefix.as_str()) {
@@ -88,7 +88,7 @@ mod tests {
             "/admin/accounts"
         );
         assert!(relative_path(&format!("/{tenant}"), tenant).is_empty());
-        // 前方一致するだけの別のパスは切らない。
+        // Do not cut other paths that merely share the prefix.
         assert_eq!(
             relative_path(&format!("/{tenant}0/admin"), tenant),
             format!("/{tenant}0/admin")

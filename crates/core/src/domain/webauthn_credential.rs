@@ -1,10 +1,10 @@
-//! WebAuthn（FIDO2 Passkey）クレデンシャルエンティティ。
+//! WebAuthn (FIDO2 passkey) credential entity.
 //!
-//! ユーザーが登録した Passkey デバイス 1 件を 1 レコードで管理する。
-//! `passkey_json` は `webauthn-rs` の `Passkey` 構造体を JSON シリアライズした全体（公開鍵・
-//! sign_count・transports など）を保持する。
-//! `credential_id` は認証レスポンス到着時にどの `passkey_json` を使うか素早く特定するための
-//! インデックス用フィールド（base64url 文字列）。
+//! One record holds one passkey device registered by a user.
+//! `passkey_json` holds the whole JSON-serialized `Passkey` struct of `webauthn-rs` (public key,
+//! sign_count, transports, etc.).
+//! `credential_id` is an index field (base64url string) to quickly find which `passkey_json`
+//! to use when an authentication response arrives.
 
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -13,13 +13,13 @@ use uuid::Uuid;
 pub struct WebAuthnCredential {
     pub id: Uuid,
     pub user_id: Uuid,
-    /// WebAuthn credential ID（base64url）。`passkey_challenges` 解決時の逆引き用。
+    /// WebAuthn credential ID (base64url). Used for reverse lookup when resolving `passkey_challenges`.
     pub credential_id: String,
-    /// `webauthn_rs::prelude::Passkey` を JSON シリアライズした文字列。
+    /// `webauthn_rs::prelude::Passkey` serialized as a JSON string.
     pub passkey_json: String,
-    /// ユーザーが付けた任意のラベル（例: "MacBook Touch ID"）。
+    /// Optional label set by the user (e.g. "MacBook Touch ID").
     pub name: String,
     pub created_at: DateTime<Utc>,
-    /// 直近の認証成功時刻（sign_count 更新時に併せて更新する）。
+    /// Time of the latest successful authentication (updated together with sign_count).
     pub last_used_at: Option<DateTime<Utc>>,
 }

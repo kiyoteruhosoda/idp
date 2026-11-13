@@ -1,14 +1,14 @@
-//! アカウント設定リンクの内部 API（`/internal/account-setup/*`。ADR-0062）。
+//! Internal API for account setup links (`/internal/account-setup/*`, ADR-0062).
 //!
-//! 管理者が発行したワンタイムリンクを開いた画面（web）が呼ぶ。⚠ **`describe` は読むだけで
-//! 消費しない** —— リンクはチャットで渡ることが多く、相手より先にプレビューの bot が取りに来る。
-//! 消費するのは資格情報を実際に決める操作（パスキーの完了・パスワードの設定）だけである。
+//! Called by the screen (web) that opened the one-time link issued by an admin. ⚠ **`describe` only reads and
+//! does not consume** -- links are often passed over chat, and a preview bot fetches them before the recipient.
+//! Only operations that actually set a credential (completing a passkey, setting a password) consume it.
 //!
-//! パスワードを設定する経路は専用に作らない。⚠ **同じ表のトークンなので、忘失時の再設定
-//! （`/internal/password-reset/complete`）がそのまま通る** —— 同じことをする口を 2 つ置くと、
-//! ポリシー検証・セッション失効・監査のどれかが片方だけ古くなる。
+//! There is no dedicated password-setting path. ⚠ **It is the same token table, so the forgotten-password
+//! reset (`/internal/password-reset/complete`) works as is** -- with two endpoints doing the same thing,
+//! one of policy validation, session revocation or auditing would go stale on one side.
 //!
-//! すべて `/internal/*` ルータに属し、サービス認証トークンで保護される。
+//! All belong to the `/internal/*` router and are protected by the service auth token.
 
 use crate::application::account_setup::AccountSetupError;
 use crate::application::audit::RequestContext;
@@ -25,7 +25,7 @@ use axum::response::Response;
 use axum::Json;
 use uuid::Uuid;
 
-/// リンクの中身を読む（`POST /internal/account-setup/describe`）。消費しない。
+/// Reads the link's contents (`POST /internal/account-setup/describe`). Does not consume it.
 pub async fn describe(
     State(state): State<AppState>,
     Json(req): Json<InternalAccountSetupDescribeRequest>,
@@ -50,7 +50,7 @@ pub async fn describe(
     ))
 }
 
-/// パスキー登録の開始（`POST /internal/account-setup/passkey/begin`）。
+/// Starts passkey registration (`POST /internal/account-setup/passkey/begin`).
 pub async fn passkey_begin(
     State(state): State<AppState>,
     Json(req): Json<InternalAccountSetupPasskeyBeginRequest>,
@@ -77,7 +77,7 @@ pub async fn passkey_begin(
     ))
 }
 
-/// パスキー登録の完了（`POST /internal/account-setup/passkey/complete`）。成功でリンクを消費する。
+/// Completes passkey registration (`POST /internal/account-setup/passkey/complete`). Consumes the link on success.
 pub async fn passkey_complete(
     State(state): State<AppState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -86,7 +86,7 @@ pub async fn passkey_complete(
     let tenant =
         require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let Ok(challenge_id) = Uuid::parse_str(&req.challenge_id) else {
-        // 形の違う値は、期限切れのチャレンジと同じ扱いにする（当たりを与えない）。
+        // A malformed value is treated like an expired challenge (gives no hint).
         return Ok(Json(
             InternalAccountSetupPasskeyCompleteResponse::InvalidOrExpired,
         ));

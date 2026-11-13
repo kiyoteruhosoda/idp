@@ -1,5 +1,5 @@
-# MariaDB をホストから保守接続したい場合だけ重ねる override。
-# 例: docker compose -f docker-compose.deploy.yml -f docker-compose.db-debug.yml --profile db-debug up -d mariadb
+# Override layered only when you want a maintenance connection to MariaDB from the host.
+# Example: docker compose -f docker-compose.deploy.yml -f docker-compose.db-debug.yml --profile db-debug up -d mariadb
 services:
   mariadb:
     profiles: ["db-debug"]

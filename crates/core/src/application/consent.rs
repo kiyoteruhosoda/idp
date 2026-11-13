@@ -1,11 +1,11 @@
-//! 同意（Consent）ユースケース（F3: 設計仕様 §9.2）。
+//! Consent use case (F3: design spec §9.2).
 //!
-//! ユーザーがクライアントに対して scope の同意を付与または拒否する。
-//! 同意付与後は authorization code を発行して RP へリダイレクトする。
-//! 同意拒否時は `access_denied` エラーを RP へリダイレクトする。
+//! The user grants or denies consent for scopes to a client.
+//! After consent is granted, an authorization code is issued and the user is redirected to the RP.
+//! When consent is denied, an `access_denied` error is redirected to the RP.
 //!
-//! 認証を終えた `AuthSession` を同意セッションとして再利用する。
-//! code 発行後は AuthSession を削除する（ログインフローと同じ）。
+//! The authenticated `AuthSession` is reused as the consent session.
+//! The AuthSession is deleted after the code is issued (same as the login flow).
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::authorize::AuthorizationDispatch;
@@ -24,44 +24,44 @@ use crate::domain::tenant_context::TenantContext;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// 同意画面への遷移前に必要な表示情報。
+/// Display data needed before moving to the consent screen.
 #[derive(Debug)]
 pub struct ConsentInfo {
     pub auth_session_id: String,
     pub client_name: String,
     pub client_id: String,
-    /// 同意を求めるスコープ（`openid` は除く）。
+    /// Scopes to ask consent for (excluding `openid`).
     pub requested_scopes: Vec<String>,
-    /// この認可要求の `redirect_uri`（登録済みの値と完全一致したもの）。
+    /// This authorization request's `redirect_uri` (the one that exactly matched a registered value).
     ///
-    /// web が同意画面の CSP `form-action` に許可するオリジンの出所。同意フォームの送信は
-    /// RP へのリダイレクトで終わり、Chrome は `form-action` をフォーム送信後のリダイレクト先にも
-    /// 適用するため、ここを渡さないとブラウザが RP へ戻れない。
+    /// Source of the origin that web allows in the consent screen's CSP `form-action`. Submitting the consent form
+    /// ends in a redirect to the RP, and Chrome applies `form-action` to redirect targets after a form submit
+    /// too, so without this the browser cannot return to the RP.
     pub redirect_uri: String,
 }
 
 pub enum ConsentOutcome {
-    /// 同意付与・code 発行成功。`redirect_uri?code=...&state=...` へ 302。
+    /// Consent granted and code issued. 302 to `redirect_uri?code=...&state=...`.
     Approved {
         location: String,
-        /// `form_post` のとき POST する hidden フィールド（G12）。`None` は `query`。
+        /// Hidden fields to POST for `form_post` (G12). `None` means `query`.
         form_post: Option<Vec<(String, String)>>,
     },
-    /// 同意拒否。`query` なら `location` へ 302、`form_post` なら `location` へ hidden フィールドを
-    /// POST する（エラーも成功と同じ `response_mode` で返す。G12）。
+    /// Consent denied. For `query`, 302 to `location`; for `form_post`, POST hidden fields to `location`
+    /// (errors are returned with the same `response_mode` as success. G12).
     Denied {
         location: String,
         form_post: Option<Vec<(String, String)>>,
     },
-    /// 同意は付与できたが、このアプリの利用が許可されていない（ADR-0054）。⚠ **RP へ戻さない。**
-    /// SSO Cookie はこの経路へ来る前に発行済みなので、ここでは画面を出すだけでよい。
+    /// Consent was granted, but use of this application is not permitted (ADR-0054). ⚠ **Do not return to the RP.**
+    /// The SSO cookie was issued before reaching this path, so only showing a screen is needed here.
     ApplicationNotPermitted {
-        /// 画面に出すアプリ名。
+        /// Application name shown on screen.
         application_name: String,
     },
-    /// AuthSession が無い・期限切れ・認証済みユーザーが未設定（`/authorize` からやり直し）。
+    /// No AuthSession, expired, or no authenticated user set (start over from `/authorize`).
     SessionExpired,
-    /// api 内部エラー。
+    /// api internal error.
     Internal(String),
 }
 
@@ -93,9 +93,9 @@ impl ConsentService {
         }
     }
 
-    /// 同意画面への表示情報を返す。
+    /// Returns display data for the consent screen.
     ///
-    /// `auth_session_id` の AuthSession が存在し、認証を終えていることを確認する。
+    /// Checks that the AuthSession for `auth_session_id` exists and has finished authentication.
     pub async fn info(
         &self,
         tenant: TenantContext,
@@ -104,14 +104,14 @@ impl ConsentService {
         let Some(session) = self.live_session(tenant, auth_session_id).await? else {
             return Ok(None);
         };
-        // 承諾（`approve`）と同じ入口の条件にする: 認証を終えていない段（パスワードまで通って第二段を
-        // 待っている等）には、押しても通らない画面を見せない。
+        // Same entry conditions as approval (`approve`): at a stage where authentication is not finished
+        // (e.g. password passed and waiting for the second step), don't show a screen whose button cannot succeed.
         if session.completed_authentication().is_none() {
             return Ok(None);
         }
         let request = session.request();
 
-        // クライアント情報を取得する（表示名が必要）。
+        // Fetch client info (the display name is needed).
         let client_name = match self
             .clients
             .find_by_client_id(tenant.tenant_id(), request.client_id())
@@ -130,7 +130,7 @@ impl ConsentService {
         }))
     }
 
-    /// 同意を付与して authorization code を発行する。
+    /// Grants consent and issues an authorization code.
     pub async fn approve(
         &self,
         tenant: TenantContext,
@@ -142,14 +142,14 @@ impl ConsentService {
             Ok(None) => return ConsentOutcome::SessionExpired,
             Err(e) => return ConsentOutcome::Internal(e.to_string()),
         };
-        // 同意が code を発行する根拠は「このフローで完了した認証」だけ。
+        // The only basis on which consent issues a code is "the authentication completed in this flow".
         let Some(authentication) = session.completed_authentication().cloned() else {
             return ConsentOutcome::SessionExpired;
         };
         let request = session.request();
         let now = self.clock.now();
 
-        // 同意レコードを UPSERT する。
+        // UPSERT the consent record.
         let consent = ClientConsent {
             user_id: authentication.user_id(),
             tenant_id: tenant.tenant_id(),
@@ -174,8 +174,8 @@ impl ConsentService {
             )
             .await;
 
-        // authorization code を発行する。ログイン時に記録した `sid`（G5）と認証方式（ADR-0043）は、
-        // 同意画面を挟むとここが唯一の入手経路になる（どちらも `authentication` に入っている）。
+        // Issue the authorization code. With a consent screen in between, this is the only way to obtain
+        // the `sid` recorded at login (G5) and the authentication methods (ADR-0043) (both are in `authentication`).
         let code = match self
             .code_issuance
             .issue(
@@ -189,14 +189,14 @@ impl ConsentService {
             .await
         {
             Ok(CodeIssuance::Issued(code)) => code,
-            // 同意は通っているが、このアプリの利用が許可されていない（ADR-0054）。RP へは戻さない。
+            // Consent passed, but use of this application is not permitted (ADR-0054). Do not return to the RP.
             Ok(CodeIssuance::ApplicationDenied { application_name }) => {
                 return ConsentOutcome::ApplicationNotPermitted { application_name }
             }
             Err(e) => return ConsentOutcome::Internal(e.to_string()),
         };
 
-        // AuthSession を削除する（code 発行完了）。
+        // Delete the AuthSession (code issuance done).
         if let Err(e) = self.auth_sessions.delete(session.id_hash()).await {
             tracing::warn!(error = %e, "failed to delete auth session after consent");
         }
@@ -208,7 +208,7 @@ impl ConsentService {
         }
     }
 
-    /// 同意を拒否して RP にエラーリダイレクトする。
+    /// Denies consent and error-redirects to the RP.
     pub async fn deny(
         &self,
         tenant: TenantContext,
@@ -233,7 +233,7 @@ impl ConsentService {
             )
             .await;
 
-        // AuthSession を削除する。
+        // Delete the AuthSession.
         if let Err(e) = self.auth_sessions.delete(session.id_hash()).await {
             tracing::warn!(error = %e, "failed to delete auth session after consent denial");
         }
@@ -249,7 +249,7 @@ impl ConsentService {
         }
     }
 
-    /// 期限内の AuthSession を引く（期限切れはその場で消して `None`）。
+    /// Looks up an unexpired AuthSession (an expired one is deleted on the spot and yields `None`).
     async fn live_session(
         &self,
         tenant: TenantContext,
@@ -273,10 +273,10 @@ impl ConsentService {
     }
 }
 
-/// 利用者がこの認可要求の scope すべてに同意済みか。
+/// Whether the user has consented to every scope of this authorization request.
 ///
-/// `openid` は暗黙同意なので、それしか要求していなければ同意の記録を見ずに `true`
-/// （記録を引かないので、その場合は保存先の失敗も起きない）。
+/// `openid` is implicitly consented, so if only that is requested, `true` without looking at consent records
+/// (no lookup, so no storage failure can occur in that case).
 pub async fn consent_is_granted(
     consents: &dyn ClientConsentRepository,
     tenant_id: TenantId,

@@ -2,7 +2,7 @@
 name = "assay-core"
 version = "0.1.0"
 edition = "2021"
-description = "OIDC IdP core: domain / application / infrastructure（DB 直結）と設定・ログ基盤"
+description = "OIDC IdP core: domain / application / infrastructure (direct DB access) plus settings and logging foundation"
 license = "MIT"
 
 [lib]
@@ -50,5 +50,5 @@ metrics = { workspace = true }
 x509-cert = { workspace = true }
 
 [dev-dependencies]
-# 外部 IdP への HTTP（discovery の取得）を模す（task #77）。
+# Mocks HTTP to external IdPs (fetching discovery) (task #77).
 wiremock = { workspace = true }

@@ -1,4 +1,4 @@
-//! Clients エンティティ（設計仕様 §3.2）。
+//! Clients entity (design spec §3.2).
 #![allow(dead_code)]
 
 use crate::domain::client_jwks::ClientJwks;
@@ -10,10 +10,10 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct Client {
     pub id: Uuid,
-    /// クライアントが属するテナント（ADR-0009 §2。`client_id` はテナント内一意）。
+    /// The tenant the client belongs to (ADR-0009 §2. `client_id` is unique within a tenant).
     pub tenant_id: TenantId,
     pub client_id: String,
-    /// confidential クライアントのみ。ハッシュ化して保存する。
+    /// Confidential clients only. Stored hashed.
     pub client_secret_hash: Option<String>,
     pub client_type: ClientType,
     pub client_status: ClientStatus,
@@ -23,14 +23,14 @@ pub struct Client {
     pub response_types: Vec<String>,
     pub scopes: Vec<String>,
     pub token_endpoint_auth_method: TokenEndpointAuthMethod,
-    /// `private_key_jwt` の client assertion を検証する公開鍵（ADR-0030）。それ以外の方式では
-    /// `None`。検証はこの集合だけを見る（クライアントの `jwks_uri` は取りに行かない）。
+    /// Public keys for verifying `private_key_jwt` client assertions (ADR-0030). `None` for other
+    /// methods. Verification looks only at this set (the client's `jwks_uri` is not fetched).
     pub jwks: Option<ClientJwks>,
-    /// RP-initiated logout 後のリダイレクト先として登録済みの URI 群（F4）。
+    /// URIs registered as redirect targets after RP-initiated logout (F4).
     pub post_logout_redirect_uris: Vec<String>,
-    /// front-channel logout 用 iframe URI（F4）。
+    /// iframe URI for front-channel logout (F4).
     pub frontchannel_logout_uri: Option<String>,
-    /// back-channel logout 用 HTTP POST 先 URI（F4）。
+    /// HTTP POST target URI for back-channel logout (F4).
     pub backchannel_logout_uri: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -41,58 +41,58 @@ impl Client {
         self.client_status == ClientStatus::Active
     }
 
-    /// 論理削除済みか（ADR-0035）。一覧・取得から外し、更新も受け付けないための判定。
+    /// Whether logically deleted (ADR-0035). Used to exclude from list/get and to refuse updates.
     ///
-    /// 認可・トークン経路は `is_active()` で既に拒んでいるので、この判定を足す必要は無い。
+    /// The authorization and token paths already reject via `is_active()`, so this check need not be added there.
     pub fn is_deleted(&self) -> bool {
         self.client_status == ClientStatus::Deleted
     }
 
-    /// `redirect_uri` が登録値と完全一致するか（設計仕様 §2.3・§4.2）。
+    /// Whether `redirect_uri` exactly matches a registered value (design spec §2.3, §4.2).
     pub fn allows_redirect_uri(&self, redirect_uri: &str) -> bool {
         self.redirect_uris.iter().any(|u| u == redirect_uri)
     }
 
-    /// `post_logout_redirect_uri` が登録値と完全一致するか（F4 RP-initiated logout）。
+    /// Whether `post_logout_redirect_uri` exactly matches a registered value (F4 RP-initiated logout).
     pub fn allows_post_logout_redirect_uri(&self, uri: &str) -> bool {
         self.post_logout_redirect_uris.iter().any(|u| u == uri)
     }
 
-    /// 要求 scope がすべて登録 scope の部分集合か（設計仕様 §4.2）。
+    /// Whether the requested scopes are all a subset of the registered scopes (design spec §4.2).
     pub fn allows_scopes(&self, requested: &[String]) -> bool {
         requested.iter().all(|s| self.scopes.contains(s))
     }
 
-    /// 指定の grant_type が登録済みか（G4）。
+    /// Whether the given grant_type is registered (G4).
     ///
-    /// `client_credentials` は利用者不在でアクセストークンを取れる強い許可のため、テナント管理者が
-    /// クライアント単位で明示的に有効化したものだけに限る（confidential であることは別途要求する）。
+    /// `client_credentials` is a strong permission to obtain access tokens with no user present, so it is limited to clients
+    /// a tenant admin has explicitly enabled per client (being confidential is required separately).
     pub fn allows_grant_type(&self, grant_type: GrantType) -> bool {
         self.grant_types.iter().any(|g| g == grant_type.as_str())
     }
 
-    /// `private_key_jwt`（署名済み assertion）で認証するクライアントか（ADR-0030）。
+    /// Whether the client authenticates with `private_key_jwt` (a signed assertion) (ADR-0030).
     ///
-    /// public client では常に false —— 秘密鍵を秘匿できない以上、鍵ペアによる認証も成立しない。
+    /// Always false for public clients: since they cannot keep a private key secret, key-pair authentication cannot hold either.
     pub fn uses_private_key_jwt(&self) -> bool {
         self.client_type == ClientType::Confidential
             && self.token_endpoint_auth_method == TokenEndpointAuthMethod::PrivateKeyJwt
     }
 
-    /// サーバ間（M2M）でのトークン取得を許可されているか（G4）。
-    /// public client は資格情報を秘匿できないため、登録上許可されていても常に不可とする。
+    /// Whether server-to-server (M2M) token acquisition is allowed (G4).
+    /// Public clients cannot keep credentials secret, so it is always disallowed even if permitted in the registration.
     pub fn allows_client_credentials(&self) -> bool {
         self.client_type == ClientType::Confidential
             && self.allows_grant_type(GrantType::ClientCredentials)
     }
 
-    /// サービスアカウント（ADR-0038）か ——`client_credentials` だけで動き、利用者のログインに
-    /// 使われないクライアント。
+    /// Whether this is a service account (ADR-0038): a client that runs only on `client_credentials` and is not
+    /// used for user sign-in.
     ///
-    /// アプリの名乗りを種類ごとに分ける根拠（ADR-0059）。ログイン用（`authorization_code`）と
-    /// サービスアカウントは 1 つのクライアントに同居しない（ADR-0032 Revised）が、古い登録が
-    /// 両方を持っていてもサービスアカウントとは扱わない ——利用者が入ってくる相手を「機械の名乗り」
-    /// として結び付けると、ログインの判定からアプリが外れる。
+    /// The basis for separating app identities by kind (ADR-0059). Sign-in (`authorization_code`) and
+    /// service accounts do not coexist in one client (ADR-0032 Revised), but even if an old registration
+    /// has both, it is not treated as a service account: binding a party users come in through as a "machine identity"
+    /// would drop the app from the sign-in checks.
     pub fn is_service_account(&self) -> bool {
         self.allows_client_credentials() && !self.allows_grant_type(GrantType::AuthorizationCode)
     }
@@ -127,7 +127,7 @@ mod tests {
         }
     }
 
-    /// public client は登録上許可されていても M2M を使えない（秘密を秘匿できないため）。
+    /// Public clients cannot use M2M even if permitted in the registration (they cannot keep a secret).
     #[test]
     fn client_credentials_requires_a_confidential_client_and_an_explicit_grant() {
         assert!(client(

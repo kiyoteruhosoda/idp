@@ -1,9 +1,9 @@
-//! OIDC 認可コードフローの E2E 統合テスト（MVP 完了条件 1〜13、設計仕様 §10）。
+//! E2E integration tests for the OIDC authorization code flow (MVP completion conditions 1–13, design spec §10).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test oidc_flow
 //!
-//! テストデータ（client / user）は実行ごとにランダムな識別子で作成し、既存データと干渉しない。
+//! Test data (client / user) is created with random identifiers per run and does not interfere with existing data.
 
 mod support;
 
@@ -19,12 +19,12 @@ use support::{
     CODE_VERIFIER, REDIRECT_URI, REDIRECT_URI_ENC, SERVICE_TOKEN, SERVICE_TOKEN_HEADER,
 };
 
-/// 一意な public client（openid/profile/email）を登録して client_id を返す。
+/// Registers a unique public client (openid/profile/email) and returns its client_id.
 async fn insert_public_client(pool: &MySqlPool, tenant_id: &str) -> String {
     support::insert_public_client(pool, tenant_id, &["openid", "profile", "email"]).await
 }
 
-/// 一意な confidential client（openid のみ）を登録して `(client_id, client_secret)` を返す。
+/// Registers a unique confidential client (openid only) and returns `(client_id, client_secret)`.
 async fn insert_confidential_client(pool: &MySqlPool, tenant_id: &str) -> (String, String) {
     support::insert_confidential_client(pool, tenant_id, &["openid"]).await
 }
@@ -57,8 +57,8 @@ fn authorize_uri(tenant: &str, client_id: &str, state: &str, nonce: &str) -> Str
     authorize_uri_with_scope(tenant, client_id, "openid profile email", state, nonce)
 }
 
-/// ⚠ **`nonce` を送らない**認可要求（ADR-0049）。Forgejo のような、仕様どおり
-/// 省略してくる相手を模す。**`state` と PKCE は送る。**
+/// ⚠ An authorization request **without `nonce`** (ADR-0049). Mimics counterparts like Forgejo that
+/// omit it as the spec allows. **`state` and PKCE are sent.**
 fn authorize_uri_without_nonce(tenant: &str, client_id: &str, state: &str) -> String {
     format!(
         "/{tenant}/authorize?response_type=code&client_id={client_id}&redirect_uri={REDIRECT_URI_ENC}&scope=openid&state={state}&code_challenge={CODE_CHALLENGE}&code_challenge_method=S256"
@@ -85,13 +85,13 @@ fn basic_auth(client_id: &str, secret: &str) -> String {
     )
 }
 
-/// `auth_session_id` 由来のログイン CSRF トークン（web が描画し api の LoginService が検証する契約）。
+/// Login CSRF token derived from `auth_session_id` (the contract: web renders it, api's LoginService verifies it).
 fn login_csrf(auth_session: &str, csrf_secret: &[u8; 32]) -> String {
     assay_api::application::login::csrf_token(auth_session, csrf_secret)
 }
 
-/// api の内部認証（`POST /internal/authenticate`）で資格情報検証を駆動する（ログイン画面は web crate）。
-/// `X-Forwarded-For` を渡すと監査・レート制限に反映される。結果は `result` タグ付き JSON。
+/// Drives credential verification via api's internal authentication (`POST /internal/authenticate`) (the login screen is in the web crate).
+/// Passing `X-Forwarded-For` is reflected in audit and rate limiting. The result is JSON with a `result` tag.
 async fn internal_authenticate(
     app: &axum::Router,
     tenant: &str,
@@ -148,11 +148,11 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     let client_id = insert_public_client(&pool, &root_tenant_id).await;
     let username = format!("e2e{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
     let password = "correct-horse-battery";
-    let sub = register_user(&app, &root_tenant_id, &username, password).await; // 条件 1
+    let sub = register_user(&app, &root_tenant_id, &username, password).await; // condition 1
     support::mark_email_verified(&pool, &root_tenant_id, &username).await;
 
-    // 条件 2, 3: /authorize 開始 → web の /login へハンドオフ（ADR-0018 決定 2: Cookie ではなく
-    // 単回ハンドルを URL に載せる。PUBLIC_WEB_BASE_URL 基点の絶対 URL。ADR-0012 §4）。
+    // Conditions 2, 3: start /authorize → hand off to web's /login (ADR-0018 decision 2: a one-time handle in the URL
+    // rather than a cookie; an absolute URL based on PUBLIC_WEB_BASE_URL; ADR-0012 §4).
     let response = send(
         &app,
         Request::builder()
@@ -177,7 +177,7 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     );
     let handle = handoff_handle(&response);
 
-    // web 相当: ハンドルを resume で交換して auth_session_id を得る（SSO なし → login_required）。
+    // As web would: exchange the handle via resume to get auth_session_id (no SSO → login_required).
     let body = resume_authorize(&app, &root_tenant_id, &handle, None).await;
     assert_eq!(body["result"], "login_required");
     let auth_session = body["auth_session_id"]
@@ -185,14 +185,14 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
         .expect("auth_session_id")
         .to_string();
 
-    // ハンドルは単回使用（ADR-0018 決定 3）: 再利用は拒否される。
+    // The handle is single-use (ADR-0018 decision 3): reuse is rejected.
     let body = resume_authorize(&app, &root_tenant_id, &handle, None).await;
     assert_eq!(body["result"], "expired_handle", "handle reuse is rejected");
 
-    // CSRF は auth_session 由来（web が描画・api の LoginService が検証）。
+    // CSRF derives from auth_session (web renders it, api's LoginService verifies it).
     let csrf = login_csrf(&auth_session, &env.csrf_secret);
 
-    // CSRF トークン不一致は拒否される（result=csrf_mismatch）。
+    // A CSRF token mismatch is rejected (result=csrf_mismatch).
     let (status, body) = internal_authenticate(
         &app,
         &root_tenant_id,
@@ -205,7 +205,7 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["result"], "csrf_mismatch", "csrf mismatch");
 
-    // 条件 4, 5, 7: ログイン成功。初回は profile/email が未同意のため同意ステップへ（F3）。
+    // Conditions 4, 5, 7: login succeeds. The first time, profile/email are not consented, so it goes to the consent step (F3).
     let (status, body) = internal_authenticate(
         &app,
         &root_tenant_id,
@@ -229,7 +229,7 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
         .expect("auth_session_id")
         .to_string();
 
-    // 同意を承諾すると code 付きで RP へリダイレクトされる。
+    // Accepting consent redirects to the RP with a code.
     let response = send(
         &app,
         Request::builder()
@@ -258,7 +258,7 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     );
     let code = query_param(&callback, "code").expect("authorization code");
 
-    // 条件 8, 10: /token で PKCE S256 検証、RS256 署名のトークン発行。
+    // Conditions 8, 10: PKCE S256 verification at /token, issuance of RS256-signed tokens.
     let response = send(
         &app,
         Request::builder()
@@ -281,7 +281,7 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     let id_token = tokens["id_token"].as_str().unwrap().to_string();
     let access_token = tokens["access_token"].as_str().unwrap().to_string();
 
-    // 条件 11: Discovery / JWKS。
+    // Condition 11: Discovery / JWKS.
     let response = send(
         &app,
         Request::builder()
@@ -294,10 +294,10 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let discovery = body_json(response).await;
-    // per-tenant issuer（ADR-0009 §6）: 過渡期は root テナントで `<基底>/<root_uuid>` を合成する。
+    // Per-tenant issuer (ADR-0009 §6): during the transition, `<base>/<root_uuid>` is built for the root tenant.
     let tenant_issuer = format!("{issuer}/{root_tenant_id}");
     assert_eq!(discovery["issuer"], tenant_issuer.as_str());
-    // 保証できる値だけを公開する（ADR-0043 決定 5）。RP はここを見て何を送れるかを知る。
+    // Only values that can be guaranteed are published (ADR-0043 decision 5). RPs look here to learn what they can send.
     assert_eq!(
         discovery["acr_values_supported"],
         json!(["urn:assay:ac:mfa", "urn:assay:ac:single"])
@@ -328,7 +328,7 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     assert_eq!(response.status(), StatusCode::OK);
     let jwks = body_json(response).await;
 
-    // 条件 10 検証: ID Token を JWKS の公開鍵で検証し、クレームを確認する。
+    // Condition 10 check: verify the ID Token with the JWKS public key and check the claims.
     let header = jsonwebtoken::decode_header(&id_token).expect("id token header");
     assert_eq!(header.alg, jsonwebtoken::Algorithm::RS256);
     assert_eq!(header.typ.as_deref(), Some("JWT"));
@@ -353,16 +353,16 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     assert_eq!(id_claims.claims["nonce"], "nonce-xyz");
     assert!(id_claims.claims["auth_time"].is_i64());
     assert_eq!(id_claims.claims["preferred_username"], username.as_str());
-    // 認証の強度と方式（ADR-0043）。パスワードだけなので単一要素を名乗る。
-    // ここが載らないと、RP は `acr_values` の要求が効いたかを確かめられない。
+    // Authentication strength and method (ADR-0043). Password only, so it claims single factor.
+    // Without this, RPs cannot check whether their `acr_values` request took effect.
     assert_eq!(id_claims.claims["acr"], "urn:assay:ac:single");
     assert_eq!(id_claims.claims["amr"], json!(["pwd"]));
 
-    // Access Token は typ=at+jwt。
+    // The Access Token has typ=at+jwt.
     let at_header = jsonwebtoken::decode_header(&access_token).expect("access token header");
     assert_eq!(at_header.typ.as_deref(), Some("at+jwt"));
 
-    // 条件 9: authorization code は一度しか使えない（再利用は invalid_grant）。
+    // Condition 9: an authorization code can be used only once (reuse is invalid_grant).
     let response = send(
         &app,
         Request::builder()
@@ -379,7 +379,7 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST, "code reuse");
     assert_eq!(body_json(response).await["error"], "invalid_grant");
 
-    // 条件 12: /userinfo は scope（openid profile email）に応じたクレームを返す。
+    // Condition 12: /userinfo returns claims according to scope (openid profile email).
     let response = send(
         &app,
         Request::builder()
@@ -397,7 +397,7 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     assert_eq!(claims["preferred_username"], username.as_str());
     assert_eq!(claims["name"], "E2E Tester");
 
-    // 不正なトークンは 401。
+    // An invalid token is 401.
     let response = send(
         &app,
         Request::builder()
@@ -409,8 +409,8 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
-    // 条件 6: 2 回目の /authorize は SSO により再ログインなしで code が返る（ADR-0018 決定 2:
-    // api は SSO Cookie を読まないため、web 相当の resume 呼び出しに sso_session_id を載せる）。
+    // Condition 6: the second /authorize returns a code via SSO without signing in again (ADR-0018 decision 2:
+    // api does not read the SSO cookie, so sso_session_id is put in the web-equivalent resume call).
     let response = send(
         &app,
         Request::builder()
@@ -442,7 +442,7 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     );
     let second_code = query_param(&callback, "code").expect("code via SSO");
 
-    // SSO 経由の code も /token で交換でき、auth_time は初回ログイン時刻を維持する。
+    // A code obtained via SSO can also be exchanged at /token, and auth_time keeps the first login time.
     let response = send(
         &app,
         Request::builder()
@@ -464,7 +464,7 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     let second_claims =
         jsonwebtoken::decode::<Value>(second_id_token, &decoding_key, &validation).unwrap();
     assert_eq!(second_claims.claims["nonce"], "nonce-2nd");
-    // SSO 復元でも、そのセッションを確立した方式をそのまま名乗る（作り直さない）。
+    // Even on SSO restore, it claims the method that established the session as is (not recomputed).
     assert_eq!(second_claims.claims["acr"], "urn:assay:ac:single");
     assert_eq!(second_claims.claims["amr"], json!(["pwd"]));
     assert_eq!(
@@ -472,8 +472,8 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
         "auth_time keeps the first login time on SSO resume"
     );
 
-    // `prompt=none`（サイレント認証・iframe 経路）: SSO ありなら対話なしで code、SSO なしなら
-    // `login_required` エラーが RP へ返る（ADR-0018 の回帰条件。判定は resume で行われる）。
+    // `prompt=none` (silent authentication, iframe path): with SSO, a code without interaction; without SSO,
+    // a `login_required` error goes back to the RP (an ADR-0018 regression condition; decided in resume).
     let prompt_none_uri = format!(
         "{}&prompt=none",
         authorize_uri(&root_tenant_id, &client_id, "state-silent", "nonce-silent")
@@ -509,9 +509,9 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
         Some("login_required")
     );
 
-    // `prompt=select_account`（G12）: 有効な SSO があっても**黙って現在のアカウントで続けない**。
-    // assay はブラウザごとに SSO セッションを 1 つしか持たないため複数アカウントの一覧は出せない
-    // が、ログイン画面へ戻せば同じアカウントで入り直すことも切り替えることもできる。
+    // `prompt=select_account` (G12): even with a valid SSO, **do not silently continue with the current account**.
+    // assay has only one SSO session per browser, so it cannot show a list of accounts,
+    // but returning to the login screen lets the user sign in again with the same account or switch.
     let select_account_uri = format!(
         "{}&prompt=select_account",
         authorize_uri(&root_tenant_id, &client_id, "state-select", "nonce-select")
@@ -535,7 +535,7 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
         Some("state-silent")
     );
 
-    // 条件 13: 監査ログ（login / code 発行・使用 / token 発行 / SSO）。
+    // Condition 13: audit log (login / code issuance and use / token issuance / SSO).
     assert!(audit_count(&pool, &client_id, "login.succeeded").await >= 1);
     assert!(audit_count(&pool, &client_id, "sso_session.created").await >= 1);
     assert!(audit_count(&pool, &client_id, "authorization_code.issued").await >= 2);
@@ -543,7 +543,7 @@ async fn full_authorization_code_flow_with_sso_and_audit() {
     assert!(audit_count(&pool, &client_id, "authorization_code.reuse_detected").await >= 1);
     assert!(audit_count(&pool, &client_id, "token.issued").await >= 2);
 
-    // correlation_id が付与されている。
+    // A correlation_id is attached.
     let correlation: Option<String> =
         sqlx::query("SELECT correlation_id FROM audit_log WHERE client_id = ? LIMIT 1")
             .bind(&client_id)
@@ -720,8 +720,8 @@ async fn refresh_token_rotation_introspection_and_revocation_e2e() {
     );
     assert_eq!(body_json(response).await["error"], "invalid_grant");
 
-    // SEC8: 再利用を検知したら、そこから rotation 済みの子トークンまで失効させる。
-    // 親だけを失効させると、攻撃者が先に交換して得た子トークンが生き残ってしまう。
+    // SEC8: on detecting reuse, revoke down to the child tokens rotated from it.
+    // Revoking only the parent would let child tokens an attacker obtained by exchanging first survive.
     let response = send(
         &app,
         Request::builder()
@@ -799,7 +799,7 @@ async fn invalid_authorize_and_client_auth_failures() {
 
     let client_id = insert_public_client(&pool, &root_tenant_id).await;
 
-    // 未登録 client はリダイレクトせず 400。
+    // An unregistered client gets 400 without a redirect.
     let response = send(
         &app,
         Request::builder()
@@ -811,7 +811,7 @@ async fn invalid_authorize_and_client_auth_failures() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(body_json(response).await["error"], "invalid_client");
 
-    // 未登録 redirect_uri もリダイレクトしない。
+    // An unregistered redirect_uri does not redirect either.
     let response = send(
         &app,
         Request::builder()
@@ -824,7 +824,7 @@ async fn invalid_authorize_and_client_auth_failures() {
     .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    // scope 超過は redirect_uri へ invalid_scope を返す（openid のみ登録の client を使用）。
+    // Exceeding scope returns invalid_scope to the redirect_uri (using a client registered with openid only).
     let (conf_client_id, secret) = insert_confidential_client(&pool, &root_tenant_id).await;
     let response = send(
         &app,
@@ -842,7 +842,7 @@ async fn invalid_authorize_and_client_auth_failures() {
     );
     assert_eq!(query_param(&callback, "state").as_deref(), Some("s"));
 
-    // 条件 13: confidential client の認証失敗（Basic の secret 不一致 → 401 + 監査ログ）。
+    // Condition 13: confidential client authentication failure (Basic secret mismatch → 401 + audit log).
     let bad_basic =
         base64::engine::general_purpose::STANDARD.encode(format!("{conf_client_id}:wrong-secret"));
     let response = send(
@@ -864,7 +864,7 @@ async fn invalid_authorize_and_client_auth_failures() {
     assert_eq!(body_json(response).await["error"], "invalid_client");
     assert!(audit_count(&pool, &conf_client_id, "client.authentication_failed").await >= 1);
 
-    // 正しい secret なら client 認証は通る（code が偽物なので invalid_grant まで進む）。
+    // With the correct secret client authentication passes (the code is fake, so it gets as far as invalid_grant).
     let good_basic =
         base64::engine::general_purpose::STANDARD.encode(format!("{conf_client_id}:{secret}"));
     let response = send(
@@ -903,7 +903,7 @@ async fn login_lockout_after_repeated_failures() {
     register_user(&app, &root_tenant_id, &username, password).await;
     support::mark_email_verified(&pool, &root_tenant_id, &username).await;
 
-    // AuthSession を作ってログイン画面へ（ハンドオフ → resume）。
+    // Create an AuthSession and go to the login screen (handoff → resume).
     let auth_session = support::begin_login(
         &app,
         &root_tenant_id,
@@ -912,7 +912,7 @@ async fn login_lockout_after_repeated_failures() {
     .await;
     let csrf = login_csrf(&auth_session, &env.csrf_secret);
 
-    // 9 回失敗 → invalid_credentials、10 回目でロック（locked）。
+    // 9 failures → invalid_credentials, locked on the 10th (locked).
     for attempt in 1..=10 {
         let (status, body) = internal_authenticate(
             &app,
@@ -932,7 +932,7 @@ async fn login_lockout_after_repeated_failures() {
         assert_eq!(body["result"], expected, "attempt {attempt}");
     }
 
-    // ロック中は正しいパスワードでも拒否される。
+    // While locked, even the correct password is rejected.
     let (_, body) = internal_authenticate(
         &app,
         &root_tenant_id,
@@ -944,17 +944,17 @@ async fn login_lockout_after_repeated_failures() {
     .await;
     assert_eq!(body["result"], "locked", "locked account");
 
-    // 監査ログ: login.failed が 10 件以上、login.locked が 2 件以上（ロック時 + ロック中の試行）。
+    // Audit log: 10+ login.failed and 2+ login.locked (at locking + attempts while locked).
     assert!(audit_count(&pool, &client_id, "login.failed").await >= 10);
     assert!(audit_count(&pool, &client_id, "login.locked").await >= 2);
 }
 
-/// ⚠ **`nonce` が無くても認可は始まる**（ADR-0049。OIDC Core 3.1.2.1 で code flow の
-/// `nonce` は任意）。
+/// ⚠ **Authorization starts even without `nonce`** (ADR-0049; `nonce` is optional for the code flow in
+/// OIDC Core 3.1.2.1).
 ///
-/// ⚠ **必須をやめた理由は、仕様どおりの相手を弾いていたから** ——Forgejo は
-/// `nonce` を送らない（未実装）ので、ログイン画面にすら着けなかった。
-/// **`state` と PKCE(S256) は必須のまま**である。
+/// ⚠ **It stopped being required because it rejected spec-compliant counterparts** — Forgejo does not
+/// send `nonce` (not implemented), so it could not even reach the login screen.
+/// **`state` and PKCE (S256) remain required.**
 #[tokio::test]
 async fn authorize_without_nonce_is_accepted() {
     let Some(env) = support::setup("authorize without nonce").await else {
@@ -981,7 +981,7 @@ async fn authorize_without_nonce_is_accepted() {
     )
     .await;
 
-    // ⚠ **弾かれず、ログイン画面へのハンドオフまで進む。**
+    // ⚠ **Not rejected; proceeds as far as the handoff to the login screen.**
     assert_eq!(response.status(), StatusCode::FOUND);
     assert!(
         location(&response).contains("/login?auth_session="),
@@ -989,9 +989,9 @@ async fn authorize_without_nonce_is_accepted() {
         location(&response)
     );
 
-    // ⚠ **`state` は必須のまま。** 不正な要求は**クライアントへ差し戻す**
-    //   （302 で `redirect_uri` へ `error=` を載せる）ので、**行き先で見分ける**
-    //   ——ログイン画面へのハンドオフではないこと。
+    // ⚠ **`state` remains required.** Invalid requests are **sent back to the client**
+    //   (302 to `redirect_uri` with `error=`), so **tell them apart by destination**
+    //   — it must not be the handoff to the login screen.
     let without_state = format!(
         "/{root_tenant_id}/authorize?response_type=code&client_id={client_id}&redirect_uri={REDIRECT_URI_ENC}&scope=openid&code_challenge={CODE_CHALLENGE}&code_challenge_method=S256"
     );
@@ -1007,7 +1007,7 @@ async fn authorize_without_nonce_is_accepted() {
     assert!(back.contains("error=invalid_request"), "location: {back}");
     assert!(!back.contains("/login?auth_session="), "location: {back}");
 
-    // ⚠ **PKCE も必須のまま。**
+    // ⚠ **PKCE remains required too.**
     let without_pkce = format!(
         "/{root_tenant_id}/authorize?response_type=code&client_id={client_id}&redirect_uri={REDIRECT_URI_ENC}&scope=openid&state=s"
     );

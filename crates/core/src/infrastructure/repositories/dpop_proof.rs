@@ -1,6 +1,6 @@
-//! `DpopProofReplayRepository` の sqlx 実装（ADR-0075 決定 4）。
+//! sqlx implementation of `DpopProofReplayRepository` (ADR-0075 decision 4).
 //!
-//! 「使われていなければ記録する」を**主キーへの挿入 1 回**で判定する（`client_assertion` と同じ形）。
+//! "Record it unless already used" is decided by **a single insert on the primary key** (same shape as `client_assertion`).
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::DpopProofReplayRepository;
@@ -37,7 +37,7 @@ impl DpopProofReplayRepository for SqlxDpopProofReplayRepository {
                 .await;
         match result {
             Ok(_) => Ok(true),
-            // 主キー違反 ＝ 同じ鍵・同じ jti の証明が既に使われた。
+            // Primary key violation = a proof with the same key and the same jti was already used.
             Err(sqlx::Error::Database(db)) if db.is_unique_violation() => Ok(false),
             Err(e) => Err(DomainError::Repository(e.to_string())),
         }

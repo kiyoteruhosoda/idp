@@ -1,11 +1,11 @@
-//! AP6: 段階的ロックと管理者によるロック解除。
+//! AP6: progressive lockout and unlock by an admin.
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test account_lockout
 //!
-//! 段階的ロックは「失敗の記録とロック判定を 1 文の UPDATE で行う」（SEC13）制約のため、
-//! ロック時間の選択が SQL の中に落ちる。ドメインの計算式（`lock_duration_secs_for`）と
-//! SQL が選ぶ段が**一致していること**をここで固定する。片方だけ直しても気づけるようにする。
+//! Progressive lockout is constrained to "record the failure and decide the lock in one UPDATE" (SEC13),
+//! so the choice of lock duration happens inside SQL. This pins down that the domain formula
+//! (`lock_duration_secs_for`) and the step SQL picks **agree**, so fixing only one side gets noticed.
 
 mod support;
 
@@ -16,11 +16,11 @@ use axum::http::StatusCode;
 use support::{admin_token, body_json, create_plain_user, post_empty, send};
 use uuid::Uuid;
 
-/// ロック期限から「何秒後か」を秒へ丸める。
+/// Rounds "how many seconds from now" of a lock expiry to seconds.
 ///
-/// `chrono::Utc::now()` はナノ秒精度だが、`DATETIME(6)` へ保存する時点で**マイクロ秒へ切り捨て**
-/// られる。差を `num_seconds()`（0 方向への切り捨て）で見ると、ちょうど 60 秒のはずが 59 になる。
-/// 検証したいのは「どの段が選ばれたか」なので、最も近い秒へ丸めて比べる。
+/// `chrono::Utc::now()` has nanosecond precision, but it is **truncated to microseconds** when stored in
+/// `DATETIME(6)`. Looking at the difference with `num_seconds()` (truncation toward 0) gives 59 for exactly 60.
+/// What we want to check is "which step was chosen", so we round to the nearest second and compare.
 fn lock_seconds(
     locked_until: chrono::DateTime<chrono::Utc>,
     now: chrono::DateTime<chrono::Utc>,
@@ -29,7 +29,7 @@ fn lock_seconds(
         + i64::from((locked_until - now).num_milliseconds().rem_euclid(1_000) >= 500)
 }
 
-/// 3 回失敗でロック、上限は初回の 4 倍（＝ 3 段）。
+/// Lock after 3 failures; the cap is 4x the first (= 3 steps).
 fn escalating_policy() -> LockoutPolicy {
     LockoutPolicy {
         max_failed_attempts: 3,
@@ -38,7 +38,7 @@ fn escalating_policy() -> LockoutPolicy {
     }
 }
 
-/// ロック時間が段ごとに伸び、SQL が選ぶ段がドメインの計算式と一致する。
+/// The lock duration grows per step, and the step SQL picks agrees with the domain formula.
 #[tokio::test]
 async fn the_lock_window_grows_with_each_repeated_lockout() {
     let Some(env) = support::setup("account lockout escalation").await else {
@@ -50,17 +50,17 @@ async fn the_lock_window_grows_with_each_repeated_lockout() {
     let policy = escalating_policy();
     let now = chrono::Utc::now();
 
-    // 閾値に届くまではロックされない。
+    // No lock until the threshold is reached.
     for _ in 0..(policy.max_failed_attempts - 1) {
         let record = users
             .record_login_failure(user_uuid, policy, now)
             .await
             .expect("record login failure");
-        assert!(!record.is_locked(), "閾値未満ではロックしない");
+        assert!(!record.is_locked(), "no lock below the threshold");
     }
 
-    // 閾値到達以降、失敗するたびに段が 1 つ進む。SQL が選んだロック期限を、ドメインの
-    // 計算式が返す秒数と突き合わせる。
+    // From the threshold on, each failure advances one step. Compare the lock expiry SQL chose with
+    // the seconds the domain formula returns.
     for step in 0..4 {
         let record = users
             .record_login_failure(user_uuid, policy, now)
@@ -71,13 +71,13 @@ async fn the_lock_window_grows_with_each_repeated_lockout() {
         let actual_secs = lock_seconds(locked_until, now);
         assert_eq!(
             actual_secs, expected_secs as i64,
-            "step {step}: SQL の選んだ段（{actual_secs}s）がドメインの計算式（{expected_secs}s）と食い違う \
-             （failed_login_count = {}）",
+            "step {step}: the step SQL chose ({actual_secs}s) disagrees with the domain formula ({expected_secs}s) \
+             (failed_login_count = {})",
             record.failed_login_count
         );
     }
 
-    // 上限を超えて伸び続けないこと。
+    // It must not keep growing past the cap.
     let record = users
         .record_login_failure(user_uuid, policy, now)
         .await
@@ -89,8 +89,8 @@ async fn the_lock_window_grows_with_each_repeated_lockout() {
     );
 }
 
-/// 管理者の解除は、ロック期限のクリアと**失敗回数のリセットを同時に**行う。
-/// 期限だけ消すと、次の 1 回の失敗で即座に再ロックされ、しかも段が 1 つ進む（前より長くなる）。
+/// An admin unlock clears the lock expiry and **resets the failure count at the same time**.
+/// Clearing only the expiry would re-lock on the next single failure, one step further (longer than before).
 #[tokio::test]
 async fn an_administrator_unlock_also_clears_the_failure_counter() {
     let Some(env) = support::setup("account lockout admin unlock").await else {
@@ -115,7 +115,7 @@ async fn an_administrator_unlock_also_clears_the_failure_counter() {
         .await
         .expect("load user")
         .expect("user exists");
-    assert!(locked.is_locked_at(now), "前提: ロックされている");
+    assert!(locked.is_locked_at(now), "precondition: locked");
 
     let res = send(
         app,
@@ -133,19 +133,22 @@ async fn an_administrator_unlock_also_clears_the_failure_counter() {
         .await
         .expect("load user")
         .expect("user exists");
-    assert!(!unlocked.is_locked_at(now), "ロック期限が消えている");
+    assert!(!unlocked.is_locked_at(now), "the lock expiry is cleared");
     assert_eq!(
         unlocked.failed_login_count, 0,
-        "失敗回数もリセットする（残すと次の 1 回で再ロックされ、段も進む）"
+        "the failure count is reset too (keeping it re-locks on the next failure and advances the step)"
     );
 
-    // 解除後は初回の段からやり直しになる（段が引き継がれない）。
+    // After unlocking, it starts again from the first step (the step is not carried over).
     for _ in 0..(policy.max_failed_attempts - 1) {
         let record = users
             .record_login_failure(user_uuid, policy, now)
             .await
             .expect("record login failure");
-        assert!(!record.is_locked(), "解除後は閾値からやり直し");
+        assert!(
+            !record.is_locked(),
+            "after unlock, counting restarts from the threshold"
+        );
     }
     let record = users
         .record_login_failure(user_uuid, policy, now)
@@ -155,11 +158,11 @@ async fn an_administrator_unlock_also_clears_the_failure_counter() {
     assert_eq!(
         lock_seconds(locked_until, now),
         policy.lock_duration_secs as i64,
-        "解除後の再ロックは初回の長さに戻る"
+        "re-lock after unlock goes back to the first duration"
     );
 }
 
-/// ロックされていない利用者への解除も成功する（冪等）。`was_locked = false` で区別できる。
+/// Unlocking a user who is not locked also succeeds (idempotent). Distinguishable by `was_locked = false`.
 #[tokio::test]
 async fn unlocking_an_account_that_is_not_locked_succeeds_and_says_so() {
     let Some(env) = support::setup("account lockout idempotent unlock").await else {

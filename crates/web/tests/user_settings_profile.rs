@@ -1,9 +1,9 @@
-//! 設定画面のプロフィール取得は 1 リクエストにつき 1 回（task #80）。
+//! The settings screen fetches the profile once per request (task #80).
 //!
-//! `GET /{tenant_id}/settings` は、表示設定の middleware（言語・配色）と画面（表示名・ログイン
-//! 識別子）の両方がプロフィールを要る。以前はそれぞれが `/internal/account/profile` を呼び、
-//! 同じ応答を 2 回取っていた。middleware が引いた応答をリクエスト拡張で画面へ渡すので、api へ
-//! 届く呼び出しは 1 回になる。ここでは api のスタブが受けた要求を数えて確かめる。
+//! `GET /{tenant_id}/settings` needs the profile in both the display preference middleware (language, scheme) and the screen
+//! (display name, login identifier). Previously each called `/internal/account/profile`, fetching
+//! the same response twice. The middleware's response is passed to the screen via a request extension, so only
+//! one call reaches the api. Here this is checked by counting requests received by the api stub.
 
 mod support;
 
@@ -16,7 +16,7 @@ use wiremock::{Mock, ResponseTemplate};
 
 const PROFILE_PATH: &str = "/internal/account/profile";
 
-/// ログイン中の利用者のプロフィール（配色は dark を保存済み）を返すスタブ。
+/// Stub returning the logged-in user's profile (dark scheme saved).
 async fn mount_profile(env: &WebEnv) {
     Mock::given(method("POST"))
         .and(path(PROFILE_PATH))
@@ -32,8 +32,8 @@ async fn mount_profile(env: &WebEnv) {
         .await;
 }
 
-/// 表示設定の保存を受けるスタブ。GET の `?lang=` / `?theme=` は一時切替で保存しない
-/// （task #79）ので、積んでおいて「呼ばれなかった」ことを数える。
+/// Stub receiving display preference saves. GET `?lang=` / `?theme=` are temporary switches that do not save
+/// (task #79), so it is mounted to count that it was "not called".
 async fn mount_preference_updates(env: &WebEnv) {
     for update in [
         "/internal/account/update-language",
@@ -47,7 +47,7 @@ async fn mount_preference_updates(env: &WebEnv) {
     }
 }
 
-/// api のスタブが受けた、指定の経路への要求の数。
+/// Number of requests to the given path received by the api stub.
 async fn calls_to(env: &WebEnv, target: &str) -> usize {
     env.api
         .received_requests()
@@ -75,7 +75,7 @@ async fn the_settings_page_reads_the_profile_once() {
     assert_eq!(response.status(), StatusCode::OK);
     let html = body_text(response).await;
 
-    // 画面は middleware が引いた応答から表示名・ログイン識別子・保存済みの配色を描く。
+    // The screen renders display name, login identifier and saved scheme from the middleware's response.
     assert!(
         html.contains(r#"value="設定 太郎""#),
         "display name: {html}"
@@ -95,8 +95,8 @@ async fn the_settings_page_reads_the_profile_once() {
     );
 }
 
-/// `?theme=` だけが明示されたときも、言語のために middleware が引いた 1 回を画面が使う。
-/// セレクタはこのリクエストでも明示された値（一時切替）を示す。
+/// Even when only `?theme=` is explicit, the screen uses the single fetch the middleware made for the language.
+/// The selector shows the explicit value (temporary switch) on this request too.
 #[tokio::test]
 async fn choosing_a_theme_still_reads_the_profile_once() {
     let env = setup().await;
@@ -129,8 +129,8 @@ async fn choosing_a_theme_still_reads_the_profile_once() {
     );
 }
 
-/// `?lang=` と `?theme=` の両方で表示設定が決まると middleware はプロフィールを引かない。
-/// そのときは画面が自分で 1 回だけ引く（表示名が空にならない）。
+/// When both `?lang=` and `?theme=` decide the display preferences, the middleware does not fetch the profile.
+/// Then the screen fetches it itself, once (so the display name is not empty).
 #[tokio::test]
 async fn the_page_reads_the_profile_itself_when_the_middleware_did_not() {
     let env = setup().await;
@@ -152,14 +152,14 @@ async fn the_page_reads_the_profile_itself_when_the_middleware_did_not() {
         "display name: {html}"
     );
     assert_eq!(calls_to(&env, PROFILE_PATH).await, 1);
-    // 一時切替は保存しない（task #79）。
+    // Temporary switches are not saved (task #79).
     assert_eq!(calls_to(&env, "/internal/account/update-language").await, 0);
     assert_eq!(calls_to(&env, "/internal/account/update-theme").await, 0);
 }
 
-/// **未ログインならログイン画面へ送る**（task #121）。以前は中身が空の設定画面を 200 で
-/// 描いていた。認証器・セッション一覧など他のアカウント画面と同じく `{tenant}/login` へ
-/// 302 し、プロフィールは引かない。
+/// **When logged out, send to the login screen** (task #121). Previously it rendered an empty settings screen
+/// with 200. Like other account screens such as authenticators and sessions, it 302s to `{tenant}/login`
+/// and does not fetch the profile.
 #[tokio::test]
 async fn the_settings_page_sends_a_visitor_without_a_session_to_sign_in() {
     let env = setup().await;
@@ -175,7 +175,7 @@ async fn the_settings_page_sends_a_visitor_without_a_session_to_sign_in() {
     assert_eq!(calls_to(&env, PROFILE_PATH).await, 0);
 }
 
-/// 管理コンソールから開いた（`?from=admin`）ときも同じ。
+/// Same when opened from the admin console (`?from=admin`).
 #[tokio::test]
 async fn the_settings_page_from_the_console_also_requires_sign_in() {
     let env = setup().await;
@@ -189,7 +189,7 @@ async fn the_settings_page_from_the_console_also_requires_sign_in() {
     assert_eq!(location(&response), format!("{}/login", env.prefix()));
 }
 
-/// Cookie はあってもセッションが切れていれば、他のアカウント画面と同じくログイン画面へ送る。
+/// Even with a Cookie, if the session expired send to the login screen like other account screens.
 #[tokio::test]
 async fn the_settings_page_sends_an_expired_session_to_sign_in() {
     let env = setup().await;
@@ -210,8 +210,8 @@ async fn the_settings_page_sends_an_expired_session_to_sign_in() {
     assert_eq!(location(&response), format!("{}/login", env.prefix()));
 }
 
-/// プロフィールが引けなかった（api の内部エラー）だけなら、従来どおり欄を空にして描く
-/// （表示の都合で画面を落とさない。ログインし直しても直らない）。
+/// If only the profile could not be fetched (api internal error), render with empty fields as before
+/// (do not fail the screen for display reasons; signing in again would not fix it).
 #[tokio::test]
 async fn the_settings_page_still_renders_when_the_profile_lookup_fails() {
     let env = setup().await;

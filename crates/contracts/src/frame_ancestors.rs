@@ -1,24 +1,24 @@
-//! 画面を出さずに試す往復（`prompt=none`）を、枠（iframe）に入れてよい親（task #888・ADR-0076）。
+//! Parents allowed to frame (iframe) the no-screen round trip (`prompt=none`) (task #888, ADR-0076).
 //!
-//! 各アプリは切れたログインを、見えない枠で `/authorize?prompt=none` へ問い合わせて続ける。
-//! その往復の応答（api の `/authorize` と web の `/login?auth_session=` の 302）にだけ、
-//! `SILENT_AUTH_FRAME_ANCESTORS` に書いた親からの枠を許す CSP を付ける。ほかの画面は今までどおり
-//! `frame-ancestors 'none'`・`X-Frame-Options: DENY`。
+//! Each app keeps an expired login going by querying `/authorize?prompt=none` in a hidden frame.
+//! Only the responses of that round trip (the 302 of api's `/authorize` and of web's `/login?auth_session=`)
+//! get a CSP allowing framing by the parents listed in `SILENT_AUTH_FRAME_ANCESTORS`. Every other screen
+//! keeps `frame-ancestors 'none'` and `X-Frame-Options: DENY` as before.
 //!
-//! api と web が同じ検査を通すため contracts に置く（`cookie_domain` と同じ）。
+//! Lives in contracts so api and web run the same check (like `cookie_domain`).
 //!
-//! 書けるのは `https://<名前>` と `https://*.<名前>`（ポート付きも可）を空白で区切ったものだけ。
-//! `*`・`'self'` などのキーワード・パス・`http`（`localhost` だけは開発のため許す）は断る。
-//! `*.` の後ろは 2 段以上（`*.com` は断る）。
+//! Only space-separated `https://<name>` and `https://*.<name>` (ports allowed) may be written.
+//! Keywords like `*` and `'self'`, paths, and `http` (only `localhost` is allowed, for development) are rejected.
+//! After `*.` there must be 2 or more labels (`*.com` is rejected).
 
 use url::Url;
 
-/// 検査を通った親の並び。空なら枠を許さない。
+/// The list of parents that passed the check. Empty means framing is not allowed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FrameAncestors(Vec<String>);
 
 impl FrameAncestors {
-    /// 枠を許さない（既定）。
+    /// Framing not allowed (default).
     pub fn none() -> Self {
         Self::default()
     }
@@ -27,7 +27,7 @@ impl FrameAncestors {
         self.0.is_empty()
     }
 
-    /// 応答に付ける CSP（`frame-ancestors …`）。空なら `None`（付けない）。
+    /// CSP to put on the response (`frame-ancestors …`). `None` (not added) when empty.
     pub fn content_security_policy(&self) -> Option<String> {
         if self.0.is_empty() {
             return None;
@@ -40,7 +40,7 @@ impl FrameAncestors {
     }
 }
 
-/// `SILENT_AUTH_FRAME_ANCESTORS` を検査する。1 つでも書けないものがあれば全体を断る（起動を止める）。
+/// Checks `SILENT_AUTH_FRAME_ANCESTORS`. If even one entry is invalid, rejects the whole value (stops startup).
 pub fn parse_frame_ancestors(raw: &str) -> Result<FrameAncestors, String> {
     raw.split_whitespace()
         .map(parse_source)
@@ -61,14 +61,14 @@ fn parse_source(raw: &str) -> Result<String, String> {
         Some(rest) => (true, rest),
         None => (false, rest),
     };
-    // `*.` を外した残りをふつうの URL として読む（パス・クエリ・利用者情報が無いことも見る）
+    // Parse the rest after removing `*.` as a normal URL (also check there is no path, query or userinfo)
     let Ok(url) = Url::parse(&format!("{scheme}://{host_and_port}")) else {
         return refuse("is not an origin");
     };
     let Some(host) = url.host_str() else {
         return refuse("has no host");
     };
-    // `*` は先頭の `*.` だけ（`https://*` や `https://a.*.com` は断る）
+    // `*` only as the leading `*.` (`https://*` and `https://a.*.com` are rejected)
     if host.contains('*') {
         return refuse("is too broad");
     }

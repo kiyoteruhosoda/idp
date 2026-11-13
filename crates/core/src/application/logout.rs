@@ -1,10 +1,10 @@
-//! RP-initiated Logout のユースケース（F4、設計仕様 §9 拡張）。
+//! RP-initiated Logout use case (F4, design spec §9 extension).
 //!
-//! OIDC RP-initiated Logout 1.0 spec に基づき、SSO セッションを終了し
-//! `sso_session.terminated` 監査イベントを記録する。
-//! front-channel の通知に必要な情報を返す（描画は web が行う）。
-//! ⚠ back-channel logout の通知は出さない（ADR-0055）。RP へ知らせるのは管理者が利用者を止めたとき
-//! だけで、それは `stop_announcement` の仕事である（ADR-0053）。
+//! Based on the OIDC RP-initiated Logout 1.0 spec, ends the SSO session and
+//! records the `sso_session.terminated` audit event.
+//! Returns the information needed for front-channel notification (rendering is done by web).
+//! ⚠ Does not send back-channel logout notifications (ADR-0055). RPs are notified only when an admin
+//! stops a user, and that is the job of `stop_announcement` (ADR-0053).
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::audit::{AuditEventType, AuditResult};
@@ -22,45 +22,45 @@ use serde::Deserialize;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// `id_token_hint` から取り出した検証済みの手掛かり（G12。OIDC RP-Initiated Logout 1.0 §2）。
+/// Verified hints extracted from `id_token_hint` (G12. OIDC RP-Initiated Logout 1.0 §2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedIdTokenHint {
-    /// ログアウト対象として RP が指している利用者の `sub`。
+    /// `sub` of the user the RP points at as the logout target.
     pub subject: String,
-    /// ID Token を受け取った RP（`aud`）。`post_logout_redirect_uri` の照合先になる。
+    /// The RP that received the ID Token (`aud`). Used as the match target for `post_logout_redirect_uri`.
     pub client_id: String,
 }
 
-/// `id_token_hint` の検証結果。
+/// Result of verifying `id_token_hint`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum IdTokenHintOutcome {
-    /// 指定なし。
+    /// Not specified.
     Absent,
-    /// 検証を通った。
+    /// Passed verification.
     Verified(VerifiedIdTokenHint),
-    /// 指定されたが検証を通らなかった（署名不正・issuer 違い・未知の kid・JWT でない 等）。
+    /// Specified but failed verification (bad signature, wrong issuer, unknown kid, not a JWT, etc.).
     Invalid,
 }
 
-/// RP-initiated logout の帰結。
+/// Outcome of an RP-initiated logout.
 pub enum LogoutOutcome {
-    /// ログアウト処理を実施した（対象セッションが無かった場合も含む。冪等）。
+    /// Logout was performed (including when there was no target session; idempotent).
     Completed(LogoutResult),
-    /// `id_token_hint` が指す利用者と、いま手元のセッションの利用者が一致しないため**何もしなかった**。
+    /// The user pointed at by `id_token_hint` differs from the user of the current session, so **nothing was done**.
     ///
-    /// Presentation は**ブラウザの SSO Cookie も消してはならない**。消すと「DB にはセッションが
-    /// 生きているのに、ブラウザからはそこへ戻れない」宙ぶらりんの状態になり、守ろうとした
-    /// 別利用者のログイン状態を結局は壊してしまう。
+    /// Presentation **must not delete the browser's SSO Cookie either**. Deleting it leaves a dangling state
+    /// where "the session is alive in the DB but the browser can no longer get back to it", which ends up
+    /// breaking the login state of the other user we were trying to protect.
     SubjectMismatch,
 }
 
-/// RP-initiated logout の結果。Presentation がこれを元に front-channel の通知とリダイレクトを実施する。
+/// Result of an RP-initiated logout. Presentation performs front-channel notification and redirect from it.
 pub struct LogoutResult {
-    /// ログアウトしたユーザーの内部 ID（監査用）。
+    /// Internal ID of the logged-out user (for auditing).
     pub user_id: Option<Uuid>,
-    /// front-channel logout URI 群（`frontchannel_logout_uri` を持つ全クライアント）。
+    /// Front-channel logout URIs (all clients that have a `frontchannel_logout_uri`).
     pub frontchannel_uris: Vec<String>,
-    /// 検証済みの post-logout redirect URI（未指定または検証失敗の場合は `None`）。
+    /// Verified post-logout redirect URI (`None` if not specified or verification failed).
     pub post_logout_redirect_uri: Option<String>,
 }
 
@@ -70,11 +70,11 @@ pub struct LogoutService {
     clients: Arc<dyn ClientRepository>,
     codes: Arc<dyn AuthorizationCodeRepository>,
     signing_keys: Arc<dyn SigningKeyRepository>,
-    /// ログアウトで、そのセッション由来の refresh token も落とすために引く（ADR-0044）。
+    /// Used at logout to also drop refresh tokens originating from that session (ADR-0044).
     refresh_tokens: Arc<dyn RefreshTokenRepository>,
     audit: Arc<AuditService>,
     clock: Arc<dyn Clock>,
-    /// 基底 issuer。front-channel logout の `iss` はテナント毎に合成する（ADR-0009 §6）。
+    /// Base issuer. The front-channel logout `iss` is composed per tenant (ADR-0009 §6).
     base_issuer: String,
 }
 
@@ -104,13 +104,13 @@ impl LogoutService {
         }
     }
 
-    /// RP-initiated logout を処理する。
+    /// Handles an RP-initiated logout.
     ///
-    /// - `sso_session_id`: SSO Cookie の値（平文）。`None` なら既にログアウト済み扱い。
-    /// - `client_id_hint`: `client_id` パラメータ（post_logout_redirect_uri の検証に使う）。
-    /// - `id_token_hint`: RP が受け取った ID Token（G12）。署名・issuer を検証し、`aud` を
-    ///   `post_logout_redirect_uri` の照合先に、`sub` を「誰のログアウトか」の確認に使う。
-    /// - `post_logout_redirect_uri`: RP が指定したリダイレクト先。登録済みのもののみ許可。
+    /// - `sso_session_id`: SSO Cookie value (plaintext). `None` is treated as already logged out.
+    /// - `client_id_hint`: the `client_id` parameter (used to verify post_logout_redirect_uri).
+    /// - `id_token_hint`: the ID Token the RP received (G12). Signature and issuer are verified; `aud` is
+    ///   used as the match target for `post_logout_redirect_uri` and `sub` to confirm "whose logout it is".
+    /// - `post_logout_redirect_uri`: redirect target specified by the RP. Only registered ones are allowed.
     #[allow(clippy::too_many_arguments)]
     pub async fn logout(
         &self,
@@ -123,16 +123,16 @@ impl LogoutService {
     ) -> LogoutOutcome {
         let now = self.clock.now();
 
-        // 1. `id_token_hint` の検証（G12）。セッションに触れる前に済ませる。
+        // 1. Verify `id_token_hint` (G12). Done before touching the session.
         let hint = self.verify_id_token_hint(tenant, id_token_hint).await;
 
-        // 2. SSO セッションの特定と終了。
+        // 2. Identify and end the SSO session.
         let user_id = if let Some(session_id) = sso_session_id.filter(|s| !s.is_empty()) {
             let hash = crypto::sha256_hex(session_id);
             let session = match self.sso_sessions.find_by_hash(&hash).await {
                 Ok(Some(s)) => s,
                 _ => {
-                    // セッション不明または DB エラー → ログアウト済み扱いで続行。
+                    // Unknown session or DB error -> treat as logged out and continue.
                     return LogoutOutcome::Completed(LogoutResult {
                         user_id: None,
                         frontchannel_uris: vec![],
@@ -141,22 +141,22 @@ impl LogoutService {
                 }
             };
             let uid = session.user_id;
-            // `sid` は行を消す前に導出する（削除後は `session_hash` しか手元に残らないため、
-            // 導出関数は行ではなくハッシュを受ける形にしてある）。
+            // `sid` is derived before deleting the row (after deletion only `session_hash` is left at hand,
+            // so the derivation function takes the hash rather than the row).
             let sid = session.sid();
 
-            // ユーザーの sub を取得（`id_token_hint` との突き合わせに使う）。
+            // Fetch the user's sub (used to match against `id_token_hint`).
             let sub = match self.users.find_by_id(uid).await {
                 Ok(Some(u)) => Some(u.sub.to_string()),
                 _ => None,
             };
 
-            // `id_token_hint` の `sub` が今ログインしている利用者と**一致しない限り終了しない**
-            // （G12）。hint は「この利用者をログアウトさせたい」という RP の指定であり、別人の
-            // セッションを落とすのは指定に反する。同じブラウザを共有していて別の人がログイン
-            // し直した後に、前の利用者ぶんのログアウト要求が届く経路が現実に存在する。
-            // 利用者行を読めず `sub` が引けなかった場合も一致を確認できないため終了しない
-            // （hint を送っていない要求は従来どおり無条件に終了する）。
+            // **Do not end the session unless** the `sub` of `id_token_hint` matches the currently logged-in user
+            // (G12). The hint is the RP saying "I want this user logged out"; dropping another person's
+            // session goes against that. There is a real path where, after someone else logs in again on a
+            // shared browser, a logout request for the previous user arrives.
+            // If the user row cannot be read and `sub` is unavailable, a match cannot be confirmed, so do not end it
+            // (requests without a hint are ended unconditionally as before).
             if let IdTokenHintOutcome::Verified(verified) = &hint {
                 if sub.as_deref() != Some(verified.subject.as_str()) {
                     self.audit
@@ -170,31 +170,31 @@ impl LogoutService {
                             ctx,
                         )
                         .await;
-                    // Cookie も消させない（消すと DB にだけ生きたセッションが残る）。
+                    // Do not let the Cookie be deleted either (deleting it leaves a live session only in the DB).
                     return LogoutOutcome::SubjectMismatch;
                 }
             }
 
-            // SSO セッション削除。
+            // Delete the SSO session.
             if let Err(e) = self.sso_sessions.delete(&hash).await {
                 tracing::warn!(error = %e, "failed to delete sso session on logout");
             }
 
-            // 未消費の authorization code を失効。
+            // Revoke unconsumed authorization codes.
             if let Err(e) = self.codes.revoke_all_active_for_user(uid, now).await {
                 tracing::warn!(error = %e, "failed to revoke active auth codes on logout");
             }
 
-            // そのセッションから出た refresh token も失効させる（ADR-0044）。
+            // Also revoke refresh tokens issued from that session (ADR-0044).
             //
-            // ここが無いと、SSO セッションは終えたのに**同じ `sid` のトークンは受け付け
-            // 続ける**ことになり、そのセッションで入った RP やネイティブアプリは更新し続けられる。
+            // Without this, even though the SSO session has ended, **tokens with the same `sid` keep being
+            // accepted**, and RPs and native apps that signed in with that session can keep refreshing.
             //
-            // 落ちても止めない（fail-open）。ここは既にリダイレクト先を組み立てる段まで
-            // 来ていて、途中で投げると **Cookie を消せないまま利用者が宙に浮く**。
-            // 上の 2 つ（セッション削除・code 失効）と同じ扱いにする。
+            // Do not stop on failure (fail-open). We are already at the stage of building the redirect, and
+            // throwing midway **leaves the user stranded with a Cookie we could not delete**.
+            // Treat it the same as the two above (session deletion, code revocation).
             //
-            // `sid` は行を消す前に導出したもの（上）をそのまま使う。
+            // `sid` is the one derived before deleting the row (above), used as is.
             match self
                 .refresh_tokens
                 .revoke_all_for_session(uid, &sid, now)
@@ -225,8 +225,8 @@ impl LogoutService {
             None
         };
 
-        // 2. テナントの全クライアントを取得して front-channel logout の URI を収集する
-        //    （front-channel の通知・redirect 検証はフローのテナント内に限る）。
+        // 2. Fetch all clients of the tenant and collect front-channel logout URIs
+        //    (front-channel notification and redirect verification are limited to the flow's tenant).
         let clients = match self.clients.list(tenant.tenant_id()).await {
             Ok(c) => c,
             Err(e) => {
@@ -236,14 +236,14 @@ impl LogoutService {
         };
 
         let issuer = tenant_issuer(&self.base_issuer, tenant.tenant_id());
-        // ⚠ **終えたセッションが無ければ、RP の一覧を返さない**（task #588）。返していた頃は、
-        //    Cookie を持たない誰にでもテナントの RP の front-channel URI の一覧が見えた。
+        // ⚠ **If no session was ended, do not return the RP list** (task #588). While it was returned,
+        //    anyone without a Cookie could see the list of the tenant's RP front-channel URIs.
         let frontchannel_uris: Vec<String> = clients
             .iter()
             .filter(|_| user_id.is_some())
             .filter_map(|c| {
                 c.frontchannel_logout_uri.as_ref().map(|uri| {
-                    // OpenID Connect Front-Channel Logout spec: iss を query param に付与。
+                    // OpenID Connect Front-Channel Logout spec: add iss as a query param.
                     let sep = if uri.contains('?') { '&' } else { '?' };
                     let encoded_iss = percent_encoding::utf8_percent_encode(
                         &issuer,
@@ -255,17 +255,17 @@ impl LogoutService {
             })
             .collect();
 
-        // 3. post_logout_redirect_uri の検証。
+        // 3. Verify post_logout_redirect_uri.
         //
-        // 照合先の RP は `client_id` パラメータと `id_token_hint` の `aud` から決める（G12）。
-        // hint は署名検証を通っている（＝ assay が実際にその RP へ発行した ID Token である）ため、
-        // 自己申告の `client_id` より強い根拠になる。両方あって食い違う場合はどちらも信用しない。
+        // The RP to match against is determined from the `client_id` parameter and the `aud` of `id_token_hint` (G12).
+        // The hint has passed signature verification (= an ID Token assay actually issued to that RP), so it is
+        // stronger evidence than a self-declared `client_id`. If both are present and disagree, trust neither.
         let post_logout_redirect_uri = post_logout_redirect_uri
             .filter(|uri| !uri.is_empty())
             .and_then(|uri| {
                 let audience = match &hint {
-                    // 検証を通らない hint は「誰の・どの RP のログアウトか」を何も示さない。
-                    // 登録済み URI へのリダイレクトは RP への応答なので、確かめられない相手へは返さない。
+                    // A hint that fails verification says nothing about "whose logout, for which RP".
+                    // Redirecting to a registered URI is a response to the RP, so do not return to a party we cannot verify.
                     IdTokenHintOutcome::Invalid => return None,
                     IdTokenHintOutcome::Verified(v) => Some(v.client_id.as_str()),
                     IdTokenHintOutcome::Absent => None,
@@ -281,9 +281,9 @@ impl LogoutService {
                         .iter()
                         .find(|c| c.client_id == cid)
                         .is_some_and(|c| c.allows_post_logout_redirect_uri(uri)),
-                    // RP を特定できない場合のみ、テナント内のいずれかのクライアントに登録されて
-                    // いれば許可する（従来の挙動。`client_id` も `id_token_hint` も送らない RP が
-                    // あるため残す）。
+                    // Only when the RP cannot be identified, allow it if registered on any client in the tenant
+                    // (the legacy behavior; kept because some RPs send neither `client_id` nor
+                    // `id_token_hint`).
                     None => clients
                         .iter()
                         .any(|c| c.allows_post_logout_redirect_uri(uri)),
@@ -299,18 +299,18 @@ impl LogoutService {
         })
     }
 
-    /// `id_token_hint` を検証する（G12。OIDC RP-Initiated Logout 1.0 §2）。
+    /// Verifies `id_token_hint` (G12. OIDC RP-Initiated Logout 1.0 §2).
     ///
-    /// **`exp` は見ない。** hint は「以前このセッションで発行された ID Token」を指すもので、
-    /// 期限切れが普通である（同 §2 が明示的に許している）。代わりに次を確かめる:
+    /// **`exp` is not checked.** The hint refers to "an ID Token previously issued in this session" and is
+    /// normally expired (§2 explicitly allows this). Instead, the following are checked:
     ///
-    /// - `typ` が `JWT`（ID Token）であること —— Access Token（`at+jwt`）を hint として通さない。
-    /// - `kid` が assay の署名鍵（退役済みを含む）であり、署名が正しいこと。
-    /// - `iss` が**要求テナントの**合成 issuer と一致すること（他テナントの ID Token を
-    ///   持ち込んで別テナントの利用者をログアウトさせられないようにする。ADR-0009 §6）。
+    /// - `typ` is `JWT` (ID Token) — an Access Token (`at+jwt`) is not accepted as a hint.
+    /// - `kid` is one of assay's signing keys (including retired ones) and the signature is valid.
+    /// - `iss` matches the composed issuer **of the requesting tenant** (so an ID Token from another tenant
+    ///   cannot be brought in to log out a user of a different tenant. ADR-0009 §6).
     ///
-    /// 検証に落ちたものは `Invalid` として扱い、`None` には落とさない。呼び出し側で
-    /// 「指定が無い」と「指定が信用できない」を区別する必要がある。
+    /// Anything failing verification is treated as `Invalid`, not collapsed into `None`. The caller needs
+    /// to distinguish "not specified" from "specified but not trustworthy".
     async fn verify_id_token_hint(
         &self,
         tenant: TenantContext,
@@ -323,7 +323,7 @@ impl LogoutService {
         let Ok(header) = jsonwebtoken::decode_header(hint) else {
             return IdTokenHintOutcome::Invalid;
         };
-        // `typ` は省略可（RFC 7519）だが、assay が出す ID Token は必ず `JWT` を載せる。
+        // `typ` is optional (RFC 7519), but ID Tokens issued by assay always carry `JWT`.
         if header.typ.as_deref().is_some_and(|t| t != "JWT") {
             return IdTokenHintOutcome::Invalid;
         }
@@ -344,9 +344,9 @@ impl LogoutService {
         };
 
         let mut validation = Validation::new(algorithm);
-        // 期限切れの ID Token を hint に使うのは正常な運用（上記）。
+        // Using an expired ID Token as a hint is normal operation (see above).
         validation.validate_exp = false;
-        // `aud` は RP の client_id で、ここでは検証対象ではなく**取り出す値**。
+        // `aud` is the RP's client_id; here it is not verified but is **a value to extract**.
         validation.validate_aud = false;
         validation.required_spec_claims.clear();
 
@@ -370,11 +370,11 @@ impl LogoutService {
     }
 }
 
-/// `id_token_hint` から読み取るクレーム。
+/// Claims read from `id_token_hint`.
 ///
-/// 発行時の [`crate::application::token::IdTokenClaims`] とは別に定義する。hint は過去に発行した
-/// トークンであり、当時のクレーム構成のまま届く。必須項目を増やすと、古いトークンが「壊れている」
-/// ことになってログアウトが通らなくなる。
+/// Defined separately from [`crate::application::token::IdTokenClaims`] used at issuance. The hint is a
+/// previously issued token and arrives with the claim layout of that time. Adding required fields would
+/// make old tokens "broken" and logout would stop working.
 #[derive(Debug, Deserialize)]
 struct IdTokenHintClaims {
     iss: String,

@@ -1,14 +1,14 @@
-//! G1: ブラウザからの越境アクセス（CORS）。
+//! G1: cross-origin access from browsers (CORS).
 //!
-//! 既定トポロジ（`domain-split`）では SPA から api への呼び出しは常にクロスオリジンになる。
-//! ここで固定するのは「誰にどこまで開くか」の境界:
+//! In the default topology (`domain-split`) calls from an SPA to api are always cross-origin.
+//! What is pinned here is the boundary of "how far it is open to whom":
 //!
-//!   * 公開メタデータは誰でも読める（`*`）
-//!   * `/token`・`/userinfo` 等は**テナントに登録された public クライアントのオリジン**だけ
-//!   * 管理 API には開けない
-//!   * どの経路でも `Access-Control-Allow-Credentials` を付けない
+//!   * Public metadata is readable by anyone (`*`)
+//!   * `/token`, `/userinfo` etc. only for **origins of public clients registered in the tenant**
+//!   * Not open for the admin API
+//!   * `Access-Control-Allow-Credentials` is never attached on any path
 //!
-//! 実行方法は `schema.rs` と同じ（`TEST_DATABASE_URL` が必須）。
+//! Run the same way as `schema.rs` (`TEST_DATABASE_URL` is required).
 
 mod support;
 
@@ -39,8 +39,8 @@ fn allow_origin(response: &axum::response::Response) -> Option<String> {
         .map(str::to_string)
 }
 
-/// 公開メタデータは client_id もトークンも載らないため誰かを特定できない。無認証で誰でも
-/// 取得できる内容なので `*` で開く。
+/// Public metadata carries no client_id or token and identifies nobody. It is content anyone can fetch without
+/// auth, so it is opened with `*`.
 #[tokio::test]
 async fn public_metadata_is_readable_from_any_origin() {
     let Some(env) = support::setup("cors_public_metadata").await else {
@@ -64,22 +64,22 @@ async fn public_metadata_is_readable_from_any_origin() {
                 .headers()
                 .get(ACCESS_CONTROL_ALLOW_CREDENTIALS)
                 .is_none(),
-            "{path}: api はブラウザ Cookie を読まない（ADR-0018）ので credentials は許可しない"
+            "{path}: api does not read browser cookies (ADR-0018), so credentials are not allowed"
         );
     }
 }
 
-/// `/token` はテナントに登録された public クライアントの `redirect_uris` 由来のオリジンにだけ開く。
+/// `/token` is open only to origins derived from the `redirect_uris` of public clients registered in the tenant.
 #[tokio::test]
 async fn the_token_endpoint_opens_only_to_registered_public_client_origins() {
     let Some(env) = support::setup("cors_token_endpoint").await else {
         return;
     };
     let tenant = &env.root_tenant_id;
-    // `REDIRECT_URI` は `http://localhost:3000/callback`（= SPA_ORIGIN）。
+    // `REDIRECT_URI` is `http://localhost:3000/callback` (= SPA_ORIGIN).
     let _client = support::insert_public_client(&env.pool, tenant, &["openid"]).await;
 
-    // 登録済みオリジン: 実リクエストのレスポンスを読める。
+    // Registered origin: can read the response of the actual request.
     let uri = format!("/{tenant}/token");
     let allowed = support::send(&env.app, with_origin(Method::POST, &uri, SPA_ORIGIN)).await;
     assert_eq!(allow_origin(&allowed).as_deref(), Some(SPA_ORIGIN));
@@ -88,16 +88,16 @@ async fn the_token_endpoint_opens_only_to_registered_public_client_origins() {
             .headers()
             .get(ACCESS_CONTROL_ALLOW_CREDENTIALS)
             .is_none(),
-        "credentials は許可しない"
+        "credentials are not allowed"
     );
 
-    // 未登録オリジン: ヘッダを付けない（ブラウザが読み取りを拒む）。
+    // Unregistered origin: no headers attached (the browser refuses the read).
     let denied = support::send(&env.app, with_origin(Method::POST, &uri, OTHER_ORIGIN)).await;
     assert_eq!(allow_origin(&denied), None);
 }
 
-/// `/userinfo` は `Authorization: Bearer` が非 safelisted のため必ずプリフライトされる。
-/// OPTIONS にトークンは載らないので、テナント単位の許可集合で答える。
+/// `/userinfo` is always preflighted because `Authorization: Bearer` is not safelisted.
+/// OPTIONS carries no token, so it answers with the per-tenant allowed set.
 #[tokio::test]
 async fn the_userinfo_preflight_is_answered_without_hitting_the_handler() {
     let Some(env) = support::setup("cors_userinfo_preflight").await else {
@@ -116,7 +116,7 @@ async fn the_userinfo_preflight_is_answered_without_hitting_the_handler() {
         .expect("build preflight");
     let response = support::send(&env.app, preflight).await;
 
-    // ルータは OPTIONS を持たないため、ミドルウェアが受け止めないと 405 になる。
+    // The router has no OPTIONS, so unless the middleware catches it, it would be 405.
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert_eq!(allow_origin(&response).as_deref(), Some(SPA_ORIGIN));
     let methods = response
@@ -124,10 +124,10 @@ async fn the_userinfo_preflight_is_answered_without_hitting_the_handler() {
         .get(ACCESS_CONTROL_ALLOW_METHODS)
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default();
-    assert!(methods.contains("GET"), "GET が許可されている: {methods}");
+    assert!(methods.contains("GET"), "GET is allowed: {methods}");
 }
 
-/// 未登録オリジンからのプリフライトは CORS ヘッダ無しで返す（実リクエストが飛ばない）。
+/// Preflights from unregistered origins return without CORS headers (the actual request is not sent).
 #[tokio::test]
 async fn a_preflight_from_an_unknown_origin_gets_no_cors_headers() {
     let Some(env) = support::setup("cors_unknown_preflight").await else {
@@ -147,8 +147,8 @@ async fn a_preflight_from_an_unknown_origin_gets_no_cors_headers() {
     assert_eq!(allow_origin(&response), None);
 }
 
-/// 管理 API はブラウザ JS から越境で叩く経路ではない。開けると管理操作が別オリジンから
-/// 読める余地を作ってしまうので、登録済みオリジンからでもヘッダを付けない。
+/// The admin API is not a path to call cross-origin from browser JS. Opening it would leave room for admin
+/// operations to be read from another origin, so no headers are attached even for registered origins.
 #[tokio::test]
 async fn admin_endpoints_are_never_opened_cross_origin() {
     let Some(env) = support::setup("cors_admin_closed").await else {

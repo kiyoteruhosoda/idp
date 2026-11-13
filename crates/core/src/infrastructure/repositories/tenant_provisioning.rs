@@ -1,10 +1,10 @@
-//! `TenantProvisioningRepository` の sqlx 実装（REF2）。
+//! sqlx implementation of `TenantProvisioningRepository` (REF2).
 //!
-//! テナント行・作成者のブートストラップ管理者メンバーシップ（ACTIVE GUEST）・`idp.tenant.admin`
-//! 付与の 3 INSERT を**単一トランザクション**で実行する（ADR-0009 §4）。途中で失敗した場合は全体が
-//! ロールバックされ、「メンバーシップ／権限だけが残る中途半端なテナント」が残らないことを DB レベルで
-//! 保証する。作成者ユーザーは親テナント所属の既存行のため新規作成しない。各 INSERT は個別リポジトリと
-//! 同じ SQL（`insert_tenant` 等の共用ヘルパ）を使う。
+//! Runs the 3 INSERTs -- the tenant row, the creator's bootstrap admin membership (ACTIVE GUEST) and the `idp.tenant.admin`
+//! grant -- in a **single transaction** (ADR-0009 §4). If anything fails midway the whole thing is
+//! rolled back, guaranteeing at the DB level that no "half-made tenant with only a membership/permission" remains.
+//! The creator user is an existing row belonging to the parent tenant, so it is not created. Each INSERT uses the same SQL
+//! as the individual repositories (shared helpers such as `insert_tenant`).
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::TenantProvisioningRepository;

@@ -1,29 +1,32 @@
-//! テナント設定（ADR-0058）。
+//! Tenant settings (ADR-0058).
 //!
-//! `system_settings` が IdP 全体の 1 枚であるのに対し、こちらは**テナントごと**の上書きを持つ。
-//! 解決順は **テナントの行 > 全体の行 > 環境変数 > 組み込み既定**で、
-//! ⚠ **テナントに行が無いことが「全体に従う」である**（既定値の写しをテナントへ配らない）。
+//! Whereas `system_settings` is one sheet for the whole IdP, this holds **per-tenant** overrides.
+//! Resolution order is **tenant row > global row > environment variable > built-in default**, and ⚠
+//! **a tenant having no row means "follow the global value"** (default values are not copied out to
+//! tenants).
 //!
-//! 置けるキーは [`crate::domain::system_setting::RUNTIME_SETTING_DEFINITIONS`] の
-//! `scope` が決める（単位の唯一の出所）。秘匿値の扱いは `system_settings` と同じで、
-//! `is_secret` のとき `value` は暗号文であり、参照 API は平文を返さない。
+//! Which keys may be set is decided by `scope` in
+//! [`crate::domain::system_setting::RUNTIME_SETTING_DEFINITIONS`] (the single source of scope).
+//! Secrets are handled as in `system_settings`: when `is_secret`, `value` is ciphertext and the
+//! read API never returns plaintext.
 #![allow(dead_code)]
 
 use crate::domain::tenant::TenantId;
 
-/// テナント設定 1 レコード（key-value）。`value` は保存形式そのまま（`is_secret` のときは暗号文）。
+/// One tenant setting record (key-value). `value` is in stored form (ciphertext when `is_secret`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TenantSetting {
     pub tenant_id: TenantId,
     pub key: String,
     pub value: String,
-    /// `true` のとき `value` は暗号文（AES-256-GCM の base64）。
+    /// When `true`, `value` is ciphertext (base64 of AES-256-GCM).
     pub is_secret: bool,
 }
 
-/// 全テナントを横断した上書き 1 件（全体の設定画面が「既定から外れているテナント」を出すために読む）。
+/// One override across all tenants (read by the global settings screen to show "tenants deviating
+/// from default").
 ///
-/// ⚠ 秘匿値は含めない（リポジトリの時点で落とす）。
+/// ⚠ Secrets are not included (dropped at the repository).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TenantOverrideEntry {
     pub tenant_id: TenantId,
@@ -32,12 +35,12 @@ pub struct TenantOverrideEntry {
     pub value: String,
 }
 
-/// 全テナントを横断した上書きの状況。「従っているテナントの件数」は
-/// `tenant_count` から、そのキーを上書きしているテナントの数を引いて出す。
+/// Overview of overrides across all tenants. "Number of tenants following" is
+/// `tenant_count` minus the number of tenants overriding that key.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TenantOverridesAcrossTenants {
-    /// テナントの総数（root を含む）。
+    /// Total number of tenants (including root).
     pub tenant_count: u64,
-    /// 空でない、秘匿値でない上書きの全件。
+    /// All non-empty, non-secret overrides.
     pub overrides: Vec<TenantOverrideEntry>,
 }

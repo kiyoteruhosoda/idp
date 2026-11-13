@@ -1,59 +1,59 @@
 #!/usr/bin/env bash
-# scripts/build-remote-container.sh — git 非搭載のデプロイ先（例: Synology DSM）向けの一ホスト方式。
+# scripts/build-remote-container.sh — one-host method for deployment targets without git (e.g. Synology DSM).
 #
-# ソース取得＆イメージビルドは「dev コンテナ」内で行い（コンテナに git・ツールチェーンがある前提）、
-# 生成された dist/ をコンテナのワークスペース（ホストから見えるパス）からデプロイ先へ取り込み、
-# 同梱の deploy.sh を実行する。**デプロイ先に git は不要**（build-remote.sh の git 版が使えない環境向け）。
+# Fetching the source and building images happen inside a "dev container" (assumed to have git and the toolchain);
+# the generated dist/ is pulled from the container's workspace (a path visible from the host) into the deployment target,
+# and the bundled deploy.sh is run. **No git is needed on the deployment target** (for environments where build-remote.sh's git version cannot be used).
 #
-# 4 ステップを 1 本で実行する（旧来の別 pick.sh は本スクリプトへ統合済み）:
-#   SYNC   … dev コンテナ内で git pull（最新ソース取得）
-#   BUILD  … dev コンテナ内で scripts/build.sh（dist/ を生成）
-#   PICK   … ビルド済み dist/ をデプロイ先へ取り込み
-#   DEPLOY … 取り込んだ deploy.sh を実行
+# Runs 4 steps in one go (the former separate pick.sh has been merged into this script):
+#   SYNC   … git pull inside the dev container (fetch the latest source)
+#   BUILD  … scripts/build.sh inside the dev container (generates dist/)
+#   PICK   … pull the built dist/ into the deployment target
+#   DEPLOY … run the pulled deploy.sh
 #
-# 自己更新（self-update）: このスクリプト自身は dist/ に含まれない手置きブートストラップのため、
-# git pull では更新されない。そこで SYNC 後に dev コンテナ内の最新 build-remote-container.sh と
-# byte 比較し、異なれば最新版へ自分自身を差し替えて同じ引数で自動再実行する（初回に限らず毎回）。
-# ※ この自動更新が働くのは「本スクリプトが既に self-update 対応版であること」が前提。まだ未対応の
-#   古い版がデプロイ先にある場合は、一度だけ手動で最新版へ差し替える必要がある（以後は自動）。
+# Self-update: this script itself is a hand-placed bootstrap not included in dist/, so
+# git pull does not update it. So after SYNC it byte-compares itself with the latest build-remote-container.sh
+# in the dev container and, if different, replaces itself with the latest and re-runs with the same arguments (every time, not only the first).
+# Note: this auto-update works only if "this script is already a self-update capable version". If an old
+#   version without it is on the deployment target, replace it with the latest by hand once (automatic afterwards).
 #
-# 使い方（デプロイ先で。モードはどの引数位置でも拾う。既定 migrate）:
+# Usage (on the deployment target; the mode is picked up from any argument position; default migrate):
 #   ./build-remote-container.sh            # migrate
 #   ./build-remote-container.sh app
 #   ./build-remote-container.sh reset
 #
-# 設定は環境変数、または下記 `build-remote-container.env` で行う。
-# **スクリプト冒頭の既定値を直接書き換えてはならない**（self-update が本ファイルを最新版で丸ごと
-# 差し替えるため、直接編集した値は次回実行時に失われる。設定は必ず env ファイル／環境変数で与える）:
-#   IDP_PROJECT        プロジェクト名（省略時はデプロイ先ディレクトリの親から自動取得。下記）
-#   IDP_DEV_CONTAINER  ビルドを行う dev コンテナ名
-#   IDP_DEV_USER       コンテナ内でビルドする実行ユーザー
-#   IDP_DEV_WORKDIR    コンテナ内のリポジトリ working dir（scripts/build.sh がある場所）
-#   IDP_DIST_DIR       ホストから見えるビルド済み dist/ の絶対パス（必須。無指定はエラー）
-#   IDP_TARGET_DIR     デプロイ先ディレクトリ（既定: このスクリプトの場所）
+# Configure via environment variables or the `build-remote-container.env` below.
+# **Do not edit the defaults at the top of the script directly** (self-update replaces this whole file with the
+# latest, so directly edited values are lost on the next run; always configure via the env file / environment variables):
+#   IDP_PROJECT        project name (if omitted, taken from the deployment directory's parent; see below)
+#   IDP_DEV_CONTAINER  name of the dev container that builds
+#   IDP_DEV_USER       user that runs the build inside the container
+#   IDP_DEV_WORKDIR    repository working dir inside the container (where scripts/build.sh lives)
+#   IDP_DIST_DIR       absolute path of the built dist/ as seen from the host (required; error if unset)
+#   IDP_TARGET_DIR     deployment directory (default: this script's location)
 #
-# ディレクトリ構成の前提は **/<プロジェクト名>/<環境>**（例: /volume1/docker/idp/prod）。
-#   * 環境（stg/prod 等）  … デプロイ先ディレクトリ名から取得
-#   * プロジェクト名        … デプロイ先ディレクトリの親ディレクトリ名から取得
-# プロジェクト名の優先順位: IDP_PROJECT > 設定ファイル PROJECT > 親ディレクトリ名 > 既定値 idp。
-# この構成に従っていれば PROJECT の指定は不要。従わない場合は IDP_PROJECT／PROJECT で明示する。
+# The directory layout is assumed to be **/<project name>/<environment>** (e.g. /volume1/docker/idp/prod).
+#   * environment (stg/prod etc.)  … taken from the deployment directory name
+#   * project name                 … taken from the deployment directory's parent directory name
+# Project name precedence: IDP_PROJECT > config file PROJECT > parent directory name > default idp.
+# Following this layout, PROJECT need not be set. Otherwise set it explicitly via IDP_PROJECT / PROJECT.
 #
-# 設定は上記の環境変数のほか、**スクリプトと同じ場所の `build-remote-container.env`**（KEY=VALUE 形式）
-# にも書ける（`export` 等のコマンド実行は不要）。各パスの `{PROJECT}` は確定した project 値へ展開される。例:
+# Besides the environment variables above, settings can be written in **`build-remote-container.env` next to the script**
+# (KEY=VALUE format; no commands like `export` needed). `{PROJECT}` in each path expands to the resolved project value. Example:
 #     IDP_DEV_CONTAINER=ubuntu-dev
 #     IDP_DEV_WORKDIR=/work/project/{PROJECT}
 #     IDP_DIST_DIR=/var/services/homes/kyon/.../work/project/{PROJECT}/dist
-# ※ デプロイ用 `.env`（deploy.sh / Compose が読む秘密情報ファイル）とは別物。ここへ書いても効かない。
+# Note: this is separate from the deployment `.env` (the secrets file read by deploy.sh / Compose). Writing here has no effect there.
 #
-# 前提: docker（デプロイ先）と、ビルド用 dev コンテナが起動していること。
+# Requires: docker (on the deployment target) and a running dev container for building.
 set -euo pipefail
 
-# ---- 設定ファイル（任意）を読み込む: <スクリプトと同じ場所>/build-remote-container.env -----
-# KEY=VALUE 行だけを安全に取り込む（source/eval しない）。既に設定済みの環境変数を優先し、
-# 未設定のものだけ設定ファイルの値で補う。行頭コメント（#）・空行・不正キーは無視し、値は前後空白と
-# 空白に続くインラインコメント（` # ...`）を除去する（`#` を含む値でも空白が前に無ければ保持）。
+# ---- Load the (optional) config file: <next to the script>/build-remote-container.env -----
+# Safely imports only KEY=VALUE lines (no source/eval). Already-set environment variables take precedence;
+# only unset ones are filled from the config file. Leading-# comments, blank lines and invalid keys are ignored; values have
+# surrounding whitespace and inline comments after whitespace (` # ...`) removed (a `#` not preceded by whitespace is kept).
 _config_file="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/build-remote-container.env"
-_config_loaded_keys=()   # 設定ファイルから実際に取り込んだキー（起動情報の表示用）
+_config_loaded_keys=()   # keys actually imported from the config file (for the startup info display)
 if [[ -f "$_config_file" ]]; then
   while IFS= read -r _line || [[ -n "$_line" ]]; do
     _line="${_line%$'\r'}"
@@ -62,9 +62,9 @@ if [[ -f "$_config_file" ]]; then
     _key="${_line%%=*}"
     _val="${_line#*=}"
     _key="${_key//[[:space:]]/}"
-    _val="${_val%%[[:space:]]#*}"                 # 空白+# 以降のインラインコメントを除去
-    _val="${_val#"${_val%%[![:space:]]*}"}"       # 先頭空白を除去
-    _val="${_val%"${_val##*[![:space:]]}"}"       # 末尾空白を除去
+    _val="${_val%%[[:space:]]#*}"                 # remove inline comments after whitespace+#
+    _val="${_val#"${_val%%[![:space:]]*}"}"       # remove leading whitespace
+    _val="${_val%"${_val##*[![:space:]]}"}"       # remove trailing whitespace
     [[ "$_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
     if [[ -z "${!_key:-}" ]]; then
       export "$_key=$_val"
@@ -76,54 +76,54 @@ fi
 log() { printf '[idp:container] %s\n' "$*" >&2; }
 die() { printf '[idp:container][error] %s\n' "$*" >&2; exit 1; }
 
-# ---- ターゲットディレクトリ・自分自身のパスを先に確定する ---------------------------
-# 想定ディレクトリ構成は /<プロジェクト名>/<環境>（例: /volume1/docker/idp/prod）。
-# 環境はターゲットディレクトリ名、プロジェクト名はその親ディレクトリ名から取得する（下記）。
+# ---- Settle the target directory and our own path first ---------------------------
+# The expected layout is /<project name>/<environment> (e.g. /volume1/docker/idp/prod).
+# The environment comes from the target directory name, the project name from its parent directory name (below).
 target_dir="${IDP_TARGET_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
-# 相対・非正規化パス（例 IDP_TARGET_DIR=stg や 末尾 /.）でも親ディレクトリを正しく導出できるよう、
-# 絶対・正規化済みパスへ解決してから親を取る（cd が . / .. を畳む）。存在しなければ明示エラー。
+# So the parent can be derived correctly even from relative or non-normalized paths (e.g. IDP_TARGET_DIR=stg or a trailing /.),
+# resolve to an absolute, normalized path before taking the parent (cd folds . / ..). Explicit error if it does not exist.
 target_dir="$(cd "$target_dir" 2>/dev/null && pwd)" \
-  || die "IDP_TARGET_DIR のディレクトリが存在しません: ${IDP_TARGET_DIR:-（スクリプトの場所）}"
-# self-update で自分自身を差し替えるため、絶対パスをここ（cd の前）で 1 度だけ確定する。
-# cd "$target_dir" 後に相対 BASH_SOURCE[0] を再解決すると別ディレクトリを指してしまう
-# （例: ./stg/build-remote-container.sh 起動で target_dir へ cd 済みだと ./stg が二重展開される）。
+  || die "IDP_TARGET_DIR directory does not exist: ${IDP_TARGET_DIR:-(script location)}"
+# Self-update replaces ourselves, so settle the absolute path once here (before the cd).
+# Re-resolving a relative BASH_SOURCE[0] after cd "$target_dir" would point to another directory
+# (e.g. started as ./stg/build-remote-container.sh, after cd into target_dir ./stg would be expanded twice).
 self_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
-# ---- 既定値（設定ファイル build-remote-container.env／環境変数で上書きする） ---------
-# ここの既定値は直接書き換えないこと（self-update が本ファイルを差し替えるため編集は失われる。
-# 環境固有の設定は build-remote-container.env か環境変数で与える）。
-# プロジェクト名は 1 度だけ確定する。優先順位: 環境変数 IDP_PROJECT > 設定ファイル PROJECT >
-# ターゲットディレクトリの親ディレクトリ名（/<プロジェクト名>/<環境> 前提）> 既定値 idp。
+# ---- Defaults (override with the config file build-remote-container.env / environment variables) ---------
+# Do not edit the defaults here directly (self-update replaces this file, so edits are lost;
+# give environment-specific settings via build-remote-container.env or environment variables).
+# Settle the project name once. Precedence: environment variable IDP_PROJECT > config file PROJECT >
+# the target directory's parent directory name (assuming /<project name>/<environment>) > default idp.
 _project_from_dir="$(basename "$(dirname "$target_dir")")"
 case "$_project_from_dir" in '' | '/' | '.' | '..') _project_from_dir='' ;; esac
 project="${IDP_PROJECT:-${PROJECT:-${_project_from_dir:-idp}}}"
-# プロジェクト名の出所（起動ログで「なぜこの値か」を分かるように表示する）。
-if   [[ -n "${IDP_PROJECT:-}" ]]; then project_source="環境変数 IDP_PROJECT"
-elif [[ -n "${PROJECT:-}"     ]]; then project_source="設定ファイル PROJECT"
-elif [[ -n "$_project_from_dir" ]]; then project_source="ディレクトリ（$target_dir の親）"
-else                                    project_source="既定値"
+# Where the project name came from (shown in the startup log so "why this value" is clear).
+if   [[ -n "${IDP_PROJECT:-}" ]]; then project_source="environment variable IDP_PROJECT"
+elif [[ -n "${PROJECT:-}"     ]]; then project_source="config file PROJECT"
+elif [[ -n "$_project_from_dir" ]]; then project_source="directory (parent of $target_dir)"
+else                                    project_source="default"
 fi
 dev_container="${IDP_DEV_CONTAINER:-ubuntu-dev}"
 dev_user="${IDP_DEV_USER:-sshuser}"
 dev_workdir="${IDP_DEV_WORKDIR:-/work/project/$project}"
 dist_dir="${IDP_DIST_DIR:-}"
 
-# パス中の {PROJECT} を project の値へ展開する（プロジェクト名の一元管理）。
-# 置換文字列側では bash 5.2 の patsub_replacement により `&`（マッチ全体）・`\` が
-# 特別扱いされるため、project 値を差し込む前に両者をエスケープしてリテラル挿入する。
+# Expand {PROJECT} in paths to the project value (single source for the project name).
+# In the replacement string, bash 5.2's patsub_replacement treats `&` (the whole match) and `\`
+# specially, so escape both before inserting the project value literally.
 _project_repl="${project//\\/\\\\}"
 _project_repl="${_project_repl//&/\\&}"
 dev_workdir="${dev_workdir//\{PROJECT\}/$_project_repl}"
 dist_dir="${dist_dir//\{PROJECT\}/$_project_repl}"
 
-# モードは引数のどこにあっても拾う（余分な語が前に付いても動く）。既定 migrate。
+# The mode is picked up wherever it is in the arguments (works even with extra words before it). Default migrate.
 mode=migrate
 for arg in "$@"; do
   case "$arg" in app | migrate | reset) mode="$arg" ;; esac
 done
 
-# 配置環境をターゲットディレクトリ名から分類する（stg / prod / other）。表示と、初回の既定イメージ
-# タグ決定の共通の元にする（同じ分類を 2 か所に書かないため）。
+# Classify the deployment environment from the target directory name (stg / prod / other). Shared source for display and
+# for choosing the default image tag on first run (so the same classification is not written in two places).
 classify_target_env() {
   case "$(basename "$target_dir")" in
     stg | staging | *-stg | *-staging) printf 'stg\n' ;;
@@ -132,54 +132,54 @@ classify_target_env() {
   esac
 }
 env_class="$(classify_target_env)"
-# 表示用の環境ラベル。stg/prod はそのまま、その他はディレクトリ名をそのまま出す。
+# Environment label for display. stg/prod as is; anything else shows the directory name as is.
 case "$env_class" in
   stg | prod) environment="$env_class" ;;
   *) environment="$(basename "$target_dir")" ;;
 esac
 
-# ---- 起動情報（どの環境へ・どのモードで動き・どの設定を読み込み・どう解決したかを表示） ----
+# ---- Startup info (shows which environment, which mode, which settings were loaded and how they were resolved) ----
 log "══════════════════════════════════════════════"
-log "  環境 (ENV) : $environment"
-log "  モード     : $mode"
+log "  Environment (ENV) : $environment"
+log "  Mode              : $mode"
 log "  project    : $project"
 log "══════════════════════════════════════════════"
-log "  引数        : $([[ $# -gt 0 ]] && printf '%q ' "$@" || printf '(なし → 既定 %s)' "$mode")"
+log "  Arguments   : $([[ $# -gt 0 ]] && printf '%q ' "$@" || printf '(none -> default %s)' "$mode")"
 if [[ -f "$_config_file" ]]; then
   if [[ ${#_config_loaded_keys[@]} -gt 0 ]]; then
-    log "  設定ファイル: $_config_file （読込: ${_config_loaded_keys[*]}）"
+    log "  Config file : $_config_file (loaded: ${_config_loaded_keys[*]})"
   else
-    log "  設定ファイル: $_config_file （取り込んだキーなし＝全て環境変数が優先）"
+    log "  Config file : $_config_file (no keys imported = environment variables take precedence for all)"
   fi
 else
-  log "  設定ファイル: なし（$_config_file 不在。環境変数と既定値のみ）"
+  log "  Config file : none ($_config_file absent; environment variables and defaults only)"
 fi
-log "  解決した設定:"
-log "    PROJECT           = $project （出所: $project_source）"
+log "  Resolved settings:"
+log "    PROJECT           = $project (source: $project_source)"
 log "    IDP_DEV_CONTAINER = $dev_container"
 log "    IDP_DEV_USER      = $dev_user"
 log "    IDP_DEV_WORKDIR   = $dev_workdir"
-log "    IDP_DIST_DIR      = ${dist_dir:-(未設定)}"
-log "    IDP_TARGET_DIR    = $target_dir （環境=$environment）"
+log "    IDP_DIST_DIR      = ${dist_dir:-(unset)}"
+log "    IDP_TARGET_DIR    = $target_dir (environment=$environment)"
 
-command -v docker >/dev/null 2>&1 || die "docker が見つかりません。"
-[[ -n "$dist_dir" ]] || die "IDP_DIST_DIR（ホストから見えるビルド済み dist/ の絶対パス）を設定してください。"
+command -v docker >/dev/null 2>&1 || die "docker not found."
+[[ -n "$dist_dir" ]] || die "set IDP_DIST_DIR (absolute path of the built dist/ as seen from the host)."
 
 cd "$target_dir"
 
-# デプロイ先 .env のイメージ設定（IMAGE_TAG / IMAGE_PREFIX）をビルドへ引き継ぐ。これを揃えないと
-# build.sh は既定（idp/*:latest）で作る一方、docker-compose.deploy.yml は .env のタグを要求して
-# 起動時にイメージ不一致で失敗する（stg/prod タグ・カスタム prefix 運用への対応）。環境変数が
-# 明示されていればそれを優先し、無ければ既存 .env から読む（初回は .env 未生成のため既定値）。
+# Carry the deployment target .env's image settings (IMAGE_TAG / IMAGE_PREFIX) into the build. Without aligning them
+# build.sh builds with the defaults (idp/*:latest) while docker-compose.deploy.yml requires the .env's tag, and
+# startup fails with an image mismatch (supports stg/prod tags and custom prefixes). Explicit environment variables
+# take precedence; otherwise read from the existing .env (on first run .env is not generated yet, so defaults).
 read_env_value() {
   local key="$1"
   [[ -f "$target_dir/.env" ]] || return 0
-  # キーが無ければ空を返す。set -o pipefail 下でも grep の不一致(1)で落ちないよう `|| true`。
+  # Returns empty if the key is missing. `|| true` so grep's no-match (1) does not abort under set -o pipefail.
   { grep -E "^${key}=" "$target_dir/.env" | tail -n1 | cut -d= -f2- | tr -d '\r'; } || true
 }
-# 初回（.env 未生成）の既定イメージタグを配置環境から決める。stg/prod ディレクトリなら deploy.sh が
-# .env.<env>.example から生成する IMAGE_TAG（stg/prod）とビルドタグを一致させ、「latest でビルド →
-# .env は stg を要求 → イメージ不一致」を防ぐ。その他の環境は latest。分類は env_class を再利用する。
+# Decide the default image tag for the first run (no .env yet) from the deployment environment. For stg/prod directories, match
+# the build tag with the IMAGE_TAG (stg/prod) that deploy.sh generates from .env.<env>.example, preventing "built as latest ->
+# .env requires stg -> image mismatch". Other environments use latest. Reuses env_class for the classification.
 image_tag="${IMAGE_TAG:-$(read_env_value IMAGE_TAG)}"
 image_prefix="${IMAGE_PREFIX:-$(read_env_value IMAGE_PREFIX)}"
 if [[ -z "$image_tag" ]]; then
@@ -190,59 +190,59 @@ if [[ -z "$image_tag" ]]; then
 fi
 image_prefix="${image_prefix:-idp}"
 
-# --- SYNC（dev コンテナ内で git pull だけ先に行う。build.sh はまだ走らせない） -------
-# self-update（下記）より前に最新ソースを取得しておくことで、この後で最新の
-# build-remote-container.sh を dev コンテナから取り出して自分自身と比較できるようにする。
-log "SYNC   dev コンテナ '$dev_container' で git pull します（$dev_workdir）..."
+# --- SYNC (only git pull inside the dev container first; build.sh is not run yet) -------
+# Fetching the latest source before self-update (below) lets us then take the latest
+# build-remote-container.sh out of the dev container and compare it with ourselves.
+log "SYNC   git pull in dev container '$dev_container' ($dev_workdir)..."
 docker exec -u "$dev_user" "$dev_container" bash -lc "
   set -e
   cd '$dev_workdir'
   git pull --ff-only
-" || die "dev コンテナ内での git pull に失敗しました。"
+" || die "git pull inside the dev container failed."
 
-# --- SELF-UPDATE（このスクリプト自身が古ければ最新版へ差し替えて再実行。初回に限らず毎回） ---
-# デプロイ先の build-remote-container.sh は dist/ に含まれない「手置きブートストラップ」なので
-# git pull しても自動更新されない。ここで dev コンテナ内の最新版と byte 単位で比較し、異なれば
-# 最新版で自分自身を置き換えて同じ引数で再実行する。IDP_SELF_UPDATED で再実行は 1 回に限定し
-# 無限ループを防ぐ（再実行後の git pull は no-op・self-update はスキップし、そのまま BUILD へ進む）。
+# --- SELF-UPDATE (if this script is stale, replace it with the latest and re-run; every time, not only the first) ---
+# build-remote-container.sh on the deployment target is a "hand-placed bootstrap" not included in dist/, so
+# git pull does not update it. Compare byte by byte with the latest in the dev container here and, if different,
+# replace ourselves with the latest and re-run with the same arguments. IDP_SELF_UPDATED limits re-runs to one,
+# preventing infinite loops (after re-running, git pull is a no-op and self-update is skipped, going straight to BUILD).
 if [[ "${IDP_SELF_UPDATED:-0}" != "1" ]]; then
   if _self_tmp="$(mktemp "$(dirname "$self_path")/.build-remote-container.XXXXXX" 2>/dev/null)"; then
     if docker exec -u "$dev_user" "$dev_container" \
           bash -lc "cat '$dev_workdir/scripts/build-remote-container.sh'" >"$_self_tmp" 2>/dev/null \
         && [[ -s "$_self_tmp" ]] && ! cmp -s "$_self_tmp" "$self_path"; then
-      log "SELF-UPDATE  build-remote-container.sh が更新されています。最新版へ差し替えて再実行します。"
-      # mktemp は 0600 で作るため、差し替え後に他ユーザー・別の自動化アカウントから実行できなくなる。
-      # 既存スクリプトのパーミッションを引き継ぐ（取得できなければ実行に必要な 0755 を明示付与する）。
+      log "SELF-UPDATE  build-remote-container.sh has been updated. Replacing with the latest and re-running."
+      # mktemp creates with 0600, so after replacement other users or another automation account could not run it.
+      # Inherit the existing script's permissions (if unavailable, explicitly grant 0755 needed for execution).
       chmod --reference="$self_path" "$_self_tmp" 2>/dev/null \
         || chmod "$(stat -c '%a' "$self_path" 2>/dev/null || echo 755)" "$_self_tmp" 2>/dev/null \
         || chmod 0755 "$_self_tmp"
-      # 同一ディレクトリ内 rename でアトミックに差し替える（実行中プロセスの fd は旧 inode を保持し、
-      # 直後の exec がパス経由で新 inode を開き直すため、実行中スクリプトの破損を避けられる）。
+      # Replace atomically by rename within the same directory (the running process's fd keeps the old inode, and
+      # the following exec reopens the new inode via the path, so the running script is not corrupted).
       mv -f "$_self_tmp" "$self_path"
       export IDP_SELF_UPDATED=1
       exec "$self_path" "$@"
     fi
     rm -f "$_self_tmp"
   else
-    log "SELF-UPDATE  一時ファイルを作成できないためスキップします（$self_path のディレクトリ書込権限を確認）。"
+    log "SELF-UPDATE  skipped because a temp file could not be created (check write permission on $self_path's directory)."
   fi
 fi
 
-# --- BUILD（dev コンテナ内で build.sh。git pull は SYNC 済み） ---------------------
-log "BUILD  dev コンテナ '$dev_container' でビルドします（$dev_workdir, image=${image_prefix}/*:${image_tag}）..."
+# --- BUILD (build.sh inside the dev container; git pull already done in SYNC) ---------------------
+log "BUILD  building in dev container '$dev_container' ($dev_workdir, image=${image_prefix}/*:${image_tag})..."
 docker exec \
   -e IMAGE_TAG="$image_tag" -e IMAGE_PREFIX="$image_prefix" \
   -u "$dev_user" "$dev_container" bash -lc "
   set -e
   cd '$dev_workdir'
   ./scripts/build.sh
-" || die "コンテナ内ビルドに失敗しました。"
+" || die "build inside the container failed."
 
-# --- PICK（ビルド済み dist をデプロイ先へ取り込み。旧 pick.sh 相当） --------------
+# --- PICK (pull the built dist into the deployment target; equivalent to the old pick.sh) --------------
 log "PICK   $dist_dir → $target_dir"
-[[ -d "$dist_dir" ]] || die "dist が見つかりません: $dist_dir（build.sh の出力先か IDP_DIST_DIR を確認）。"
-# デプロイ先の .env は取り込みで絶対に壊さない（秘密情報を保全）。万一 dist 側に .env が紛れても
-# 上書きしないよう、コピー前に退避し、コピー後に戻す（.env の管理は deploy.sh に一本化）。
+[[ -d "$dist_dir" ]] || die "dist not found: $dist_dir (check build.sh's output dir or IDP_DIST_DIR)."
+# Never break the deployment target's .env when pulling (preserve secrets). Even if a .env sneaks into dist,
+# back it up before copying and restore it afterwards so it is not overwritten (.env is managed solely by deploy.sh).
 env_backup=""
 if [[ -f "$target_dir/.env" ]]; then
   env_backup="$(mktemp)"
@@ -252,11 +252,11 @@ cp -a "$dist_dir/." "$target_dir/"
 if [[ -n "$env_backup" ]]; then
   mv -f "$env_backup" "$target_dir/.env"
 fi
-[[ -f "$target_dir/deploy.sh" ]] || die "deploy.sh が取り込まれていません（build.sh の出力を確認）。"
+[[ -f "$target_dir/deploy.sh" ]] || die "deploy.sh was not pulled in (check build.sh's output)."
 chmod +x "$target_dir"/*.sh 2>/dev/null || true
 
-# --- DEPLOY（.env は deploy.sh が管理: 初回生成・以後は不足キーのみ追記・秘密は不変） ----
+# --- DEPLOY (.env is managed by deploy.sh: generated on first run, afterwards only missing keys appended, secrets unchanged) ----
 log "DEPLOY ./deploy.sh $mode"
 "$target_dir/deploy.sh" "$mode"
 
-log "END    環境=$environment  モード=$mode（完了）"
+log "END    environment=$environment  mode=$mode (done)"

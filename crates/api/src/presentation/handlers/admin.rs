@@ -1,9 +1,9 @@
-//! 管理コンソールのハンドラ（A2 の基盤。ADR-0006）。
+//! Admin console handlers (A2 foundation, ADR-0006).
 //!
-//! `GET /{tenant_id}/admin/whoami` は `idp.tenant.admin` 権限（`idp.system.admin` は代替として許可）を
-//! 保有する主体だけが呼べる（`RequirePerms<IdpAdmin>`。細粒度コードだけでは通らない。ADR-0037 の決定 8）。
-//! 資格情報は他の管理 API と同じく `Authorization: Bearer` の管理トークンだけである（ADR-0037）。
-//! 権限コードそのものは内部認可であり、Discovery の `scopes_supported` には載せない（ADR-0006 §7）。
+//! `GET /{tenant_id}/admin/whoami` can only be called by principals holding `idp.tenant.admin` (`idp.system.admin`
+//! allowed as an alternative) (`RequirePerms<IdpAdmin>`; fine-grained codes alone don't pass, ADR-0037 decision 8).
+//! As with the other admin APIs, the only credential is an admin token in `Authorization: Bearer` (ADR-0037).
+//! Permission codes themselves are internal authorization and not listed in Discovery's `scopes_supported` (ADR-0006 §7).
 
 use crate::domain::permission;
 use crate::presentation::admin::{IdpAdmin, RequirePerms};
@@ -14,12 +14,12 @@ use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 
-/// 認可済み管理利用者の身元と、操作中のテナントを返す（管理コンソール基盤の疎通確認用）。
-/// アクセスできること自体が「有効な管理トークン ＋ `idp.tenant.admin` 保有」を意味する。
-/// web の管理コンソールは SSO セッションを交換した管理トークン（`POST /internal/admin/token`）で
-/// これを呼び、認証状態・身元・テナント表示名を得る（ADR-0007 §4 / ADR-0037）。テナント表示名は
-/// 全画面のヘッダに出すため、画面ごとの追加呼び出しを避けてここに相乗りさせる（`RequirePerms` が
-/// 通った時点でテナントは解決済み）。
+/// Returns the identity of the authorized admin user and the tenant being operated (admin console connectivity check).
+/// Being able to access it itself means "valid admin token + holds `idp.tenant.admin`".
+/// web's admin console calls this with the admin token exchanged from the SSO session (`POST /internal/admin/token`)
+/// to get the auth state, identity and tenant display name (ADR-0007 §4 / ADR-0037). The tenant display name
+/// appears in every screen's header, so it piggybacks here to avoid an extra call per screen (the tenant is
+/// already resolved once `RequirePerms` passes).
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/whoami",
@@ -39,8 +39,8 @@ pub async fn whoami(
     let permissions =
         effective_permissions(&state, &admin.permission_codes, tenant.tenant().is_root()).await;
     Json(WhoamiResponse {
-        // 管理コンソールは人がログインして使う画面なので、ここに来る主体は利用者である
-        // （システム用クライアントは `idp.tenant.admin` を保有できない。ADR-0037）。
+        // The admin console is a screen people sign in to, so the principal here is a user
+        // (system clients cannot hold `idp.tenant.admin`, ADR-0037).
         user_id: admin
             .actor
             .user_id()
@@ -54,21 +54,21 @@ pub async fn whoami(
     .into_response()
 }
 
-/// 保有コードから、この主体が実際に行使できるコードの一覧を作る（含意を展開する）。
+/// Builds, from the held codes, the list of codes this principal can actually exercise (expands implications).
 ///
-/// 展開先の母集合は `permissions` マスタである。「保有コードをそのまま返す」では消費側が
-/// 含意（`idp.system.admin` は全部・`:write` は `:read`）を知らないと判定できず、判定が
-/// core と web の 2 か所に散る。マスタの読みは 1 回で、コンソールの画面表示のたびに走る。
+/// The universe for expansion is the `permissions` master. "Return the held codes as is" would leave consumers
+/// unable to decide without knowing the implications (`idp.system.admin` implies all, `:write` implies `:read`), scattering
+/// the decision across core and web. The master is read once, on every console screen render.
 ///
-/// マスタが読めなかったときは**保有コードだけ**を返す。ここで落とすと管理コンソールの全画面が
-/// 開かなくなるためである。ただし返す並びは含意を展開していないので、消費側の判定は完全一致に
-/// なる（`idp.tenant.admin` の保有者に `idp.users:read` を要する画面が隠れる）。この経路が
-/// 隠しすぎになるのは**マスタが読めない間だけ**で、いま消費側が見る `idp.system.admin` は
-/// 保有コードとして直接載るため影響しない。含意が要る判定を足すときは、この分岐を
-/// 「空を返す＝絞り込まない」へ変えること。
+/// If the master cannot be read, **only the held codes** are returned, because failing here would keep every
+/// admin console screen from opening. The returned list is not expanded though, so consumers' checks become
+/// exact matches (screens needing `idp.users:read` are hidden from `idp.tenant.admin` holders). This path
+/// over-hides **only while the master is unreadable**, and `idp.system.admin`, which consumers check today,
+/// is listed directly as a held code, so it is unaffected. When adding a check that needs implications, change
+/// this branch to "return empty = no filtering".
 ///
-/// ⚠ root でないテナントでは、root の中でしか行使できないコード（署名鍵。`ROOT_SCOPED_CODES`）を
-/// 落とす。含意では持っていても、口が root を課すので押した先が 403 の行き止まりになる。
+/// ⚠ In non-root tenants, codes exercisable only within root (signing keys, `ROOT_SCOPED_CODES`) are
+/// dropped. Even if held via implication, the endpoint requires root, so clicking through would dead-end at 403.
 async fn effective_permissions(
     state: &AppState,
     held: &[String],

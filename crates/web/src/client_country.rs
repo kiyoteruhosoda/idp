@@ -1,12 +1,15 @@
-//! 今の要求の「信じてよい国」を、その要求の間だけ持つ（task #895）。
+//! Holds the request's "trustworthy country" for the duration of that request only (task #895).
 //!
-//! 国（`CF-IPCountry`）は `TRUST_FORWARDED_HEADERS` が有効なときだけ信じる（[`crate::device_observation`]
-//! と同じ判定）。middleware が要求の間だけここへ置き、api クライアントが内部の呼び出しへ
-//! [`assay_contracts::auth::CLIENT_COUNTRY_HEADER`] として添える。api は断ったログインの履歴に国を書く。
+//! The country (`CF-IPCountry`) is trusted only when `TRUST_FORWARDED_HEADERS` is enabled (same
+//! check as [`crate::device_observation`]). The middleware places it here for the duration of the
+//! request, and the api client attaches it to internal calls as
+//! [`assay_contracts::auth::CLIENT_COUNTRY_HEADER`]. api writes the country into the history of
+//! refused sign-ins.
 //!
-//! ハンドラの引数で渡さないのは、ログインの経路（パスワード・確認コード・パスキー・外部 IdP・管理
-//! コンソール・パスワード変更）がどれも api を呼ぶだけで、国を必要とするのは api 側の履歴だけだから。
-//! 経路ごとに DTO へ欄を足すと、足し忘れた経路だけ国が抜ける。
+//! It is not passed as a handler argument because every sign-in path (password, verification code,
+//! passkey, external IdP, admin console, password change) only calls api, and only the history on
+//! the api side needs the country. Adding a field to each path's DTO would drop the country on
+//! exactly the path where it was forgotten.
 
 use crate::device_observation::trusted_country;
 use crate::state::WebState;
@@ -18,24 +21,25 @@ tokio::task_local! {
     static CLIENT_COUNTRY: Option<String>;
 }
 
-/// 今の要求の信じてよい国（middleware の外・要求の外では `None`）。
+/// The current request's trustworthy country (`None` outside the middleware or outside a request).
 pub fn current() -> Option<String> {
     CLIENT_COUNTRY.try_with(Clone::clone).ok().flatten()
 }
 
-/// 要求の間だけ国を置く middleware。
+/// Middleware that holds the country for the duration of the request.
 pub async fn scope_client_country(
     State(state): State<WebState>,
     request: Request,
     next: Next,
 ) -> Response {
-    // 見出しに載せるので、国コードの形（英数字 2 文字）以外は置かない（壊れた見出しで api 呼び出しを落とさない）。
+    // It goes into a header, so only country-code shapes (2 alphanumerics) are kept (a broken
+    // header must not fail the api call).
     let country = trusted_country(request.headers(), state.config.trust_forwarded_headers())
         .filter(|c| c.len() == 2 && c.bytes().all(|b| b.is_ascii_alphanumeric()));
     CLIENT_COUNTRY.scope(country, next.run(request)).await
 }
 
-/// 試験用: 国を置いた状態で `f` を走らせる。
+/// For tests: runs `f` with a country set.
 #[cfg(test)]
 pub async fn with_country<F: std::future::Future>(country: Option<String>, f: F) -> F::Output {
     CLIENT_COUNTRY.scope(country, f).await

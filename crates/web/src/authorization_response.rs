@@ -1,14 +1,14 @@
-//! 認可応答を RP へ返す（`response_mode`。G12）。
+//! Returns the authorization response to the RP (`response_mode`, G12).
 //!
-//! api は認可応答を「送信先（`redirect_to`）＋任意のフォームフィールド（`form_post`）」の形で返す。
-//! web はそれを HTTP へ写すだけ:
+//! api returns the authorization response as "destination (`redirect_to`) + optional form fields (`form_post`)".
+//! web only maps that onto HTTP:
 //!
-//! - `form_post` が `None`（＝ `query`）: `redirect_to` へ 302。従来どおり。
-//! - `form_post` が `Some`: `redirect_to` を action にした**自動送信フォーム**を描いて POST。
+//! - `form_post` is `None` (= `query`): 302 to `redirect_to`. Same as before.
+//! - `form_post` is `Some`: render an **auto-submitting form** with `redirect_to` as its action and POST.
 //!
-//! 認可応答を返す経路はログイン・MFA・パスキー・同意・強制パスワード変更・外部 IdP・resume と
-//! 7 つある。**判断をこの 1 か所に集める**のは、どれか 1 つで `form_post` を見落とすと、そこだけ
-//! 認可コードが URL に載って返る——しかも成功して見える——ためである。
+//! There are 7 paths that return an authorization response: sign-in, MFA, passkey, consent, forced password change,
+//! external IdP and resume. **The decision is gathered in this one place** because if any one of them overlooked
+//! `form_post`, only that path would return the authorization code in the URL — and it would even look successful.
 
 use crate::i18n::Messages;
 use crate::templates::{render, AuthorizationPost};
@@ -16,7 +16,7 @@ use assay_contracts::auth::FormPostFields;
 use axum::http::header;
 use axum::response::{Html, IntoResponse, Response};
 
-/// 認可応答を返す。`form_post` の有無で 302 と自動送信フォームを出し分ける。
+/// Returns the authorization response. Chooses between a 302 and an auto-submitting form based on `form_post`.
 pub fn respond(
     messages: &Messages,
     redirect_to: &str,
@@ -28,15 +28,15 @@ pub fn respond(
     }
 }
 
-/// 自動送信フォームのページ。
+/// The auto-submitting form page.
 ///
-/// **キャッシュを禁止する。** 本文に認可コードが載るため、共有プロキシやブラウザの戻る操作で
-/// 再表示されると、コードが本来より長く手の届く場所に残る。
+/// **Caching is forbidden.** The body carries the authorization code, so if a shared proxy or the browser's back
+/// button redisplays it, the code stays within reach longer than it should.
 ///
-/// **`form-action` に RP のオリジンを許可する。** このページのフォームは `redirect_uri` へ直接
-/// POST する。既定の CSP（`form-action 'self'`）のままでは、Chrome の挙動とは関係なく **仕様
-/// どおり全ブラウザで送信が遮断され**、認可コードは発行済みなのに RP へ届かない
-/// （SAML の POST binding が同じ形を採っている。`handlers::saml_sso`）。
+/// **`form-action` allows the RP's origin.** This page's form POSTs directly to `redirect_uri`.
+/// With the default CSP (`form-action 'self'`), regardless of Chrome's behaviour, **every browser blocks the
+/// submission per spec**, and the authorization code, though issued, never reaches the RP
+/// (the SAML POST binding takes the same shape; see `handlers::saml_sso`).
 fn form_post_page(messages: &Messages, action: &str, fields: &[(String, String)]) -> Response {
     let html = render(&AuthorizationPost {
         messages,
@@ -47,7 +47,7 @@ fn form_post_page(messages: &Messages, action: &str, fields: &[(String, String)]
         [
             (header::CACHE_CONTROL, "no-store"),
             (header::PRAGMA, "no-cache"),
-            // 認可コードを載せたページから RP へ遷移するので、`Referer` も出さない。
+            // The page carrying the authorization code navigates to the RP, so no `Referer` is sent either.
             (header::REFERRER_POLICY, "no-referrer"),
         ],
         [(
@@ -59,7 +59,7 @@ fn form_post_page(messages: &Messages, action: &str, fields: &[(String, String)]
         .into_response()
 }
 
-/// 302 リダイレクト（`query` モード）。
+/// 302 redirect (`query` mode).
 fn found(location: &str) -> Response {
     crate::handlers::found(location)
 }
@@ -84,7 +84,7 @@ mod tests {
         );
     }
 
-    /// form_post ではフォームを描く。**302 は返さない**（Location に載せたら意味が無い）。
+    /// form_post renders a form. **No 302 is returned** (putting it in Location would defeat the purpose).
     #[tokio::test]
     async fn form_post_mode_renders_a_self_submitting_form() {
         let messages = Messages::new(Locale::Ja);
@@ -104,7 +104,7 @@ mod tests {
                 .get(header::CACHE_CONTROL)
                 .and_then(|v| v.to_str().ok()),
             Some("no-store"),
-            "認可コードを載せたページはキャッシュさせない"
+            "the page carrying the authorization code must not be cached"
         );
 
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -121,8 +121,8 @@ mod tests {
         assert!(html.contains("data-auto-submit"), "{html}");
     }
 
-    /// 自動送信フォームは `redirect_uri` へ直接 POST する。既定の `form-action 'self'` のままだと
-    /// **全ブラウザが仕様どおり遮断する**（コードは発行済みなのに RP へ届かない）。
+    /// The auto-submitting form POSTs directly to `redirect_uri`. With the default `form-action 'self'`,
+    /// **every browser blocks it per spec** (the code is issued but never reaches the RP).
     #[tokio::test]
     async fn form_post_mode_allows_the_relying_party_origin_as_a_form_action() {
         let messages = Messages::new(Locale::Ja);
@@ -143,7 +143,7 @@ mod tests {
         );
     }
 
-    /// フィールドの値は RP 由来（`state`）を含むため、テンプレートのエスケープに委ねる。
+    /// Field values include RP-supplied data (`state`), so escaping is left to the template.
     #[tokio::test]
     async fn field_values_are_escaped() {
         let messages = Messages::new(Locale::Ja);

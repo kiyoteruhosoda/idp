@@ -1,8 +1,8 @@
-//! ユーザーの所属テナント列挙ユースケース（テナント切り替え UI 用）。
+//! Use case: list the tenants a user belongs to (for the tenant switcher UI).
 //!
-//! ログイン済みユーザーが `ACTIVE` なメンバーシップ（HOME / GUEST）を持つテナントを列挙する。
-//! SSO セッションはホスト単位で共有されるため（ADR-0009 §8）、切り替えは対象テナントの管理コンソール
-//! へ遷移するだけでよく、再ログインは不要。表示名はテナント行から解決する。
+//! Lists tenants where the logged-in user has an `ACTIVE` membership (HOME / GUEST).
+//! The SSO session is shared per host (ADR-0009 §8), so switching only needs a move to the target
+//! tenant's admin console; no re-login. Display names are resolved from the tenant row.
 
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
@@ -11,17 +11,17 @@ use crate::domain::repositories::{
 };
 use std::sync::Arc;
 
-/// 切り替え可能なテナント 1 件。
+/// One switchable tenant.
 pub struct AccountTenant {
     pub tenant_id: String,
     pub name: String,
-    /// メンバーシップ種別（`HOME` / `GUEST`）。
+    /// Membership kind (`HOME` / `GUEST`).
     pub membership_type: String,
 }
 
 pub enum ListTenantsOutcome {
     Ok(Vec<AccountTenant>),
-    /// SSO セッションが無い・期限切れ。
+    /// No SSO session, or it has expired.
     SessionExpired,
     Internal(String),
 }
@@ -51,7 +51,7 @@ impl AccountTenantsService {
     pub async fn list(&self, sso_session_id: &str) -> ListTenantsOutcome {
         let now = self.clock.now();
 
-        // SSO セッションから本人を解決する。
+        // Resolve the user from the SSO session.
         let session_hash = crypto::sha256_hex(sso_session_id);
         let user_id = match self.sso_sessions.find_by_hash(&session_hash).await {
             Ok(Some(s)) if s.is_valid_at(now) => s.user_id,
@@ -64,10 +64,10 @@ impl AccountTenantsService {
             Err(e) => return ListTenantsOutcome::Internal(e.to_string()),
         };
 
-        // 各メンバーシップのテナント表示名を解決する（所属数は小さく N+1 は問題にならない）。
-        // テナント行が見つからないメンバーシップ（削除競合等）や、`DISABLED` なテナントはスキップする。
-        // 無効テナントは `TenantResolutionService::resolve` が拒否する（遷移先が常に 404 になる）ため、
-        // 切り替え候補に出さない。
+        // Resolve the tenant display name for each membership (few memberships, so N+1 is fine).
+        // Skip memberships whose tenant row is missing (deletion race etc.) and `DISABLED` tenants.
+        // `TenantResolutionService::resolve` rejects disabled tenants (the target would always 404),
+        // so they are not offered for switching.
         let mut result = Vec::with_capacity(memberships.len());
         for m in memberships {
             match self.tenants.find_by_id(m.tenant_id).await {

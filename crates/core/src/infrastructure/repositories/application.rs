@@ -1,5 +1,5 @@
-//! `ApplicationRepository` の sqlx 実装（ADR-0054）。
-//! UUID は CHAR(36) 正準文字列で入出力する。
+//! sqlx implementation of `ApplicationRepository` (ADR-0054).
+//! UUIDs are read and written as canonical CHAR(36) strings.
 
 use crate::domain::account::AccountRef;
 use crate::domain::application::{
@@ -30,7 +30,7 @@ impl SqlxApplicationRepository {
 const SELECT_COLUMNS: &str =
     "id, tenant_id, display_name, status, assignment_mode, created_at, updated_at";
 
-/// 別名（`a.`）付きの SELECT 句。join する問い合わせで列名が曖昧にならないようにする。
+/// SELECT clause with an alias (`a.`), so column names aren't ambiguous in queries with joins.
 fn aliased_columns(alias: &str) -> String {
     SELECT_COLUMNS
         .split(", ")
@@ -79,8 +79,8 @@ fn map_binding(row: &MySqlRow) -> Result<ApplicationBinding> {
     let service_provider_id: Option<String> =
         row.try_get("service_provider_id").map_err(repo_err)?;
     let resource_id: Option<String> = row.try_get("resource_id").map_err(repo_err)?;
-    // DB 側の CHECK 制約と同じことをここでも言う。種類と埋まっている列が食い違う行は、
-    // 黙って片方を使うのではなくリポジトリエラーにする（表せてはいけない状態をドメインへ通さない）。
+    // Say here the same thing as the DB CHECK constraint. A row whose kind and filled columns disagree
+    // becomes a repository error rather than silently using one side (states that must not be representable don't reach the domain).
     let target = match (kind.as_str(), client_id, service_provider_id, resource_id) {
         ("oidc", Some(client), None, None) => BindingTarget::Oidc {
             client_row_id: parse_uuid(&client)?,
@@ -108,7 +108,7 @@ fn map_binding(row: &MySqlRow) -> Result<ApplicationBinding> {
     })
 }
 
-/// 名乗りの種類ごとに、相手を持つ列（`application_bindings` の列名）。
+/// Per binding kind, the column holding the counterpart (column names of `application_bindings`).
 fn target_column(target: &BindingTarget) -> &'static str {
     match target {
         BindingTarget::Oidc { .. } | BindingTarget::ServiceAccount { .. } => "client_id",
@@ -176,8 +176,8 @@ impl ApplicationRepository for SqlxApplicationRepository {
         row.as_ref().map(map_application).transpose()
     }
 
-    /// `clients.client_id`（テナント内一意の文字列）→ binding → アプリ、を 1 往復で解く。
-    /// 認可のたびに引くため、client を読んでからアプリを読む 2 往復にはしない。
+    /// Resolves `clients.client_id` (tenant-unique string) -> binding -> app in one round trip.
+    /// It is looked up on every authorization, so it is not 2 round trips of reading the client then the app.
     async fn find_by_oidc_client_id(
         &self,
         tenant_id: TenantId,
@@ -220,9 +220,9 @@ impl ApplicationRepository for SqlxApplicationRepository {
         row.as_ref().map(map_application).transpose()
     }
 
-    /// 種類と相手の両方で引く。⚠ **種類を条件から外さない** ——ログイン用とサービスアカウントは
-    /// 同じ `client_id` 列を使うので、種類を見ないとログイン用の名乗りでサービスアカウントの口
-    /// （self の名簿・管理トークン）が通ってしまう。
+    /// Looks up by both kind and counterpart. ⚠ **Don't drop the kind from the condition** -- login bindings and service accounts
+    /// use the same `client_id` column, so ignoring the kind would let a login binding pass through the service account endpoints
+    /// (self roster, admin token).
     async fn find_by_binding_target(
         &self,
         tenant_id: TenantId,
@@ -255,8 +255,8 @@ impl ApplicationRepository for SqlxApplicationRepository {
         rows.iter().map(map_application).collect()
     }
 
-    /// `tenant_id` も条件に入れる（id だけで更新できると、root の管理者が他テナントのアプリを
-    /// 止められる）。
+    /// `tenant_id` is also part of the condition (if updating by id alone were possible, a root admin could
+    /// disable another tenant's app).
     async fn update(
         &self,
         tenant_id: TenantId,
@@ -305,8 +305,8 @@ impl ApplicationRepository for SqlxApplicationRepository {
         rows.iter().map(map_binding).collect()
     }
 
-    /// 一意制約違反は `Conflict`。「その client は既に別のアプリに繋がっている」であって、
-    /// 呼び出し側の不具合ではない（管理画面がそのまま出せる失敗）。
+    /// A unique-constraint violation is `Conflict`. It means "that client is already linked to another app",
+    /// not a caller bug (a failure the admin screen can show as is).
     async fn add_binding(&self, binding: &ApplicationBinding) -> Result<()> {
         let mut client_id = None;
         let mut service_provider_id = None;
@@ -355,9 +355,9 @@ impl ApplicationRepository for SqlxApplicationRepository {
         Ok(result.rows_affected() > 0)
     }
 
-    /// 1 文の UPDATE で付け替える（外す＋足すの間に「どこにも属さない」瞬間を作らない）。
-    /// `created_at` は「このアプリへ結び付けた日時」なので、移した時刻に改める。
-    /// 一意キーは相手の列にだけ掛かっているので、付け替えでは衝突しない。
+    /// Re-links in one UPDATE (no moment of "belonging nowhere" between removing and adding).
+    /// `created_at` is "when it was linked to this app", so it is reset to the time of the move.
+    /// The unique key applies only to the counterpart column, so re-linking doesn't conflict.
     async fn move_binding(
         &self,
         binding_id: Uuid,
@@ -393,8 +393,8 @@ impl ApplicationRepository for SqlxApplicationRepository {
         rows.iter().map(map_binding).collect()
     }
 
-    /// ⚠ 種類で絞らなくても人の行だけに当たる（サービスアカウントの行は `user_id` が NULL）が、
-    /// 読み手が「サービスアカウントも数えているのでは」と疑わずに済むよう、種類を明示する。
+    /// ⚠ Even without filtering by kind it only hits people's rows (service account rows have NULL `user_id`), but
+    /// the kind is stated explicitly so readers don't wonder "isn't it counting service accounts too".
     async fn is_assigned(&self, application_id: Uuid, user_id: Uuid) -> Result<bool> {
         let row = sqlx::query(
             "SELECT 1 FROM application_assignments \
@@ -443,12 +443,12 @@ impl ApplicationRepository for SqlxApplicationRepository {
         tenant_id: TenantId,
         account: AccountRef,
     ) -> Result<Vec<AccountAssignment>> {
-        // 種類ごとに見る列が違う（`kind` と列の組は CHECK 制約が保証している）。
+        // The column to look at differs per kind (the pairing of `kind` and columns is guaranteed by a CHECK constraint).
         let (column, id) = match account {
             AccountRef::User { user_id } => ("user_id", user_id),
             AccountRef::ServiceAccount { client_row_id } => ("client_id", client_row_id),
         };
-        // アプリの行で要求テナントに絞る（割り当ての表はテナントを持たない）。
+        // Narrow to the requested tenant via the app row (the assignment table has no tenant).
         let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT a.application_id, a.assigned_at \
              FROM application_assignments a JOIN applications p ON p.id = a.application_id \
@@ -499,8 +499,8 @@ impl ApplicationRepository for SqlxApplicationRepository {
         row.try_get("assigned").map_err(repo_err)
     }
 
-    /// 冪等（既存の割り当ては `id`・`assigned_at`・`assigned_by` を保持する）。割り当て直しで
-    /// 「いつから使えるのか」が書き換わると、監査でさかのぼれなくなる。
+    /// Idempotent (existing assignments keep `id`, `assigned_at` and `assigned_by`). If reassigning
+    /// rewrote "since when it is usable", audits could not trace back.
     async fn assign(&self, assignment: &ApplicationAssignment) -> Result<()> {
         sqlx::query(
             "INSERT INTO application_assignments \

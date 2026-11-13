@@ -1,4 +1,4 @@
-//! `UserRepository` の sqlx 実装。UUID は CHAR(36) 正準文字列として入出力する。
+//! sqlx implementation of `UserRepository`. UUIDs are read and written as canonical CHAR(36) strings.
 
 use crate::domain::authentication_policy::LockoutPolicy;
 use crate::domain::error::{DomainError, Result};
@@ -23,16 +23,16 @@ impl SqlxUserRepository {
         Self { pool }
     }
 
-    /// 登録簿（`user_login_identifiers`）を引く 2 つの解決が共有する本体（AP8、ADR-0009 §8）。
+    /// Body shared by the 2 resolutions that look up the registry (`user_login_identifiers`) (AP8, ADR-0009 §8).
     ///
-    /// **複数の利用者に当たったら誰も返さない**（[`LoginIdentifierMatch::Unresolved`] の
-    /// `Ambiguous`。「不在」とは区別する。MT25）。1 テナント内で 1 正規化値は 1 人のものだが
-    /// （migration 0041）、種別ごとに正規化が違うため 1 つの入力は複数の正規化値へ広がり、
-    /// 「ユーザー名としては A、電話番号としては B」という入力があり得る（ゲスト解決は所属元
-    /// テナントもまたぐ）。
-    /// `LIMIT 1` でどちらかを選ぶと、どちらが返るかが索引の都合で決まってしまう。曖昧な入力で
-    /// 認証を通すより、通さない方を選ぶ（候補生成側でも起きにくくしてある。
-    /// [`crate::domain::login_identifier::lookup_candidates`]）。
+    /// **If it matches multiple users, nobody is returned** (`Ambiguous` of [`LoginIdentifierMatch::Unresolved`],
+    /// distinguished from "absent"; MT25). Within a tenant one normalized value belongs to one person
+    /// (migration 0041), but normalization differs per type, so one input expands to several normalized values,
+    /// and an input may be "A as a username, B as a phone number" (guest resolution also crosses the owning
+    /// tenant).
+    /// Choosing one with `LIMIT 1` would let the index decide which is returned. Rather than letting
+    /// an ambiguous input authenticate, we choose not to (candidate generation also makes it unlikely;
+    /// [`crate::domain::login_identifier::lookup_candidates`]).
     async fn resolve_login_identifier(
         &self,
         scope: IdentifierScope,
@@ -56,8 +56,8 @@ impl SqlxUserRepository {
             0 => Ok(LoginIdentifierMatch::not_found()),
             1 => map_row(&rows[0]).map(LoginIdentifierMatch::Resolved),
             _ => {
-                // 曖昧。ログイン経路は監査にも残すが（`UnresolvedReason::audit_code`）、登録・改名の
-                // 空き判定はここを通っても監査に出ないため、運用ログにも残す（値は PII のため出さない）。
+                // Ambiguous. The login path also records it in the audit log (`UnresolvedReason::audit_code`), but registration/rename
+                // availability checks pass through here without an audit entry, so it is also logged operationally (the value is PII and not output).
                 tracing::warn!(
                     tenant_id = %tenant_id,
                     "login identifier resolved to multiple users; refusing to authenticate"
@@ -68,52 +68,52 @@ impl SqlxUserRepository {
     }
 }
 
-/// 登録簿を引く範囲（ADR-0009 §8・ADR-0029）。ログイン経路が「所属元として引くのか、参加先の
-/// ゲストとして引くのか、ドメインで決まった所属元テナントに絞って引くのか」を選ぶ。SQL 断片を
-/// 引数で渡し回さず列挙で表すことで、組み立て可能な形がこの 3 つに閉じる。
+/// Range of the registry lookup (ADR-0009 §8, ADR-0029). The login path chooses "look up as the owning tenant, as a guest of
+/// the joined tenant, or restricted to the owning tenant determined by domain". Expressing it as an enum instead of
+/// passing SQL fragments around as arguments closes the buildable shapes to these 3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IdentifierScope {
-    /// 所属元テナントの登録簿（`user_login_identifiers.tenant_id` = 要求テナント）。
-    /// 引き方に合わせた索引 `user_login_identifiers_lookup_idx (tenant_id, 種別, 正規化値)`
-    /// に乗る（migration 0041 で一意キーから種別が外れたため、索引は別立てになった）。
+    /// Registry of the owning tenant (`user_login_identifiers.tenant_id` = requested tenant).
+    /// Uses the index matching the lookup, `user_login_identifiers_lookup_idx (tenant_id, type, normalized value)`
+    /// (migration 0041 removed the type from the unique key, so the index became separate).
     Home,
-    /// 要求テナントに ACTIVE な GUEST として参加している利用者を、**その利用者の所属元の**
-    /// 登録簿で引く。
+    /// Looks up users participating in the requested tenant as ACTIVE GUESTs in **that user's owning tenant's**
+    /// registry.
     ActiveGuest,
-    /// 所属元テナントが**分かっている**とき（ドメインから決まった。ADR-0029）に、そのテナントの
-    /// 登録簿だけを引く。要求テナントで ACTIVE なメンバー（HOME / GUEST を問わない）であることは
-    /// [`Self::ActiveGuest`] と同じく課す。
+    /// When the owning tenant **is known** (determined from the domain; ADR-0029), looks up only that tenant's
+    /// registry. Being an ACTIVE member of the requested tenant (HOME or GUEST) is
+    /// required, as with [`Self::ActiveGuest`].
     ///
-    /// **この範囲では曖昧さが原理的に起きない。** 引くのは 1 テナントの登録簿だけで、その中では
-    /// 1 正規化値が 1 人のものだからである（migration 0041）。ゲストを横断走査しないので、
-    /// 同名のゲストが何人参加していても互いに干渉しない。
+    /// **Ambiguity cannot arise in this range by construction.** Only one tenant's registry is looked up, and within it
+    /// one normalized value belongs to one person (migration 0041). Guests are not scanned across, so
+    /// however many guests with the same name participate, they don't interfere with each other.
     MemberWithHomeTenant(TenantId),
 }
 
 impl IdentifierScope {
-    /// `FROM user_login_identifiers i JOIN users u ...` に続く JOIN と WHERE。候補の IN 句以外の
-    /// 絞り込みをここに書き、末尾は条件で終える（IN 句を ` AND` で継ぐため）。
+    /// JOINs and WHERE following `FROM user_login_identifiers i JOIN users u ...`. Filters other than the candidates' IN clause
+    /// go here, and it ends with a condition (the IN clause is appended with ` AND`).
     ///
-    /// `ActiveGuest` の `i.tenant_id = u.tenant_id` は「識別子は所属元テナントに登録される」という
-    /// 登録簿の不変条件を明示するもので、これが無いと他テナントに登録された行でも解決されうる。
+    /// `ActiveGuest`'s `i.tenant_id = u.tenant_id` makes explicit the registry invariant "identifiers are registered in the
+    /// owning tenant"; without it, rows registered in other tenants could resolve.
     ///
-    /// `home.status = 'ACTIVE'`（所属元テナントが有効）も課す（ADR-0009 §8）。所属元の無効化は
-    /// 「その組織の利用者を止める」操作であり、参加先テナント経由の裏口を残す意味ではない。
-    /// `Home` 側に同じ条件が要らないのは、そちらの要求テナント＝所属元テナントであり、middleware
-    /// （`TenantResolutionService`）が `DISABLED` なら 404 で先に止めているため。同じ規則を
-    /// メンバーシップ側から見たものが `TenantMembershipRepository::is_active_member`。
+    /// `home.status = 'ACTIVE'` (owning tenant active) is also required (ADR-0009 §8). Disabling the owning tenant is
+    /// the operation "stop that organization's users", not something that leaves a back door via joined tenants.
+    /// `Home` doesn't need the same condition because its requested tenant = owning tenant, and the middleware
+    /// (`TenantResolutionService`) already stops `DISABLED` with a 404. The same rule seen
+    /// from the membership side is `TenantMembershipRepository::is_active_member`.
     ///
-    /// `ActiveGuest` は `Home` と違い引き方の索引（`user_login_identifiers_lookup_idx`
-    /// = `(tenant_id, 種別, 正規化値)`）には乗らず、
-    /// 当該テナントの ACTIVE な GUEST メンバーシップ
-    /// （`tenant_memberships_tenant_type_status_idx (tenant_id, membership_type, status)`。
-    /// migration 0040）から、利用者の識別子（`(user_id, identifier_type)` の索引）へ辿る。等値条件を
-    /// 索引の列順に合わせてあるので、走査はテナントのメンバー数ではなく**ゲスト数**に比例する。
+    /// Unlike `Home`, `ActiveGuest` doesn't use the lookup index (`user_login_identifiers_lookup_idx`
+    /// = `(tenant_id, type, normalized value)`); it goes
+    /// from the tenant's ACTIVE GUEST memberships
+    /// (`tenant_memberships_tenant_type_status_idx (tenant_id, membership_type, status)`,
+    /// migration 0040) to the user's identifiers (index on `(user_id, identifier_type)`). The equality conditions
+    /// follow the index column order, so the scan is proportional to **the number of guests**, not the tenant's member count.
     ///
-    /// この経路が走るのは所属元での解決が空振りしたとき、つまり**参加先の画面からのゲストの
-    /// ログインすべて**と、**存在しないユーザー名でのログイン試行**のたびである。前者は通常の
-    /// ログインであり、後者は総当たりが最も送ってくる形でもあるため、どちらもメンバー数に
-    /// 比例させない。
+    /// This path runs when resolution in the owning tenant comes up empty, i.e. on **every guest login from the
+    /// joined tenant's screen** and on **every login attempt with a nonexistent username**. The former is ordinary
+    /// login, and the latter is the shape brute force sends most, so neither should be
+    /// proportional to the member count.
     fn sql(self) -> &'static str {
         match self {
             Self::Home => "WHERE i.tenant_id = ?",
@@ -123,9 +123,9 @@ impl IdentifierScope {
                  WHERE m.tenant_id = ? AND m.membership_type = ? AND m.status = ? \
                    AND i.tenant_id = u.tenant_id"
             }
-            // 所属元が決まっているので、メンバーシップ種別では絞らない（HOME でも GUEST でもよい）。
-            // 代わりに `u.tenant_id = ?` で所属元を固定する。要求テナント自身がドメインを持つ場合も
-            // この形で足りる（そのときの所属元＝要求テナントで、HOME 側に当たる）。
+            // The owning tenant is fixed, so don't filter by membership type (HOME or GUEST both fine).
+            // Instead the owning tenant is pinned with `u.tenant_id = ?`. This shape also suffices when the requested tenant itself
+            // has the domain (then owning tenant = requested tenant, which is the HOME side).
             Self::MemberWithHomeTenant(_) => {
                 "JOIN tenant_memberships m ON m.user_id = u.id \
                  JOIN tenants home ON home.id = u.tenant_id AND home.status = 'ACTIVE' \
@@ -135,8 +135,8 @@ impl IdentifierScope {
         }
     }
 
-    /// [`Self::sql`] のプレースホルダを、候補（種別 × 正規化値）より先に埋める値。メンバーシップの
-    /// 種別・状態はリテラルを書かず Rust 側の enum から取り、許可値の単一の出所から離れないようにする。
+    /// Values filling [`Self::sql`]'s placeholders before the candidates (type x normalized value). Membership
+    /// type and status come from the Rust enums rather than literals, staying with the single source of allowed values.
     fn binds(self, tenant_id: TenantId) -> Vec<String> {
         match self {
             Self::Home => vec![tenant_id.to_string()],
@@ -154,13 +154,13 @@ impl IdentifierScope {
     }
 }
 
-/// 登録簿の解決クエリを組み立てる。外部入力は必ず bind を通り、この文字列に載るのは
-/// モジュール内のリテラルと `?` の個数だけ（DB 無しで形を検証できるよう関数に切り出す）。
-/// 解決のクエリ。
+/// Builds the registry resolution query. External input always goes through bind; all that goes into this string
+/// is literals from this module and the number of `?` (split into a function so its shape can be verified without a DB).
+/// The resolution query.
 ///
-/// `email` 種別だけは**識別子が載っているテナント**（＝利用者の所属元）のスイッチを見る
-/// （ADR-0050 決定 3）。要求元テナントを見ないのは、ゲストとして参加している先の設定で
-/// 所属元の入り口が開いたり閉じたりしないようにするためである。
+/// Only the `email` type looks at the switch of **the tenant where the identifier is registered** (= the user's owning tenant)
+/// (ADR-0050 decision 3). The requesting tenant is not consulted so that the settings of a tenant joined as a guest
+/// don't open or close the entrance of the owning tenant.
 fn login_identifier_sql(scope: IdentifierScope, candidate_count: usize) -> String {
     let placeholders = vec!["(?, ?)"; candidate_count].join(", ");
     let scope = scope.sql();
@@ -178,12 +178,12 @@ fn login_identifier_sql(scope: IdentifierScope, candidate_count: usize) -> Strin
     )
 }
 
-/// `users` の列と、**登録簿から連れてくる主たるログイン識別子**。
+/// `users` columns, plus **the primary login identifier brought in from the registry**.
 ///
-/// AP15b で `users.preferred_username` を撤去したので、この 1 列だけは
-/// `user_login_identifiers` の主識別子行（`primary_of_user`）から引く。JOIN ではなく相関
-/// サブクエリにするのは、主識別子を持たない利用者（管理者が作ってユーザー名を付けていない
-/// アカウント）を落とさないため —— `find_by_id` が突然 `None` を返すようになる。
+/// AP15b removed `users.preferred_username`, so this one column is looked up from
+/// the primary identifier row of `user_login_identifiers` (`primary_of_user`). It is a correlated subquery rather than a JOIN
+/// so users without a primary identifier (accounts created by an admin without a username)
+/// aren't dropped -- otherwise `find_by_id` would suddenly start returning `None`.
 const SELECT_COLUMNS: &str = "u.id AS id, u.tenant_id AS tenant_id, u.sub AS sub, \
      u.email AS email, u.email_verified AS email_verified, \
      (SELECT p.display_value FROM user_login_identifiers p WHERE p.primary_of_user = u.id) \
@@ -200,9 +200,9 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-/// 登録簿の一意制約（tenant × 正規化値。migration 0041 で種別に依存しない）違反を `Conflict`
-/// として返す。事前チェックをすり抜けた同時実行はここで捕まる
-/// （AP15b でこの制約が主識別子にも効くようになった）。
+/// Returns a violation of the registry's unique constraint (tenant x normalized value; type-independent since migration 0041)
+/// as `Conflict`. Concurrent executions that slipped past the pre-check are caught here
+/// (since AP15b this constraint applies to primary identifiers too).
 fn identifier_conflict(e: sqlx::Error) -> DomainError {
     match &e {
         sqlx::Error::Database(db) if db.is_unique_violation() => DomainError::Conflict(
@@ -250,20 +250,20 @@ fn map_row(row: &MySqlRow) -> Result<User> {
     })
 }
 
-/// 主たるログイン識別子を登録簿へ書き込む（AP15b で**唯一の置き場所**になった）。
+/// Writes the primary login identifier into the registry (which became **the only place for it** in AP15b).
 ///
-/// `preferred_username` が `None`・空のときは主識別子行を削除する（解除）。
+/// When `preferred_username` is `None` or empty, the primary identifier row is deleted (unset).
 ///
-/// # 同じ値を他人が持っているとき
+/// # When someone else holds the same value
 ///
-/// **`Conflict` で失敗させる。** 前半（expand）の間は「登録簿を諦めて `users` 側を正とする」で
-/// 済ませていた —— どちらにも在り、`users` 側で解決され続けたからである。列を落とした今、
-/// 諦めると**そのユーザー名でログインできない利用者を黙って作る**ことになる。
+/// **Fails with `Conflict`.** During the first half (expand) it was enough to "give up on the registry and treat `users` as
+/// authoritative" -- the value was in both, and kept resolving via `users`. With the column dropped,
+/// giving up would **silently create a user who cannot log in with that username**.
 ///
-/// 衝突は 2 通りの経路で当たる。他人の識別子と同じ値なら下の事前チェックが（**種別を問わず**。
-/// 一意キーと同じ範囲で見る）、同時実行ですり抜けたものは登録簿の一意制約
-/// （tenant × 正規化値）が捕まえる。移送が済んだことで、
-/// ADR-0025 が「残る限界」として挙げていた同時実行の窓は DB 側で塞がった。
+/// Conflicts are hit by 2 paths. A value equal to someone else's identifier is caught by the pre-check below (**regardless of type**,
+/// looking at the same range as the unique key), and ones that slip through concurrently by the registry's unique constraint
+/// (tenant x normalized value). With the migration done,
+/// the concurrency window ADR-0025 listed as a "remaining limitation" is closed on the DB side.
 async fn sync_primary_login_identifier(
     conn: &mut sqlx::MySqlConnection,
     user_id: Uuid,
@@ -283,16 +283,16 @@ async fn sync_primary_login_identifier(
     };
     let normalized = LoginIdentifierType::Username.normalize(value);
 
-    // 他人が同じ値を握っているか（テナントは利用者の行から引く。呼び出し側に渡させると
-    // `users` と食い違う余地が生まれる）。
+    // Does someone else hold the same value (the tenant is taken from the user's row; letting callers pass it
+    // leaves room for disagreeing with `users`).
     //
-    // **種別で絞らない。** migration 0041 で一意キーから `identifier_type` が外れたので、種別で
-    // 絞ると制約より狭い判定になる —— 他人が別種別で同じ正規化値を持っていると素通りし、この
-    // 事前チェックの存在意義（「制約が弾くものを、書きに行く前に同じ範囲で見る」）が失われる。
-    // 利用者から見た応答は変わらない（素通りしても書き込みが一意制約で落ち、どちらの経路も
-    // `Conflict` になる）が、DB エラー頼みの経路をトランザクションの途中に残さない。
-    // 無効な行も見る（一意キーが `is_active` を見ないのと同じ。無効化した識別子の値は別人へ
-    // 渡さない）。条件が一意キーと同じ 2 列なので、索引もそのまま乗る。
+    // **Don't filter by type.** Migration 0041 removed `identifier_type` from the unique key, so filtering by type
+    // makes the check narrower than the constraint -- someone holding the same normalized value under another type would slip through,
+    // defeating the purpose of this pre-check ("look at what the constraint rejects, in the same range, before writing").
+    // The response seen by users doesn't change (if it slipped through, the write fails on the unique constraint and both paths
+    // give `Conflict`), but we don't leave a path relying on a DB error in the middle of the transaction.
+    // Inactive rows are checked too (just as the unique key ignores `is_active`; a disabled identifier's value is not
+    // handed to someone else). The condition is the same 2 columns as the unique key, so the index applies as is.
     let taken_by_someone_else: Option<i32> = sqlx::query_scalar(
         "SELECT 1 FROM user_login_identifiers i \
          JOIN users u ON u.id = ? \
@@ -306,16 +306,16 @@ async fn sync_primary_login_identifier(
     .await
     .map_err(repo_err)?;
     if taken_by_someone_else.is_some() {
-        // 値そのものは PII なので出さない（`CLAUDE.md`「ログ」）。
+        // The value itself is PII, so it is not output (`CLAUDE.md` "Logging").
         return Err(DomainError::Conflict(
             "preferred_username is already used as a login identifier by another user".to_string(),
         ));
     }
 
-    // 主識別子は 1 利用者 1 行（`primary_of_user` の UNIQUE が保証する）。既存行があれば
-    // 値を入れ替え、無ければ作る。「更新して 0 行なら INSERT」にしないのは、MariaDB の
-    // 影響行数が**変わった行**の数で、同じ値で更新すると 0 になるためである（そこで INSERT に
-    // 回ると一意制約で落ちる）。
+    // One primary identifier row per user (guaranteed by the UNIQUE on `primary_of_user`). If a row exists,
+    // replace its value; otherwise create one. It isn't "INSERT if the update affected 0 rows" because MariaDB's
+    // affected rows counts **changed rows**, so updating with the same value gives 0 (falling through to INSERT
+    // would then fail on the unique constraint).
     let existing: Option<String> = sqlx::query_scalar(
         "SELECT id FROM user_login_identifiers WHERE user_id = ? AND primary_of_user IS NOT NULL",
     )
@@ -358,24 +358,24 @@ async fn sync_primary_login_identifier(
     Ok(())
 }
 
-/// 主メールアドレスを登録簿へ書き込む（ADR-0050 決定 1）。
+/// Writes the primary email address into the registry (ADR-0050 decision 1).
 ///
-/// `users.email` は NOT NULL・空を許さないので、ユーザー名と違って「解除」の経路は無い。
+/// `users.email` is NOT NULL and can't be empty, so unlike the username there is no "unset" path.
 ///
-/// # 同じ値を**自分**が別の行で持っているとき
+/// # When **the user themself** holds the same value in another row
 ///
-/// **主メール行を作らない**（ADR-0050 決定 6）。ユーザー名を指定せずに作った利用者は
-/// ユーザー名がメールアドレスの文字列になっており（`unwrap_or_else(|| email.clone())`）、
-/// 同じ正規化値で 2 行目を作ると一意制約（0041）に当たる。その値は既にその人のものとして
-/// 登録簿が守っているので、行を増やす意味が無い。
+/// **No primary email row is created** (ADR-0050 decision 6). For users created without a username,
+/// the username is the email address string (`unwrap_or_else(|| email.clone())`), and
+/// creating a 2nd row with the same normalized value hits the unique constraint (0041). The value is already protected
+/// by the registry as that person's, so there is no point adding a row.
 ///
-/// このとき**既にある主メール行は消す**。消さないと、メールを変更して元の値へ戻したときに
-/// 古い行が居座り、`users.email` と登録簿が割れる。
+/// In this case **the existing primary email row is deleted**. Otherwise, when the email is changed and then changed back,
+/// the old row lingers and `users.email` and the registry split.
 ///
-/// # 同じ値を**他人**が持っているとき
+/// # When **someone else** holds the same value
 ///
-/// `Conflict` で失敗させる。判定は一意キーと同じ範囲（テナント × 正規化値。**種別で絞らない**）
-/// で行う —— 絞ると制約より狭い判定になり、他人が別種別で同じ値を持っていると素通りする。
+/// Fails with `Conflict`. The check uses the same range as the unique key (tenant x normalized value, **not filtered by type**)
+/// -- filtering makes it narrower than the constraint, letting someone holding the same value under another type slip through.
 async fn sync_primary_email_identifier(
     conn: &mut sqlx::MySqlConnection,
     user_id: Uuid,
@@ -385,13 +385,13 @@ async fn sync_primary_email_identifier(
 
     let value = email.trim();
     if value.is_empty() {
-        // `users.email` は NOT NULL。ここへ来るのは呼び出し側の組み立て誤りなので、
-        // 黙って無視せず、行を触らずに返す（INSERT 側が一意制約より先に落ちる）。
+        // `users.email` is NOT NULL. Reaching here is a caller assembly bug, so rather than
+        // silently ignoring it, return without touching the row (the INSERT side would fail before the unique constraint).
         return Ok(());
     }
     let normalized = LoginIdentifierType::Email.normalize(value);
 
-    // 他人が同じ正規化値を握っているか（テナントは利用者の行から引く）。
+    // Does someone else hold the same normalized value (the tenant is taken from the user's row).
     let taken_by_someone_else: Option<i32> = sqlx::query_scalar(
         "SELECT 1 FROM user_login_identifiers i \
          JOIN users u ON u.id = ? \
@@ -405,7 +405,7 @@ async fn sync_primary_email_identifier(
     .await
     .map_err(repo_err)?;
     if taken_by_someone_else.is_some() {
-        // 値そのものは PII なので出さない（`CLAUDE.md`「ログ」）。
+        // The value itself is PII, so it is not output (`CLAUDE.md` "Logging").
         return Err(DomainError::Conflict(
             "email is already used as a login identifier by another user".to_string(),
         ));
@@ -420,7 +420,7 @@ async fn sync_primary_email_identifier(
     .await
     .map_err(repo_err)?;
 
-    // 自分の別の行（主メール行以外。多くはユーザー名）が同じ値を持っているか。
+    // Does another row of the same user (not the primary email row; usually the username) hold the same value?
     let held_by_self_elsewhere: Option<i32> = sqlx::query_scalar(
         "SELECT 1 FROM user_login_identifiers i \
          JOIN users u ON u.id = ? \
@@ -462,11 +462,11 @@ async fn sync_primary_email_identifier(
             .map_err(identifier_conflict)?;
         }
         None => {
-            // テナントは利用者の行から引く（呼び出し側に渡させると `users` と食い違う余地が
-            // 生まれる）。ただし **`INSERT ... SELECT` にはしない** —— 参照元の `users` の行へ
-            // 共有ロックが掛かり、同じ利用者を更新する他のトランザクションとデッドロックし得る。
-            // 主識別子の同期と合わせて 1 つの作成で 2 回掛かるため、こちらは値を読んでから
-            // 束縛して入れる（読みは consistent read でロックを取らない）。
+            // The tenant is taken from the user's row (letting callers pass it leaves room for disagreeing with `users`).
+            // But **this is not an `INSERT ... SELECT`** -- it would take a shared lock on the source `users` row
+            // and could deadlock with other transactions updating the same user.
+            // Together with syncing the primary identifier it would happen twice per creation, so here the value is read and then
+            // bound in (the read is a consistent read and takes no lock).
             let tenant_id: String = sqlx::query_scalar("SELECT tenant_id FROM users WHERE id = ?")
                 .bind(user_id.to_string())
                 .fetch_optional(&mut *conn)
@@ -493,11 +493,11 @@ async fn sync_primary_email_identifier(
     Ok(())
 }
 
-/// users への INSERT と、主たるログイン識別子の登録。
+/// INSERT into users, and registration of the primary login identifier.
 ///
-/// **必ず同じトランザクションで行う。** ユーザー名が他人と衝突すると識別子の側が `Conflict` で
-/// 失敗するが（AP15b）、`users` の行だけが残ると「ログインする手段を持たない利用者」が
-/// できてしまう。呼び出し側にトランザクションを渡させるのはそのためである。
+/// **Always done in the same transaction.** If the username collides with someone else's, the identifier side fails with `Conflict`
+/// (AP15b), and if only the `users` row remained, "a user with no means to log in" would
+/// be created. That is why the caller passes in the transaction.
 async fn insert_user(conn: &mut sqlx::MySqlConnection, user: &User) -> Result<()> {
     sqlx::query(
         "INSERT INTO users \
@@ -529,12 +529,12 @@ async fn insert_user(conn: &mut sqlx::MySqlConnection, user: &User) -> Result<()
         }
         _ => DomainError::Repository(e.to_string()),
     })?;
-    // 主たるログイン識別子の置き場所は登録簿だけである（AP15b）。値が他人と衝突していれば
-    // ここで `Conflict` になり、利用者の作成ごと失敗する。
+    // The registry is the only place for the primary login identifier (AP15b). If the value collides with someone else's,
+    // it becomes `Conflict` here and the whole user creation fails.
     sync_primary_login_identifier(conn, user.id, user.preferred_username.as_deref()).await?;
-    // メールアドレスも登録簿が正本の一意性に載せる（ADR-0050）。ユーザー名と同じ理由で
-    // 同じトランザクションに置く —— `users` の行だけが残ると、そのメールを他人が
-    // ログイン識別子として取れてしまう。
+    // The email address is also placed under the registry's authoritative uniqueness (ADR-0050). For the same reason as the username
+    // it is in the same transaction -- if only the `users` row remained, someone else could
+    // take that email as a login identifier.
     sync_primary_email_identifier(conn, user.id, &user.email).await?;
     Ok(())
 }
@@ -580,20 +580,20 @@ impl UserRepository for SqlxUserRepository {
         row.as_ref().map(map_row).transpose()
     }
 
-    /// 参加先テナントの ACTIVE な GUEST を `users.email` で引く（MT26）。
+    /// Looks up an ACTIVE GUEST of the joined tenant by `users.email` (MT26).
     ///
-    /// 形はゲストの識別子解決（[`IdentifierScope::ActiveGuest`]）と同じで、突き合わせ先だけが
-    /// 登録簿ではなく `users.email` になる。索引も同じ経路に乗る —— 当該テナントの ACTIVE な GUEST
-    /// メンバーシップ（`tenant_memberships_tenant_type_status_idx`。migration 0040）から利用者へ辿る。
+    /// The shape is the same as guest identifier resolution ([`IdentifierScope::ActiveGuest`]); only the match target is
+    /// `users.email` instead of the registry. The index follows the same path -- from the tenant's ACTIVE GUEST
+    /// memberships (`tenant_memberships_tenant_type_status_idx`, migration 0040) to the user.
     ///
-    /// `LIMIT 2` は曖昧さの検出用。`users.email` の一意性はテナント内でしか無いので、所属元の違う
-    /// ゲストが同じアドレスを持ち得る。2 件見えたら誰も返さない（どちらへ送るかを索引の都合で
-    /// 決めさせない）。
+    /// `LIMIT 2` is for detecting ambiguity. `users.email` is only unique within a tenant, so guests with different owning
+    /// tenants can share an address. If 2 are seen, nobody is returned (the index must not decide
+    /// where it is sent).
     ///
-    /// **`u.status = 'ACTIVE'` も SQL 側で課す。** 曖昧さの判定は「送り先になり得る人」の数で
-    /// 行わなければならない —— 無効・ロック中の利用者は呼び出し側（`find_resettable_user`）が
-    /// どのみち落とすので候補ではない。数えてしまうと、同じアドレスの `DISABLED` なゲストが
-    /// 1 人居るだけで、唯一の有効なゲストに再設定メールが届かなくなる。
+    /// **`u.status = 'ACTIVE'` is also required in SQL.** Ambiguity must be judged by the number of "people who could be
+    /// recipients" -- disabled or locked users are dropped by the caller (`find_resettable_user`)
+    /// anyway, so they are not candidates. Counting them would mean that a single `DISABLED` guest with the same address
+    /// prevents the only active guest from receiving the reset email.
     async fn find_active_guest_by_email(
         &self,
         tenant_id: TenantId,
@@ -620,7 +620,7 @@ impl UserRepository for SqlxUserRepository {
             1 => map_row(&rows[0]).map(Some),
             0 => Ok(None),
             _ => {
-                // 値（メールアドレス）は PII なので出さない。
+                // The value (email address) is PII, so it is not output.
                 tracing::warn!(
                     tenant_id = %tenant_id,
                     "password reset email matched multiple guests; refusing to choose one"
@@ -630,16 +630,16 @@ impl UserRepository for SqlxUserRepository {
         }
     }
 
-    /// ゲスト招待の相手を `users.email` でテナント横断に引く（ADR-0061）。
+    /// Looks up the target of a guest invitation by `users.email` across tenants (ADR-0061).
     ///
-    /// 形は上のパスワード再設定（[`find_active_guest_by_email`]）と同じで、**メンバーシップで
-    /// 絞らない**ところだけが違う —— 招く相手は参加先テナントにまだ居ないからである。
+    /// The shape is the same as the password reset above ([`find_active_guest_by_email`]), differing only in **not filtering
+    /// by membership** -- the invitee isn't in the joined tenant yet.
     ///
-    /// ⚠ **`users` の索引は `(tenant_id, email)` なので、この引き方は索引に乗らない**
-    /// （先頭列がテナント）。招待は人が押す稀な操作で、`users` の行数も運用上小さいため、
-    /// email 単独の索引は足していない。行数が増えて目に見えて遅くなったら索引を足す。
+    /// ⚠ **The `users` index is `(tenant_id, email)`, so this lookup doesn't use an index**
+    /// (the leading column is the tenant). Invitations are rare, human-initiated operations and `users` is operationally small,
+    /// so no email-only index has been added. Add one if it gets visibly slow as rows grow.
     ///
-    /// `LIMIT 2` は曖昧さの検出用。2 件見えたら誰も返さない（トレイト側のコメント参照）。
+    /// `LIMIT 2` is for detecting ambiguity. If 2 are seen, nobody is returned (see the trait comment).
     async fn find_active_user_by_email_across_tenants(&self, email: &str) -> Result<Option<User>> {
         let sql = format!(
             "SELECT {SELECT_COLUMNS} FROM users u \
@@ -657,7 +657,7 @@ impl UserRepository for SqlxUserRepository {
             1 => map_row(&rows[0]).map(Some),
             0 => Ok(None),
             _ => {
-                // 値（メールアドレス）は PII なので出さない。
+                // The value (email address) is PII, so it is not output.
                 tracing::warn!(
                     "invitation lookup matched users in more than one tenant; refusing to choose one"
                 );
@@ -666,11 +666,11 @@ impl UserRepository for SqlxUserRepository {
         }
     }
 
-    /// 主たるログイン識別子（ユーザー名）で引く。
+    /// Looks up by the primary login identifier (username).
     ///
-    /// 照合は登録簿の正規化値で行う（AP15b）。`users.preferred_username` の照合は照合順序
-    /// （`utf8mb4_unicode_ci`）任せで大小を無視していたが、登録簿は種別ごとの正規化を
-    /// **明示的に**持っている。同じ規則を通すために、入力もここで正規化する。
+    /// Matching uses the registry's normalized value (AP15b). Matching on `users.preferred_username` relied on the collation
+    /// (`utf8mb4_unicode_ci`) to ignore case, but the registry holds per-type normalization
+    /// **explicitly**. To apply the same rule, the input is normalized here too.
     async fn find_by_username(&self, tenant_id: TenantId, username: &str) -> Result<Option<User>> {
         use crate::domain::login_identifier::LoginIdentifierType;
 
@@ -688,19 +688,19 @@ impl UserRepository for SqlxUserRepository {
         row.as_ref().map(map_row).transpose()
     }
 
-    /// ログイン欄の入力から解決する（AP8）。
+    /// Resolves from the login field input (AP8).
     ///
-    /// 登録簿（`user_login_identifiers`）の**有効な行**を、種別ごとの正規化キーで 1 クエリで引く。
-    /// 「全件読んでアプリ側で正規化して突き合わせる」方式は取らない（テナントの規模に比例して
-    /// 破綻するうえ、一意性の保証が DB から離れる）。
+    /// Looks up the registry's (`user_login_identifiers`) **active rows** by per-type normalized keys in one query.
+    /// The approach "read everything and normalize/match in the app" is not taken (it breaks down in proportion to tenant size,
+    /// and the uniqueness guarantee leaves the DB).
     ///
-    /// 曖昧な入力を通さない規則は [`Self::resolve_login_identifier`] に置いてあり、参加先テナントの
-    /// ゲスト解決（[`Self::find_active_guest_by_login_identifier`]）と共有する。
+    /// The rule of not letting ambiguous input through lives in [`Self::resolve_login_identifier`], shared with
+    /// guest resolution in joined tenants ([`Self::find_active_guest_by_login_identifier`]).
     ///
-    /// **登録簿だけを見る。** 主識別子も登録簿の行になったので（AP15b）、`users` 側への
-    /// フォールバックは無い。無いことに意味がある —— フォールバックが残っていると、
-    /// 登録簿で無効化した識別子でも `users` 側で解決されて認証が通り、「止めたのに使える」
-    /// 識別子ができる。
+    /// **Only the registry is consulted.** Primary identifiers are registry rows too now (AP15b), so there is no
+    /// fallback to `users`. The absence matters -- with a fallback left in,
+    /// an identifier disabled in the registry would still resolve via `users` and authenticate, creating identifiers that
+    /// "still work after being stopped".
     async fn find_by_login_identifier(
         &self,
         tenant_id: TenantId,
@@ -710,8 +710,8 @@ impl UserRepository for SqlxUserRepository {
             .await
     }
 
-    /// 参加先テナントの ACTIVE な GUEST を、**その利用者の所属元テナントの**登録簿で解決する
-    /// （[`IdentifierScope::ActiveGuest`]）。
+    /// Resolves an ACTIVE GUEST of the joined tenant via **that user's owning tenant's** registry
+    /// ([`IdentifierScope::ActiveGuest`]).
     async fn find_active_guest_by_login_identifier(
         &self,
         tenant_id: TenantId,
@@ -721,8 +721,8 @@ impl UserRepository for SqlxUserRepository {
             .await
     }
 
-    /// 所属元テナントが分かっているとき、そのテナントの登録簿だけを引く
-    /// （[`IdentifierScope::MemberWithHomeTenant`]。ADR-0029）。
+    /// When the owning tenant is known, looks up only that tenant's registry
+    /// ([`IdentifierScope::MemberWithHomeTenant`], ADR-0029).
     async fn find_member_by_login_identifier(
         &self,
         tenant_id: TenantId,
@@ -759,17 +759,17 @@ impl UserRepository for SqlxUserRepository {
         lockout: LockoutPolicy,
         now: DateTime<Utc>,
     ) -> Result<LoginFailureRecord> {
-        // 加算とロック判定を 1 文で行う（SEC13）。読んで書き戻す方式では、並行する試行が同じ値を
-        // 読んで同じ値を書くため、N 回失敗しても 1 しか進まないことがある。
+        // Increment and lock decision in one statement (SEC13). With read-then-write-back, concurrent attempts read the same value
+        // and write the same value, so N failures might advance it by only 1.
         //
-        // **代入の順序に意味がある。** MariaDB / MySQL の単一表 UPDATE は SET を左から右へ評価し、
-        // 後続の式は先に更新された列の**新しい値**を見る。`locked_until` を先に置くことで、
-        // その CASE の中の `failed_login_count` は更新前の値を指す（逆順にすると 2 回分進む）。
+        // **The order of assignments matters.** MariaDB / MySQL single-table UPDATE evaluates SET left to right, and
+        // later expressions see the **new value** of columns updated earlier. Putting `locked_until` first makes
+        // `failed_login_count` inside its CASE refer to the pre-update value (reversed, it would advance by 2).
         //
-        // 段階的ロック（AP6）: ロック時間は失敗回数で変わるが、その回数はこの UPDATE の中に
-        // しか無い。計算式を SQL へ写すと定義が二重化するため、**段の一覧をドメインから受け取り
-        // （`escalation_ladder`）、SQL 側は該当する段を選ぶだけ**にする。段は超過の大きい順に
-        // 並んでいるので、先に一致した WHEN が最も長いロック時間になる。
+        // Progressive lockout (AP6): the lock duration depends on the failure count, but that count exists only inside
+        // this UPDATE. Mirroring the formula in SQL would duplicate the definition, so **the list of steps is received from the domain
+        // (`escalation_ladder`) and SQL only picks the matching step**. Steps are ordered by largest excess first,
+        // so the first matching WHEN gives the longest lock duration.
         let mut qb: QueryBuilder<MySql> = QueryBuilder::new("UPDATE users SET locked_until = CASE");
         for (threshold, duration_secs) in lockout.escalation_ladder() {
             qb.push(" WHEN failed_login_count + 1 >= ");
@@ -781,17 +781,17 @@ impl UserRepository for SqlxUserRepository {
         qb.push_bind(id.to_string());
         qb.build().execute(&self.pool).await.map_err(repo_err)?;
 
-        // 記録後の状態を読み直す（MariaDB の UPDATE は RETURNING を持たない）。並行する失敗が
-        // 間に挟まれば、より進んだ値・より新しいロック期限が返る。どちらも「今ロックされているか」の
-        // 判定としては正しく、監査に残る回数が実際の試行数を下回ることも無い。
+        // Re-read the state after recording (MariaDB's UPDATE has no RETURNING). If a concurrent failure
+        // slips in between, a more advanced value or newer lock expiry is returned. Both are correct for
+        // deciding "is it locked now", and the count left in the audit log never falls below the actual number of attempts.
         let row = sqlx::query("SELECT failed_login_count, locked_until FROM users WHERE id = ?")
             .bind(id.to_string())
             .fetch_optional(&self.pool)
             .await
             .map_err(repo_err)?;
         let Some(row) = row else {
-            // 記録の途中で利用者が消えた（管理者削除）。ロック判定の対象が無いだけなので、
-            // 「ロックされていない」として扱う。
+            // The user disappeared during recording (deleted by an admin). There is simply nothing to lock,
+            // so treat it as "not locked".
             return Ok(LoginFailureRecord {
                 failed_login_count: 0,
                 locked_until: None,
@@ -800,7 +800,7 @@ impl UserRepository for SqlxUserRepository {
         let locked_until: Option<NaiveDateTime> = row.try_get("locked_until").map_err(repo_err)?;
         Ok(LoginFailureRecord {
             failed_login_count: row.try_get("failed_login_count").map_err(repo_err)?,
-            // 期限切れのロックは「掛かっていない」とみなす（読み直しの時点で判定する）。
+            // An expired lock is treated as "not in place" (judged at re-read time).
             locked_until: locked_until.map(to_utc).filter(|until| *until > now),
         })
     }
@@ -811,9 +811,9 @@ impl UserRepository for SqlxUserRepository {
         expected_current_hash: &str,
         password_hash: &str,
     ) -> Result<bool> {
-        // 現行ハッシュを条件に含めた compare-and-swap（トレイト定義の理由参照）。
-        // 設定時刻は DB の時計で入れる（`created_at` / `updated_at` と同じ扱い。AP7 の有効期限は
-        // この列を起点に測る）。
+        // Compare-and-swap including the current hash in the condition (see the trait definition for why).
+        // The set time uses the DB clock (same as `created_at` / `updated_at`; AP7's expiry is
+        // measured from this column).
         let result = sqlx::query(
             "UPDATE users SET password_hash = ?, must_change_password = 0, \
              password_changed_at = UTC_TIMESTAMP(6) WHERE id = ? AND password_hash = ?",
@@ -919,9 +919,9 @@ impl UserRepository for SqlxUserRepository {
         preferred_username: Option<&str>,
         name: Option<&str>,
     ) -> Result<()> {
-        // メール・表示名とユーザー名を**同じトランザクションで**更新する。ユーザー名が他人と
-        // 衝突すると識別子の側が `Conflict` になるが（AP15b）、そこで `users` の変更だけが
-        // 残ると「エラーを返したのに変更は起きている」状態を外へ見せてしまう。
+        // Update email, display name and username **in the same transaction**. If the username collides with someone else's,
+        // the identifier side gives `Conflict` (AP15b), and if only the `users` change remained there,
+        // we would expose a state where "an error was returned but the change happened".
         let mut tx = self.pool.begin().await.map_err(repo_err)?;
         sqlx::query("UPDATE users SET email = ?, name = ? WHERE id = ?")
             .bind(email)
@@ -930,54 +930,54 @@ impl UserRepository for SqlxUserRepository {
             .execute(&mut *tx)
             .await
             .map_err(|e| match &e {
-                // 事前チェックとの競合（同時更新）は DB の UNIQUE 制約が最終的に保証する。
+                // Races with the pre-check (concurrent updates) are ultimately guaranteed by the DB's UNIQUE constraint.
                 sqlx::Error::Database(db) if db.is_unique_violation() => {
                     DomainError::Conflict("email already exists".to_string())
                 }
                 _ => DomainError::Repository(e.to_string()),
             })?;
-        // ユーザー名の置き場所は登録簿だけである（AP15b）。
+        // The registry is the only place for the username (AP15b).
         sync_primary_login_identifier(&mut tx, id, preferred_username).await?;
-        // 主メール行も同じトランザクションで追随させる（ADR-0050）。ここで同期しないと、
-        // 変更前のアドレスが登録簿に居座り、変更後のアドレスは誰のものでもない状態になる。
+        // The primary email row follows in the same transaction too (ADR-0050). Without syncing here,
+        // the old address would linger in the registry and the new address would belong to nobody.
         sync_primary_email_identifier(&mut tx, id, email).await?;
         tx.commit().await.map_err(repo_err)?;
         Ok(())
     }
 
-    /// 別名のメール行を主メール行へ昇格させる（ADR-0052）。
+    /// Promotes an alias email row to the primary email row (ADR-0052).
     ///
-    /// # 書く順番
+    /// # Write order
     ///
-    /// **降格 → 昇格 → `users.email`** の順に書く。`primary_email_of_user` は UNIQUE なので、
-    /// 先に昇格させると一瞬でも 2 行が主メールになり、書き込みが落ちる。
+    /// Writes in the order **demote -> promote -> `users.email`**. `primary_email_of_user` is UNIQUE, so
+    /// promoting first would make 2 rows primary email even momentarily, and the write would fail.
     ///
-    /// 対象が在るかは**書く前**に確かめる。先に降格させてから対象が無いと分かると、
-    /// ロールバックするまでの間その利用者は主メール行を持たない状態になる。
+    /// Whether the target exists is checked **before writing**. Demoting first and then finding no target would leave
+    /// the user without a primary email row until rollback.
     ///
-    /// # 値は登録簿から読み直す
+    /// # The value is re-read from the registry
     ///
-    /// `users.email` に入れる文字列は呼び出し側から渡させず、同じトランザクションの中で
-    /// 対象行の `display_value` を読む。渡させると、画面に出ていた値と実際に昇格する行が
-    /// 食い違ったとき、`users.email` と登録簿が割れたまま成功してしまう。
+    /// The string put into `users.email` is not passed in by the caller; the target row's `display_value` is read within
+    /// the same transaction. If it were passed in, when the value shown on screen and the row actually promoted
+    /// disagree, it would succeed with `users.email` and the registry split.
     ///
-    /// # 昇格した行は必ず有効にする
+    /// # The promoted row is always made active
     ///
-    /// 主メール行は識別子単位で有効/無効を切り替えられない（`set_active` が除外する）。無効な
-    /// まま昇格させると、二度と有効にできない行が通知の宛先になる。ADR-0050 決定 2 の
-    /// 「主メールは基本的に有効」もこれと同じ理由である。
+    /// The primary email row can't be enabled/disabled per identifier (`set_active` excludes it). Promoting it while
+    /// inactive would make a row that can never be enabled again the notification address. ADR-0050 decision 2's
+    /// "the primary email is basically active" is for the same reason.
     ///
-    /// # `email_verified` は触らない
+    /// # `email_verified` is not touched
     ///
-    /// 管理者によるメール変更（MT25）が検証済みを維持するのと同じ扱いにする（ADR-0050 で
-    /// 識別子としてのメールに所有確認を課さないと決めたのと揃える）。
+    /// Treated the same as an admin's email change (MT25) keeping verified status (consistent with ADR-0050's decision
+    /// not to require proof of ownership for email as an identifier).
     async fn promote_primary_email(&self, user_id: Uuid, identifier_id: Uuid) -> Result<bool> {
         let mut tx = self.pool.begin().await.map_err(repo_err)?;
 
-        // 1. 昇格させる行を確かめ、`users.email` に入れる値を読む。条件は「その利用者の・
-        //    メール種別の・主たるログイン識別子でない行」。アプリ層でも同じことを確かめているが、
-        //    判定と書き込みの間に開く窓はここで閉じる（`FOR UPDATE` で行を押さえる ——
-        //    押さえないと、読んだ `display_value` と実際に昇格する行の値がずれ得る）。
+        // 1. Check the row to promote and read the value to put into `users.email`. The condition is "the user's,
+        //    email-type, non-primary-login-identifier row". The app layer checks the same, but
+        //    the window between check and write is closed here (the row is locked with `FOR UPDATE` --
+        //    otherwise the `display_value` read and the value of the row actually promoted could diverge).
         let display_value: Option<String> = sqlx::query_scalar(
             "SELECT display_value FROM user_login_identifiers \
              WHERE id = ? AND user_id = ? AND identifier_type = 'email' \
@@ -993,7 +993,7 @@ impl UserRepository for SqlxUserRepository {
             return Ok(false);
         };
 
-        // 2. いまの主メール行を降格させる（無いこともある。ADR-0050 決定 6）。
+        // 2. Demote the current primary email row (there may be none; ADR-0050 decision 6).
         sqlx::query(
             "UPDATE user_login_identifiers SET primary_email_of_user = NULL \
              WHERE user_id = ? AND primary_email_of_user IS NOT NULL",
@@ -1003,7 +1003,7 @@ impl UserRepository for SqlxUserRepository {
         .await
         .map_err(repo_err)?;
 
-        // 3. 選んだ行を昇格させる。
+        // 3. Promote the chosen row.
         sqlx::query(
             "UPDATE user_login_identifiers \
              SET primary_email_of_user = user_id, is_active = 1 WHERE id = ?",
@@ -1013,15 +1013,15 @@ impl UserRepository for SqlxUserRepository {
         .await
         .map_err(repo_err)?;
 
-        // 4. `users.email` を昇格した行の写しにする（ADR-0050 決定 4。通知の宛先も一緒に動く）。
+        // 4. Make `users.email` a copy of the promoted row (ADR-0050 decision 4; the notification address moves with it).
         sqlx::query("UPDATE users SET email = ? WHERE id = ?")
             .bind(&display_value)
             .bind(user_id.to_string())
             .execute(&mut *tx)
             .await
             .map_err(|e| match &e {
-                // 登録簿の一意性（0041）が効いている限り他人の `users.email` とは衝突しないが、
-                // 判定を 2 か所に割らない（`update_profile` と同じ扱いにする）。
+                // As long as the registry's uniqueness (0041) holds it won't collide with someone else's `users.email`, but
+                // the check isn't split into 2 places (same handling as `update_profile`).
                 sqlx::Error::Database(db) if db.is_unique_violation() => {
                     DomainError::Conflict("email already exists".to_string())
                 }
@@ -1037,7 +1037,7 @@ impl UserRepository for SqlxUserRepository {
 mod tests {
     use super::*;
 
-    /// 所属元の解決は登録簿を要求テナントで引く（`user_login_identifiers_lookup_idx` と同じキー）。
+    /// Owning-tenant resolution looks up the registry by the requested tenant (same key as `user_login_identifiers_lookup_idx`).
     #[test]
     fn home_scope_filters_the_registry_by_the_requested_tenant() {
         let sql = login_identifier_sql(IdentifierScope::Home, 2);
@@ -1046,16 +1046,16 @@ mod tests {
             "{sql}"
         );
         assert!(!sql.contains("tenant_memberships"), "{sql}");
-        // 所属元経路は要求テナント＝所属元テナントで、middleware が DISABLED を 404 で止めている。
-        // ここで tenants を JOIN すると、一意性チェック等の非ログイン経路にも条件が漏れる。
+        // On the owning-tenant path, requested tenant = owning tenant, and the middleware stops DISABLED with a 404.
+        // JOINing tenants here would leak the condition into non-login paths such as uniqueness checks.
         assert!(!sql.contains("JOIN tenants"), "{sql}");
-        // 候補 1 件につき (?, ?) 1 組。
+        // One (?, ?) pair per candidate.
         assert!(sql.contains("IN ((?, ?), (?, ?)) LIMIT 2"), "{sql}");
     }
 
-    /// ゲストの解決は、要求テナントの ACTIVE な GUEST を、その利用者の所属元の登録簿で引く。
-    /// `i.tenant_id = u.tenant_id` が落ちると他テナントの識別子でも解決されてしまうため、
-    /// 条件の有無をここで固定する。
+    /// Guest resolution looks up the requested tenant's ACTIVE GUEST in that user's owning tenant's registry.
+    /// Dropping `i.tenant_id = u.tenant_id` would let identifiers of other tenants resolve, so
+    /// the presence of the condition is pinned here.
     #[test]
     fn active_guest_scope_joins_membership_and_stays_in_the_home_registry() {
         let sql = login_identifier_sql(IdentifierScope::ActiveGuest, 1);
@@ -1063,8 +1063,8 @@ mod tests {
             sql.contains("JOIN tenant_memberships m ON m.user_id = u.id"),
             "{sql}"
         );
-        // 所属元テナントが DISABLED なら解決しない（ADR-0009 §8）。この JOIN が落ちると
-        // 「所属元は止めたのに参加先からは入れる」利用者ができる。
+        // Don't resolve if the owning tenant is DISABLED (ADR-0009 §8). Dropping this JOIN would create users who
+        // "can still get in via a joined tenant after the owning tenant was stopped".
         assert!(
             sql.contains("JOIN tenants home ON home.id = u.tenant_id AND home.status = 'ACTIVE'"),
             "{sql}"
@@ -1078,8 +1078,8 @@ mod tests {
         assert!(sql.contains("IN ((?, ?)) LIMIT 2"), "{sql}");
     }
 
-    /// bind の個数が SQL のプレースホルダと一致する（ずれると照合キーがテナント ID として
-    /// 使われ、静かに誰も解決しなくなる）。
+    /// The number of binds matches the SQL placeholders (if they drift, a match key would be used as a tenant ID
+    /// and silently nobody would resolve).
     #[test]
     fn scope_binds_match_the_placeholders_in_the_scope_fragment() {
         let tenant: TenantId = uuid::Uuid::now_v7().into();
@@ -1100,7 +1100,7 @@ mod tests {
                 "ACTIVE".to_string()
             ]
         );
-        // 順序が SQL の `?` の並び（m.tenant_id → m.status → u.tenant_id）と一致すること。
+        // The order must match the SQL's `?` sequence (m.tenant_id -> m.status -> u.tenant_id).
         assert_eq!(
             IdentifierScope::MemberWithHomeTenant(home_tenant).binds(tenant),
             vec![

@@ -1,18 +1,18 @@
-//! 利用者のセルフサービス設定画面（web。`/{tenant_id}/settings`。MT15・MT20）。
+//! User self-service settings screen (web. `/{tenant_id}/settings`. MT15, MT20).
 //!
-//! ログイン済み（SSO セッション保有）利用者が、自分のパスワード変更・表示言語の選択・MFA（TOTP /
-//! Passkey）の管理導線にアクセスする。パスワード変更は api の `POST /internal/account/change-password`
-//! に委ね、MFA は既存の `/{tenant_id}/account/*` 画面へ誘導する。
+//! Signed-in users (holding an SSO session) access their own password change, display language choice and MFA (TOTP /
+//! Passkey) management entry points here. Password change is delegated to the api's `POST /internal/account/change-password`,
+//! and MFA leads to the existing `/{tenant_id}/account/*` screens.
 //!
-//! 表示設定（言語・配色。MT20）の保存は [`save_display_preferences`]
-//! （`POST /{tenant_id}/settings/display`）だけが行う。GET の `?lang=` / `?theme=` は一時切替
-//! （[`crate::display_preferences`] middleware が Cookie とその画面の表示に効かせるだけ）で、
-//! ユーザー設定（DB）へは書かない（task #79）。
+//! Display settings (language, color scheme; MT20) are saved only by [`save_display_preferences`]
+//! (`POST /{tenant_id}/settings/display`). GET `?lang=` / `?theme=` are temporary switches
+//! (the [`crate::display_preferences`] middleware only applies them to the cookie and that screen's display)
+//! and are not written to the user settings (DB) (task #79).
 //!
-//! この画面の状態変更（表示名・パスワード・言語・配色）はすべて CSRF 同期トークン
-//! （`console_csrf_token`。SSO セッション id 由来）で守る（task #79・#118）。SameSite=Lax の SSO
-//! Cookie だけに頼らない —— 利用者向けの他の画面（セッション一覧・認証器）と同じ作法である。
-//! トークンが合わなければ何も保存せず、設定画面へ戻してバナーで伝える。
+//! All state changes on this screen (display name, password, language, color scheme) are protected by the CSRF
+//! synchronizer token (`console_csrf_token`, derived from the SSO session id) (task #79, #118). It does not rely on the
+//! SameSite=Lax SSO cookie alone — the same practice as other user screens (session list, authenticators).
+//! If the token does not match, nothing is saved; it returns to the settings screen and reports via a banner.
 
 use super::internal_call_status;
 use crate::client_ip::ClientIp;
@@ -39,12 +39,12 @@ use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 
-/// 設定画面（`GET /{tenant_id}/settings`）。
+/// Settings screen (`GET /{tenant_id}/settings`).
 ///
-/// `?lang=` / `?theme=` の解釈（一時切替）と Cookie の保存は
-/// [`crate::display_preferences::resolve_display_preferences`] middleware が全画面共通で行う
-/// （MT20）。ここは決定済みの値で描画するだけで、セレクタは [`save_display_preferences`] へ
-/// CSRF トークン付きで POST する（task #79）。
+/// Interpreting `?lang=` / `?theme=` (temporary switch) and saving the cookie are done for every screen by the
+/// [`crate::display_preferences::resolve_display_preferences`] middleware
+/// (MT20). This only renders with the decided values; the selectors POST to [`save_display_preferences`]
+/// with a CSRF token (task #79).
 pub async fn page(
     State(state): State<WebState>,
     Extension(tenant): Extension<WebTenant>,
@@ -55,14 +55,14 @@ pub async fn page(
     let locale = locale(&headers);
     let from_admin = query.from.as_deref() == Some("admin");
 
-    // 未ログイン・セッション切れはログイン画面へ送る（task #121）。認証器・セッション一覧など
-    // 他のアカウント画面と同じ形（戻り先は付けない）。
+    // Not signed in / session expired goes to the login screen (task #121). Same shape as other account screens
+    // such as authenticators and the session list (no return destination attached).
     let Some(sso) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
         return found(&format!("{}/login", tenant.prefix()));
     };
-    // 表示名・ログイン識別子のプリフィル値。プロフィールは表示設定の middleware が引いたものを
-    // 使い、api を引き直さない（task #80）。middleware が引かなかったとき（`?lang=` と `?theme=` の
-    // 両方で決まった）だけここで引く。取得失敗時は空文字で描画する（フェイルソフト）。
+    // Prefill values for display name and login identifier. The profile fetched by the display settings middleware is
+    // reused without calling the api again (task #80). Only when the middleware did not fetch it (decided by both `?lang=`
+    // and `?theme=`) is it fetched here. On fetch failure it renders with empty strings (fail-soft).
     let profile = match fetched {
         Some(Extension(FetchedAccountProfile(profile))) => profile,
         None => fetch_account_profile(&state, &sso).await,
@@ -86,12 +86,12 @@ pub async fn page(
         ),
         _ => (String::new(), String::new(), None),
     };
-    // 決定順は middleware と同じ（`?theme=` > ユーザー設定 > Cookie）。**`?theme=` を自分でも
-    // 読む**のが要点で、一時切替の Cookie は応答の中で書かれるため、このリクエストでは Cookie も
-    // ユーザー設定もまだ切替前の値を返す。読まないと「画面は切り替わったのにセレクタは元のまま」
-    // に見える。
-    // 未選択（`?theme=` も DB も Cookie も無い）は「OS に合わせる」を選択済みとして見せる ——
-    // セレクタに「未選択」という選択肢は無く、実際の見え方も OS 追従だからである。
+    // Same decision order as the middleware (`?theme=` > user setting > cookie). **Reading `?theme=` here too**
+    // is the key point: the temporary-switch cookie is written in the response, so in this request both the cookie and
+    // the user setting still return the pre-switch value. Without reading it, "the screen switched but the selector
+    // stayed" would appear.
+    // Unselected (no `?theme=`, DB or cookie) is shown as "follow the OS" selected —
+    // the selector has no "unselected" option, and the actual appearance does follow the OS.
     let current_theme = query
         .theme
         .as_deref()
@@ -102,7 +102,7 @@ pub async fn page(
 
     let csrf = console_csrf_token(&sso, state.config.csrf_secret());
 
-    // Messages は FluentBundle を含み !Send のため、await をまたがないよう先にレンダリングして解放する。
+    // Messages contains a FluentBundle and is !Send, so render first and drop it so it does not live across an await.
     let body = {
         let messages = Messages::new(locale);
         render(&UserSettings {
@@ -122,7 +122,7 @@ pub async fn page(
     Html(body).into_response()
 }
 
-/// セルフサービスのパスワード変更（`POST /{tenant_id}/settings/password`）。
+/// Self-service password change (`POST /{tenant_id}/settings/password`).
 pub async fn change_password(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -132,7 +132,7 @@ pub async fn change_password(
     Form(form): Form<AccountPasswordForm>,
 ) -> Response {
     let base = format!("{}/settings", tenant.prefix());
-    // 管理コンソール発の文脈（戻るリンク）を PRG リダイレクト後も維持する。
+    // Keep the admin-console-originated context (back link) across the PRG redirect.
     let suffix = if form.from.as_deref() == Some("admin") {
         "&from=admin"
     } else {
@@ -187,7 +187,7 @@ pub async fn change_password(
     }
 }
 
-/// セルフサービスの表示名変更（`POST /{tenant_id}/settings/name`）。
+/// Self-service display name change (`POST /{tenant_id}/settings/name`).
 pub async fn change_name(
     State(state): State<WebState>,
     Extension(tenant): Extension<WebTenant>,
@@ -232,17 +232,17 @@ pub async fn change_name(
     }
 }
 
-/// 表示設定（言語・配色）の保存（`POST /{tenant_id}/settings/display`。task #79）。
+/// Saves display settings (language, color scheme) (`POST /{tenant_id}/settings/display`. task #79).
 ///
-/// ユーザー設定（`users.language` / `users.theme`）へ書く**唯一の経路**。設定画面のセレクタと、
-/// 管理コンソールのヘッダの言語ドロップダウン（ログイン中）が送る。GET の `?lang=` / `?theme=` は
-/// 一時切替で保存しない（[`crate::display_preferences`]）。
+/// **The only path** writing to user settings (`users.language` / `users.theme`). Sent by the settings screen's
+/// selectors and the admin console header's language dropdown (when signed in). GET `?lang=` / `?theme=` are
+/// temporary switches and are not saved ([`crate::display_preferences`]).
 ///
-/// - CSRF トークン（`console_csrf_token`）が合わなければ何も保存せず、設定画面へ戻してバナーで伝える。
-/// - 保存したら Cookie も揃えて（ログアウト後の前回選択として残る）、`return_to` の画面へ 303 で
-///   戻す。`return_to` はこのテナント配下のパスだけを受け（オープンリダイレクトにしない）、
-///   `lang` / `theme` のクエリは落とす（戻った先で一時切替が保存を上書きして見えないように）。
-/// - 別端末への追随は従来どおり: 保存先は DB で、ログイン中は DB が Cookie より強い。
+/// - If the CSRF token (`console_csrf_token`) does not match, nothing is saved; return to the settings screen with a banner.
+/// - After saving, align the cookie too (kept as the previous choice after sign-out) and 303 back to the `return_to`
+///   screen. `return_to` accepts only paths under this tenant (no open redirect), and the
+///   `lang` / `theme` queries are dropped (so a temporary switch at the destination does not appear to override the save).
+/// - Following on other devices is as before: stored in the DB, and while signed in the DB beats the cookie.
 pub async fn save_display_preferences(
     State(state): State<WebState>,
     Extension(tenant): Extension<WebTenant>,
@@ -325,10 +325,10 @@ pub async fn save_display_preferences(
     (set_cookies.into_headers(), see_other(&back)).into_response()
 }
 
-/// 戻り先から一時切替のクエリ（`lang` / `theme`）を落とす。
+/// Drops the temporary-switch queries (`lang` / `theme`) from the return destination.
 ///
-/// 一時切替を付けたままの画面（`/admin/clients?lang=en`）でヘッダから日本語を保存すると、
-/// そのまま戻した先で `?lang=en` がまた効き、保存が効いていないように見える。
+/// Saving Japanese from the header on a screen that still carries a temporary switch (`/admin/clients?lang=en`) would,
+/// after returning there as is, re-apply `?lang=en` and make the save look ineffective.
 fn without_display_overrides(path: &str) -> String {
     let Some((base, query)) = path.split_once('?') else {
         return path.to_string();
@@ -365,7 +365,7 @@ fn error_key_for(error: &str) -> Option<&'static str> {
         "session" => Some("user-settings-error-session"),
         "internal" => Some("user-settings-error-internal"),
         "name-invalid" => Some("user-settings-error-name-invalid"),
-        // CSRF トークンの不一致（task #79・#118）。セッション一覧・認証器の画面と同じ文言。
+        // CSRF token mismatch (task #79, #118). Same wording as the session list and authenticator screens.
         "csrf" => Some("user-security-error-csrf"),
         _ => None,
     }
@@ -391,7 +391,7 @@ mod tests {
         })
     }
 
-    /// 配色セレクタは保存済みの値を選択状態で出す（保存したのに戻って見ると既定に見える、を防ぐ）。
+    /// The color scheme selector shows the saved value as selected (prevents it looking like the default after saving).
     #[test]
     fn the_appearance_selector_shows_the_saved_choice() {
         let messages = Messages::new(Locale::Ja);
@@ -417,7 +417,7 @@ mod tests {
             "{html}"
         );
 
-        // 未選択は「端末の設定に合わせる」として見せる（実際の見え方と一致させる）。
+        // Unselected is shown as "follow the device setting" (matching the actual appearance).
         let html = render_with("system");
         assert!(
             html.contains(r#"<option value="system" selected>"#),
@@ -425,7 +425,7 @@ mod tests {
         );
     }
 
-    /// 戻り先から一時切替（`lang` / `theme`）だけを落とし、他のクエリは保つ。
+    /// Drops only the temporary switches (`lang` / `theme`) from the return destination, keeping other queries.
     #[test]
     fn the_return_path_drops_only_the_temporary_switches() {
         assert_eq!(without_display_overrides("/t/admin"), "/t/admin");
@@ -434,7 +434,7 @@ mod tests {
             without_display_overrides("/t/admin/clients?page=2&lang=en&theme=dark&q=x"),
             "/t/admin/clients?page=2&q=x"
         );
-        // 名前が前方一致するだけの別パラメータは落とさない。
+        // Other parameters that merely share a name prefix are not dropped.
         assert_eq!(
             without_display_overrides("/t/admin?language=x&themes=y"),
             "/t/admin?language=x&themes=y"
@@ -446,8 +446,8 @@ mod tests {
     fn back_link_to_admin_console_is_shown_only_when_opened_from_admin() {
         let html = render_settings(true);
         assert!(html.contains("/00000000-0000-7000-8000-000000000000/admin\""));
-        // フォーム送信（表示名・表示・パスワード・ログアウト）でも管理コンソール文脈を hidden で
-        // 引き継ぐ（ログアウトはトークンが合わずに戻したとき。task #143）。
+        // Form submissions (display name, display, password, sign-out) also carry the admin console context in hidden
+        // fields (sign-out: when returning due to a token mismatch. task #143).
         assert_eq!(
             html.matches(r#"<input type="hidden" name="from" value="admin">"#)
                 .count(),

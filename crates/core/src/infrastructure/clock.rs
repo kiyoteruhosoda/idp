@@ -1,4 +1,4 @@
-//! 実時刻の `Clock` 実装。
+//! Real-time `Clock` implementation.
 
 use crate::domain::clock::Clock;
 use chrono::{DateTime, Utc};

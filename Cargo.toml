@@ -2,27 +2,27 @@
 resolver = "2"
 members = ["crates/core", "crates/contracts", "crates/api", "crates/web"]
 
-# ワークスペース共通の lint 方針（各 crate は `[lints] workspace = true` で参照する）。
+# Workspace-wide lint policy (each crate references it with `[lints] workspace = true`).
 #
-# `result_large_err`: axum のハンドラ・ゲートは失敗を `Response`（128 バイト）で返す。clippy 0.1.98 で
-# このしきい値（既定 128 バイト）にちょうど掛かるようになったが、ここでの `Err` は「今から返す応答」
-# そのものであり、`Box` に包んでも呼び出し側で開梱し直すだけで、`IntoResponse` を返す axum の慣用形
-# からも外れる。presentation 層の 38 か所へ個別に `#[allow]` を撒くより、方針としてここで 1 度だけ
-# 許可する（CI は `-D warnings` で回すため、許可は明示的に置く必要がある）。
+# `result_large_err`: axum handlers and gates return failures as `Response` (128 bytes). With clippy 0.1.98
+# it started hitting exactly this threshold (default 128 bytes), but the `Err` here is "the response about to be
+# returned" itself; wrapping it in `Box` only makes callers unbox it again, and departs from axum's idiom of
+# returning `IntoResponse`. Rather than scattering `#[allow]` over 38 places in the presentation layer, allow it once
+# here as policy (CI runs with `-D warnings`, so the allowance must be explicit).
 [workspace.lints.clippy]
 result_large_err = "allow"
 
-# ワークスペース共通の依存バージョン（各 crate は `workspace = true` で参照する）。
-# ADR-0007（API/Web サービス分割）: P1 で core（domain/application/infrastructure）と api（presentation +
-# バイナリ）へ分割。P3 で contracts（serde DTO 契約）と web（HTML 描画 + API クライアント）を追加した。
+# Workspace-wide dependency versions (each crate references them with `workspace = true`).
+# ADR-0007 (API/Web service split): P1 split into core (domain/application/infrastructure) and api (presentation +
+# binary). P3 added contracts (serde DTO contracts) and web (HTML rendering + API client).
 [workspace.dependencies]
-# `time` は再試行のバックオフ・定期ローテーションの sleep で使う（sqlx 経由の feature 統合に
-# 依存させず明示する）。
+# `time` is used for retry backoff and periodic-rotation sleeps (made explicit rather than relying on
+# feature unification via sqlx).
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "time"] }
 axum = { version = "0.8", features = ["macros"] }
 tower = "0.5"
 tower-http = { version = "0.7", features = ["trace"] }
-# HTTP の基本型のみ（axum 非依存）。api / web が同じ HTTP スパンを作るために contracts で使う。
+# HTTP basic types only (no axum dependency). Used in contracts so api / web create the same HTTP spans.
 http = "1"
 sqlx = { version = "0.9", default-features = false, features = [
     "runtime-tokio",
@@ -44,18 +44,18 @@ anyhow = "1"
 dotenvy = "0.15"
 async-trait = "0.1"
 jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
-# RSA の署名・検証・鍵生成は aws-lc-rs（定数時間の実装。jsonwebtoken の `aws_lc_rs` と同じもの）。
-# RustCrypto の rsa 0.9 は秘密鍵の演算の時間から鍵が漏れうる（RUSTSEC-2023-0071 / CVE-2023-49092・直る版なし）
-# うえ、digest 0.10 の世代に sha2 / hmac / p256 / x509-cert / rand を縛っていたので外した。
+# RSA signing, verification and key generation use aws-lc-rs (constant-time implementation; the same as jsonwebtoken's `aws_lc_rs`).
+# RustCrypto's rsa 0.9 can leak the key through private-key operation timing (RUSTSEC-2023-0071 / CVE-2023-49092, no fixed version)
+# and pinned sha2 / hmac / p256 / x509-cert / rand to the digest 0.10 generation, so it was removed.
 aws-lc-rs = "1"
-# 鍵の入れ物（PKCS#8 / SPKI）の読み書きだけに使う。演算は aws-lc-rs に任せる。
+# Used only to read/write key containers (PKCS#8 / SPKI). Operations are left to aws-lc-rs.
 pkcs8 = { version = "0.11", features = ["std", "pem"] }
 p256 = { version = "0.14", features = ["pkcs8", "pem"] }
 aes-gcm = "0.11"
-# `oid` は SAML 応答の RSA 署名（PKCS#1 v1.5 の DigestInfo 生成）に使う。
+# `oid` is used for RSA signatures of SAML responses (generating the PKCS#1 v1.5 DigestInfo).
 sha2 = { version = "0.11", features = ["oid"] }
-# 漏えい済みパスワード照合（AP7）のレンジ API は SHA-1 の接頭辞で引く仕様のため使う。
-# 保存・認証には使わない（保存は argon2）。
+# Used because the range API for breached-password checks (AP7) looks up by SHA-1 prefix.
+# Not used for storage or authentication (storage uses argon2).
 sha1 = "0.11"
 hmac = "0.13"
 hex = "0.4"
@@ -64,46 +64,46 @@ rand = "0.10"
 argon2 = "0.6"
 url = "2"
 percent-encoding = "2"
-# COOKIE_DOMAIN の起動時検証（public suffix 拒否。ADR-0012 §Consequences）。
+# Startup validation of COOKIE_DOMAIN (rejects public suffixes, ADR-0012 §Consequences).
 psl = "2"
-# SAML メタデータの XML 解析（外部 IdP メタデータ取り込み）・XML 生成（自身の SP メタデータ出力）。
-# 0.38 で実体参照（`&amp;` など）が別イベント `GeneralRef` に割れ、0.40 で属性値の正規化が入った——
-# この 2 つは domain::xml_text に寄せて受けている。0.42 で名前・値が `&[u8]` から `&str` になった。
-# どれも xml_c14n / xml_signature（XML 署名の正準化と検証）の意味に触れるので、版を上げるときは
-# 依存の一括更新に混ぜず単独の変更として移す。
+# XML parsing of SAML metadata (importing external IdP metadata) and XML generation (our own SP metadata output).
+# In 0.38 entity references (`&amp;` etc.) split into a separate `GeneralRef` event, and 0.40 added attribute value normalization --
+# both are handled in domain::xml_text. In 0.42 names and values changed from `&[u8]` to `&str`.
+# All of these touch the semantics of xml_c14n / xml_signature (XML signature canonicalization and verification), so when bumping
+# the version, move it as a standalone change, not mixed into a bulk dependency update.
 quick-xml = "0.42"
-# SAML HTTP-Redirect binding の DEFLATE 展開（`SAMLRequest` = base64(raw-deflate(xml))）。
+# DEFLATE inflation for the SAML HTTP-Redirect binding (`SAMLRequest` = base64(raw-deflate(xml))).
 flate2 = "1"
-# 外部 SAML IdP の署名証明書（`<ds:X509Certificate>`）から公開鍵を取り出す（AP12）。
-# 検証に使うのは SubjectPublicKeyInfo だけで、証明書チェーンの検証はしない（信頼の起点は
-# 「管理者がこの証明書を登録した」ことで、CA ではない。ADR-0027）。
+# Extracts the public key from an external SAML IdP's signing certificate (`<ds:X509Certificate>`) (AP12).
+# Only SubjectPublicKeyInfo is used for verification; the certificate chain is not validated (the root of trust is
+# "the admin registered this certificate", not a CA, ADR-0027).
 x509-cert = { version = "0.3", default-features = false, features = ["std"] }
 utoipa = { version = "6", features = ["axum_extras", "chrono", "uuid"] }
 utoipa-swagger-ui = { version = "10", features = ["axum", "vendored"] }
 fluent = "0.17"
 unic-langid = { version = "0.9", features = ["macros"] }
-# web crate のサーバレンダリング用テンプレート（コンパイル時型検証・HTML 自動エスケープ）。
+# Templates for server rendering in the web crate (compile-time type checking, automatic HTML escaping).
 askama = "0.16"
-# web crate の API クライアント（core/sqlx へ依存させないための HTTP 越しアクセス）。TLS は rustls。
+# API client of the web crate (access over HTTP so it doesn't depend on core/sqlx). TLS is rustls.
 reqwest = { version = "0.13", default-features = false, features = ["json", "query", "form", "rustls"] }
-# TOTP（RFC 6238）の生成・検証（MFA 自己登録）。
+# TOTP (RFC 6238) generation and verification (MFA self-enrollment).
 totp-rs = { version = "6", features = ["gen_secret", "otpauth"] }
-# QR コードを SVG として生成（TOTP セットアップ画面で埋め込む）。
+# Generates QR codes as SVG (embedded in the TOTP setup screen).
 qrcode = "0.14"
-# SMTP メール配送（招待メール MT17・パスワードリセット MT18）。TLS は rustls。
+# SMTP mail delivery (invitation mail MT17, password reset MT18). TLS is rustls.
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "hostname", "tokio1", "tokio1-rustls-tls"] }
-# web crate の統合テストで api をスタブする HTTP モックサーバ（G11。DB 不要で CI が速い）。
+# HTTP mock server stubbing the api in the web crate's integration tests (G11; no DB needed, so CI is fast).
 wiremock = "0.6"
-# WebAuthn（FIDO2 Passkey）認証ライブラリ。
-# danger-allow-state-serialisation: チャレンジ状態の DB 保存に必要（サーバサイドで管理するため安全）。
-# conditional-ui: discoverable credentials（ユーザー名不要のパスキーログイン）のサポート。
+# WebAuthn (FIDO2 passkey) authentication library.
+# danger-allow-state-serialisation: needed to store challenge state in the DB (safe because it is managed server-side).
+# conditional-ui: support for discoverable credentials (username-less passkey login).
 webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation", "conditional-ui"] }
-# `ResidentKeyRequirement` は webauthn-rs の prelude に出てこないため、プロトコル型を直接引く
-# （webauthn-rs が内部で使っているものと同一のクレート・同一バージョン）。
+# `ResidentKeyRequirement` is not in webauthn-rs's prelude, so the protocol types are referenced directly
+# (the same crate and same version webauthn-rs uses internally).
 webauthn-rs-proto = { version = "0.5" }
-# メトリクス（G6）。`metrics` は計測の facade（`tracing` と同じ位置づけ）で core・api の双方が使う。
-# 収集とレンダリングは api だけが持つ（`/metrics` を出すのは api のため）。
-# metrics-exporter-prometheus は既定でプッシュゲートウェイ・HTTP リスナを引き込むため既定機能を切り、
-# レンダリングだけを使う（配信は axum のルートで行う）。
+# Metrics (G6). `metrics` is the instrumentation facade (positioned like `tracing`), used by both core and api.
+# Only the api owns collection and rendering (since the api is the one serving `/metrics`).
+# metrics-exporter-prometheus pulls in a push gateway and HTTP listener by default, so default features are off
+# and only rendering is used (serving is done via an axum route).
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }

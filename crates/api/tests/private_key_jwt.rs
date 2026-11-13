@@ -1,14 +1,14 @@
-//! `private_key_jwt` クライアント認証の統合テスト（ADR-0030。RFC 7523）。
+//! Integration tests for `private_key_jwt` client authentication (ADR-0030; RFC 7523).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test private_key_jwt
 //!
-//! 検証の要:
-//! - 署名済み assertion だけでトークンが取れること（共有秘密を一切流さない）。
-//! - 同じ assertion の**再利用が拒まれる**こと（`jti` の再生防止）。これが無いと、傍受した
-//!   相手は `exp` までの間その assertion を使い回せる。
-//! - 他人の鍵・他テナント宛・期限切れ・`jti` 無しが通らないこと。
-//! - `private_key_jwt` で登録したクライアントが、secret 方式へ「落ちない」こと。
+//! Key points checked:
+//! - A token can be obtained with only a signed assertion (no shared secret is sent at all).
+//! - **Reusing the same assertion is rejected** (`jti` replay prevention). Otherwise someone who intercepted it
+//!   could reuse the assertion until `exp`.
+//! - Someone else's key, another tenant as audience, expired, and missing `jti` do not pass.
+//! - A client registered with `private_key_jwt` does not "fall back" to secret methods.
 
 mod support;
 
@@ -43,7 +43,7 @@ struct AssertionSpec<'a> {
 }
 
 impl<'a> AssertionSpec<'a> {
-    /// 素直に通るはずの assertion（`aud` はテナント issuer のトークンエンドポイント）。
+    /// An assertion that should pass plainly (`aud` is the token endpoint of the tenant issuer).
     fn valid(
         env: &support::TestEnv,
         client_id: &'a str,
@@ -80,7 +80,7 @@ impl<'a> AssertionSpec<'a> {
     }
 }
 
-/// `/token` へ `client_credentials` + client assertion を投げる。
+/// Sends `client_credentials` + client assertion to `/token`.
 async fn request_token(
     app: &axum::Router,
     tenant_id: &str,
@@ -112,8 +112,8 @@ async fn request_token_with_type(
     .await
 }
 
-/// 署名済み assertion だけでアクセストークンが取れる。`client_id` は body に載せない
-/// （RFC 7521 §4.2 が認める省略形。対象クライアントは assertion の `sub` から決まる）。
+/// An access token can be obtained with only a signed assertion. `client_id` is not put in the body
+/// (the short form allowed by RFC 7521 §4.2; the target client is determined from the assertion's `sub`).
 #[tokio::test]
 async fn issues_a_token_for_a_signed_assertion_without_any_shared_secret() {
     let Some(env) = support::setup("private_key_jwt").await else {
@@ -128,18 +128,18 @@ async fn issues_a_token_for_a_signed_assertion_without_any_shared_secret() {
 
     let tokens = body_json(response).await;
     assert_eq!(tokens["token_type"], "Bearer");
-    // 登録できる scope は OIDC の 4 値だけで、そのすべてが利用者前提か offline_access のため、
-    // このトークンに載る scope は無い（ADR-0033）。
+    // The only registrable scopes are the 4 OIDC values, all of which assume a user or are offline_access, so
+    // no scope is carried by this token (ADR-0033).
     assert_eq!(tokens["scope"], "");
     assert!(tokens["access_token"]
         .as_str()
         .is_some_and(|t| !t.is_empty()));
-    // client_credentials なので利用者主体のトークンは返らない（G4）。
+    // It is client_credentials, so no user-subject token is returned (G4).
     assert_eq!(tokens["id_token"], Value::Null);
     assert_eq!(tokens["refresh_token"], Value::Null);
 }
 
-/// テナント issuer そのものを `aud` に入れる実装も受け入れる（ADR-0030 決定 6）。
+/// Implementations putting the tenant issuer itself in `aud` are also accepted (ADR-0030 decision 6).
 #[tokio::test]
 async fn the_tenant_issuer_is_also_accepted_as_the_audience() {
     let Some(env) = support::setup("private_key_jwt_aud_issuer").await else {
@@ -154,7 +154,7 @@ async fn the_tenant_issuer_is_also_accepted_as_the_audience() {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
-/// **同じ assertion は 2 回使えない**（ADR-0030 決定 5）。1 回目は通り、2 回目は拒まれる。
+/// **The same assertion cannot be used twice** (ADR-0030 decision 5). The first passes, the second is rejected.
 #[tokio::test]
 async fn the_same_assertion_cannot_be_replayed() {
     let Some(env) = support::setup("private_key_jwt_replay").await else {
@@ -167,24 +167,24 @@ async fn the_same_assertion_cannot_be_replayed() {
     let assertion = spec.build();
 
     let first = request_token(&env.app, &env.root_tenant_id, &assertion).await;
-    assert_eq!(first.status(), StatusCode::OK, "1 回目は通る");
+    assert_eq!(first.status(), StatusCode::OK, "the first one passes");
 
     let second = request_token(&env.app, &env.root_tenant_id, &assertion).await;
     assert_eq!(
         second.status(),
         StatusCode::UNAUTHORIZED,
-        "同じ assertion の使い回しは拒む"
+        "reusing the same assertion is rejected"
     );
     assert_eq!(body_json(second).await["error"], "invalid_client");
 
-    // `jti` を変えれば（＝新しく署名すれば）通る。止めているのは再生であって連続利用ではない。
+    // Changing `jti` (= signing anew) passes. What is stopped is replay, not repeated use.
     let mut fresh = AssertionSpec::valid(&env, &client_id, &private_pem, &kid);
     fresh.jti = support::unique();
     let third = request_token(&env.app, &env.root_tenant_id, &fresh.build()).await;
     assert_eq!(third.status(), StatusCode::OK);
 }
 
-/// 登録されていない鍵で署名した assertion は通らない（＝鍵を差し替えれば旧鍵は失効する）。
+/// An assertion signed with an unregistered key does not pass (= replacing the key revokes the old one).
 #[tokio::test]
 async fn an_assertion_signed_by_another_key_is_rejected() {
     let Some(env) = support::setup("private_key_jwt_other_key").await else {
@@ -200,7 +200,7 @@ async fn an_assertion_signed_by_another_key_is_rejected() {
     assert_eq!(body_json(response).await["error"], "invalid_client");
 }
 
-/// 別の宛先向けに署名させた assertion を転送しても通らない。
+/// Forwarding an assertion signed for another audience does not pass.
 #[tokio::test]
 async fn an_assertion_for_another_audience_is_rejected() {
     let Some(env) = support::setup("private_key_jwt_bad_aud").await else {
@@ -215,7 +215,7 @@ async fn an_assertion_for_another_audience_is_rejected() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
-/// 期限切れ、および有効期間が長すぎる assertion は通らない（ADR-0030 決定 5）。
+/// Expired assertions and assertions with too long a validity do not pass (ADR-0030 decision 5).
 #[tokio::test]
 async fn expired_and_overlong_assertions_are_rejected() {
     let Some(env) = support::setup("private_key_jwt_lifetime").await else {
@@ -225,7 +225,7 @@ async fn expired_and_overlong_assertions_are_rejected() {
         support::insert_private_key_jwt_client(&env.pool, &env.root_tenant_id, &["openid"]).await;
 
     let mut expired = AssertionSpec::valid(&env, &client_id, &private_pem, &kid);
-    // 時計ずれの許容幅（60 秒）より確実に過去へ置く。
+    // Put it clearly further in the past than the clock skew tolerance (60 seconds).
     expired.expires_in_seconds = -300;
     assert_eq!(
         request_token(&env.app, &env.root_tenant_id, &expired.build())
@@ -244,7 +244,7 @@ async fn expired_and_overlong_assertions_are_rejected() {
     );
 }
 
-/// `client_assertion_type` が `jwt-bearer` でなければ受け付けない（RFC 7523 §2.2）。
+/// Not accepted unless `client_assertion_type` is `jwt-bearer` (RFC 7523 §2.2).
 #[tokio::test]
 async fn an_unsupported_assertion_type_is_rejected() {
     let Some(env) = support::setup("private_key_jwt_type").await else {
@@ -264,8 +264,8 @@ async fn an_unsupported_assertion_type_is_rejected() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
-/// `private_key_jwt` で登録したクライアントは、secret 方式へ落ちない（ADR-0030 決定 2）。
-/// この方式のクライアントは secret を持たないので、Basic を送っても照合対象が無い。
+/// A client registered with `private_key_jwt` does not fall back to secret methods (ADR-0030 decision 2).
+/// Clients with this method have no secret, so sending Basic has nothing to verify against.
 #[tokio::test]
 async fn a_private_key_jwt_client_cannot_authenticate_with_a_secret() {
     let Some(env) = support::setup("private_key_jwt_no_fallback").await else {
@@ -295,7 +295,7 @@ async fn a_private_key_jwt_client_cannot_authenticate_with_a_secret() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
-/// Discovery が `private_key_jwt` と対応署名アルゴリズムを広告する。
+/// Discovery advertises `private_key_jwt` and the supported signing algorithms.
 #[tokio::test]
 async fn discovery_advertises_private_key_jwt() {
     let Some(env) = support::setup("private_key_jwt_discovery").await else {

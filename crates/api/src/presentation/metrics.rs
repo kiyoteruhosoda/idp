@@ -1,25 +1,25 @@
-//! Prometheus メトリクスの収集と配信（G6）。
+//! Collecting and serving Prometheus metrics (G6).
 //!
-//! 可観測性が JSON ログと `log` / `audit_log` テーブルだけだったため、ログイン成功率・
-//! トークン発行レート・エンドポイント別レイテンシ・DB プールの枯渇といった SLO を見るのに要る値が
-//! 取れなかった。ここでは `metrics` facade の収集器を設置し、Prometheus のテキスト形式で配信する。
+//! Observability was only JSON logs and the `log` / `audit_log` tables, so the values needed for SLOs such as login success rate,
+//! token issuance rate, per-endpoint latency and DB pool exhaustion
+//! could not be obtained. This installs a `metrics` facade recorder and serves it in Prometheus text format.
 //!
-//! # 公開面
+//! # Exposure
 //!
-//! `/internal/metrics` に置く。`/internal/*` は**リバースプロキシで外部から遮断する前提**の面で
-//! （ADR-0007 §5）、多層防御としてサービス認証トークン（`X-Internal-Auth-Token`）も要る。
-//! メトリクスは「どの利用者がいつ何回失敗したか」を集約した情報であり、公開面に出す値ではない。
-//! Prometheus 側はスクレイプ設定でヘッダを付けて取得する（`docs/OPERATIONS.md` 参照）。
+//! Placed at `/internal/metrics`. `/internal/*` is the surface **assumed to be blocked from outside by the reverse proxy**
+//! (ADR-0007 §5), and as defense in depth the service auth token (`X-Internal-Auth-Token`) is also required.
+//! Metrics aggregate "which user failed when and how many times", which is not for the public surface.
+//! Prometheus fetches with the header set in its scrape config (see `docs/OPERATIONS.md`).
 //!
-//! # 何を測るか
+//! # What is measured
 //!
-//! - **監査イベント**（ログイン成否・トークン発行・鍵ローテーション等）: 記録は
-//!   `AuditService` の 1 か所（`assay_core::metrics::AUDIT_EVENTS`）。計測器を各ユースケースへ
-//!   散らさない。
-//! - **HTTP の所要時間**: 本モジュールのミドルウェア。
-//! - **DB プールの接続数**: 定期タスク（`spawn_db_pool_metrics`）。
+//! - **Audit events** (login success/failure, token issuance, key rotation, etc.): recorded in one place,
+//!   `AuditService` (`assay_core::metrics::AUDIT_EVENTS`). Instruments are not scattered across
+//!   use cases.
+//! - **HTTP duration**: this module's middleware.
+//! - **DB pool connections**: a periodic task (`spawn_db_pool_metrics`).
 //!
-//! ラベルの基数を有限に保つ方針は `assay_core::metrics` に書いてある。
+//! The policy of keeping label cardinality finite is written in `assay_core::metrics`.
 
 use crate::infrastructure::db::Db;
 use axum::extract::{MatchedPath, Request, State};
@@ -28,26 +28,26 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 
-/// このサービスを表す `service` ラベル値。web も同じ名前のメトリクスを出す場合に区別できるよう
-/// 付けておく（現時点で `/metrics` を持つのは api だけ）。
+/// `service` label value for this service. Set so it can be told apart if web also emits metrics with the same name
+/// (currently only the api has `/metrics`).
 const SERVICE: &str = "api";
 
-/// 所要時間ヒストグラムの区切り（秒）。
+/// Bucket boundaries (seconds) of the duration histogram.
 ///
-/// IdP の応答は「数ミリ秒（キャッシュ済みの discovery）」から「数百ミリ秒（Argon2 を伴う
-/// トークン発行）」までの幅がある。既定の区切りだとこの帯域が 1〜2 バケットに潰れて
-/// p95 が読めないため、5ms〜10s を対数的に刻む。
+/// IdP responses range from "a few milliseconds (cached discovery)" to "hundreds of milliseconds (token
+/// issuance with Argon2)". The default buckets squash this band into 1-2 buckets, making
+/// p95 unreadable, so 5ms-10s is divided logarithmically.
 const DURATION_BUCKETS: &[f64] = &[
     0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
 ];
 
-/// DB プール接続数を観測する間隔。枯渇は数十秒続いて初めて問題になるため 10 秒で足りる。
+/// Interval for observing DB pool connections. Exhaustion only matters after lasting tens of seconds, so 10 seconds is enough.
 const DB_POOL_SAMPLE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// 収集器を**プロセスに 1 度だけ**設置し、レンダリング用のハンドルを返す。
+/// Installs the recorder **only once per process** and returns the handle for rendering.
 ///
-/// `metrics` の収集器はプロセスグローバルで、2 度設置できない。統合テストは 1 プロセス内で
-/// `AppState` を何度も組み立てるため、2 度目以降は最初のハンドルを返す（失敗にしない）。
+/// The `metrics` recorder is process-global and cannot be installed twice. Integration tests build `AppState`
+/// many times in one process, so from the second time on the first handle is returned (not a failure).
 pub fn handle() -> Option<PrometheusHandle> {
     static HANDLE: std::sync::OnceLock<Option<PrometheusHandle>> = std::sync::OnceLock::new();
     HANDLE
@@ -64,7 +64,7 @@ pub fn handle() -> Option<PrometheusHandle> {
             match builder.install_recorder() {
                 Ok(handle) => Some(handle),
                 Err(e) => {
-                    // メトリクスが出ないことは可用性の問題ではない。起動は続ける。
+                    // Missing metrics is not an availability problem. Startup continues.
                     tracing::warn!(error = %e, "failed to install the metrics recorder; /internal/metrics will be empty");
                     None
                 }
@@ -73,10 +73,10 @@ pub fn handle() -> Option<PrometheusHandle> {
         .clone()
 }
 
-/// `GET /internal/metrics`: Prometheus のテキスト形式で現在値を返す。
+/// `GET /internal/metrics`: returns current values in Prometheus text format.
 ///
-/// 収集器の設置に失敗している場合は 503 を返す（空の 200 を返すと、監視側からは
-/// 「イベントが 1 件も起きていない」と区別できない）。
+/// Returns 503 if installing the recorder failed (an empty 200 would be indistinguishable, for monitoring, from
+/// "no events have happened at all").
 pub async fn metrics_endpoint(
     State(state): State<crate::presentation::state::AppState>,
 ) -> Response {
@@ -84,7 +84,7 @@ pub async fn metrics_endpoint(
         Some(handle) => (
             StatusCode::OK,
             [
-                // Prometheus のテキスト形式（version 0.0.4）。
+                // Prometheus text format (version 0.0.4).
                 (
                     header::CONTENT_TYPE,
                     "text/plain; version=0.0.4; charset=utf-8",
@@ -102,11 +102,11 @@ pub async fn metrics_endpoint(
     }
 }
 
-/// HTTP リクエストの所要時間を記録するミドルウェア。
+/// Middleware recording HTTP request duration.
 ///
-/// `route` ラベルには**マッチしたルートの雛形**を使う。実 URL を使うと、テナント ID・利用者 ID が
-/// そのままラベル値になって時系列が際限なく増える。雛形が取れないリクエスト（404）は
-/// `unmatched` にまとめる——存在しないパスを叩かれるだけで時系列が増えては困る。
+/// The `route` label uses **the matched route template**. Using the real URL would turn tenant IDs and user IDs
+/// into label values and grow time series without bound. Requests without a template (404) are grouped as
+/// `unmatched` -- time series must not grow just because nonexistent paths are hit.
 pub async fn track_http_metrics(request: Request, next: Next) -> Response {
     let method = request.method().clone();
     let route = request
@@ -130,10 +130,10 @@ pub async fn track_http_metrics(request: Request, next: Next) -> Response {
     response
 }
 
-/// sqlx コネクションプールの接続数を定期的に観測するタスクを起こす。
+/// Spawns a task that periodically observes the sqlx connection pool's connection count.
 ///
-/// gauge を「使うたびに書く」形にしないのは、プールの枯渇が**何も起きていない間**にこそ
-/// 見たい値だから（枯渇して要求が待たされているとき、記録する側も待たされている）。
+/// The gauge is not "written on each use" because pool exhaustion is a value we want to see precisely
+/// **while nothing is happening** (when exhausted and requests are waiting, the recorder is waiting too).
 pub fn spawn_db_pool_metrics(pool: Db) {
     tokio::spawn(async move {
         loop {

@@ -1,10 +1,10 @@
-//! DER（ASN.1 の符号化の規則）を読むだけの小さな読み手（task #892。Key Attestation の証明書の鎖）。
+//! A small read-only DER (ASN.1 encoding rules) reader (task #892. Key Attestation certificate chains).
 //!
-//! 証明書と Android の Key Attestation の拡張（`KeyDescription`）を読むのに要る分だけを持つ:
-//! 型と長さと中身（TLV）の切り出し、文脈の印（`[n]`・31 以上の番号も）、整数・真偽・オブジェクト識別子。
-//! 書く側は持たない。長さは確定長だけ（DER は不定長を許さない）。
+//! Holds only what is needed to read certificates and the Android Key Attestation extension (`KeyDescription`):
+//! slicing out type, length and contents (TLV), context tags (`[n]`, including numbers 31 and above), integers, booleans, object identifiers.
+//! No writer. Only definite lengths (DER does not allow indefinite lengths).
 
-/// 型の印の種類（クラス）。
+/// Kind (class) of a type tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TagClass {
     Universal,
@@ -13,7 +13,7 @@ pub enum TagClass {
     Private,
 }
 
-/// 1 つの要素（型・長さ・中身）。`raw` は印と長さを含む全体。
+/// One element (type, length, contents). `raw` is the whole thing including tag and length.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DerElement<'a> {
     pub class: TagClass,
@@ -23,7 +23,7 @@ pub struct DerElement<'a> {
     pub raw: &'a [u8],
 }
 
-/// 読めなかった（形が崩れている・途中で切れている）。
+/// Could not be read (malformed or truncated).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DerError;
 
@@ -37,10 +37,10 @@ pub const TAG_ENUMERATED: u32 = 10;
 pub const TAG_SEQUENCE: u32 = 16;
 pub const TAG_SET: u32 = 17;
 
-/// 長さの上限（証明書 1 枚でも数 KB。大きすぎるものは読まない）。
+/// Length limit (even a single certificate is a few KB. Anything too large is not read).
 const MAX_LEN: usize = 64 * 1024;
 
-/// 要素を順に読み出す読み手。
+/// A reader that reads elements in order.
 #[derive(Debug, Clone)]
 pub struct DerReader<'a> {
     rest: &'a [u8],
@@ -55,7 +55,7 @@ impl<'a> DerReader<'a> {
         self.rest.is_empty()
     }
 
-    /// 次の要素を読む。
+    /// Reads the next element.
     pub fn next_element(&mut self) -> Result<DerElement<'a>, DerError> {
         let input = self.rest;
         let (&first, mut cursor) = input.split_first().ok_or(DerError)?;
@@ -68,7 +68,7 @@ impl<'a> DerReader<'a> {
         let constructed = first & 0x20 != 0;
         let mut number = u32::from(first & 0x1f);
         if number == 0x1f {
-            // 31 以上の番号: 7 ビットずつ、最後の 1 バイトだけ上の位が 0。
+            // Numbers 31 and above: 7 bits at a time, with the high bit 0 only on the last byte.
             number = 0;
             loop {
                 let (&b, rest) = cursor.split_first().ok_or(DerError)?;
@@ -114,7 +114,7 @@ impl<'a> DerReader<'a> {
         })
     }
 
-    /// 次の要素が汎用の型 `number` であることを確かめて読む。
+    /// Reads the next element after checking it is the universal type `number`.
     pub fn expect(&mut self, number: u32) -> Result<DerElement<'a>, DerError> {
         let element = self.next_element()?;
         if element.class != TagClass::Universal || element.number != number {
@@ -123,7 +123,7 @@ impl<'a> DerReader<'a> {
         Ok(element)
     }
 
-    /// 次の要素が文脈の印 `[number]` なら読み、違えば読まずに `None`。
+    /// Reads the next element if it is the context tag `[number]`; otherwise does not read and returns `None`.
     pub fn optional_context(&mut self, number: u32) -> Result<Option<DerElement<'a>>, DerError> {
         let mut peek = self.clone();
         match peek.next_element() {
@@ -139,12 +139,12 @@ impl<'a> DerReader<'a> {
 }
 
 impl<'a> DerElement<'a> {
-    /// 中身を要素の並びとして読む（SEQUENCE・SET・明示の印）。
+    /// Reads the contents as a sequence of elements (SEQUENCE, SET, explicit tag).
     pub fn children(&self) -> DerReader<'a> {
         DerReader::new(self.contents)
     }
 
-    /// 0 以上の整数（u64 に収まるもの）。
+    /// A non-negative integer (one that fits in u64).
     pub fn unsigned(&self) -> Result<u64, DerError> {
         let bytes = self.contents;
         if bytes.is_empty() || bytes[0] & 0x80 != 0 {
@@ -165,7 +165,7 @@ impl<'a> DerElement<'a> {
         }
     }
 
-    /// BIT STRING の中身（使っていないビットの数が 0 のものだけ）。
+    /// Contents of a BIT STRING (only when the number of unused bits is 0).
     pub fn bit_string_bytes(&self) -> Result<&'a [u8], DerError> {
         match self.contents.split_first() {
             Some((0, bytes)) => Ok(bytes),
@@ -173,7 +173,7 @@ impl<'a> DerElement<'a> {
         }
     }
 
-    /// オブジェクト識別子を `1.2.840…` の形にする。
+    /// Formats an object identifier as `1.2.840…`.
     pub fn oid(&self) -> Result<String, DerError> {
         let bytes = self.contents;
         let (&first, rest) = bytes.split_first().ok_or(DerError)?;
@@ -204,7 +204,7 @@ impl<'a> DerElement<'a> {
     }
 }
 
-/// `input` がちょうど 1 つの要素であることを確かめて読む。
+/// Reads `input` after checking it is exactly one element.
 pub fn single(input: &[u8]) -> Result<DerElement<'_>, DerError> {
     let mut reader = DerReader::new(input);
     let element = reader.next_element()?;
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn reads_high_tag_numbers() {
-        // [709] EXPLICIT（0xBF 0x85 0x45）に OCTET STRING を包んだもの。
+        // An OCTET STRING wrapped in [709] EXPLICIT (0xBF 0x85 0x45).
         let input = [0xbf, 0x85, 0x45, 0x03, 0x04, 0x01, 0xaa];
         let e = single(&input).unwrap();
         assert_eq!(e.class, TagClass::ContextSpecific);

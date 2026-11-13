@@ -1,13 +1,13 @@
-//! 認可要求（`/authorize` が受理した OIDC の認可リクエスト。設計仕様 §4.2）。
+//! Authorization request (an OIDC authorization request accepted by `/authorize`. Design spec §4.2).
 //!
-//! [`AuthorizationRequest`] は**検証を通った後の**認可要求を表す値オブジェクトである。生成は
-//! [`AuthorizationRequest::accept`] に限られ、そこを通らない限り作れない（永続化からの復元
-//! [`AuthorizationRequest::reconstitute`] を除く）。したがってこの型を受け取った側は、`redirect_uri` が
-//! 登録済みであること・`openid` を含むこと・PKCE が S256 であることを改めて確かめなくてよい。
+//! [`AuthorizationRequest`] is a value object representing an authorization request **after it passed validation**. It can be
+//! created only through [`AuthorizationRequest::accept`] and cannot be made without going through it (except restoration from
+//! persistence, [`AuthorizationRequest::reconstitute`]). So whoever receives this type need not re-check that `redirect_uri` is
+//! registered, that it includes `openid`, or that PKCE is S256.
 //!
-//! 認可要求は AuthSession（`/authorize` 〜 code 発行までの一時状態）に丸ごと持ち越され、ログイン・
-//! MFA・パスキー・外部 IdP・パスワード変更・同意・SSO 復元のどの経路でも、最後はこの値から
-//! authorization code と認可応答を組み立てる。
+//! The authorization request is carried whole into the AuthSession (temporary state from `/authorize` to code issuance), and
+//! whichever path is taken (sign-in, MFA, passkey, external IdP, password change, consent, SSO restore), the
+//! authorization code and authorization response are finally built from this value.
 
 use crate::domain::client::Client;
 use crate::domain::error::OAuthErrorCode;
@@ -15,9 +15,9 @@ use crate::domain::response_mode::{AuthorizationResponse, ResponseMode};
 use crate::domain::values::{CodeChallengeMethod, Prompt, PromptSet, Scope};
 use chrono::{DateTime, Utc};
 
-/// `/authorize` のクエリパラメータ（検証前の生値）。
+/// Query parameters of `/authorize` (raw values before validation).
 ///
-/// 未指定を検出できるよう、すべて `Option` で受ける。
+/// All are received as `Option` so that omission can be detected.
 #[derive(Debug, Default)]
 pub struct AuthorizationParameters {
     pub response_type: Option<String>,
@@ -28,44 +28,44 @@ pub struct AuthorizationParameters {
     pub nonce: Option<String>,
     pub code_challenge: Option<String>,
     pub code_challenge_method: Option<String>,
-    /// `prompt` パラメータ（`none` / `login` / `consent` / `select_account`）。
+    /// The `prompt` parameter (`none` / `login` / `consent` / `select_account`).
     pub prompt: Option<String>,
-    /// `max_age` パラメータ（秒）。
+    /// The `max_age` parameter (seconds).
     pub max_age: Option<u64>,
-    /// `acr_values` パラメータ（空白区切り。G12）。認証ポリシーの `requested_acr` 条件（AP3）が
-    /// 参照する。IdP は要求された acr を**保証しない**（満たせない要求は単に一致しないだけ）。
+    /// The `acr_values` parameter (space-separated. G12). Referenced by the authentication policy's `requested_acr` condition (AP3).
+    /// The IdP **does not guarantee** the requested acr (an unsatisfiable request simply does not match).
     pub acr_values: Option<String>,
-    /// `login_hint` パラメータ（ログイン画面のユーザー名プリフィル。G12）。
+    /// The `login_hint` parameter (prefills the user name on the sign-in screen. G12).
     pub login_hint: Option<String>,
-    /// `ui_locales` パラメータ（RP が要求する表示言語。空白区切りの BCP47 タグ。G12）。
+    /// The `ui_locales` parameter (display languages requested by the RP. Space-separated BCP47 tags. G12).
     pub ui_locales: Option<String>,
-    /// `response_mode` パラメータ（`query`（既定）/ `form_post`。G12）。
-    /// 未知の値は既定へ丸めず `invalid_request` にする（理由は [`ResponseMode::parse`]）。
+    /// The `response_mode` parameter (`query` (default) / `form_post`. G12).
+    /// Unknown values are not rounded to the default but become `invalid_request` (see [`ResponseMode::parse`] for why).
     pub response_mode: Option<String>,
 }
 
-/// 認可要求を受理できなかった理由。
+/// Why the authorization request could not be accepted.
 ///
-/// 2 種類を分けるのは、**`redirect_uri` を信用してよいかどうか**で返し方が変わるためである。
+/// The two kinds are separated because how to respond depends on **whether `redirect_uri` can be trusted**.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthorizationRequestRejection {
-    /// `client_id` / `redirect_uri` が信用できない。**リダイレクトしない**（オープンリダイレクタに
-    /// しない）。エラーは IdP 自身の画面（400）で返す。
+    /// `client_id` / `redirect_uri` cannot be trusted. **Do not redirect** (do not become an open
+    /// redirector). The error is returned on the IdP's own screen (400).
     NotRedirectable {
         error: OAuthErrorCode,
         description: &'static str,
     },
-    /// `redirect_uri` は登録済みと確認できた。エラーを付けてそこへ戻す。
+    /// `redirect_uri` was confirmed as registered. Return there with the error attached.
     Redirectable {
         redirect_uri: String,
-        /// 要求に `state` があれば透過返却する（空なら返さない）。
+        /// If the request had a `state`, it is passed back (not returned if empty).
         state: Option<String>,
         error: OAuthErrorCode,
         description: &'static str,
     },
 }
 
-/// PKCE の code challenge（RFC 7636）。受理できる方式は S256 だけ。
+/// PKCE code challenge (RFC 7636). The only acceptable method is S256.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PkceChallenge {
     challenge: String,
@@ -73,7 +73,7 @@ pub struct PkceChallenge {
 }
 
 impl PkceChallenge {
-    /// 永続化された値から復元する（受理の時点で検証済み）。
+    /// Restores from a persisted value (validated at acceptance time).
     pub fn reconstitute(challenge: String, method: CodeChallengeMethod) -> Self {
         Self { challenge, method }
     }
@@ -87,35 +87,35 @@ impl PkceChallenge {
     }
 }
 
-/// 受理済みの認可要求（値オブジェクト）。
+/// An accepted authorization request (value object).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorizationRequest {
     client_id: String,
     redirect_uri: String,
     scope: Vec<String>,
     state: String,
-    /// ⚠ **`nonce` は任意**（ADR-0049）。無いときは空文字で持ち回り、id_token では**クレームごと
-    /// 出さない**（`token.rs` の `skip_serializing_if`）。
+    /// ⚠ **`nonce` is optional** (ADR-0049). When absent it is carried as an empty string, and the id_token **omits the claim
+    /// entirely** (`skip_serializing_if` in `token.rs`).
     nonce: String,
     pkce: PkceChallenge,
-    /// 空白区切りの**集合**。未指定・未知値のみは空集合。SSO 判定は resume（ADR-0018 決定 2）で
-    /// 行うため、評価時点まで持ち越す。
+    /// A space-separated **set**. Empty set when omitted or only unknown values. The SSO decision happens in resume (ADR-0018 decision 2),
+    /// so it is carried until evaluation.
     prompt: PromptSet,
-    /// 認可応答の返し方（G12）。要求は `/authorize` で来るが応答を組み立てるのは別のリクエスト。
+    /// How to return the authorization response (G12). The request comes at `/authorize`, but the response is built by a different request.
     response_mode: ResponseMode,
-    /// 秒。未指定は `None`。`prompt` と同じく resume で評価する。
+    /// Seconds. `None` when omitted. Evaluated in resume, like `prompt`.
     max_age: Option<u64>,
-    /// 空白区切りの生値（G12）。認証ポリシーの `requested_acr` 条件（AP3）が参照する。
+    /// Raw space-separated value (G12). Referenced by the authentication policy's `requested_acr` condition (AP3).
     acr_values: Option<String>,
     login_hint: Option<String>,
     ui_locales: Option<String>,
 }
 
-/// 永続化から [`AuthorizationRequest`] を組み立て直すための部品。
+/// Parts for rebuilding an [`AuthorizationRequest`] from persistence.
 ///
-/// ⚠ **Infrastructure 層（リポジトリ実装）と試験のためだけ**にある。保存されている値は受理の時点で
-/// 検証を通っているので、ここでは検証し直さない。新しい要求を作るときは必ず
-/// [`AuthorizationRequest::accept`] を通す。
+/// ⚠ Exists **only for the Infrastructure layer (repository implementations) and tests**. Stored values passed validation
+/// at acceptance time, so they are not re-validated here. New requests must always go through
+/// [`AuthorizationRequest::accept`].
 #[derive(Debug, Clone)]
 pub struct AuthorizationRequestParts {
     pub client_id: String,
@@ -134,13 +134,13 @@ pub struct AuthorizationRequestParts {
 }
 
 impl AuthorizationRequest {
-    /// 認可要求を、それを出したクライアントに照らして受理する（設計仕様 §4.2「検証項目」）。
+    /// Accepts an authorization request against the client that issued it (design spec §4.2 "validation items").
     ///
-    /// `client` はフローのテナントで `client_id` から解決済みのもの（解決できなかった場合の
-    /// 扱いは呼び出し側）。検証の順序は次のとおりで、前の段で落ちたら後ろは見ない:
+    /// `client` is the one resolved from `client_id` in the flow's tenant (what to do if it could not be resolved
+    /// is up to the caller). Validation runs in this order, and later stages are not looked at if an earlier one fails:
     ///
-    /// 1. クライアントが有効か・`redirect_uri` が登録済みか（落ちたら**リダイレクトしない**）
-    /// 2. それ以外（落ちたら `redirect_uri` へエラーを付けて戻す）
+    /// 1. Whether the client is active and `redirect_uri` is registered (on failure, **do not redirect**)
+    /// 2. Everything else (on failure, return to `redirect_uri` with the error attached)
     pub fn accept(
         params: &AuthorizationParameters,
         client: &Client,
@@ -177,7 +177,7 @@ impl AuthorizationRequest {
         })?;
 
         Ok(Self {
-            // 要求の生値ではなく**登録されている表記**を使う（照合は DB の照合順序に従う）。
+            // Use **the registered notation**, not the raw request value (matching follows the DB collation).
             client_id: client.client_id.clone(),
             redirect_uri: redirect_uri.to_string(),
             scope: split_scope(params.scope.as_deref()),
@@ -187,9 +187,9 @@ impl AuthorizationRequest {
                 challenge: params.code_challenge.clone().expect("validated above"),
                 method: CodeChallengeMethod::S256,
             },
-            // 未知の `prompt` 値は無視する（`PromptSet::parse` が読み飛ばす）。
+            // Unknown `prompt` values are ignored (`PromptSet::parse` skips them).
             prompt: PromptSet::parse(params.prompt.as_deref().unwrap_or_default()),
-            // 検証済み（未知の値は上で弾いている）。未指定は既定の `query`。
+            // Validated (unknown values were rejected above). Default is `query` when omitted.
             response_mode: non_empty(params.response_mode.as_deref())
                 .and_then(|raw| ResponseMode::parse(raw).ok())
                 .unwrap_or_default(),
@@ -200,7 +200,7 @@ impl AuthorizationRequest {
         })
     }
 
-    /// 永続化された値から復元する（[`AuthorizationRequestParts`] の注意を参照）。
+    /// Restores from a persisted value (see the note on [`AuthorizationRequestParts`]).
     pub fn reconstitute(parts: AuthorizationRequestParts) -> Self {
         Self {
             client_id: parts.client_id,
@@ -254,7 +254,7 @@ impl AuthorizationRequest {
         self.max_age
     }
 
-    /// `acr_values` の生値（未指定は `None`）。
+    /// Raw value of `acr_values` (`None` when omitted).
     pub fn acr_values(&self) -> Option<&str> {
         self.acr_values.as_deref()
     }
@@ -267,7 +267,7 @@ impl AuthorizationRequest {
         self.ui_locales.as_deref()
     }
 
-    /// `acr_values` を空白区切りで分割した一覧（未指定は空）。
+    /// `acr_values` split on whitespace (empty when omitted).
     pub fn requested_acr(&self) -> Vec<String> {
         self.acr_values
             .as_deref()
@@ -277,33 +277,33 @@ impl AuthorizationRequest {
             .collect()
     }
 
-    /// `prompt=none`: 利用者に画面を見せてはならない（ログインも同意も求められない）。
+    /// `prompt=none`: no screen may be shown to the user (neither sign-in nor consent can be requested).
     pub fn forbids_interaction(&self) -> bool {
         self.prompt.contains(Prompt::None)
     }
 
-    /// 既存の SSO を使わず、ログイン画面を通させるか。
+    /// Whether to bypass existing SSO and make the user go through the sign-in screen.
     ///
-    /// `select_account` も `login` と同じく SSO 復元を止める（G12）。assay はブラウザごとに SSO
-    /// セッションを 1 つしか持たないため「選ばせる別アカウント」の一覧は出せないが、**黙って現在の
-    /// アカウントで続けない**ことが要求の本質である。ログイン画面へ戻せば、利用者は同じアカウントで
-    /// 入り直すことも別のアカウントへ切り替えることもできる。
+    /// `select_account`, like `login`, stops SSO restore (G12). assay has only one SSO session per browser,
+    /// so it cannot show a list of "other accounts to choose", but the essence of the request is **not to silently continue with
+    /// the current account**. Returning to the sign-in screen lets the user either sign in again with the same account
+    /// or switch to another account.
     pub fn forces_reauthentication(&self) -> bool {
         self.prompt.contains(Prompt::Login) || self.prompt.contains(Prompt::SelectAccount)
     }
 
-    /// 既存の同意があっても同意画面を出すか（`prompt=consent`）。
+    /// Whether to show the consent screen even if consent already exists (`prompt=consent`).
     pub fn forces_consent(&self) -> bool {
         self.prompt.contains(Prompt::Consent)
     }
 
-    /// `auth_time` の認証が `max_age` を超えて古いか（`max_age` 未指定なら常に `false`）。
+    /// Whether the authentication at `auth_time` is older than `max_age` (always `false` when `max_age` is omitted).
     pub fn authentication_is_too_old(&self, auth_time: DateTime<Utc>, now: DateTime<Utc>) -> bool {
         self.max_age
             .is_some_and(|max_age| (now - auth_time).num_seconds() > max_age as i64)
     }
 
-    /// 利用者の同意が要る scope（`openid` は暗黙同意なので除く）。空なら同意は要らない。
+    /// Scopes that need the user's consent (`openid` is excluded as implicitly consented). Consent is unnecessary if empty.
     pub fn scopes_needing_consent(&self) -> Vec<String> {
         self.scope
             .iter()
@@ -312,13 +312,13 @@ impl AuthorizationRequest {
             .collect()
     }
 
-    /// 認可成功の応答（送信先＋パラメータ）。`response_mode` に従う（G12）。
+    /// The authorization success response (destination + parameters). Follows `response_mode` (G12).
     pub fn success_response(&self, code: &str) -> AuthorizationResponse {
         AuthorizationResponse::success(&self.redirect_uri, code, &self.state, self.response_mode)
     }
 
-    /// 認可エラーの応答。エラーも**成功と同じ `response_mode`** で返す（RP は同じ受け口で待っている。
-    /// OAuth 2.0 Form Post Response Mode）。
+    /// The authorization error response. Errors are also returned **with the same `response_mode` as success** (the RP waits at the same endpoint.
+    /// OAuth 2.0 Form Post Response Mode).
     pub fn error_response(
         &self,
         error: OAuthErrorCode,
@@ -334,7 +334,7 @@ impl AuthorizationRequest {
     }
 }
 
-/// `redirect_uri` の確認より後ろの検証（エラーは `redirect_uri` へ戻す）。
+/// Validation after the `redirect_uri` check (errors return to `redirect_uri`).
 fn validate_redirectable(
     params: &AuthorizationParameters,
     client: &Client,
@@ -368,20 +368,20 @@ fn validate_redirectable(
     if non_empty(params.state.as_deref()).is_none() {
         return Err((OAuthErrorCode::InvalidRequest, "state is required"));
     }
-    // `nonce` は**任意**（OIDC Core 3.1.2.1。必須なのは implicit / hybrid で、
-    // このサーバは `response_type=code` しか受けない）。
+    // `nonce` is **optional** (OIDC Core 3.1.2.1. It is required only for implicit / hybrid, and
+    // this server only accepts `response_type=code`).
     //
-    // ⚠ **2026-09-10 に必須化をやめた**（ADR-0049）。方針として必須にしていたが、
-    // **仕様どおりに送ってくる相手を弾いていた** ——Forgejo は `nonce` を送らない
-    // （未実装。forgejo/forgejo#186）ので、ログイン画面にすら着けなかった。
+    // ⚠ **Stopped requiring it on 2026-09-10** (ADR-0049). It had been required as a policy, but
+    // **that rejected parties sending requests per the spec**: Forgejo does not send `nonce`
+    // (not implemented. forgejo/forgejo#186), so it could not even reach the sign-in screen.
     //
-    // ⚠ **`state` と PKCE(S256) は必須のまま**である。コード奪取と CSRF の防御は
-    // そちらが持っており、`nonce` が主に効くのは id_token のリプレイ
-    // （implicit）である。
+    // ⚠ **`state` and PKCE (S256) remain required**. Those carry the defense against code theft and CSRF,
+    // and `nonce` mainly matters for id_token replay
+    // (implicit).
     //
-    // ⚠ **送ってきた相手には、これまでどおり id_token へ載せて返す**
-    // （`token.rs`。無いときは**クレームごと出さない** ——空文字を載せない）。
-    // `response_mode` は未指定なら `query`。指定があって解釈できない値は弾く（丸めない）。
+    // ⚠ **For parties that send it, it is returned in the id_token as before**
+    // (`token.rs`. When absent, **the claim is omitted entirely**: no empty string).
+    // `response_mode` defaults to `query`. A specified value that cannot be interpreted is rejected (not rounded).
     if let Some(raw) = non_empty(params.response_mode.as_deref()) {
         if ResponseMode::parse(raw).is_err() {
             return Err((
@@ -413,12 +413,12 @@ fn non_empty(v: Option<&str>) -> Option<&str> {
     v.filter(|s| !s.is_empty())
 }
 
-/// 試験で認可要求を手早く組み立てるための部品（検証済みの値として扱う）。
+/// Parts for quickly building authorization requests in tests (treated as validated values).
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
 
-    /// `openid` だけを要求する、S256 の最小の認可要求。
+    /// The minimal S256 authorization request, requesting only `openid`.
     pub fn request(client_id: &str, redirect_uri: &str) -> AuthorizationRequest {
         AuthorizationRequest::reconstitute(AuthorizationRequestParts {
             client_id: client_id.to_string(),
@@ -481,7 +481,7 @@ mod tests {
         }
     }
 
-    /// 戻し先へ返すエラー（`Redirectable`）のコードだけを取り出す。
+    /// Extracts only the code of an error returned to the redirect target (`Redirectable`).
     fn redirect_error(params: &AuthorizationParameters) -> OAuthErrorCode {
         match AuthorizationRequest::accept(params, &client()) {
             Err(AuthorizationRequestRejection::Redirectable { error, .. }) => error,
@@ -510,7 +510,7 @@ mod tests {
         assert_eq!(request.client_id(), "app");
     }
 
-    /// `redirect_uri` を信用できない段階の失敗は、リダイレクトしない。
+    /// Failures at the stage where `redirect_uri` cannot be trusted do not redirect.
     #[test]
     fn untrusted_redirect_uri_is_not_redirected_to() {
         let mut inactive = client();
@@ -558,7 +558,7 @@ mod tests {
             })
         );
 
-        // `state` が無い要求は、戻すときも `state` を付けない。
+        // A request without `state` does not get a `state` when returned either.
         let mut params = valid();
         params.state = None;
         match AuthorizationRequest::accept(&params, &client()) {
@@ -573,11 +573,11 @@ mod tests {
     #[test]
     fn rejects_missing_or_invalid_parameters() {
         let mut params = valid();
-        params.scope = Some("email".to_string()); // openid 無し
+        params.scope = Some("email".to_string()); // no openid
         assert_eq!(redirect_error(&params), OAuthErrorCode::InvalidScope);
 
         let mut params = valid();
-        params.scope = Some("openid profile".to_string()); // 登録外 scope
+        params.scope = Some("openid profile".to_string()); // scope not registered
         assert_eq!(redirect_error(&params), OAuthErrorCode::InvalidScope);
 
         let mut params = valid();
@@ -603,7 +603,7 @@ mod tests {
         ));
     }
 
-    /// ⚠ **`nonce` は任意である**（ADR-0049）。無くても空でも通り、空文字で持ち回る。
+    /// ⚠ **`nonce` is optional** (ADR-0049). Passes when absent or empty, carried as an empty string.
     #[test]
     fn nonce_is_optional() {
         for nonce in [None, Some(String::new())] {
@@ -679,7 +679,7 @@ mod tests {
         assert_eq!(request.requested_acr(), ["urn:a", "urn:b"]);
     }
 
-    /// 成功もエラーも、要求された `response_mode` で返す（G12）。
+    /// Both success and errors are returned with the requested `response_mode` (G12).
     #[test]
     fn responses_follow_the_requested_response_mode() {
         let mut params = valid();

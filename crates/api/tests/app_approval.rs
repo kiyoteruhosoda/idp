@@ -1,11 +1,11 @@
-//! 「アプリで続ける」と認証アプリの鍵（task #892。ADR-0077）。
+//! "Continue with the app" and authenticator app keys (task #892; ADR-0077).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test app_approval
 //!
-//! 認証アプリの役は試験が持つ: Keystore の鍵の代わりに aws-lc-rs の P-256 の鍵で署名する。Key Attestation の
-//! 確かめそのものは domain の試験（`key_attestation/tests.rs`）が受け持つので、ここでは鍵の証明が通った
-//! 後の段階の受付を DB に置いてから、登録の確認・有効化・承認・完了・取り消しを通す。
+//! The test plays the authenticator app: it signs with an aws-lc-rs P-256 key instead of a Keystore key. Key Attestation
+//! verification itself is covered by the domain tests (`key_attestation/tests.rs`), so here an enrollment in the stage
+//! after key attestation passed is put in the DB, then registration confirmation, activation, approval, completion and revocation are run.
 
 mod support;
 
@@ -22,7 +22,7 @@ use support::{
 
 const PACKAGE: &str = "com.nolumia.auth";
 
-/// 認証アプリの口を開く（環境変数だけで決まる。試験のバイナリごとに 1 回）。
+/// Opens the authenticator app endpoints (decided by env vars only; once per test binary).
 fn enable_app_approver() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -42,7 +42,7 @@ async fn setup(name: &str) -> Option<TestEnv> {
     support::setup(name).await
 }
 
-/// アプリの鍵の代わり。
+/// Stand-in for the app's key.
 struct AppKey {
     pair: EcdsaKeyPair,
     spki: Vec<u8>,
@@ -54,7 +54,7 @@ impl AppKey {
         let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
         let pair =
             EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref()).unwrap();
-        // SubjectPublicKeyInfo（id-ecPublicKey・prime256v1）＋非圧縮の点。
+        // SubjectPublicKeyInfo (id-ecPublicKey, prime256v1) + uncompressed point.
         let mut spki = hex::decode("3059301306072a8648ce3d020106082a8648ce3d030107034200").unwrap();
         spki.extend_from_slice(pair.public_key().as_ref());
         Self { pair, spki }
@@ -74,7 +74,7 @@ impl AppKey {
     }
 }
 
-/// パスキーでたった今ログインした SSO セッション（登録の確認の条件）。
+/// An SSO session that just signed in with a passkey (the condition for confirming registration).
 async fn passkey_session(env: &TestEnv, user_id: &str, method: &str) -> String {
     let session_id = assay_api::domain::crypto::random_hex(32);
     sqlx::query(
@@ -111,7 +111,7 @@ async fn public(
     (status, serde_json::from_str(&text).unwrap_or(Value::Null))
 }
 
-/// 受付を始め、鍵の証明が通った段階を DB に置く（Key Attestation の確かめは domain の試験）。
+/// Starts enrollment and puts the stage after key attestation passed in the DB (Key Attestation checks are in the domain tests).
 async fn enrollment_awaiting_confirmation(env: &TestEnv, key: &AppKey) -> String {
     let (status, body) = public(env, Method::POST, "enrollments", None).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
@@ -135,7 +135,7 @@ async fn enrollment_awaiting_confirmation(env: &TestEnv, key: &AppKey) -> String
     id
 }
 
-/// 利用者を作り、鍵を登録して有効にする。`(user_id, key)` を返す。
+/// Creates a user, registers a key and activates it. Returns `(user_id, key)`.
 async fn registered_key(env: &TestEnv) -> (String, AppKey) {
     let user_id = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let key = AppKey::new();
@@ -164,7 +164,7 @@ async fn registered_key(env: &TestEnv) -> (String, AppKey) {
     (user_id, key)
 }
 
-/// 依頼を始める（web の代わり）。`(request_id, browser_binding)`。
+/// Starts a request (in place of web). `(request_id, browser_binding)`.
 async fn start_request(env: &TestEnv, auth_session_id: Option<&str>) -> (String, String) {
     let body = internal(
         env,
@@ -179,7 +179,7 @@ async fn start_request(env: &TestEnv, auth_session_id: Option<&str>) -> (String,
     )
 }
 
-/// アプリが依頼を読んで承認する。返すのは continue_url のコード。
+/// The app reads the request and approves it. Returns the code of continue_url.
 async fn approve(env: &TestEnv, key: &AppKey, request_id: &str) -> String {
     let (status, view) = public(env, Method::GET, &format!("requests/{request_id}"), None).await;
     assert_eq!(status, StatusCode::OK, "{view}");
@@ -241,24 +241,24 @@ async fn an_approval_completes_only_in_the_browser_that_started_it() {
     };
     let (_user, key) = registered_key(&env).await;
 
-    // 別の端末で始めた依頼を承認した: コードはこのスマホのブラウザへ届くが、印が無い。
+    // Approved a request started on another device: the code reaches this phone's browser, but there is no mark.
     let (request_id, binding) = start_request(&env, None).await;
     let code = approve(&env, &key, &request_id).await;
     let refused = complete(&env, &request_id, &code, None).await;
     assert_eq!(refused["result"], "another_browser", "{refused}");
-    // 断った依頼は終わっている（同じコードをもう一度、別の印で出しても通らない）。
+    // The refused request is finished (issuing the same code again with another mark does not pass).
     let other = complete(&env, &request_id, &code, Some("not-the-binding")).await;
     assert_eq!(other["result"], "invalid", "{other}");
-    // 違う印の 1 回目も「別のブラウザ」になる。
+    // The first attempt with a different mark also counts as "another browser".
     let (request_id2, _) = start_request(&env, None).await;
     let code2 = approve(&env, &key, &request_id2).await;
     let wrong = complete(&env, &request_id2, &code2, Some("not-the-binding")).await;
     assert_eq!(wrong["result"], "another_browser", "{wrong}");
-    // 一度断った依頼は、後から正しい印で来ても完了しない。
+    // A request refused once does not complete even if the correct mark comes later.
     let late = complete(&env, &request_id, &code, Some(&binding)).await;
     assert_eq!(late["result"], "invalid", "{late}");
 
-    // 同じブラウザ（印が合う）なら完了し、ログイン状態は 30 日（使わなかったときの期限も同じ）。
+    // In the same browser (mark matches) it completes, and the sign-in lasts 30 days (the idle expiry is the same).
     let (request_id, binding) = start_request(&env, None).await;
     let code = approve(&env, &key, &request_id).await;
     let done = complete(&env, &request_id, &code, Some(&binding)).await;
@@ -270,7 +270,7 @@ async fn an_approval_completes_only_in_the_browser_that_started_it() {
     let sso = done["sso_session_id"].as_str().unwrap();
     assert_eq!(done["sso_absolute_ttl_secs"], 2_592_000);
     let (idle, absolute) = session_lifetime_secs(&env, sso).await;
-    // created_at は DB が付ける（数ミリ秒ずれる）ので、秒の切り捨ての分だけ幅を見る。
+    // created_at is set by the DB (off by a few milliseconds), so allow for second truncation.
     assert!((2_591_998..=2_592_000).contains(&idle), "{idle}");
     assert!((2_591_998..=2_592_000).contains(&absolute), "{absolute}");
     let linked: Option<String> = sqlx::query_scalar(
@@ -337,7 +337,7 @@ async fn the_code_is_single_use_and_lasts_30_seconds() {
         "invalid"
     );
 
-    // 30 秒を過ぎたコード。
+    // A code past 30 seconds.
     let (request_id, binding) = start_request(&env, None).await;
     let code = approve(&env, &key, &request_id).await;
     sqlx::query(
@@ -352,7 +352,7 @@ async fn the_code_is_single_use_and_lasts_30_seconds() {
         "invalid"
     );
 
-    // 違うコード。
+    // A wrong code.
     let (request_id, binding) = start_request(&env, None).await;
     let _ = approve(&env, &key, &request_id).await;
     assert_eq!(
@@ -372,7 +372,7 @@ async fn revoking_the_key_ends_the_sessions_it_approved() {
     let done = complete(&env, &request_id, &code, Some(&binding)).await;
     let approved_session = done["sso_session_id"].as_str().unwrap().to_string();
 
-    // 「端末」の欄に「認証アプリ」として並ぶ。
+    // It is listed in the "Devices" section as "Authenticator app".
     let account = passkey_session(&env, &user_id, "webauthn").await;
     let listed = internal(
         &env,
@@ -386,7 +386,7 @@ async fn revoking_the_key_ends_the_sessions_it_approved() {
     assert_eq!(listed["keys"][0]["security_level"], "tee");
     assert!(listed["keys"][0]["last_used_at"].is_string());
 
-    // アプリから取り消す（時刻への署名）。
+    // Revoke from the app (signature over the time).
     let signed_at = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let (status, _) = public(
         &env,
@@ -409,7 +409,7 @@ async fn revoking_the_key_ends_the_sessions_it_approved() {
     let (status, _) = public(&env, Method::GET, &format!("keys/{}", key.key_id()), None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
-    // 取り消した鍵ではもう承認できない。
+    // A revoked key can no longer approve.
     let (request_id, _) = start_request(&env, None).await;
     let (_, view) = public(&env, Method::GET, &format!("requests/{request_id}"), None).await;
     let challenge = view["challenge"].as_str().unwrap();
@@ -473,7 +473,7 @@ async fn signatures_must_come_from_the_registered_key_for_this_request() {
     let (_, view) = public(&env, Method::GET, &format!("requests/{request_id}"), None).await;
     let challenge = view["challenge"].as_str().unwrap().to_string();
 
-    // 登録した鍵の番号で、別の鍵の署名。
+    // Registered key's number with another key's signature.
     let (status, body) = public(
         &env,
         Method::POST,
@@ -488,7 +488,7 @@ async fn signatures_must_come_from_the_registered_key_for_this_request() {
         (status, body["error"].clone()),
         (StatusCode::FORBIDDEN, json!("signature_invalid"))
     );
-    // 断るための署名を承認に使い回す。
+    // Reusing a refusal signature for approval.
     let (status, _) = public(
         &env,
         Method::POST,
@@ -500,7 +500,7 @@ async fn signatures_must_come_from_the_registered_key_for_this_request() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    // 知らない鍵。
+    // An unknown key.
     let (status, body) = public(
         &env,
         Method::POST,
@@ -515,7 +515,7 @@ async fn signatures_must_come_from_the_registered_key_for_this_request() {
         (status, body["error"].clone()),
         (StatusCode::FORBIDDEN, json!("key_revoked"))
     );
-    // 断れば、もう承認できない。
+    // Once refused, it can no longer be approved.
     let (status, _) = public(
         &env,
         Method::POST,
@@ -548,7 +548,7 @@ async fn registration_needs_a_recent_passkey_and_a_matching_attestation() {
     let user_id = create_plain_user(&env.pool, &env.root_tenant_id).await;
     let key = AppKey::new();
     let enrollment = enrollment_awaiting_confirmation(&env, &key).await;
-    // パスワードで入ったセッションでは確かめられない。
+    // A session signed in with a password cannot confirm.
     let password_session = passkey_session(&env, &user_id, "password").await;
     let refused = internal(
         &env,
@@ -557,7 +557,7 @@ async fn registration_needs_a_recent_passkey_and_a_matching_attestation() {
     )
     .await;
     assert_eq!(refused["result"], "passkey_required", "{refused}");
-    // 確かめる前のコード無しの有効化は通らない。
+    // Activation without a code before confirmation does not pass.
     let (status, _) = public(
         &env,
         Method::POST,
@@ -567,7 +567,7 @@ async fn registration_needs_a_recent_passkey_and_a_matching_attestation() {
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
 
-    // 試験の根で作った正しい形の鎖でも、challenge がこの受付のものでなければ受けない。
+    // Even a correctly shaped chain made with the test root is not accepted if the challenge is not this enrollment's.
     let (status, body) = public(&env, Method::POST, "enrollments", None).await;
     assert_eq!(status, StatusCode::CREATED);
     let id = body["enrollment_id"].as_str().unwrap();
@@ -593,7 +593,7 @@ async fn registration_needs_a_recent_passkey_and_a_matching_attestation() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(body["error"], "attestation_rejected");
     assert_eq!(body["reason"], "wrong_challenge");
-    // 断った受付は捨てる（同じ challenge で出し直させない）。
+    // A refused enrollment is discarded (cannot be reissued with the same challenge).
     let (status, _) = public(
         &env,
         Method::PUT,

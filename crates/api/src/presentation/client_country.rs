@@ -1,10 +1,10 @@
-//! web が添えた「信じてよい国」を、内部の要求の間だけ持つ（task #895）。
+//! Holds the "trusted country" attached by web, only for the duration of an internal request (task #895).
 //!
-//! web は `CF-IPCountry` を `TRUST_FORWARDED_HEADERS` のときだけ信じ、内部の呼び出しに
-//! [`CLIENT_COUNTRY_HEADER`] として添える。この middleware は **`/internal/*` のサブルータにだけ**付ける
-//! （サービストークンの内側）。外から直接 api に来た要求の同じ見出しは誰でも付けられるので読まない。
+//! web trusts `CF-IPCountry` only under `TRUST_FORWARDED_HEADERS` and attaches it to internal calls as
+//! [`CLIENT_COUNTRY_HEADER`]. This middleware is attached **only to the `/internal/*` subrouter**
+//! (behind the service token). The same header on requests hitting the api directly can be set by anyone, so it is not read.
 //!
-//! 読むのは断ったログインの履歴の写し（`SignInFailureRecordingSink`）だけで、[`RequestCountry`] として渡す。
+//! Only the copy of rejected sign-in history (`SignInFailureRecordingSink`) reads it, passed as [`RequestCountry`].
 
 use crate::domain::sign_in_history::RequestCountry;
 use crate::domain::user_device::CountryCode;
@@ -17,7 +17,7 @@ tokio::task_local! {
     static CLIENT_COUNTRY: Option<CountryCode>;
 }
 
-/// 内部の要求の間だけ、web が添えた国を置く。
+/// Holds the country attached by web, only for the duration of an internal request.
 pub async fn capture_client_country(request: Request, next: Next) -> Response {
     let country = request
         .headers()
@@ -27,7 +27,7 @@ pub async fn capture_client_country(request: Request, next: Next) -> Response {
     CLIENT_COUNTRY.scope(country, next.run(request)).await
 }
 
-/// 今の要求の国を引く口（要求の外・外からの要求では `None`）。
+/// Accessor for the current request's country (`None` outside a request or for external requests).
 pub struct TaskLocalRequestCountry;
 
 impl RequestCountry for TaskLocalRequestCountry {

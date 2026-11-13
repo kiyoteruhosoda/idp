@@ -1,13 +1,13 @@
-//! 保護リソース（`aud` に入る宛名）の登録と、クライアントへの貸し出し
-//! （`/{tenant_id}/admin/resources`・`/{tenant_id}/admin/clients/{client_id}/resources`。ADR-0042）。
+//! Registering protected resources (the audience names put in `aud`) and lending them to clients
+//! (`/{tenant_id}/admin/resources`, `/{tenant_id}/admin/clients/{client_id}/resources`, ADR-0042).
 //!
-//! ここで登録した名前が、`client_credentials` に `resource=<名前>` を添えて得たトークンの `aud` に
-//! なる。**載るのは宛名だけで、そこで何をしてよいかは載らない**（ADR-0033。リソースサーバが
-//! `client_id` で決める）。
+//! A name registered here becomes the `aud` of a token obtained via `client_credentials` with `resource=<name>`.
+//! **Only the audience is carried, not what may be done there** (ADR-0033; the resource server
+//! decides by `client_id`).
 //!
-//! 保護は `idp.resources:read` / `idp.resources:write`。クライアント管理（`idp.clients:*`）と
-//! 分けるのは、宛名がクライアントより長生きする独立した登録簿だからである——RP を 1 つ消しても、
-//! その RP が公開していた API の名前は他の呼び出し元にとって在り続ける。
+//! Protected by `idp.resources:read` / `idp.resources:write`. It is separate from client management (`idp.clients:*`)
+//! because audiences are an independent registry that outlives clients -- deleting one RP does not
+//! make the name of the API it exposed go away for other callers.
 
 use crate::application::resource_management::ResourceManagementError;
 use crate::domain::resource::ProtectedResource;
@@ -27,7 +27,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use uuid::Uuid;
 
-/// 登録済みの宛名を一覧する（`GET /{tenant_id}/admin/resources`）。
+/// Lists registered audiences (`GET /{tenant_id}/admin/resources`).
 #[utoipa::path(
     get,
     path = "/{tenant_id}/admin/resources",
@@ -53,7 +53,7 @@ pub async fn list_resources(
     Ok(Json(to_list(resources)))
 }
 
-/// 宛名を登録する（`POST /{tenant_id}/admin/resources`）。
+/// Registers an audience (`POST /{tenant_id}/admin/resources`).
 #[utoipa::path(
     post,
     path = "/{tenant_id}/admin/resources",
@@ -96,10 +96,10 @@ pub async fn register_resource(
     Ok((StatusCode::CREATED, Json(to_response(&resource))))
 }
 
-/// 宛名の状態を変える（`PATCH /{tenant_id}/admin/resources/{resource_id}`）。
+/// Changes an audience's status (`PATCH /{tenant_id}/admin/resources/{resource_id}`).
 ///
-/// `DISABLED` にすると**新しいトークンの宛先に使えなくなる**が、発行済みのトークンは寿命が
-/// 尽きるまで有効なままである（署名済みのクレームは取り消せない）。
+/// `DISABLED` means it **can no longer be the audience of new tokens**, but already issued tokens stay
+/// valid until they expire (signed claims cannot be revoked).
 #[utoipa::path(
     patch,
     path = "/{tenant_id}/admin/resources/{resource_id}",
@@ -143,7 +143,7 @@ pub async fn update_resource_status(
     Ok(Json(to_response(&resource)))
 }
 
-/// 宛名を削除する（`DELETE /{tenant_id}/admin/resources/{resource_id}`）。貸し出しも一緒に消える。
+/// Deletes an audience (`DELETE /{tenant_id}/admin/resources/{resource_id}`). Its loans are deleted too.
 #[utoipa::path(
     delete,
     path = "/{tenant_id}/admin/resources/{resource_id}",

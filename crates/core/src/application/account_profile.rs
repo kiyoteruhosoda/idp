@@ -1,7 +1,7 @@
-//! ユーザーのセルフサービス・プロフィール（表示名）ユースケース。
+//! Use case: the user's self-service profile (display name).
 //!
-//! ログイン済みユーザーが SSO セッション経由で自分の `users.name`（表示名）を取得・更新する。
-//! 表示名は一意制約・書式制約を持たない自由入力で、空・空白のみは解除（`NULL`）に正規化する。
+//! A logged-in user reads and updates their own `users.name` (display name) via the SSO session.
+//! The display name is free input with no uniqueness or format constraint; empty or whitespace-only clears it (`NULL`).
 
 use crate::domain::clock::Clock;
 use crate::domain::crypto;
@@ -10,34 +10,34 @@ use crate::domain::user::User;
 use crate::domain::values::validate_display_name;
 use std::sync::Arc;
 
-/// プロフィール取得結果（設定画面のプリフィル用）。
+/// Profile read result (for prefilling the settings screen).
 pub enum ProfileOutcome {
     Ok {
         name: Option<String>,
         preferred_username: Option<String>,
         email: String,
-        /// 保存済みの表示言語（`users.language`。未設定なら `None`）。MT20。
+        /// Saved display language (`users.language`; `None` if unset). MT20.
         language: Option<String>,
-        /// 保存済みの配色（`users.theme`。未設定なら `None`）。web が画面へ適用する。
+        /// Saved color scheme (`users.theme`; `None` if unset). web applies it to the screen.
         theme: Option<String>,
     },
-    /// SSO セッションが無い・期限切れ。
+    /// No SSO session, or it has expired.
     SessionExpired,
     Internal(String),
 }
 
 pub struct UpdateNameCommand {
-    /// SSO セッション Cookie の生値（SHA-256 ハッシュで DB 検索する）。
+    /// Raw value of the SSO session cookie (looked up in the DB by its SHA-256 hash).
     pub sso_session_id: String,
-    /// 新しい表示名。空・空白のみ・`None` は解除扱い（DB `NULL`）。
+    /// New display name. Empty, whitespace-only or `None` clears it (DB `NULL`).
     pub name: Option<String>,
 }
 
 pub enum UpdateNameOutcome {
     Ok,
-    /// SSO セッションが無い・期限切れ。
+    /// No SSO session, or it has expired.
     SessionExpired,
-    /// 表示名が長すぎる等、値が不正。
+    /// The value is invalid, e.g. the display name is too long.
     Invalid,
     Internal(String),
 }
@@ -61,7 +61,7 @@ impl AccountProfileService {
         }
     }
 
-    /// 現在のプロフィール（表示名・ログイン識別子・メール）を取得する。
+    /// Reads the current profile (display name, login identifier, email).
     pub async fn get(&self, sso_session_id: &str) -> ProfileOutcome {
         match self.resolve_active_user(sso_session_id).await {
             Ok(Some(user)) => ProfileOutcome::Ok {
@@ -76,9 +76,9 @@ impl AccountProfileService {
         }
     }
 
-    /// 表示名を更新する（空・空白のみは解除）。
+    /// Updates the display name (empty or whitespace-only clears it).
     pub async fn update_name(&self, cmd: UpdateNameCommand) -> UpdateNameOutcome {
-        // 空・空白のみは解除（`NULL`）へ正規化。前後の空白はトリムして保存する。
+        // Normalize empty or whitespace-only to cleared (`NULL`). Leading/trailing whitespace is trimmed before saving.
         let normalized = cmd
             .name
             .as_deref()
@@ -104,10 +104,10 @@ impl AccountProfileService {
         UpdateNameOutcome::Ok
     }
 
-    /// SSO セッションから本人を解決し、**有効なユーザー行**を返す。セッション無効・ユーザー不在・
-    /// 無効化済み（LOCKED/DISABLED）はいずれも `Ok(None)`（未ログイン扱い）。他の認証済み経路
-    /// （`AdminAccessService` / `AccountPasswordService`）と同様に `is_active()` を必須とし、
-    /// セッションが残存する無効アカウントによる操作を防ぐ。
+    /// Resolves the user from the SSO session and returns an **active user row**. An invalid session,
+    /// a missing user, or a disabled one (LOCKED/DISABLED) all yield `Ok(None)` (treated as logged out).
+    /// Like the other authenticated paths (`AdminAccessService` / `AccountPasswordService`), `is_active()`
+    /// is required, preventing actions by a disabled account whose session is still alive.
     async fn resolve_active_user(&self, sso_session_id: &str) -> Result<Option<User>, String> {
         let now = self.clock.now();
         let session_hash = crypto::sha256_hex(sso_session_id);

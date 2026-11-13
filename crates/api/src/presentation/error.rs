@@ -1,4 +1,4 @@
-//! HTTP API のエラー表現。ドメイン／ユースケースのエラーを HTTP ステータスと JSON に変換する。
+//! Error representation of the HTTP API. Converts domain / use-case errors to HTTP status and JSON.
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -12,7 +12,7 @@ pub enum ApiError {
     Forbidden(String),
     NotFound(String),
     Conflict(String),
-    /// レート制限超過（429。SEC6）。
+    /// Rate limit exceeded (429, SEC6).
     TooManyRequests(String),
     Internal(String),
 }
@@ -34,9 +34,9 @@ impl ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, code, message) = self.parts();
-        // 内部エラーの詳細はクライアントに漏らさず、ログにのみ残す。500 の本文は翻訳しない
-        // （利用者に取れる行動が無く、ロケール解決の経路を増やすだけ。MT19。詳細は
-        // `presentation::i18n` のモジュールコメント「翻訳の対象外」）。
+        // Internal error details are not leaked to the client, only logged. The 500 body is not translated
+        // (the user has no action to take, and it would only add locale-resolution paths. MT19. See
+        // the module comment "Not translated" in `presentation::i18n`).
         let body = if status == StatusCode::INTERNAL_SERVER_ERROR {
             tracing::error!(error = %message, "internal server error");
             json!({ "error": code, "message": "internal server error" })

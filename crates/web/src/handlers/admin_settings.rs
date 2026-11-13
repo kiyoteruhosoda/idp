@@ -1,10 +1,10 @@
-//! 管理コンソールの設定画面（web。`/{tenant_id}/admin/settings`。MT14）。
+//! Admin console settings screen (web. `/{tenant_id}/admin/settings`. MT14).
 //!
-//! テナント設定区画（自テナント表示名。`idp.tenant.admin`）と、root（`idp.system.admin`）のみに見える
-//! システム設定区画（SMTP）を 1 画面に集約する。web はフォーム描画のみを担い、更新は api の
-//! `/{tenant_id}/admin/settings/tenant`（PATCH）・`/{tenant_id}/admin/system-settings`（PUT）へ SSO
-//! Cookie 転送で委ねる。システム設定区画の可否は「api への GET が 403 か否か」で判定する（root 判定を
-//! web が別途持たず、認可の単一の出所を api に集約する）。
+//! Combines on one screen the tenant settings section (own tenant display name; `idp.tenant.admin`) and the
+//! system settings section (SMTP) visible only to root (`idp.system.admin`). web only renders forms; updates are
+//! delegated to the api's `/{tenant_id}/admin/settings/tenant` (PATCH) and `/{tenant_id}/admin/system-settings` (PUT)
+//! by forwarding the SSO cookie. Whether to show the system settings section is decided by "whether the api GET is 403"
+//! (web keeps no separate root check; the api is the single source of authorization).
 
 use super::locale;
 use crate::api_client::AdminApiError;
@@ -35,7 +35,7 @@ use axum::Form;
 
 const SETTINGS_SEGMENT: &str = "/admin/settings";
 
-/// 設定画面（`GET /{tenant_id}/admin/settings`）。
+/// Settings screen (`GET /{tenant_id}/admin/settings`).
 pub async fn page(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -49,29 +49,29 @@ pub async fn page(
     };
     let sso = sso(&headers);
 
-    // FluentBundle（Messages）は !Send のため、api 呼び出し（await）はすべて先に済ませてから生成する。
+    // FluentBundle (Messages) is !Send, so finish all api calls (awaits) before creating it.
     let tenant_result = state
         .api
         .get_current_tenant(&correlation.0, &tenant.0, &sso)
         .await;
-    // テナントの設定値（ADR-0058）。読めない（403）なら区画を出さない。
+    // Tenant setting values (ADR-0058). If unreadable (403), the section is not shown.
     let tenant_settings_result = state
         .api
         .list_tenant_settings(&correlation.0, &tenant.0, &sso)
         .await;
-    // テナント自身のメールの経路（ADR-0058 §8）。`idp.smtp:read` が無ければ 403 で、区画を出さない。
+    // The tenant's own mail route (ADR-0058 §8). Without `idp.smtp:read` it is 403 and the section is not shown.
     let tenant_smtp_result = state
         .api
         .get_tenant_smtp(&correlation.0, &tenant.0, &sso)
         .await;
-    // システム設定区画は root（idp.system.admin）のみ。403 は「root ではない」ことを意味するので非表示にする。
+    // The system settings section is root (idp.system.admin) only. 403 means "not root", so hide it.
     let system_result = state
         .api
         .get_system_settings(&correlation.0, &tenant.0, &sso)
         .await;
-    // web への未反映（MT27）: web が起動時に受け取った共有設定と、api が今配っている共有設定のずれ。
-    // api だけを再起動した状態がこれに当たる（ADR-0013 §Consequences）。システム設定区画を見られない
-    // 管理者（root 以外）には出さないので、その場合は問い合わせない。
+    // Not yet applied to web (MT27): divergence between the shared settings web received at startup and those the api serves now.
+    // This happens when only the api was restarted (ADR-0013 §Consequences). It is not shown to admins who cannot see
+    // the system settings section (non-root), so in that case it is not queried.
     let stale_web_keys = if system_result.is_ok() {
         stale_web_shared_settings(&state).await
     } else {
@@ -117,7 +117,7 @@ pub async fn page(
         }
     };
 
-    // 保存済みだが api へ未反映のキー（MT27）。判定は api が返す（規則の単一の出所は core）。
+    // Keys saved but not yet applied to the api (MT27). The api decides (core is the single source of the rules).
     let pending_api_keys: Vec<String> = system
         .as_ref()
         .map(|s| {
@@ -129,7 +129,7 @@ pub async fn page(
         })
         .unwrap_or_default();
 
-    // 絞り込み。件数は絞る前に控え、「N 件中 M 件」を出す（未反映の警告は絞る前の一覧から作ってある）。
+    // Filtering. Note the count before filtering to show "M of N" (the not-applied warning is built from the unfiltered list).
     let filter = SettingsFilter::new(
         query.q.as_deref(),
         query.mine.as_deref(),
@@ -172,12 +172,12 @@ pub async fn page(
     .into_response()
 }
 
-/// web が起動時に適用した共有設定と、api が現在配っている共有設定を突き合わせ、**web に未反映の**
-/// キー名を返す（MT27）。
+/// Compares the shared settings web applied at startup with those the api currently serves and returns the key names
+/// **not yet applied to web** (MT27).
 ///
-/// 取得に失敗したら空を返す（設定画面そのものは表示できる方が運用上有用で、ここでの失敗は
-/// 「未反映が無い」ではなく「判定できない」に過ぎない）。起動時の fail-fast（ADR-0013 §4）とは
-/// 目的が違う点に注意する。あちらは誤った設定で動き続けないため、こちらは補助表示のため。
+/// Returns empty if fetching fails (being able to show the settings screen itself is more useful operationally, and a
+/// failure here only means "cannot tell", not "nothing unapplied"). Note the purpose differs from the startup
+/// fail-fast (ADR-0013 §4): that one avoids running on wrong settings; this one is an auxiliary display.
 async fn stale_web_shared_settings(state: &WebState) -> Vec<String> {
     match state.api.fetch_shared_runtime_settings().await {
         Ok(current) => {
@@ -190,7 +190,7 @@ async fn stale_web_shared_settings(state: &WebState) -> Vec<String> {
     }
 }
 
-/// テナント表示名の更新（`POST /{tenant_id}/admin/settings/tenant`）。
+/// Updates the tenant display name (`POST /{tenant_id}/admin/settings/tenant`).
 pub async fn update_tenant(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -227,10 +227,10 @@ pub async fn update_tenant(
     }
 }
 
-/// テナントの値を決める（`POST /{tenant_id}/admin/settings/tenant/keys`。ADR-0058）。
+/// Sets a tenant value (`POST /{tenant_id}/admin/settings/tenant/keys`. ADR-0058).
 ///
-/// ⚠ 締め出し得る値（api が 409 を返す）は保存せず、確認画面を挟む。確認画面から
-/// `confirmed` を付けて送り直したときだけ保存される（判定は api の定義が唯一の出所）。
+/// ⚠ Values that could lock people out (the api returns 409) are not saved; a confirmation screen is inserted. They are
+/// saved only when resent from the confirmation screen with `confirmed` (the api's definitions are the single source).
 pub async fn update_tenant_setting(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -262,7 +262,7 @@ pub async fn update_tenant_setting(
         Err(AdminApiError::Validation(_)) => found(&format!(
             "{base}?error=tenant-value-validation#tenant-values"
         )),
-        // 確認が要る値。いま効いている値と説明を並べるために一覧を引き直す（引けなくても確認は出す）。
+        // A value needing confirmation. Re-fetch the list to show the currently effective value and description (confirm anyway if it fails).
         Err(AdminApiError::Conflict(_)) if !confirmed => {
             let current = state
                 .api
@@ -292,7 +292,7 @@ pub async fn update_tenant_setting(
     }
 }
 
-/// テナントの上書きを消して全体の値に戻す（`POST /{tenant_id}/admin/settings/tenant/keys/clear`）。
+/// Removes the tenant override and returns to the global value (`POST /{tenant_id}/admin/settings/tenant/keys/clear`).
 pub async fn clear_tenant_setting(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -324,10 +324,10 @@ pub async fn clear_tenant_setting(
     }
 }
 
-/// テナント自身のメールの経路を保存する（`POST /{tenant_id}/admin/settings/smtp`。ADR-0058 §8）。
+/// Saves the tenant's own mail route (`POST /{tenant_id}/admin/settings/smtp`. ADR-0058 §8).
 ///
-/// パスワード欄が空なら現行維持。消すのは「パスワードを消す」を付けたときだけ。
-/// 経路を決める項目がすべて空になれば、api が行ごと消して全体の経路へ戻す。
+/// If the password field is empty, the current one is kept. It is deleted only when "delete password" is checked.
+/// If all fields defining the route become empty, the api deletes the row and falls back to the global route.
 pub async fn update_tenant_smtp(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -377,9 +377,9 @@ pub async fn update_tenant_smtp(
     }
 }
 
-/// フォームのパスワード欄を api へ送る値にする。`None` = 現行維持 / `Some("")` = 消去 / `Some(x)` = 設定。
+/// Turns the form's password field into the value sent to the api. `None` = keep / `Some("")` = delete / `Some(x)` = set.
 ///
-/// ⚠ 「消す」が付いていれば、欄に何か入っていても消す（取り違えた入力を黙って保存しない）。
+/// ⚠ If "delete" is checked, delete even if the field contains something (do not silently save mixed-up input).
 fn tenant_smtp_password(input: String, clear: bool) -> Option<String> {
     if clear {
         Some(String::new())
@@ -390,7 +390,7 @@ fn tenant_smtp_password(input: String, clear: bool) -> Option<String> {
     }
 }
 
-/// テナントのメールの経路を消して全体の経路へ戻す（`POST /{tenant_id}/admin/settings/smtp/clear`）。
+/// Removes the tenant's mail route and falls back to the global route (`POST /{tenant_id}/admin/settings/smtp/clear`).
 pub async fn clear_tenant_smtp(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -419,7 +419,7 @@ pub async fn clear_tenant_smtp(
     }
 }
 
-/// システム設定（SMTP）の更新（`POST /{tenant_id}/admin/system-settings`）。
+/// Updates system settings (SMTP) (`POST /{tenant_id}/admin/system-settings`).
 pub async fn update_system(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -447,7 +447,7 @@ pub async fn update_system(
             }
         }
     };
-    // 空欄は「現行維持」（null を送ると api 側で維持される）。
+    // Empty means "keep current" (sending null keeps it on the api side).
     let password: Option<String> = if form.smtp_password.is_empty() {
         None
     } else {
@@ -460,7 +460,7 @@ pub async fn update_system(
         "smtp_password": password,
         "smtp_from_address": form.smtp_from_address,
         "smtp_use_tls": form.smtp_use_tls.is_some(),
-        // SMTP パスワードと同じ規則: 空欄は「変更しない」（キーごと落とす）。
+        // Same rule as the SMTP password: empty means "do not change" (drop the key).
         "sms_gateway_url": form.sms_gateway_url,
         "sms_auth_header": form.sms_auth_header,
         "sms_auth_token": if form.sms_auth_token.is_empty() { None } else { Some(form.sms_auth_token) },
@@ -479,8 +479,8 @@ pub async fn update_system(
     }
 }
 
-/// ランタイム設定の DB 上書き（`POST /{tenant_id}/admin/system-settings/runtime`）。
-/// `value` が空欄なら上書きを解除する（既定値・環境変数へ戻る）。反映には再起動が必要。
+/// DB override of a runtime setting (`POST /{tenant_id}/admin/system-settings/runtime`).
+/// An empty `value` removes the override (back to default/environment variable). A restart is needed to apply it.
 pub async fn update_runtime(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -510,7 +510,7 @@ pub async fn update_runtime(
         Err(AdminApiError::Validation(_)) => {
             found(&format!("{base}?error=runtime-validation#runtime-settings"))
         }
-        // 409 = 書式は正しいが、その値では次回起動できない（ADR-0017）。
+        // 409 = the format is valid, but the next startup would fail with that value (ADR-0017).
         Err(AdminApiError::Conflict(_)) => found(&format!(
             "{base}?error=runtime-not-bootable#runtime-settings"
         )),
@@ -525,8 +525,8 @@ fn error_key_for(error: &str) -> Option<&'static str> {
         "validation" => Some("admin-settings-error-validation"),
         "runtime-validation" => Some("admin-settings-error-runtime-validation"),
         "tenant-value-validation" => Some("admin-settings-error-tenant-value-validation"),
-        // 書式は正しいが、その値では起動できない（ADR-0017）。書式エラーと同じ文言にすると
-        // 運用者は URL を疑い続けて、実際に足りない secret に辿り着けない。
+        // The format is valid, but startup would fail with that value (ADR-0017). Using the same wording as a format error
+        // would keep operators suspecting the URL, never reaching the secret that is actually missing.
         "runtime-not-bootable" => Some("admin-settings-error-runtime-not-bootable"),
         "restart" => Some("admin-restart-error"),
         "internal" => Some("admin-error-internal"),
@@ -556,7 +556,7 @@ fn internal_error(messages: &Messages, tenant: &WebTenant, admin: &AdminContext)
 mod tests {
     use super::tenant_smtp_password;
 
-    /// 空欄は現行維持、「消す」は消去。⚠ 他の項目だけを直して保存しても、パスワードは消えない。
+    /// Empty keeps the current one, "delete" deletes it. ⚠ Saving after fixing only other fields does not delete the password.
     #[test]
     fn the_tenant_smtp_password_field_keeps_clears_or_sets() {
         assert_eq!(tenant_smtp_password(String::new(), false), None);
@@ -568,7 +568,7 @@ mod tests {
             tenant_smtp_password(String::new(), true),
             Some(String::new())
         );
-        // 「消す」が付いていれば、欄に何か入っていても消す。
+        // If "delete" is checked, delete even if the field contains something.
         assert_eq!(
             tenant_smtp_password("typo".into(), true),
             Some(String::new())

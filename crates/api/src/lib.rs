@@ -1,11 +1,11 @@
-//! OIDC IdP の API（`assay-api`）。
+//! The OIDC IdP API (`assay-api`).
 //!
-//! axum の presentation 層（OIDC protocol・JSON 管理 API・管理コンソール HTML）とバイナリ起動を担う。
-//! Domain / Application / Infrastructure・設定・ログ基盤は `assay-core` にある。
+//! Provides the axum presentation layer (OIDC protocol, JSON admin API, admin console HTML) and binary startup.
+//! Domain / Application / Infrastructure, settings and logging infrastructure live in `assay-core`.
 //!
-//! ADR-0007（API/Web サービス分割）の P1 として単一 crate を分割した。ここでは core の各モジュールを
-//! 再エクスポートし、presentation 内の `crate::domain` 等の参照と統合テストの参照経路を維持する
-//! （all-in-one を保ったまま crate 境界だけを作る段階）。web crate 化は P3 で行う。
+//! The single crate was split as P1 of ADR-0007 (API/Web service split). Here each core module is
+//! re-exported, keeping references like `crate::domain` inside presentation and integration test paths working
+//! (the stage of creating only the crate boundary while staying all-in-one). The web crate is done in P3.
 pub use assay_core::{application, config, domain, infrastructure, telemetry};
 
 pub mod presentation;
@@ -15,15 +15,15 @@ use anyhow::Context;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-/// アプリを起動する（設定読み込み → ログ初期化 → DB 接続 → スキーマ照合 → 署名鍵ブートストラップ
-/// → HTTP サーバ起動）。
+/// Starts the app (load settings -> init logging -> connect DB -> check schema -> bootstrap signing key
+/// -> start HTTP server).
 pub async fn run() -> anyhow::Result<()> {
     let _ = dotenvy::dotenv();
 
     let config = config::Config::from_env().context("failed to load configuration")?;
 
-    // ログ初期化は DB 接続より前に要る。受信端だけ受け取っておき、プールができてから
-    // `log` テーブルへの書き込みタスクを起こす（CLAUDE.md「ログ」）。
+    // Logging init is needed before connecting to the DB. Keep just the receiver, and once the pool exists
+    // start the task writing to the `log` table (CLAUDE.md "ログ").
     let log_receiver = telemetry::init(&config);
 
     if config.key_encryption_key_is_dev() {
@@ -53,8 +53,8 @@ pub async fn run() -> anyhow::Result<()> {
 
     let clock: Arc<dyn domain::clock::Clock> = Arc::new(infrastructure::clock::SystemClock);
 
-    // seed 済み root テナントの存在確認（fail-fast。マイグレーション/seed 漏れの検出）。
-    // root UUID は固定値だが、識別は `parent_tenant_id IS NULL` の構造で行いログへ記録する（ADR-0011）。
+    // Check that the seeded root tenant exists (fail-fast; detects missing migrations/seeds).
+    // The root UUID is fixed, but it is identified by the structure `parent_tenant_id IS NULL` and logged (ADR-0011).
     {
         use domain::repositories::TenantRepository as _;
         let tenants = infrastructure::repositories::tenant::SqlxTenantRepository::new(pool.clone());
@@ -66,32 +66,32 @@ pub async fn run() -> anyhow::Result<()> {
         tracing::info!(root_tenant_id = %root.id, "root tenant resolved");
     }
 
-    // ユースケースの組み立て（依存注入は AppState::build に集約）。
+    // Assemble the use cases (dependency injection is consolidated in AppState::build).
     let state = presentation::state::AppState::build(pool.clone(), Arc::new(config.clone()), clock);
 
-    // 署名鍵ブートストラップ: ACTIVE 鍵が無ければ生成して永続化する。
+    // Signing key bootstrap: if there is no ACTIVE key, generate and persist one.
     ensure_active_signing_key(&state.keys)
         .await
         .context("failed to ensure an active signing key")?;
 
-    // DB コネクションプールの観測（G6）。枯渇は「何も起きていない間」にこそ見たい値なので、
-    // 使用時ではなく定期的に観測する。
+    // Observe the DB connection pool (G6). Exhaustion is a value we want to see precisely "while nothing is happening",
+    // so it is observed periodically rather than on use.
     presentation::metrics::spawn_db_pool_metrics(pool.clone());
 
-    // エラー・警告ログの DB 書き込み（CLAUDE.md「ログ」）。取り込み層 → チャネル → ここ。
+    // Write error/warning logs to the DB (CLAUDE.md "ログ"). Ingestion layer -> channel -> here.
     spawn_application_log_writer(state.application_logs.clone(), log_receiver);
     spawn_application_log_purge(
         state.application_logs.clone(),
         config.app_log_retention_days(),
     );
 
-    // 監査ログの保持期間（G8）。既定は 0（削除しない）で、明示的に日数を設定したときだけ動く。
+    // Audit log retention (G8). Default 0 (never delete); runs only when a number of days is set explicitly.
     spawn_audit_log_purge(state.audit.clone(), config.audit_log_retention_days());
 
-    // 180 日使われていない端末の登録を消す（task #872）。消すたびに監査へ残し、有効な組織には知らせる
-    // ので、表の掃除（`expired_records`）とは別のループにする。1 日 1 回で足りる。
-    // ⚠ 初回は起動の 5 分後に走らせる。「24 時間待ってから初回」だと、1 日に 1 回以上配り直す
-    //   （そのたびに起動し直す）限り一度も走らない。
+    // Delete device registrations unused for 180 days (task #872). Each deletion is audited and active orgs are notified,
+    // so this is a separate loop from the table cleanup (`expired_records`). Once a day is enough.
+    // ⚠ The first run is 5 minutes after startup. With "wait 24 hours before the first run", as long as we redeploy
+    //   at least once a day (restarting each time), it would never run.
     {
         let devices = state.device_registry.clone();
         tokio::spawn(async move {
@@ -108,10 +108,10 @@ pub async fn run() -> anyhow::Result<()> {
         });
     }
 
-    // 期限切れレコードの一括 GC（G2）。認可セッション・authorization code・refresh token・
-    // SSO セッション・失効 jti・パスキーチャレンジ・各種一時トークンを 1 本のタスクで掃除する。
-    // 表ごとにループを生やすと追加のたびに掃除漏れが生まれるため、対象は
-    // `infrastructure::repositories::expired_records` に単一定義してある。
+    // Bulk GC of expired records (G2). One task cleans auth sessions, authorization codes, refresh tokens,
+    // SSO sessions, revoked jtis, passkey challenges and the various temporary tokens.
+    // A loop per table would cause missed cleanups every time one is added, so the targets are
+    // defined once in `infrastructure::repositories::expired_records`.
     if let Some(interval) = config.expired_record_purge_interval() {
         let purge = state.expired_records.clone();
         tracing::info!(
@@ -132,15 +132,15 @@ pub async fn run() -> anyhow::Result<()> {
         );
     }
 
-    // Back-channel logout の送信ワーカー（G5）。ログアウトのハンドラは通知要求をキューへ積むだけで
-    // 終わり、実際の HTTP 送信と再試行はここが担う。プロセスが落ちても未送信分は行として残るため、
-    // 再起動後にこのループが拾い直す。
+    // Back-channel logout sender worker (G5). Logout handlers only queue notification requests
+    // and finish; the actual HTTP sending and retries happen here. Unsent items remain as rows even if the process dies,
+    // so this loop picks them up again after a restart.
     {
         let deliveries = state.backchannel_logout.clone();
         let interval = config.backchannel_logout_poll_interval();
         let retention_days = config.backchannel_logout_retention_days();
         tokio::spawn(async move {
-            // 決着済み行の掃除は毎回やる必要がないため、一定回数に 1 度だけ走らせる。
+            // Cleaning up settled rows need not happen every time, so it runs only once every N iterations.
             let purge_every = (3_600 / interval.as_secs().max(1)).max(1);
             let mut tick: u64 = 0;
             loop {
@@ -165,14 +165,14 @@ pub async fn run() -> anyhow::Result<()> {
         });
     }
 
-    // 署名鍵自動ローテーション（K2）: バックグラウンドタスクで定期チェック。
-    // 排他制御は無い。**api を単一インスタンスで動かす前提**（README「スケール前提」・G9）。
+    // Automatic signing key rotation (K2): periodic check in a background task.
+    // No mutual exclusion. **Assumes the api runs as a single instance** (README "スケール前提", G9).
     {
         let keys = state.keys.clone();
         let lead_days = config.key_rotation_lead_days();
         let publish_lead_hours = config.key_rotation_publish_lead_hours();
         tokio::spawn(async move {
-            // 起動直後は 1 分待ってから最初のチェック（DB 起動完了を待つ余裕を持たせる）。
+            // Right after startup, wait 1 minute before the first check (leaving room for the DB to finish starting).
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
             loop {
                 if let Err(e) = keys.rotate_if_needed(lead_days, publish_lead_hours).await {
@@ -183,7 +183,7 @@ pub async fn run() -> anyhow::Result<()> {
         });
     }
 
-    // 設定画面からの再起動要求（ADR-0017）。ハンドラは `AppState` 越しに同じ値を持つ。
+    // Restart request from the settings screen (ADR-0017). Handlers hold the same value via `AppState`.
     let restart = state.restart.clone();
     let app = presentation::router::build(state);
 
@@ -204,40 +204,40 @@ pub async fn run() -> anyhow::Result<()> {
         .context("server error")?;
 
     if restart.was_requested() {
-        // 新しいプロセスを起こすのは配置側の再起動ポリシー（ADR-0017）。終了コードは 0 なので
-        // `restart: unless-stopped` / `always` 系でのみ再起動される。
+        // Starting a new process is the deployment's restart policy (ADR-0017). The exit code is 0, so
+        // it is restarted only with `restart: unless-stopped` / `always`-style policies.
         tracing::info!("exiting to be restarted by the process manager");
     }
 
     Ok(())
 }
 
-/// 1 回の INSERT でまとめる最大件数（バースト時に 1 文が巨大にならないように区切る）。
+/// Max entries combined into one INSERT (split so a single statement doesn't get huge during bursts).
 const APP_LOG_BATCH_SIZE: usize = 128;
-/// 保持期間の適用間隔。日単位の保持なので 1 時間ごとで十分。
+/// Interval for applying retention. Retention is in days, so hourly is plenty.
 const APP_LOG_PURGE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3_600);
-/// 監査ログの保持期間の適用間隔（G8）。同じく日単位の保持なので 1 時間ごとで足りる。
+/// Interval for applying audit log retention (G8). Also in days, so hourly is enough.
 const AUDIT_LOG_PURGE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3_600);
-/// 保持期間削除が 1 周期で消し切れなかったときの、次のバッチまでの待ち（G8）。
-/// 初回有効化時は削除対象が数百万行になり得るため、周期を待たずに続けて消す。ただし
-/// 詰めて回すと認可フローの INSERT を圧迫するので、バッチ間に短い間隔を置く。
+/// Wait before the next batch when retention deletion couldn't finish in one cycle (G8).
+/// When first enabled, millions of rows may be targeted, so deletion continues without waiting for the cycle. But
+/// running back to back would squeeze the authorization flow's INSERTs, so a short gap is kept between batches.
 const AUDIT_LOG_PURGE_BATCH_PAUSE: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// `tracing` が拾った WARN / ERROR を `log` テーブルへ書き続けるタスクを起こす。
+/// Spawns a task that keeps writing WARN / ERROR captured by `tracing` into the `log` table.
 ///
-/// **このタスクは自分の失敗をログに出さない**。ログ書き込みの失敗ログがまた書き込みを誘発して
-/// 止まらなくなるため、失敗は捨てる（stdout の構造化ログには元のイベントが出ているので、
-/// 情報そのものは失われない。DB への保存は best-effort）。
+/// **This task never logs its own failures**. A log about a failed log write would trigger another write and
+/// never stop, so failures are dropped (the original event is in the structured stdout log, so
+/// the information itself is not lost; saving to the DB is best-effort).
 fn spawn_application_log_writer(
     logs: Arc<application::application_log::ApplicationLogService>,
     mut receiver: infrastructure::log_capture::ApplicationLogReceiver,
 ) {
     tokio::spawn(async move {
         while let Some(mut batch) = receiver.recv_batch(APP_LOG_BATCH_SIZE).await {
-            // 溢れて捨てた件数は、捨てたこと自体をログに出す代わりに 1 行の記録として残す
-            // （`tracing` へ出すと取り込み層が拾って再帰する）。
+            // The number of overflowed-and-dropped entries is kept as one record instead of logging the drop itself
+            // (emitting to `tracing` would be picked up by the ingestion layer and recurse).
             let dropped = receiver.take_dropped();
-            // `recv_batch` は 1 件以上たまってから返すので、batch は必ず非空。
+            // `recv_batch` returns only after at least one entry has accumulated, so the batch is never empty.
             if let (true, Some(occurred_at)) = (
                 dropped > 0,
                 batch.first().map(|first| first.occurred_at.clone()),
@@ -249,7 +249,7 @@ fn spawn_application_log_writer(
     });
 }
 
-/// 溢れて捨てた件数を伝える 1 件を組み立てる。
+/// Builds the one entry reporting the number of overflowed-and-dropped entries.
 fn dropped_notice(
     dropped: u64,
     occurred_at: String,
@@ -268,8 +268,8 @@ fn dropped_notice(
     }
 }
 
-/// 保持期間を過ぎたエラー・警告ログを定期的に削除するタスクを起こす。
-/// `retention_days = 0` は「削除しない」（設定で明示的に選んだ場合のみ）。
+/// Spawns a task that periodically deletes error/warning logs past retention.
+/// `retention_days = 0` means "never delete" (only when explicitly chosen in settings).
 fn spawn_application_log_purge(
     logs: Arc<application::application_log::ApplicationLogService>,
     retention_days: u32,
@@ -280,18 +280,18 @@ fn spawn_application_log_purge(
     }
     tokio::spawn(async move {
         loop {
-            // 削除の成否はログに出さない（取り込み層が拾って自己増殖するため）。
+            // Deletion success/failure is not logged (the ingestion layer would pick it up and self-amplify).
             let _ = logs.purge_expired(retention_days).await;
             tokio::time::sleep(APP_LOG_PURGE_INTERVAL).await;
         }
     });
 }
 
-/// 保持期間を過ぎた監査イベントを定期的に削除するタスクを起こす（G8）。
-/// `retention_days = 0`（既定）は「削除しない」。
+/// Spawns a task that periodically deletes audit events past retention (G8).
+/// `retention_days = 0` (default) means "never delete".
 ///
-/// 1 周期で消し切れなかった場合は、周期を待たずに次のバッチへ進む。保持期間を後から有効化した
-/// 環境では削除対象が一度に数百万行になり得るため、1 時間に 1 バッチでは追いつかない。
+/// If one cycle couldn't delete everything, it moves on to the next batch without waiting for the cycle. In environments
+/// where retention is enabled later, millions of rows may be targeted at once, and one batch an hour couldn't keep up.
 fn spawn_audit_log_purge(audit: Arc<application::audit::AuditService>, retention_days: u32) {
     if retention_days == 0 {
         tracing::info!("audit log retention is disabled (AUDIT_LOG_RETENTION_DAYS=0)");
@@ -301,7 +301,7 @@ fn spawn_audit_log_purge(audit: Arc<application::audit::AuditService>, retention
     tokio::spawn(async move {
         loop {
             match audit.purge_expired(retention_days).await {
-                // 消し切った（今回の対象は無かった）。次の周期まで待つ。
+                // Deleted everything (nothing targeted this time). Wait until the next cycle.
                 Ok(0) => tokio::time::sleep(AUDIT_LOG_PURGE_INTERVAL).await,
                 Ok(deleted) => {
                     tracing::info!(deleted, "purged expired audit log rows");
@@ -316,11 +316,11 @@ fn spawn_audit_log_purge(audit: Arc<application::audit::AuditService>, retention
     });
 }
 
-/// `system_settings` から DB 管理設定（非 secret）を読み出す。[`config::Config`] の解決に渡す
-/// 起動時スナップショットであり、**起動後に読み直さない**。
+/// Reads DB-managed settings (non-secret) from `system_settings`. A startup snapshot passed to
+/// [`config::Config`] resolution, **not re-read after startup**.
 ///
-/// `/internal/runtime-settings`（MT26 / ADR-0013）はこのスナップショット由来の値を web へ配る。
-/// 「実行中の api が使っている値」と「web が受け取る値」を同じものに保つための境界がここにある。
+/// `/internal/runtime-settings` (MT26 / ADR-0013) hands values from this snapshot to web.
+/// This is the boundary that keeps "values the running api uses" and "values web receives" the same.
 pub async fn load_db_managed_settings(
     pool: &sqlx::MySqlPool,
 ) -> anyhow::Result<std::collections::HashMap<String, String>> {
@@ -337,12 +337,12 @@ pub async fn load_db_managed_settings(
         .collect())
 }
 
-/// 署名鍵ブートストラップを、一過性の失敗に対して指数バックオフで再試行する。
+/// Retries the signing key bootstrap with exponential backoff against transient failures.
 ///
-/// `ensure_active_key` は冪等（ACTIVE 鍵があれば何もしない・挿入は advisory lock で排他）なので
-/// 再試行は安全。ここで失敗する典型は「他インスタンスと同時起動して排他ロック待ちがタイムアウトした」
-/// 「DB 接続が一過性に切れた」であり、いずれも次の試行で解消する。全試行が失敗したときだけ
-/// 起動を失敗させる（鍵が無ければトークン発行ができないため fail-fast は維持する）。
+/// `ensure_active_key` is idempotent (does nothing if an ACTIVE key exists; inserts are serialized by an advisory lock), so
+/// retrying is safe. Typical failures here are "started together with another instance and the lock wait timed out" and
+/// "the DB connection dropped transiently", both resolved by the next attempt. Startup fails only when all attempts
+/// fail (without a key no tokens can be issued, so fail-fast is kept).
 async fn ensure_active_signing_key(
     keys: &application::key_service::KeyService,
 ) -> anyhow::Result<()> {
@@ -375,7 +375,7 @@ async fn ensure_active_signing_key(
         .context(format!("giving up after {ATTEMPTS} attempts")))
 }
 
-/// graceful shutdown のきっかけ: OS のシグナルか、設定画面からの再起動要求（ADR-0017）。
+/// Trigger for graceful shutdown: an OS signal or a restart request from the settings screen (ADR-0017).
 async fn shutdown_signal(restart: service_restart::ServiceRestart) {
     tokio::select! {
         result = tokio::signal::ctrl_c() => {

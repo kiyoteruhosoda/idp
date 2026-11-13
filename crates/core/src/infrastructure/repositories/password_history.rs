@@ -1,8 +1,8 @@
-//! `PasswordHistoryRepository` の sqlx 実装（AP7）。
+//! sqlx implementation of `PasswordHistoryRepository` (AP7).
 //!
-//! 積む（INSERT）と剪定（DELETE）を 1 つのメソッドで行う。剪定は「新しい順に `retain` 件を
-//! 残して残りを消す」ので、`retain = 0` は当該利用者の履歴を空にする（履歴を見ない設定へ
-//! 変えたときに、使わないハッシュを持ち続けない）。
+//! Pushing (INSERT) and pruning (DELETE) are done in one method. Pruning "keeps the newest `retain`
+//! rows and deletes the rest", so `retain = 0` empties that user's history (when the setting is changed to not use
+//! history, unused hashes are not kept around).
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::PasswordHistoryRepository;
@@ -47,9 +47,9 @@ impl PasswordHistoryRepository for SqlxPasswordHistoryRepository {
         .await
         .map_err(repo_err)?;
 
-        // 残す件数を超えた古い行を消す。並びは `retired_at` の降順、同値なら `id`（単調増加＝
-        // 挿入順）の降順で決める。境界行を先に読んでから値で比較するのは、MariaDB が
-        // 「更新対象の表を副問い合わせで参照する DELETE」を許さないためである。
+        // Delete old rows beyond the number to keep. Order is `retired_at` descending, ties broken by `id` (monotonic =
+        // insertion order) descending. The boundary row is read first and compared by value because MariaDB
+        // does not allow "a DELETE that references the target table in a subquery".
         let boundary = sqlx::query(
             "SELECT retired_at, id FROM user_password_history WHERE user_id = ? \
              ORDER BY retired_at DESC, id DESC LIMIT ? OFFSET ?",

@@ -1,17 +1,17 @@
-//! 期限切れ行の掃除（G2）を 1 ファイルに集約する。
+//! Concentrates expired-row cleanup (G2) in one file.
 //!
-//! 進行状態・使い捨てトークンの表は放っておくと無限に増える。以前は `log` テーブルだけが定期削除の
-//! 対象で、他は誰も消していなかった（`passkey_challenges` は `delete_expired` を実装しながら
-//! 呼び出し元が無いままだった）。`revoked_access_tokens` は `/introspect` のブラックリスト照合に
-//! 使うため、肥大がそのままレイテンシになる。
+//! Tables of in-progress state and one-time tokens grow without bound if left alone. Previously only the `log` table was
+//! deleted periodically, and nobody deleted the others (`passkey_challenges` implemented `delete_expired`
+//! but had no caller). `revoked_access_tokens` is used for the `/introspect` blacklist check,
+//! so its bloat turns directly into latency.
 //!
-//! 表ごとにバックグラウンドループを生やすと追加のたびに掃除漏れが生まれるので、
-//! [`ExpiringRecordStore`] という 1 つのポートで「掃除できること」を表明し、
-//! [`crate::application::expired_record_purge::ExpiredRecordPurgeService`] が 1 本のタスクで回す。
+//! Growing a background loop per table would leave cleanup gaps with each addition, so
+//! a single port, [`ExpiringRecordStore`], declares "can be cleaned up", and
+//! [`crate::application::expired_record_purge::ExpiredRecordPurgeService`] runs them in one task.
 //!
-//! **このファイルが GC の対象一覧である。** 期限を持つ表を足したら、ここに実装を足して
-//! `all_expiring_record_stores` と `PURGED_TABLES` へ載せる（載せ忘れは統合テスト
-//! `expired_record_purge::every_table_with_an_expiry_column_is_swept` が検出する）。
+//! **This file is the list of GC targets.** When adding a table with an expiry, add an implementation here and
+//! put it in `all_expiring_record_stores` and `PURGED_TABLES` (omissions are caught by the integration test
+//! `expired_record_purge::every_table_with_an_expiry_column_is_swept`).
 
 use crate::domain::error::Result;
 use crate::domain::repositories::{
@@ -40,9 +40,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use std::sync::Arc;
 
-/// `expires_at <= now` の行を削除する共通実装（この GC の対象表はすべてこの形をしている）。
+/// Common implementation deleting rows with `expires_at <= now` (every GC target table has this shape).
 async fn delete_by_expires_at(pool: &Db, table: &str, now: DateTime<Utc>) -> Result<u64> {
-    // テーブル名は本モジュール内の定数だけが渡る（外部入力を組み立てない）。
+    // Only constants in this module are passed as table names (no external input is assembled).
     let sql = format!("DELETE FROM {table} WHERE expires_at <= ?");
     let result = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(now.naive_utc())
@@ -52,8 +52,8 @@ async fn delete_by_expires_at(pool: &Db, table: &str, now: DateTime<Utc>) -> Res
     Ok(result.rows_affected())
 }
 
-/// 掃除対象を「所有するリポジトリのトレイトへ委譲する」形で表明するためのマクロ。
-/// 既に `delete_expired` を持つリポジトリはそれを呼び、持たない表は直接 DELETE する。
+/// Macro declaring cleanup targets in the form "delegate to the owning repository's trait".
+/// Repositories that already have `delete_expired` call it; tables without one are DELETEd directly.
 macro_rules! purge_via_repository {
     ($ty:ty, $table:literal, $trait:path) => {
         #[async_trait]
@@ -99,8 +99,8 @@ purge_via_repository!(
     UserAuthenticatorRepository
 );
 
-/// 掃除しか用途の無い表（ユースケース側から期限切れ行を触ることが無い）は、
-/// リポジトリトレイトを広げずにここで直接消す。
+/// Tables used only for cleanup (use cases never touch their expired rows) are deleted directly here
+/// without widening a repository trait.
 macro_rules! purge_directly {
     ($ty:ty, $table:literal) => {
         #[async_trait]
@@ -128,11 +128,11 @@ purge_directly!(
     "email_verification_tokens"
 );
 
-/// 期限を持つ全テーブルの掃除口を組み立てる（**GC の対象一覧**）。
+/// Builds the cleanup handles for every table with an expiry (**the list of GC targets**).
 ///
-/// 起動時にここで作った一式を [`crate::application::expired_record_purge::ExpiredRecordPurgeService`]
-/// へ渡す。表を足したときの追随漏れは統合テスト
-/// `expired_record_purge::every_table_with_an_expiry_column_is_swept` が検出する。
+/// The set built here at startup is passed to [`crate::application::expired_record_purge::ExpiredRecordPurgeService`].
+/// Failing to follow when a table is added is caught by the integration test
+/// `expired_record_purge::every_table_with_an_expiry_column_is_swept`.
 pub fn all_expiring_record_stores(pool: Db) -> Vec<Arc<dyn ExpiringRecordStore>> {
     vec![
         Arc::new(SqlxAuthSessionRepository::new(pool.clone())),
@@ -153,8 +153,8 @@ pub fn all_expiring_record_stores(pool: Db) -> Vec<Arc<dyn ExpiringRecordStore>>
     ]
 }
 
-/// GC が覆うべき表の名前（`all_expiring_record_stores` と対で保守する）。
-/// 統合テストが `information_schema` と突き合わせ、`expires_at` を持つのに載っていない表を検出する。
+/// Names of the tables the GC must cover (maintained as a pair with `all_expiring_record_stores`).
+/// An integration test compares against `information_schema` and detects tables with `expires_at` that are not listed.
 pub const PURGED_TABLES: &[&str] = &[
     "auth_sessions",
     "saml_sso_requests",

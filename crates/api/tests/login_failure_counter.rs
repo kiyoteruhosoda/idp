@@ -1,10 +1,10 @@
-//! SEC13: ログイン失敗カウンタの加算が原子的であることの検証。
+//! SEC13: checks that incrementing the login failure counter is atomic.
 //!
-//! 従来は「`failed_login_count` を読む → +1 して書き戻す」だったため、並行して届いた N 件の
-//! 試行が同じ値を読み、N 回失敗しても行が 1 しか進まずロック閾値へ届かないことがあった。
-//! ここでは実 DB に対して同時に失敗を記録し、**取りこぼしが無い**ことを確かめる。
+//! It used to "read `failed_login_count` → write back +1", so N concurrent attempts could read the same value
+//! and after N failures the row advanced only by 1, never reaching the lock threshold.
+//! Here failures are recorded concurrently against a real DB to confirm **nothing is lost**.
 //!
-//! 実行方法は `schema.rs` と同じ（`TEST_DATABASE_URL` が必須）。
+//! Run the same way as `schema.rs` (`TEST_DATABASE_URL` is required).
 
 mod support;
 
@@ -25,12 +25,12 @@ async fn concurrent_failures_all_count_and_reach_the_lock_threshold() {
     let user_uuid = Uuid::parse_str(&user_id).expect("user id is a UUID");
 
     let users = Arc::new(SqlxUserRepository::new(env.pool.clone()));
-    // 閾値を同時実行数ちょうどに置く。取りこぼしがあれば「ロックされない」で落ちる。
+    // Set the threshold to exactly the concurrency. If anything is lost, it fails with "not locked".
     let lockout = LockoutPolicy {
         max_failed_attempts: CONCURRENCY as i32,
         lock_duration_secs: 900,
-        // 段階化しない設定（上限 = 初回時間）。ここで見たいのは加算の原子性だけで、
-        // ロック時間の伸びは AP6 のテストが見る。
+        // A non-progressive setting (cap = first duration). We only want to see increment atomicity here;
+        // lock duration growth is covered by the AP6 tests.
         max_lock_duration_secs: 900,
     };
     let now = chrono::Utc::now();
@@ -45,7 +45,7 @@ async fn concurrent_failures_all_count_and_reach_the_lock_threshold() {
                 .expect("record login failure")
         }));
     }
-    // spawn した時点で並行して走っている。ここでは全件の完了を待つだけ。
+    // They are already running in parallel once spawned. Here we only wait for all to complete.
     for handle in handles {
         handle.await.expect("task did not panic");
     }
@@ -59,23 +59,26 @@ async fn concurrent_failures_all_count_and_reach_the_lock_threshold() {
 
     assert_eq!(
         count, CONCURRENCY as i32,
-        "並行した失敗をすべて数える（read-modify-write だとここが 1〜{CONCURRENCY} の間で揺れる）"
+        "counts every concurrent failure (with read-modify-write this would vary between 1 and {CONCURRENCY})"
     );
     assert!(
         locked_until.is_some(),
-        "閾値に達したらロックが掛かる（多層防御の一枚を取りこぼさない）"
+        "the lock applies once the threshold is reached (do not lose one layer of defence in depth)"
     );
 
-    // 最後に記録した側は必ず「ロック済み」を観測する（呼び出し側の Locked 判定の根拠）。
+    // The last recorder always observes "locked" (the basis for the caller's Locked decision).
     let last = users
         .record_login_failure(user_uuid, lockout, now)
         .await
         .expect("record login failure");
-    assert!(last.is_locked(), "ロック後の失敗も Locked を返す");
+    assert!(
+        last.is_locked(),
+        "failures after locking also return Locked"
+    );
     assert_eq!(last.failed_login_count, CONCURRENCY as i32 + 1);
 }
 
-/// 期限切れのロックは「掛かっていない」として返す（利用者が待てば解ける。恒久ロックはしない）。
+/// An expired lock is returned as "not locked" (waiting releases it; no permanent lock).
 #[tokio::test]
 async fn an_expired_lock_is_not_reported_as_locked() {
     let Some(env) = support::setup("login_failure_counter_expired").await else {
@@ -86,7 +89,7 @@ async fn an_expired_lock_is_not_reported_as_locked() {
     let users = SqlxUserRepository::new(env.pool.clone());
 
     let now = chrono::Utc::now();
-    // 1 秒だけロックされる設定で閾値に達しさせ、その 1 時間後の視点で読む。
+    // Reach the threshold with a 1-second lock and read from the viewpoint of 1 hour later.
     let lockout = LockoutPolicy {
         max_failed_attempts: 1,
         lock_duration_secs: 1,
@@ -105,10 +108,10 @@ async fn an_expired_lock_is_not_reported_as_locked() {
         .expect("record login failure");
     assert!(
         after.is_locked(),
-        "later 時点で新しいロックが掛かり直す（閾値 1 のため）"
+        "a new lock applies again at the later point (threshold is 1)"
     );
 
-    // 閾値に届かない設定なら、過去のロックは復活しない。
+    // With a setting that does not reach the threshold, a past lock does not come back.
     let lenient = LockoutPolicy {
         max_failed_attempts: 1_000,
         lock_duration_secs: 1,
@@ -119,5 +122,5 @@ async fn an_expired_lock_is_not_reported_as_locked() {
         .record_login_failure(user_uuid, lenient, much_later)
         .await
         .expect("record login failure");
-    assert!(!relaxed.is_locked(), "期限切れのロックは掛かっていない扱い");
+    assert!(!relaxed.is_locked(), "an expired lock counts as not locked");
 }

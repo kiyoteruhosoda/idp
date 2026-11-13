@@ -1,21 +1,21 @@
-//! Cookie の読み書き（axum アダプタ）。
+//! Reading and writing cookies (axum adapter).
 //!
-//! 名前と `Set-Cookie` 値の組み立ては api との契約のため [`assay_contracts::cookies`] に単一定義
-//! してある。本モジュールは `HeaderMap` からの読み出しと、応答へ載せる `Set-Cookie` ヘッダの
-//! 組み立て（[`SetCookies`]）という axum 依存の部分を担う。
+//! Names and building `Set-Cookie` values are a contract with the api, so they are defined once in [`assay_contracts::cookies`].
+//! This module handles the axum-dependent parts: reading from `HeaderMap` and building the `Set-Cookie` headers
+//! for responses ([`SetCookies`]).
 //!
-//! ブラウザ Cookie はすべて web だけが発行・読取する host-only Cookie である（ADR-0018 決定 2。
-//! api はブラウザ Cookie を読まない）。[`SetCookies`] のメソッドは 2 種類に分かれる。
+//! All browser cookies are host-only cookies issued and read only by web (ADR-0018 decision 2;
+//! the api does not read browser cookies). [`SetCookies`] methods come in two kinds.
 //!
-//! - **セッション**（`sso_session_id`・`auth_session_id`）: `set_session` / `expire_session`。
-//!   旧 ADR-0012 構成でブラウザに残った `Domain` 付き Cookie の掃除（削除併送）を伴う。
-//! - **web ローカル**（`lang`・CSRF・MFA チケット）: `set_local` / `expire_local`。
+//! - **Session** (`sso_session_id`, `auth_session_id`): `set_session` / `expire_session`.
+//!   Includes cleaning up `Domain`-scoped cookies left in browsers by the old ADR-0012 setup (sending deletions alongside).
+//! - **web-local** (`lang`, CSRF, MFA ticket): `set_local` / `expire_local`.
 //!
-//! web ローカルのうち **CSRF の種・MFA チケット・SAML 進行状態**は名前を `__Host-` 前置にして
-//! オリジンへ束縛する（SEC5）。Cookie はサブドメイン間で分離されないため、同一親ドメインの別
-//! サブドメインを奪った攻撃者が `Domain=親` の同名 Cookie を強制でき、種を固定して CSRF トークンを
-//! 偽造できてしまう。名前の解決は `WebState::origin_bound_cookie` に集約してあり、読み出し
-//! （[`get`]）と発行（[`SetCookies::set_local`]）は必ず同じ実名を使う。
+//! Among web-local cookies, **the CSRF seed, MFA ticket and SAML progress state** get a `__Host-` prefixed name to
+//! bind them to the origin (SEC5). Cookies are not isolated between subdomains, so an attacker who took over another
+//! subdomain of the same parent domain could force a same-name cookie with `Domain=parent`, fixing the seed and forging
+//! CSRF tokens. Name resolution is centralized in `WebState::origin_bound_cookie`, and reading
+//! ([`get`]) and issuing ([`SetCookies::set_local`]) always use the same actual name.
 
 use axum::http::header::{COOKIE, SET_COOKIE};
 use axum::http::{HeaderMap, HeaderName};
@@ -23,46 +23,46 @@ use axum::response::AppendHeaders;
 
 pub use assay_contracts::cookies::{CookiePolicy, AUTH_SESSION_COOKIE, SSO_SESSION_COOKIE};
 
-/// 管理ログインフォームの CSRF 用 Cookie（GET で発行する推測不能な乱数。同期トークンの種）。
-/// **オリジン束縛**（`WebState::origin_bound_cookie` 経由で `__Host-` 前置。SEC5）。
+/// CSRF cookie for the admin login form (an unguessable random value issued on GET; the synchronizer token's seed).
+/// **Origin-bound** (`__Host-` prefixed via `WebState::origin_bound_cookie`. SEC5).
 pub const ADMIN_CSRF_COOKIE: &str = "admin_csrf_id";
-/// エンドユーザー・ポータルのログインフォーム CSRF 用 Cookie（`admin_csrf_id` と同じ仕組み・別名前空間）。
-/// **オリジン束縛**（SEC5）。
+/// CSRF cookie for the end-user portal login form (same mechanism as `admin_csrf_id`, separate namespace).
+/// **Origin-bound** (SEC5).
 pub const PORTAL_CSRF_COOKIE: &str = "portal_csrf_id";
-/// ポータルの TOTP 入力ステップで `mfa_ticket`（署名付き短命チケット）を保持する Cookie。
-/// **オリジン束縛**（SEC5）。
+/// Cookie holding the `mfa_ticket` (signed short-lived ticket) during the portal's TOTP input step.
+/// **Origin-bound** (SEC5).
 pub const PORTAL_MFA_COOKIE: &str = "portal_mfa_ticket";
-/// 登録していない端末で正しく入ろうとしたときの「登録の札」（task #916。10 分。オリジン束縛名で置く）。
+/// The "enrollment ticket" when signing in correctly from an unregistered device (task #916. 10 minutes. Set with an origin-bound name).
 pub const DEVICE_ENROLLMENT_COOKIE: &str = "device_enrollment";
-/// SAML SSO の進行状態 id を保持する Cookie。SSO 未確立で `/saml/continue` から
-/// ログインへ誘導したあと、ログイン成功時にフローへ復帰するために使う（web ローカル）。
-/// **オリジン束縛**（SEC5）。
+/// Cookie holding the SAML SSO progress state id. Used to return to the flow on successful login after
+/// `/saml/continue` led to login because SSO was not established (web-local).
+/// **Origin-bound** (SEC5).
 pub const SAML_REQUEST_COOKIE: &str = "saml_request_id";
-/// 外部 IdP ログインを始めたブラウザに置く一度きりの値（task #581）。戻り口（OIDC の callback・
-/// SAML の ACS）で api へ渡し、開始したブラウザかを確かめる。**オリジン束縛**（`__Host-`）、
-/// SAML の ACS（サイトをまたぐ POST）でも届くよう `SameSite=None`。
+/// One-time value placed in the browser that started an external IdP login (task #581). Passed to the api at the
+/// return endpoint (OIDC callback, SAML ACS) to confirm it is the starting browser. **Origin-bound** (`__Host-`),
+/// `SameSite=None` so it also arrives at the SAML ACS (a cross-site POST).
 pub const EXTERNAL_LOGIN_BINDING_COOKIE: &str = "external_login_binding";
-/// [`EXTERNAL_LOGIN_BINDING_COOKIE`] の寿命。api の進行状態の寿命（600 秒）と揃える。
+/// Lifetime of [`EXTERNAL_LOGIN_BINDING_COOKIE`]. Aligned with the api's progress state lifetime (600 s).
 pub const EXTERNAL_LOGIN_BINDING_MAX_AGE_SECS: u64 = 600;
-/// 「アプリで続ける」を始めたブラウザに置く一度きりの印（task #892。ADR-0077）。認証アプリが開いた
-/// ブラウザでコードと一緒に api へ渡し、依頼を始めたブラウザかを確かめる。**オリジン束縛**（`__Host-`）・
-/// `SameSite=Lax`（アプリが開く移動はトップレベルの GET なので届く）。
+/// One-time mark placed in the browser that started "Continue in the app" (task #892. ADR-0077). Passed to the api
+/// with the code in the browser opened by the authenticator app to confirm it is the requesting browser. **Origin-bound** (`__Host-`),
+/// `SameSite=Lax` (the navigation the app opens is a top-level GET, so it arrives).
 pub const APP_APPROVAL_BINDING_COOKIE: &str = "app_approval_binding";
-/// [`APP_APPROVAL_BINDING_COOKIE`] の寿命。api の依頼の寿命（300 秒）と揃える。
+/// Lifetime of [`APP_APPROVAL_BINDING_COOKIE`]. Aligned with the api's request lifetime (300 s).
 pub const APP_APPROVAL_BINDING_MAX_AGE_SECS: u64 = 300;
-/// 認証アプリの登録の確認へ、ログインの後に戻すための受付の識別子（task #892）。**オリジン束縛**。
+/// Reception identifier for returning to the authenticator app registration confirmation after login (task #892). **Origin-bound**.
 pub const APP_APPROVER_ENROLLMENT_COOKIE: &str = "app_approver_enrollment";
-/// [`APP_APPROVER_ENROLLMENT_COOKIE`] の寿命。api の受付の寿命（600 秒）と揃える。
+/// Lifetime of [`APP_APPROVER_ENROLLMENT_COOKIE`]. Aligned with the api's reception lifetime (600 s).
 pub const APP_APPROVER_ENROLLMENT_MAX_AGE_SECS: u64 = 600;
-/// 表示言語の選択を保持する Cookie（`ja` / `en`。MT15。決定チェーンの優先度3）。
+/// Cookie holding the display language choice (`ja` / `en`. MT15. Priority 3 in the decision chain).
 pub const LANG_COOKIE: &str = "lang";
-/// 表示設定 Cookie（言語・配色）の保持期間（既定 1 年）。UI 設定のため長命にする。
+/// Retention of display setting cookies (language, color scheme) (default 1 year). Long-lived since they are UI settings.
 pub const PREFERENCE_COOKIE_MAX_AGE_SECS: u64 = 31_536_000;
-/// 配色の選択を保持する Cookie（`light` / `dark` / `system`）。**`HttpOnly` を付けない**
-/// （`assets/theme.js` が最初の描画より前に読む。理由は `assay_contracts::cookies::set_preference`）。
+/// Cookie holding the color scheme choice (`light` / `dark` / `system`). **No `HttpOnly`**
+/// (`assets/theme.js` reads it before the first paint; see `assay_contracts::cookies::set_preference` for why).
 pub const THEME_COOKIE: &str = "theme";
 
-/// リクエストの `Cookie` ヘッダから `name` の値を取り出す。
+/// Extracts the value of `name` from the request's `Cookie` header.
 pub fn get(headers: &HeaderMap, name: &str) -> Option<String> {
     assay_contracts::cookies::read(
         headers
@@ -73,8 +73,8 @@ pub fn get(headers: &HeaderMap, name: &str) -> Option<String> {
     )
 }
 
-/// 応答へ載せる `Set-Cookie` ヘッダの集合。`WebState::set_cookies()` から作り、メソッドを繋いで
-/// 組み立てて `AppendHeaders` として返す（`IntoResponse` のタプルへそのまま渡せる）。
+/// Set of `Set-Cookie` headers for a response. Created from `WebState::set_cookies()`, built by chaining methods,
+/// and returned as `AppendHeaders` (can be passed directly in an `IntoResponse` tuple).
 ///
 /// ```ignore
 /// (state.set_cookies()
@@ -97,22 +97,22 @@ impl SetCookies {
         }
     }
 
-    /// セッション Cookie を host-only で発行する（`COOKIE_DOMAIN` 設定時は旧 `Domain` 付き
-    /// Cookie の削除を併送する。ADR-0018 決定 2・4）。
+    /// Issues a session cookie as host-only (when `COOKIE_DOMAIN` is set, also sends deletion of the old `Domain`-scoped
+    /// cookie. ADR-0018 decision 2, 4).
     #[must_use]
     pub fn set_session(mut self, name: &str, value: &str, max_age_secs: u64) -> Self {
         self.push_all(self.policy.set_session(name, value, max_age_secs));
         self
     }
 
-    /// セッション Cookie を失効させる。
+    /// Expires a session cookie.
     #[must_use]
     pub fn expire_session(mut self, name: &str) -> Self {
         self.push_all(self.policy.expire_session(name));
         self
     }
 
-    /// web ローカル Cookie を発行する（host-only。`Domain` は付けない）。
+    /// Issues a web-local cookie (host-only; no `Domain`).
     #[must_use]
     pub fn set_local(mut self, name: &str, value: &str, max_age_secs: u64) -> Self {
         self.headers
@@ -120,7 +120,7 @@ impl SetCookies {
         self
     }
 
-    /// 画面のスクリプトから読める表示設定 Cookie を発行する（配色。`HttpOnly` 無し）。
+    /// Issues a display setting cookie readable by screen scripts (color scheme; no `HttpOnly`).
     #[must_use]
     pub fn set_preference(mut self, name: &str, value: &str, max_age_secs: u64) -> Self {
         self.headers.push((
@@ -130,8 +130,8 @@ impl SetCookies {
         self
     }
 
-    /// 他のサイトからの POST でも届くローカル Cookie を発行する（外部 SAML IdP の ACS 用。
-    /// `assay_contracts::cookies::CookiePolicy::set_cross_site_local`）。
+    /// Issues a local cookie that also arrives on POSTs from other sites (for the external SAML IdP's ACS.
+    /// `assay_contracts::cookies::CookiePolicy::set_cross_site_local`).
     #[must_use]
     pub fn set_cross_site_local(mut self, name: &str, value: &str, max_age_secs: u64) -> Self {
         self.headers.push((
@@ -141,7 +141,7 @@ impl SetCookies {
         self
     }
 
-    /// [`Self::set_cross_site_local`] で置いた Cookie を失効させる。
+    /// Expires a cookie set with [`Self::set_cross_site_local`].
     #[must_use]
     pub fn expire_cross_site_local(mut self, name: &str) -> Self {
         self.headers
@@ -149,7 +149,7 @@ impl SetCookies {
         self
     }
 
-    /// web ローカル Cookie を失効させる。
+    /// Expires a web-local cookie.
     #[must_use]
     pub fn expire_local(mut self, name: &str) -> Self {
         self.headers
@@ -157,7 +157,7 @@ impl SetCookies {
         self
     }
 
-    /// 応答へ付与する `Set-Cookie` ヘッダ。
+    /// `Set-Cookie` headers to attach to the response.
     pub fn into_headers(self) -> AppendHeaders<Vec<(HeaderName, String)>> {
         AppendHeaders(self.headers)
     }
@@ -168,11 +168,11 @@ impl SetCookies {
     }
 }
 
-/// 受け取った要求の `Cookie` ヘッダを、セッション Cookie の名前について読み替える middleware（task #583）。
+/// Middleware that maps the session cookie names in the incoming request's `Cookie` header (task #583).
 ///
-/// HTTPS では、セッション Cookie はブラウザとの間だけ `__Host-` を前置した名前で出し入れする
-/// （[`CookiePolicy::bind_session_cookie_names`]）。ここで契約の名前へ読み替えるので、各ハンドラは
-/// 今までどおり [`SSO_SESSION_COOKIE`] / [`AUTH_SESSION_COOKIE`] で読める。⚠ 前置しない同名は捨てる。
+/// Over HTTPS, session cookies are exchanged with the browser only under `__Host-` prefixed names
+/// ([`CookiePolicy::bind_session_cookie_names`]). They are mapped back to the contract names here, so handlers
+/// can keep reading [`SSO_SESSION_COOKIE`] / [`AUTH_SESSION_COOKIE`]. ⚠ Unprefixed same names are dropped.
 pub async fn bind_session_cookie_names(
     policy: CookiePolicy,
     mut request: axum::extract::Request,
@@ -194,8 +194,8 @@ pub async fn bind_session_cookie_names(
                     headers.insert(COOKIE, value);
                 }
                 Err(_) => {
-                    // 元の Cookie に非 ASCII が混ざっている等。セッションは読めないものとして扱う
-                    // （前置しない名前を素通しにはしない）。
+                    // The original cookie contains non-ASCII etc. Treat the session as unreadable
+                    // (do not pass the unprefixed name through).
                     tracing::warn!("could not rebuild the cookie header for the session cookies");
                 }
             }
@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn login_success_cookies_are_accumulated_in_order() {
-        // ログイン成功の代表形: SSO 発行 + auth_session 失効 + 言語同期（ADR-0018 決定 2 / MT20）。
+        // Typical successful login: SSO issued + auth_session expired + language synced (ADR-0018 decision 2 / MT20).
         let set_cookies = SetCookies::new(CookiePolicy::new(true, None))
             .set_session(SSO_SESSION_COOKIE, "sess", 600)
             .expire_session(AUTH_SESSION_COOKIE)
@@ -256,8 +256,8 @@ mod tests {
 
     #[test]
     fn session_cookies_stay_host_only_and_clean_up_the_legacy_domain() {
-        // ADR-0018 決定 2・4: セッション Cookie 本体は常に host-only。COOKIE_DOMAIN が設定されて
-        // いる移行期間は旧 `Domain` 付き Cookie の削除を併送する。CSRF 等のローカル Cookie は対象外。
+        // ADR-0018 decision 2, 4: the session cookie itself is always host-only. During the migration period with COOKIE_DOMAIN
+        // set, deletion of the old `Domain`-scoped cookie is sent alongside. Local cookies such as CSRF are excluded.
         let set_cookies = SetCookies::new(CookiePolicy::new(false, Some("example.com")))
             .set_session(SSO_SESSION_COOKIE, "sess", 600)
             .expire_local(ADMIN_CSRF_COOKIE);

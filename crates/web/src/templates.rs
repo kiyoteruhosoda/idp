@@ -1,11 +1,11 @@
-//! サーバレンダリング画面の Askama テンプレート定義（`templates/` 配下の `.html` に対応）。
+//! Askama template definitions for server-rendered screens (one per `.html` under `templates/`).
 //!
-//! 旧来の `format!` による HTML 組み立てを置き換える。テンプレートは `.html` 拡張子のため
-//! `{{ }}` の出力は **自動的に HTML エスケープ**され、格納型 XSS を既定で防ぐ（旧 `html::escape` の
-//! 手動呼び出しは不要になった）。翻訳文言は各テンプレートが `messages.get("key")` を直接呼び出す。
+//! Replaces the old HTML assembly with `format!`. Templates use the `.html` extension, so
+//! `{{ }}` output is **automatically HTML-escaped**, preventing stored XSS by default (manual calls to
+//! the old `html::escape` are no longer needed). Each template calls `messages.get("key")` directly for text.
 //!
-//! 各テンプレート構造体は対応する `.html` を `#[template(path = ...)]` で束ね、コンパイル時に
-//! 型検証される（sqlx のコンパイル時クエリ検証と同じ思想）。
+//! Each template struct binds its `.html` via `#[template(path = ...)]` and is type-checked at
+//! compile time (same idea as sqlx's compile-time query checking).
 
 use crate::admin_dto::{
     ApplicationAssignmentView, ApplicationBindingCandidateView, ApplicationCurrentUserView,
@@ -23,32 +23,32 @@ use assay_contracts::version::{
     BuildTimeVersionInfoProvider, SchemaVersionInfo, VersionInfo, VersionInfoProvider,
 };
 
-/// フッタなどの共通 UI に表示する Cargo パッケージバージョン。
+/// Cargo package version shown in shared UI such as the footer.
 pub fn app_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-/// フッタに表示するバージョン表記。Git バージョン（`git describe`。ビルド時に埋め込み）が
-/// 取得できていれば `v{package} ({git})`、なければパッケージ版のみ（`v{package}`）。
+/// Version label shown in the footer. When the Git version (`git describe`, embedded at build time)
+/// is available, `v{package} ({git})`; otherwise only the package version (`v{package}`).
 pub fn footer_version() -> String {
     let info = BuildTimeVersionInfoProvider::new(app_version()).version_info();
-    // git 版が埋め込まれていない（ビルド引数の渡し忘れ）ときも `unknown` と出す。黙って省くと、
-    // 「そもそも出ない画面」なのか「渡し忘れ」なのかが運用者に区別できない。
+    // Print `unknown` even when no git version is embedded (build arg forgotten). Omitting it silently
+    // would leave operators unable to tell "a screen that never shows it" from "forgot to pass it".
     format!("{} ({})", info.display_version(), info.git_version)
 }
 
-/// 画面へ出す時刻の**スクリプト無しの控え**を作る（ADR-0048）。
+/// Builds the **script-free fallback** for times shown on screen (ADR-0048).
 ///
-/// api は RFC 3339 の UTC 文字列（`2026-09-09T11:20:04.512345Z`）を返す。これをそのまま
-/// 出すと、桁が長いだけでなく**閲覧者の時刻でもない**。実際に、狭い画面では秒より後ろが
-/// 切り落とされて「いつなのか」だけが読めない状態になっていた。
+/// The api returns RFC 3339 UTC strings (`2026-09-09T11:20:04.512345Z`). Showing them as is
+/// is not only long but also **not in the viewer's time zone**. In practice, narrow screens cut off
+/// everything after the seconds, leaving "when" unreadable.
 ///
-/// ここが返すのは `2026-09-09 11:20 UTC` の形。ブラウザが動いていれば
-/// `assets/local-time.js` が閲覧者のタイムゾーンの表記へ差し替えるので、これは
-/// **JavaScript が動かなかったときに残る値**である。UTC と明示するのは、差し替えが
-/// 起きなかったときに 9 時間ずれた時刻を黙って見せないため。
+/// This returns the form `2026-09-09 11:20 UTC`. When the browser runs scripts,
+/// `assets/local-time.js` replaces it with the viewer's time zone, so this is
+/// **the value left when JavaScript did not run**. UTC is stated explicitly so that, when the
+/// replacement does not happen, we never silently show a time that is 9 hours off.
 ///
-/// 解釈できない値はそのまま返す（表示を欠かすより、生の値でも出したほうが手掛かりになる）。
+/// Unparseable values are returned as is (a raw value is a better clue than showing nothing).
 pub fn utc_short(value: &str) -> String {
     match chrono::DateTime::parse_from_rfc3339(value) {
         Ok(t) => t
@@ -59,18 +59,18 @@ pub fn utc_short(value: &str) -> String {
     }
 }
 
-/// アセット URL に付与するキャッシュバスティング用バージョン（`/assets/app.css?v=...`）。
+/// Cache-busting version appended to asset URLs (`/assets/app.css?v=...`).
 ///
-/// アセットはバイナリ同梱でデプロイ単位でしか変わらないが、URL が安定だと中間キャッシュ
-/// （CDN・ブラウザ）の TTL が尽きるまで旧アセットが配られ続ける（実際に Cloudflare が
-/// origin の `max-age=0` を上書きして 4 時間キャッシュさせる）。デプロイごとに URL 自体を
-/// 変えることで、キャッシュ TTL に依存せず必ず新しいアセットを取得させる。
+/// Assets are bundled in the binary and change only per deploy, but with stable URLs intermediate caches
+/// (CDN, browser) keep serving old assets until their TTL runs out (Cloudflare actually overrides
+/// the origin's `max-age=0` and caches for 4 hours). Changing the URL itself on every deploy
+/// forces fresh assets regardless of cache TTL.
 ///
-/// 値は「パッケージ版-同梱アセットの内容ダイジェスト」。**git 版は載せない**（ADR-0034）。
-/// この URL は無認証のログイン画面（`page.html`）にも出るため、git 版を混ぜると稼働中の
-/// コミットを外から読めてしまい、フッタから版数を外した意味が無くなる。アセット内容が
-/// 変われば必ずダイジェストが変わるので、キャッシュバスティングには digest だけで足りる。
-/// クエリ値として安全な文字（英数・`.` `-` `_`）以外は `-` へ置換する。
+/// The value is "package version-content digest of bundled assets". **The git version is not included** (ADR-0034).
+/// This URL also appears on the unauthenticated login screen (`page.html`), so mixing in the git version
+/// would let outsiders read the running commit, defeating the point of removing the version from the
+/// footer. Any change in asset content always changes the digest, so the digest alone suffices for cache busting.
+/// Characters other than those safe in a query value (alphanumerics, `.` `-` `_`) are replaced with `-`.
 pub fn asset_version() -> &'static str {
     static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     VERSION.get_or_init(|| {
@@ -88,9 +88,9 @@ pub fn asset_version() -> &'static str {
     })
 }
 
-/// `?v=` 付き URL で参照される同梱アセットの内容ダイジェスト。キャッシュバスティング用途のため
-/// 暗号強度は不要（FNV-1a 64bit）。webfont は安定 URL（FA CSS 内の相対参照）でクエリを付けられず
-/// ダイジェストを変えても配信 URL が変わらないため対象外。
+/// Content digest of bundled assets referenced via `?v=` URLs. Used only for cache busting, so
+/// no cryptographic strength is needed (FNV-1a 64bit). Webfonts are excluded: they use stable URLs
+/// (relative references in the FA CSS) that cannot carry a query, so changing the digest would not change their URL.
 fn embedded_assets_digest() -> u64 {
     [
         crate::handlers::stylesheet::APP_CSS,
@@ -100,9 +100,9 @@ fn embedded_assets_digest() -> u64 {
         crate::handlers::vendor_assets::BOOTSTRAP_CSS,
         crate::handlers::vendor_assets::BOOTSTRAP_JS,
         crate::handlers::vendor_assets::FONTAWESOME_CSS,
-        // 画面固有スクリプト（SEC12）も `?v=` 付き・`immutable` で配信するため、内容を digest に
-        // 含める。含め忘れると、JS だけを直した配置（git 版が `unknown` のビルド）で URL が
-        // 変わらず、ブラウザが古いスクリプトを持ち続ける。
+        // Page-specific scripts (SEC12) are also served with `?v=` and `immutable`, so their content goes into
+        // the digest. If forgotten, a deploy that only fixes JS (a build whose git version is `unknown`) keeps
+        // the same URL and browsers keep the old script.
         crate::handlers::page_scripts::PASSKEY_LOGIN_JS,
         crate::handlers::page_scripts::PASSKEY_REGISTER_JS,
         crate::handlers::page_scripts::PASSWORD_VISIBILITY_JS,
@@ -117,7 +117,7 @@ fn embedded_assets_digest() -> u64 {
     })
 }
 
-/// FNV-1a 64bit ハッシュ（`hash` を初期値として `bytes` を畳み込む）。
+/// FNV-1a 64bit hash (folds `bytes` into `hash` as the initial value).
 fn fnv1a64(mut hash: u64, bytes: &[u8]) -> u64 {
     for &byte in bytes {
         hash ^= u64::from(byte);
@@ -135,7 +135,7 @@ mod tests {
     };
     use crate::i18n::{Locale, Messages};
 
-    /// 秒の設定は長さを添えて読ませる（持ち主「秒わかりにくい」。task #887）。
+    /// Second-based settings are shown with a readable duration (owner: "seconds are hard to read", task #887).
     #[test]
     fn seconds_are_shown_with_a_readable_duration() {
         let ja = Messages::new(Locale::Ja);
@@ -154,15 +154,15 @@ mod tests {
         assert!(!is_seconds_setting("PASSWORD_MAX_AGE_DAYS"));
     }
 
-    /// サイドバーとホームが、メニューを自前で並べていないこと。
+    /// The sidebar and the home page must not lay out menus on their own.
     ///
-    /// ⚠ **これが破られた状態が実際に続いていた** ——サイドバーにだけ「外部 IdP」が、ホームに
-    /// だけ「認証ポリシー」が載っており、どちらも相手の部分集合にならないので利用者からは
-    /// 「省略」とも読めなかった。両方が [`CONSOLE_NAV`] から描いている限り、ずれは**書けない**。
-    /// 直に `href` を書いた瞬間にここで落ちる。
+    /// ⚠ **This was actually broken for a while** -- "External IdP" was only in the sidebar and
+    /// "Authentication policies" only on home; neither was a subset of the other, so users could not
+    /// even read it as "abbreviated". As long as both render from [`CONSOLE_NAV`], drift **cannot be written**.
+    /// The moment someone writes an `href` directly, this fails.
     #[test]
     fn the_console_menu_is_the_only_place_that_lists_admin_screens() {
-        // ホーム自身へのリンク（サイドバー先頭の「コンソールのトップ」）だけは定義の外に在る。
+        // Only the link to home itself (the sidebar's first item "Console top") lives outside the definition.
         const ALLOWED: &str = "{{ tenant }}/admin\"";
         for (name, source) in [
             (
@@ -175,16 +175,16 @@ mod tests {
                 if !line.contains("{{ tenant }}/admin") || line.contains(ALLOWED) {
                     continue;
                 }
-                // 認証まわり（ログアウト・テナント切替）はメニューではなくヘッダの操作。
+                // Authentication actions (log out, switch tenant) are header controls, not menu items.
                 if line.contains("/admin/logout") || line.contains("/admin/switch-tenant") {
                     continue;
                 }
-                // 新しいバージョンの知らせが問い合わせる口（画面ではない）。
+                // The endpoint the new-version notice polls (not a screen).
                 if line.contains("/admin/version/current") {
                     continue;
                 }
                 panic!(
-                    "{name}:{} がメニューを直に書いている。CONSOLE_NAV へ足すこと: {}",
+                    "{name}:{} writes a menu directly; add it to CONSOLE_NAV: {}",
                     n + 1,
                     line.trim()
                 );
@@ -192,44 +192,44 @@ mod tests {
         }
     }
 
-    /// メニューの翻訳キーが両言語に在ること。
+    /// Menu translation keys must exist in both languages.
     ///
-    /// ⚠ **説明のキーだけが抜けている状態が実在した** ——「外部 IdP」はサイドバーにしか無く、
-    /// サイドバーは説明を出さないので `-desc` を誰も定義していなかった。ホームへ載せた途端に
-    /// キー名がそのまま画面へ出る（`Messages::get` は見つからないキーをそのまま返す）。
+    /// ⚠ **A state where only the description keys were missing actually existed** -- "External IdP" was only
+    /// in the sidebar, which does not show descriptions, so nobody defined `-desc`. As soon as it was put
+    /// on home, the raw key name appeared on screen (`Messages::get` returns unknown keys as is).
     #[test]
     fn every_menu_entry_has_both_a_name_and_a_description() {
         for locale in [Locale::Ja, Locale::En] {
             let messages = Messages::new(locale);
             for group in CONSOLE_NAV {
                 for key in [group.label, group.description] {
-                    assert_ne!(messages.get(key), key, "{key} の訳が無い（{locale:?}）");
+                    assert_ne!(messages.get(key), key, "{key} untranslated ({locale:?})");
                 }
                 for item in group.items {
                     for key in [item.label, item.description] {
-                        assert_ne!(messages.get(key), key, "{key} の訳が無い（{locale:?}）");
+                        assert_ne!(messages.get(key), key, "{key} untranslated ({locale:?})");
                     }
                 }
             }
         }
     }
 
-    /// まとまりと行き先が重複していないこと（同じ画面を 2 か所へ置かない）。
+    /// Groups and destinations must not be duplicated (never place the same screen in two places).
     #[test]
     fn the_console_menu_lists_each_screen_once() {
         let mut seen = std::collections::BTreeSet::new();
         for group in CONSOLE_NAV {
             for item in group.items {
-                assert!(seen.insert(item.path), "{} が 2 回載っている", item.path);
+                assert!(seen.insert(item.path), "{} is listed twice", item.path);
             }
         }
     }
 
-    /// フォームが送る入力欄と、ハンドラが要求する項目の食い違いを検出する（ADR-0032）。
+    /// Detects mismatches between fields the form submits and fields the handler requires (ADR-0032).
     ///
-    /// `usage` は `NewClientForm` / `EditClientForm` の**必須**項目なので、テンプレートが描画を
-    /// やめると登録が 400 になる。実際、この欄を足したとき E2E スクリプトだけが送っておらず
-    /// CI で落ちた —— 描画側と受け取り側の対応は、遅い経路ではなくここで固定しておく。
+    /// `usage` is a **required** field of `NewClientForm` / `EditClientForm`, so if the template stops
+    /// rendering it, registration returns 400. In fact, when this field was added only the E2E script did not
+    /// send it and CI failed -- pin the renderer/receiver correspondence here, not on a slow path.
     #[test]
     fn the_client_form_renders_the_controls_the_handler_requires() {
         let messages = Messages::new(Locale::Ja);
@@ -257,10 +257,10 @@ mod tests {
             r#"name="scope_offline_access""#,
             r#"name="csrf_token""#,
         ] {
-            assert!(html.contains(control), "{control} が描画されていない");
+            assert!(html.contains(control), "{control} is not rendered");
         }
-        // 用途は入口が決めるので、フォームは選択肢を出さず hidden で持ち回る（ADR-0038）。
-        // `usage` は handler の必須項目なので、hidden が消えると登録が 400 になる。
+        // The entry point decides the usage, so the form shows no choice and carries it as hidden (ADR-0038).
+        // `usage` is required by the handler, so if the hidden field disappears registration returns 400.
         assert!(
             html.contains(
                 r#"<input type="hidden" id="client-usage" name="usage" value="user_login">"#
@@ -269,17 +269,17 @@ mod tests {
         );
         assert!(
             !html.contains(r#"<select class="form-select" id="client-usage""#),
-            "用途の select は出さない: {html}"
+            "no usage select is shown: {html}"
         );
-        // `openid` は外せない（入力欄を持たず、ハンドラが必ず付ける）。
+        // `openid` cannot be removed (it has no input; the handler always adds it).
         assert!(html.contains(r#"id="client-scope-openid""#), "{html}");
         assert!(
             !html.contains(r#"name="scope_openid""#),
-            "openid を送信対象の入力欄にしない: {html}"
+            "openid must not be a submitted input: {html}"
         );
     }
 
-    /// ADR-0032: 用途は `client_credentials` の有無で決まる。
+    /// ADR-0032: usage is decided by whether `client_credentials` is present.
     #[test]
     fn usage_reflects_what_the_client_can_actually_do() {
         let login = vec!["authorization_code".to_string()];
@@ -290,10 +290,10 @@ mod tests {
             client_usage::USER_LOGIN
         );
         assert_eq!(usage_from_registration(&system, &[]), client_usage::SYSTEM);
-        // grant が 1 つも無い（あり得ないが）ときも、システム用として扱わない。
+        // Even with no grant at all (should not happen), do not treat it as a system client.
         assert_eq!(usage_from_registration(&[], &[]), client_usage::USER_LOGIN);
-        // 「両方」の姿（api は作らせない）。システム用と読むと redirect_uri の欄が隠れ、
-        // 保存しただけで登録済みリダイレクト先が消える。URI を残す側へ寄せる。
+        // The "both" shape (the api does not allow creating it). Reading it as system hides the redirect_uri field,
+        // and merely saving would erase the registered redirect URIs. Lean toward keeping the URIs.
         let both = vec![
             "authorization_code".to_string(),
             "client_credentials".to_string(),
@@ -313,8 +313,8 @@ mod tests {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')));
     }
 
-    /// git バージョンが注入されないビルドでもアセット内容の変化で URL が変わるよう、
-    /// バージョンは必ず内容ダイジェストを含む。
+    /// So that the URL changes with asset content even in builds without an injected git version,
+    /// the version always includes the content digest.
     #[test]
     fn asset_version_includes_content_digest() {
         let digest = format!("{:016x}", embedded_assets_digest());
@@ -331,9 +331,9 @@ mod tests {
         assert_ne!(fnv1a64(base, b""), fnv1a64(fnv1a64(base, b"a"), b""));
     }
 
-    /// 再起動待機画面は「自力で設定画面へ戻る」ことと「押せる導線を持たない」ことが要件
-    /// （ADR-0017）。この画面を返した直後に web が止まるため、ナビゲーションを載せるとどのリンクも
-    /// 数秒間つながらず、壊れたように見える。
+    /// The restart-wait screen must "return to the settings screen on its own" and "have no clickable links"
+    /// (ADR-0017). web stops right after returning this screen, so any navigation would leave every link
+    /// unreachable for a few seconds, looking broken.
     #[test]
     fn the_restarting_page_reloads_itself_and_offers_no_console_navigation() {
         let messages = Messages::new(Locale::Ja);
@@ -353,11 +353,11 @@ mod tests {
         assert!(!html.contains("/admin/logout"), "{html}");
     }
 
-    /// 個別に操作できない行（主識別子・主メール）には、操作ボタンを出さない。
+    /// Rows that cannot be operated on individually (primary identifier, primary email) get no action buttons.
     ///
-    /// ⚠ **行の有無で判定しない。** AP15b で主識別子も登録簿の行になり `id` が必ず付くように
-    /// なったので、`id` だけで出し分けると **押しても必ず失敗するボタン**が並ぶ（api は
-    /// `primary_of_user IS NULL` / `primary_email_of_user IS NULL` を条件に弾く）。
+    /// ⚠ **Do not decide by whether a row exists.** Since AP15b the primary identifier is also a registry row
+    /// and always has an `id`, so deciding by `id` alone shows **buttons that always fail when pressed** (the api
+    /// rejects on `primary_of_user IS NULL` / `primary_email_of_user IS NULL`).
     #[test]
     fn rows_that_cannot_be_operated_on_show_no_buttons() {
         let messages = Messages::new(Locale::Ja);
@@ -403,7 +403,7 @@ mod tests {
             );
         }
 
-        // 主メールの行は、主識別子とは別の見出しで示す（どちらなのか読めないと直し方が分からない）。
+        // The primary email row is shown under a heading separate from the primary identifier (otherwise one cannot tell how to fix it).
         let primary_email = render_row(false, true);
         assert!(
             primary_email.contains(&messages.get("admin-login-identifiers-primary-email")),
@@ -411,8 +411,8 @@ mod tests {
         );
     }
 
-    /// 主メールへの昇格は**メール種別の行にだけ**出す（ADR-0052）。電話番号や社員番号に出すと、
-    /// 押しても必ず失敗するボタンが並ぶ（api が種別を見て弾く）。
+    /// Promote-to-primary-email is shown **only on email-type rows** (ADR-0052). Showing it on phone numbers
+    /// or employee numbers would show buttons that always fail (the api rejects by type).
     #[test]
     fn only_email_rows_offer_the_promotion_to_primary_email() {
         let messages = Messages::new(Locale::Ja);
@@ -451,13 +451,13 @@ mod tests {
             "{alias_email}"
         );
 
-        // 別の種別には出さない。
+        // Not shown for other types.
         for other in ["username", "phone_number", "employee_number"] {
             let html = render_row(other, false);
             assert!(!html.contains("/primary-email"), "{other}: {html}");
         }
 
-        // すでに主メールの行は、そもそも操作の対象外（昇格ボタンも出ない）。
+        // A row that is already the primary email is not a target at all (no promote button either).
         let already_primary = render_row("email", true);
         assert!(
             !already_primary.contains("/primary-email"),
@@ -465,7 +465,7 @@ mod tests {
         );
     }
 
-    /// テナント設定にメールログインのトグルを出し、現在の状態を反映する（ADR-0050 決定 3）。
+    /// Tenant settings show the email-login toggle reflecting the current state (ADR-0050 decision 3).
     #[test]
     fn the_tenant_settings_show_the_email_login_toggle() {
         let messages = Messages::new(Locale::Ja);
@@ -505,7 +505,7 @@ mod tests {
             "{off}"
         );
 
-        /// トグルの `<input>` タグだけを切り出す（自己登録のトグルと取り違えないため）。
+        /// Extracts only the toggle's `<input>` tag (so it is not confused with the self-registration toggle).
         fn toggle_input(html: &str) -> String {
             let start = html.find(r#"id="email_login_enabled""#).expect("toggle");
             let end = html[start..].find('>').expect("tag end");
@@ -568,8 +568,8 @@ mod tests {
         })
     }
 
-    /// 絞り込みのフォームを出し、条件を書き戻し、絞る前の件数と「該当なし」を出す。
-    /// ランタイム設定の種類は、その一覧を見られるとき（root）にだけ出す。
+    /// Shows the filter form, writes back the conditions, and shows the pre-filter count and "no matches".
+    /// The runtime-setting kind is shown only when that list is viewable (root).
     #[test]
     fn the_settings_filter_keeps_its_condition_and_shows_counts() {
         let messages = Messages::new(Locale::Ja);
@@ -607,7 +607,7 @@ mod tests {
             html.contains("id=\"settings-filter-mine\" name=\"mine\" value=\"1\" checked"),
             "{html}"
         );
-        // root でなければランタイム設定の種類は出さない。
+        // Without root, the runtime-setting kind is not shown.
         assert!(!html.contains("id=\"settings-filter-runtime\""), "{html}");
         assert!(html.contains("0 / 16"), "{html}");
         assert!(
@@ -652,8 +652,8 @@ mod tests {
         })
     }
 
-    /// テナントのメールの経路（ADR-0058 §8）。権限が無ければ区画ごと出さない。全体に従っているときは
-    /// その旨を出し、「全体の経路に戻す」は出さない。⚠ パスワードは値を描かない（設定の有無だけ）。
+    /// The tenant's mail route (ADR-0058 §8). Without permission the whole section is hidden. When following the global
+    /// route, say so and do not show "revert to global route". ⚠ Passwords are never rendered (only whether set).
     #[test]
     fn the_tenant_mail_route_section_follows_its_origin() {
         let messages = Messages::new(Locale::Ja);
@@ -695,7 +695,7 @@ mod tests {
         );
     }
 
-    /// 1 項目ぶんの `<li>` を切り出す（項目ごとの表示を他の項目と混ぜずに確かめる）。
+    /// Extracts the `<li>` of one item (to check each item's display without mixing it with others).
     fn tenant_value_item(html: &str, key: &str) -> String {
         let marker = format!("id=\"tenant-value-{key}\"");
         let start = html
@@ -705,8 +705,8 @@ mod tests {
         html[start..start + end].to_string()
     }
 
-    /// ⚠ 値だけを見せない（ADR-0058 §6）。「全体に従っている」か「このテナントで決めた」かと、
-    /// 全体の値を必ず並べる。「全体の値に戻す」は、このテナントで決めた項目にだけ出す。
+    /// ⚠ Never show only the value (ADR-0058 §6). Always show whether it "follows the global setting" or
+    /// "was set by this tenant", alongside the global value. "Revert to global" appears only for items set by this tenant.
     #[test]
     fn tenant_values_show_where_each_value_comes_from_and_the_whole_idp_value() {
         let messages = Messages::new(Locale::Ja);
@@ -773,7 +773,7 @@ mod tests {
             messages.get("admin-tenant-values-false")
         )));
 
-        // 訳の無いキーでも項目ごと消さず、キーそのものを見出しにする。
+        // Even a key without a translation keeps its item; the key itself becomes the heading.
         let unlabeled = tenant_value_item(&html, "A_KEY_WITHOUT_A_LABEL");
         assert!(unlabeled.contains("A_KEY_WITHOUT_A_LABEL"), "{unlabeled}");
         assert!(
@@ -782,7 +782,7 @@ mod tests {
         );
     }
 
-    /// 読めない（`None`）ときは区画ごと出さない。
+    /// When unreadable (`None`), the whole section is hidden.
     #[test]
     fn tenant_values_are_hidden_without_the_read_permission() {
         let messages = Messages::new(Locale::Ja);
@@ -790,7 +790,7 @@ mod tests {
         assert!(!html.contains("id=\"tenant-values\""), "{html}");
     }
 
-    /// 締め出し得る選択肢は、選ぶ前から「保存前に確認あり」と読める。
+    /// Options that could lock people out read as "confirmation before saving" even before being chosen.
     #[test]
     fn choices_that_can_lock_people_out_are_marked() {
         let messages = Messages::new(Locale::Ja);
@@ -823,7 +823,7 @@ mod tests {
         assert!(!html.contains(&format!("allow（{note}）")), "{html}");
     }
 
-    /// 全体の設定画面は、テナントが上書きできるキーについて「従っている件数」と「外れているテナント」を出す。
+    /// The global settings screen shows, for tenant-overridable keys, the "following" count and the "deviating tenants".
     #[test]
     fn whole_idp_settings_show_how_tenants_follow_each_overridable_key() {
         let messages = Messages::new(Locale::Ja);
@@ -871,7 +871,7 @@ mod tests {
             "1"
         )));
         assert!(html.contains("Branch Office: <code>1234</code>"), "{html}");
-        // テナントが変えられないキーには出さない。
+        // Not shown for keys tenants cannot change.
         assert_eq!(
             html.matches(&messages.get("admin-settings-runtime-tenant-overridable"))
                 .count(),
@@ -879,7 +879,7 @@ mod tests {
         );
     }
 
-    /// 確認画面は `confirmed` を付けて同じ値を送り直す。
+    /// The confirmation screen resends the same value with `confirmed` added.
     #[test]
     fn the_confirmation_page_resends_the_value_with_confirmed() {
         let messages = Messages::new(Locale::Ja);
@@ -900,8 +900,8 @@ mod tests {
         assert!(html.contains(&messages.get("admin-tenant-value-confirm-lead")));
     }
 
-    /// ログイン画面は認可要求の `login_hint` をユーザー名欄の初期値にする（G12）。値は RP が
-    /// 指定した任意の文字列なので、属性値として HTML エスケープされていることまで確かめる。
+    /// The login screen uses the authorization request's `login_hint` as the username field's initial value (G12). The
+    /// value is an arbitrary string from the RP, so also verify it is HTML-escaped as an attribute value.
     #[test]
     fn the_login_form_prefills_the_username_from_the_login_hint() {
         let messages = Messages::new(Locale::Ja);
@@ -918,7 +918,7 @@ mod tests {
             })
         };
 
-        /// ユーザー名欄の `<input>` タグだけを切り出す（他の入力欄と取り違えないため）。
+        /// Extracts only the username field's `<input>` tag (so it is not confused with other inputs).
         fn username_input(html: &str) -> String {
             let start = html.find(r#"id="login-username""#).expect("username input");
             let end = html[start..].find('>').expect("tag end");
@@ -931,27 +931,27 @@ mod tests {
             "{html}"
         );
 
-        // ヒントが無ければ初期値を持たない（空の value も置かない）。
+        // Without a hint there is no initial value (not even an empty value attribute).
         let html = render_with(None);
         assert!(!username_input(&html).contains("value="), "{html}");
 
-        // 属性を閉じて別の属性を差し込む値は、引用符ごとエスケープされて value の中に留まる。
+        // A value that closes the attribute and injects another stays inside value, quotes and all escaped.
         let html = render_with(Some(r#"" autofocus onfocus="alert(1)"#));
         let tag = username_input(&html);
         assert!(tag.contains("alert(1)"), "the value is kept: {html}");
-        // 引用符がエスケープされるので value 属性は閉じられず、`onfocus="..."` は生えない。
+        // Quotes are escaped, so the value attribute is not closed and no `onfocus="..."` appears.
         assert!(
             !tag.contains(r#"onfocus=""#),
             "but never as an attribute: {html}"
         );
     }
 
-    /// サイドバーとホームが**同じ行き先を挙げる**こと（利用者が最初に気付いた症状）。
+    /// The sidebar and home **list the same destinations** (the symptom users first noticed).
     ///
-    /// ⚠ 以前はサイドバーにだけ `/admin/external-idps` が、ホームにだけ
-    /// `/admin/authentication-policies` が在った。どちらも相手の部分集合にならないため、
-    /// 「片方は省略している」とも読めない見え方になっていた。ホームは共通レイアウト
-    /// （＝サイドバー）を含めて描かれるので、**1 回の描画で両方を数えられる**。
+    /// ⚠ Previously `/admin/external-idps` was only in the sidebar and
+    /// `/admin/authentication-policies` only on home. Neither was a subset of the other, so it did not
+    /// even read as "one side abbreviates". Home is rendered including the shared layout
+    /// (= the sidebar), so **both can be counted in one render**.
     #[test]
     fn the_sidebar_and_the_home_cards_offer_the_same_screens() {
         let messages = Messages::new(Locale::Ja);
@@ -962,7 +962,7 @@ mod tests {
             admin: Some(ConsoleAdmin {
                 label: "admin",
                 tenant_name: Some("Acme"),
-                // api は含意を展開した一覧を返す（root の管理者なら署名鍵の権限も載る）。
+                // The api returns the list with implications expanded (a root admin also gets signing-key permissions).
                 permissions: &["idp.system.admin".to_string(), "idp.keys:read".to_string()],
                 csrf_token: "test-console-csrf",
             }),
@@ -974,27 +974,27 @@ mod tests {
                 assert_eq!(
                     html.matches(&href).count(),
                     2,
-                    "{} はサイドバーとホームの両方にちょうど 1 つずつ要る",
+                    "{} must appear exactly once in both the sidebar and home",
                     item.path
                 );
             }
         }
     }
 
-    /// メニューに載らない画面も、開いた元の項目へ解決されること（サイドバーの印とタブ名の元）。
+    /// Screens not in the menu also resolve to the item they were opened from (source of the sidebar marker and tab title).
     #[test]
     fn every_admin_screen_resolves_to_the_menu_entry_it_was_opened_from() {
         fn entry(path: &str) -> Option<&'static str> {
             console_nav_item_for(path).map(|item| item.path)
         }
-        // 項目そのものと、その下の画面。
+        // The item itself and screens under it.
         assert_eq!(entry("/admin/accounts"), Some("/admin/accounts"));
         assert_eq!(entry("/admin/clients/new"), Some("/admin/clients"));
         assert_eq!(
             entry("/admin/applications/0190/assignments"),
             Some("/admin/applications")
         );
-        // 別のパスに在るが「アカウント」「設定」から開く画面。
+        // Screens at other paths but opened from "Accounts" / "Settings".
         for path in [
             "/admin/users/new",
             "/admin/members/0190",
@@ -1008,7 +1008,7 @@ mod tests {
             Some("/admin/settings")
         );
         assert_eq!(entry("/admin/restart"), Some("/admin/settings"));
-        // どの項目にも属さない画面。⚠ `/admin/login` を `/admin/logs` が拾わないこと。
+        // Screens belonging to no item. ⚠ `/admin/logs` must not capture `/admin/login`.
         for path in [
             "/admin",
             "/admin/login",
@@ -1018,16 +1018,16 @@ mod tests {
         ] {
             assert_eq!(entry(path), None, "{path}");
         }
-        // 開いた元として書いた項目が、メニューに実在すること（項目を改名したら一緒に直す）。
+        // Items written as the opening source must exist in the menu (fix together when renaming an item).
         for (prefix, parent) in CONSOLE_NAV_PARENTS {
-            assert_eq!(entry(parent), Some(*parent), "{prefix} の行き先 {parent}");
+            assert_eq!(entry(parent), Some(*parent), "{prefix} -> {parent}");
         }
     }
 
-    /// 共通レイアウトは、開いている画面をサイドバーの 1 項目とタブ名に示す。
+    /// The shared layout marks the open screen on one sidebar item and in the tab title.
     ///
-    /// ⚠ 印が無かった頃は、どの画面を開いていてもサイドバーが同じ見た目で、タブ名も全画面
-    /// 「管理コンソール」だった（タブを並べると見分けられない）。
+    /// ⚠ Before the marker, the sidebar looked the same on every screen and the tab title was
+    /// "Admin console" everywhere (tabs side by side could not be told apart).
     #[test]
     fn the_layout_marks_the_open_screen_in_the_menu_and_the_tab_title() {
         let messages = Messages::new(Locale::Ja);
@@ -1048,7 +1048,7 @@ mod tests {
         };
         let console = messages.get("admin-console-title");
 
-        // メニューに載らない画面（利用者の作成）でも、開いた元の「アカウント」に付く。
+        // Screens not in the menu (creating a user) still mark the item they were opened from, "Accounts".
         let html = render_at("/admin/users/new");
         assert_eq!(html.matches(r#"aria-current="page""#).count(), 1, "{html}");
         assert!(
@@ -1063,7 +1063,7 @@ mod tests {
             "{html}"
         );
 
-        // ホームはホームの行に付き、タブ名は「管理コンソール」だけ。
+        // Home marks the home row, and the tab title is just "Admin console".
         let html = render_at("/admin");
         assert_eq!(html.matches(r#"aria-current="page""#).count(), 1, "{html}");
         assert!(
@@ -1075,16 +1075,16 @@ mod tests {
             "{html}"
         );
 
-        // どの項目にも属さない画面（テナント切替）では、どこにも付けない。
+        // Screens belonging to no item (switch tenant) mark nothing.
         let html = render_at("/admin/switch-tenant");
         assert!(!html.contains("aria-current"), "{html}");
     }
 
-    /// ログイン済みの管理コンソールは、新しいバージョンの知らせの部品を隠した状態で持つ。
+    /// A logged-in admin console carries the new-version notice widget, hidden.
     ///
-    /// 描いたビルドの表記（フッターと同じ）と、稼働中のビルドを問い合わせる口を属性で持ち、
-    /// `assets/console.js` が比べる。⚠ 口のパスがルートに無いと、知らせは黙って一度も出ない
-    /// （問い合わせが 404 で終わるだけ）ので、ルートに在ることまで見る。
+    /// It holds, as attributes, the rendered build label (same as the footer) and the endpoint to query the
+    /// running build; `assets/console.js` compares them. ⚠ If the endpoint path is not routed, the notice silently
+    /// never appears (the query just ends in 404), so also check that it is routed.
     #[test]
     fn the_signed_in_console_carries_the_hidden_update_notice() {
         let messages = Messages::new(Locale::Ja);
@@ -1115,16 +1115,16 @@ mod tests {
         );
         assert!(
             crate::router::declared_route_paths().contains("/admin/version/current"),
-            "知らせが問い合わせる口がルートに無い"
+            "the endpoint the notice polls is not routed"
         );
 
-        // 未ログインの画面には置かない（稼働中のビルドを無認証の面に出さない。ADR-0034）。
+        // Not placed on logged-out screens (do not expose the running build on unauthenticated surfaces; ADR-0034).
         let signed_out = render_with(None);
         assert!(!signed_out.contains("data-update-notice"), "{signed_out}");
         assert!(!signed_out.contains("data-build="), "{signed_out}");
     }
 
-    /// アカウント設定の 3 画面は同じタブを出し、開いている画面のタブにだけ印を付ける。
+    /// The three account settings screens show the same tabs and mark only the open screen's tab.
     #[test]
     fn the_account_screens_share_one_set_of_tabs() {
         let messages = Messages::new(Locale::Ja);
@@ -1188,7 +1188,7 @@ mod tests {
                 let marked = html.contains(&format!(r#"href="{href}" aria-current="page""#));
                 assert_eq!(marked, href == current, "{href} on {current}: {html}");
             }
-            // サインアウトはどのタブからでもできる。
+            // Sign-out is available from any tab.
             assert!(
                 html.contains(r#"<form method="post" action="/t/logout""#),
                 "{current}: {html}"
@@ -1196,8 +1196,8 @@ mod tests {
         }
     }
 
-    /// `idp.system.admin` を要する画面（エラー警告ログ・テナント管理）は、その権限を持たない
-    /// 管理者のメニューに出さない。出していた頃は押すと api が 403 を返す行き止まりだった。
+    /// Screens requiring `idp.system.admin` (error/warning logs, tenant management) are not in the menu of
+    /// admins without that permission. When they were shown, clicking led to a dead end with the api returning 403.
     #[test]
     fn the_console_hides_the_screens_this_admin_cannot_open() {
         let messages = Messages::new(Locale::Ja);
@@ -1218,9 +1218,9 @@ mod tests {
         let tenant_admin = render_as(&["idp.members:read".to_string()]);
         assert!(!tenant_admin.contains("/t/admin/logs"), "{tenant_admin}");
         assert!(!tenant_admin.contains("/t/admin/tenants"), "{tenant_admin}");
-        // 権限に関わらず開ける画面は残る（隠しすぎていないことの確認）。
+        // Screens open regardless of permission remain (check that we do not hide too much).
         assert!(tenant_admin.contains("/t/admin/accounts"), "{tenant_admin}");
-        // 署名鍵は root でしか扱えない（task #580）。子テナントでは api が idp.keys:* を一覧から落とす。
+        // Signing keys are root-only (task #580). In child tenants the api drops idp.keys:* from the list.
         assert!(
             !tenant_admin.contains("/t/admin/signing-keys"),
             "{tenant_admin}"
@@ -1232,16 +1232,16 @@ mod tests {
         assert!(system_admin.contains("/t/admin/logs"), "{system_admin}");
         assert!(system_admin.contains("/t/admin/tenants"), "{system_admin}");
 
-        // 一覧が空なのは「api が古くて絞り込めない」場合なので、従来どおり全部出す
-        // （権限なしと読んでメニューを消すと、新旧が混在する数秒間だけ画面が別物になる）。
+        // An empty list means "the api is too old to filter", so show everything as before
+        // (reading it as no permission and hiding the menu would change the screen only during the seconds old and new coexist).
         let unknown = render_as(&[]);
         assert!(unknown.contains("/t/admin/logs"), "{unknown}");
         assert!(unknown.contains("/t/admin/tenants"), "{unknown}");
     }
 
-    /// SSO で飛ばされてきた利用者は「どこへサインインするのか」を画面からしか知れない。
-    /// 見出しにアプリ名を、左上の名乗りにテナント名を出す。**引けなかったときは既定へ戻る**
-    /// （api が古い・表示名が空、のどちらでもフォームは出し続ける）。
+    /// Users redirected via SSO can only learn "where am I signing in" from the screen.
+    /// Show the app name in the heading and the tenant name in the top-left label. **Fall back to defaults when
+    /// lookup fails** (the form keeps showing whether the api is old or the display name is empty).
     #[test]
     fn the_login_form_names_the_application_and_the_tenant() {
         let messages = Messages::new(Locale::Ja);
@@ -1265,7 +1265,7 @@ mod tests {
             "{html}"
         );
 
-        // 名前が無いときは、名乗りも見出しも変更前の既定に戻る。
+        // Without a name, both the label and the heading revert to the previous defaults.
         let html = render_with(None, None);
         assert!(
             html.contains(r#"<span class="navbar-brand mb-0 h1">assay</span>"#),
@@ -1273,21 +1273,21 @@ mod tests {
         );
         assert!(html.contains(">サインイン<"), "{html}");
 
-        // 表示名は登録値なので RP の申告ではないが、管理画面から任意の文字列が入る。
-        // テンプレートのエスケープを通ることを確かめる。
+        // The display name is a registered value, not an RP claim, but arbitrary strings can be entered from the admin screen.
+        // Verify it goes through template escaping.
         let html = render_with(Some("<script>alert(1)</script>"), None);
         assert!(!html.contains("<script>alert(1)</script>"), "{html}");
         assert!(html.contains("&#60;script&#62;"), "{html}");
     }
 
-    /// **その画面で起こりうるエラーコードすべてに文言がある。** スクリプトは
-    /// `#passkey-error` の data 属性からしか文言を引かないため、属性の無いコードは既定文言へ
-    /// 静かに落ちる（利用者は何が起きたか分からないまま同じ操作を繰り返す）。応答側だけを見ても
-    /// 画面側だけを見ても気づけないので、画面ごとに並べて固定する。
+    /// **Every error code that can occur on a screen has a message.** The script reads messages only
+    /// from `#passkey-error` data attributes, so a code without an attribute silently falls back to the
+    /// default message (the user repeats the same action without knowing what happened). Neither the response
+    /// side nor the screen side alone reveals this, so pin them side by side per screen.
     #[test]
     fn every_login_screen_has_a_message_for_the_codes_its_route_returns() {
         let messages = Messages::new(Locale::Ja);
-        // どの画面にも要る 2 つ（ブラウザのセレモニーの中止・サーバ不達）。
+        // Two needed on every screen (browser ceremony aborted, server unreachable).
         let shared = [
             "data-msg-invalid-credential",
             "data-msg-challenge-not-found",
@@ -1296,7 +1296,7 @@ mod tests {
             "data-msg-policy-denied",
         ];
 
-        // OIDC 認可フロー: 同意・セッション切れ・レート制限まで返る。
+        // OIDC authorization flow: consent, session expiry and rate limiting can be returned.
         let oidc = render(&LoginTemplate {
             messages: &messages,
             tenant_prefix: "/t",
@@ -1313,7 +1313,7 @@ mod tests {
             &["data-msg-session-expired", "data-msg-rate-limited"],
         );
 
-        // 管理コンソール: admin 権限が無い場合（`forbidden`）が加わる。
+        // Admin console: adds the no-admin-permission case (`forbidden`).
         let console = render(&ConsoleLogin {
             messages: &messages,
             tenant_prefix: "/t",
@@ -1326,7 +1326,7 @@ mod tests {
             &["data-msg-forbidden", "data-msg-rate-limited"],
         );
 
-        // ポータル: メール検証ゲート（SEC6b）が加わる。
+        // Portal: adds the email verification gate (SEC6b).
         let portal = render(&PortalLogin {
             messages: &messages,
             tenant_prefix: "/t",
@@ -1345,8 +1345,8 @@ mod tests {
     }
 
     fn assert_attributes(html: &str, shared: &[&str], extra: &[&str]) {
-        // 導線は `hidden` で描き、スクリプトが「この環境で WebAuthn が使える」と確かめてから
-        // 外す。**囲みの id がずれると誰にも見えなくなる**ので、対で固定する。
+        // The entry is rendered `hidden`, and the script removes it after confirming "WebAuthn is usable here".
+        // **If the wrapper id drifts, nobody can see it**, so pin them as a pair.
         assert!(
             html.contains(r#"<div id="passkey-login" hidden>"#),
             "{html}"
@@ -1356,9 +1356,9 @@ mod tests {
         }
     }
 
-    /// パスキーの画面はアカウント設定から来る枝葉なので、**本文の先頭に「戻る」を置く**。
-    /// 左上の名乗りもホームへのリンクにしてあるが、それがリンクだとは見て分からないため、
-    /// 戻る導線をそちらに委ねない（行き止まりを作らない）。
+    /// Passkey screens branch off account settings, so **put "Back" at the top of the body**.
+    /// The top-left label also links home, but it is not visibly a link, so do not rely on it
+    /// as the way back (never create dead ends).
     #[test]
     fn the_passkey_screens_offer_a_way_back_in_the_page_body() {
         let messages = Messages::new(Locale::Ja);
@@ -1383,13 +1383,13 @@ mod tests {
                 "{html}"
             );
         }
-        // 一覧はアカウント設定へ、登録は一覧へ戻す（1 つ上の画面を指す）。
+        // The list goes back to account settings, registration back to the list (points one screen up).
         assert!(html_has_link(&list, "/t/settings"), "{list}");
         assert!(html_has_link(&register, "/t/account/passkey"), "{register}");
     }
 
-    /// 「最終使用」も登録日時と同じ書き方で出す（利用者のタイムゾーンへ直すのは `local-time`）。
-    /// 一度も使っていないパスキーには出さない。
+    /// "Last used" uses the same format as the registration time (conversion to the user's time zone is `local-time`).
+    /// Not shown for passkeys never used.
     #[test]
     fn the_passkey_list_shows_last_use_like_the_registration_time() {
         let messages = Messages::new(Locale::Ja);
@@ -1427,7 +1427,7 @@ mod tests {
         );
     }
 
-    /// 登録が失敗しても行き止まりにしない（再試行のほかに一覧へ抜ける道を残す）。
+    /// A failed registration is not a dead end (besides retrying, leave a way out to the list).
     #[test]
     fn the_passkey_register_screen_can_be_left_after_a_failure() {
         let messages = Messages::new(Locale::Ja);
@@ -1447,10 +1447,10 @@ mod tests {
         html.contains(&format!(r#"href="{href}""#))
     }
 
-    /// 表は狭い画面でカードへ組み替える（ADR-0048）。**すべての表**が対象で、外すと
-    /// その画面だけ列が潰れる —— 実際に、セキュリティ画面の 2 つの表が `.table-cards` を
-    /// 持たないまま出ていて、スマートフォンでアプリ名が 1 文字ずつ縦に割れ、時刻は右端で
-    /// 切れていた。新しい表を足したときに同じことが起きないよう、テンプレートを直接見る。
+    /// Tables are rearranged into cards on narrow screens (ADR-0048). **All tables** are covered; leaving one out
+    /// collapses that screen's columns -- in fact, two tables on the security screen were shipped without
+    /// `.table-cards`, so on smartphones app names split vertically one character per line and times were
+    /// cut off at the right edge. Inspect the templates directly so adding a new table cannot repeat this.
     #[test]
     fn every_table_collapses_into_cards_on_narrow_screens() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("templates");
@@ -1485,7 +1485,7 @@ mod tests {
         );
     }
 
-    /// 「端末」の欄（task #872）: 登録済みの端末と取り消しの口、まだ登録していないブラウザには登録の欄を出す。
+    /// The "Devices" section (task #872): registered devices with revoke, and a registration field for unregistered browsers.
     #[test]
     fn the_security_page_lists_devices_and_offers_registration() {
         let messages = Messages::new(Locale::Ja);
@@ -1536,8 +1536,8 @@ mod tests {
         assert!(!html.contains(r#"action="/t/settings/security/register-device""#));
     }
 
-    /// パスキーでの本人確認から戻ったら、打った名前のまま登録を自動で送る（task #916。押すのは 1 回）。
-    /// 確認がまだ新しくないとき・名前が持ち越されていないときは送らない。
+    /// After returning from passkey verification, registration is auto-submitted with the typed name (task #916; one press).
+    /// Not submitted when the verification is not fresh yet or the name was not carried over.
     #[test]
     fn returning_from_the_passkey_check_finishes_the_device_registration() {
         let messages = Messages::new(Locale::Ja);
@@ -1579,8 +1579,8 @@ mod tests {
         }
     }
 
-    /// 「ログイン履歴」の欄（task #879）: 成功と失敗を見分けられ、リフレッシュの「送ってきた相手」は
-    /// ログインした接続元と別に書かれ、assay の外で延ばすアプリの断り書きが出る。
+    /// The "Sign-in history" section (task #879): success and failure are distinguishable, a refresh's "sender" is
+    /// written separately from the sign-in source, and the disclaimer about apps extending outside assay appears.
     #[test]
     fn the_security_page_lists_sign_ins_and_refresh_usage() {
         let messages = Messages::new(Locale::Ja);
@@ -1657,11 +1657,11 @@ mod tests {
             error_key: None,
         });
         assert!(html.contains(r#"id="sign-ins""#), "{html}");
-        // 成功と失敗の見分け（AC2）。
+        // Telling success from failure (AC2).
         assert!(html.contains(r#"data-outcome="succeeded""#));
         assert!(html.contains(r#"data-outcome="refused""#));
         assert!(html.contains("パスワード違い"));
-        // 日時・IP と国・ブラウザと OS・入り方・入った先のアプリ（AC1）。
+        // Time, IP and country, browser and OS, sign-in method, target app (AC1).
         assert!(html.contains("203.0.113.10"));
         assert!(html.contains("JP"));
         assert!(html.contains("Windows・Chrome"));
@@ -1670,16 +1670,16 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("photonest"));
-        // 国が分からないときは偽らず「不明」（AC7）。
+        // When the country is unknown, say "unknown" rather than guessing (AC7).
         assert!(html.contains("（国は不明）"));
-        // リフレッシュの利用状況（AC3）と、送ってきた相手を分けて書く（AC4）。
+        // Refresh usage (AC3), written separately from the sender (AC4).
         assert!(html.contains("延長した回数: 12"), "{html}");
         assert!(html.contains("取り消し済み"));
         assert!(html.contains("使い終えたトークンがもう一度使われました"));
         assert!(html.contains("送ってきた相手: 198.51.100.20"), "{html}");
-        // assay を最初のログインにだけ使うアプリの断り書き（AC5）。
+        // Disclaimer for apps that use assay only for the first sign-in (AC5).
         assert!(html.contains("ここには出ません"));
-        // 古い履歴へ。
+        // To older history.
         assert!(html.contains(r#"href="/t/settings/security?history_before=41#sign-ins""#));
     }
 
@@ -1700,8 +1700,8 @@ mod tests {
         assert_eq!(browser_summary(""), "");
     }
 
-    /// 「SSH の鍵」の欄（task #885）: 組織で使っていなければ出さない。使っていれば登録の欄・指紋・取り消しの口、
-    /// パスキーの確認がまだなら確認への道を出す。
+    /// The "SSH keys" section (task #885): hidden if the organization does not use it. If it does, show the registration
+    /// field, fingerprints and revoke, and a path to verification if passkey verification is still pending.
     #[test]
     fn the_security_page_lists_ssh_keys_only_when_enabled() {
         let messages = Messages::new(Locale::Ja);
@@ -1753,9 +1753,9 @@ mod tests {
         assert!(!html.contains("operation=manage_ssh_keys"));
     }
 
-    /// 時刻は機械が読む値（`datetime`）と人が読む値（要素の中身）を分けて出す（ADR-0048）。
-    /// 中身は JavaScript が閲覧者のタイムゾーンへ差し替えるが、差し替わらなくても読める形で
-    /// 出しておく —— RFC 3339 のマイクロ秒付き文字列は、そのままでは日時として読めない。
+    /// Times are output as a machine-readable value (`datetime`) and a human-readable one (element content) (ADR-0048).
+    /// JavaScript replaces the content with the viewer's time zone, but it is output in a readable form even
+    /// without replacement -- an RFC 3339 string with microseconds is not readable as a date as is.
     #[test]
     fn timestamps_carry_a_machine_value_and_a_readable_one() {
         let messages = Messages::new(Locale::Ja);
@@ -1796,12 +1796,12 @@ mod tests {
             html.contains(r#"<time class="local-time" datetime="2026-09-09T11:20:04.512345Z">2026-09-09 11:20 UTC</time>"#),
             "{html}"
         );
-        // 生の RFC 3339 が本文へ出ていない（出ていると、差し替え前の画面が読めない）。
+        // Raw RFC 3339 does not appear in the body (if it did, the screen before replacement would be unreadable).
         assert!(!html.contains(">2026-09-09T11:20:04.512345Z<"), "{html}");
     }
 
-    /// 「状況」（task #896）: 結び付き＋登録済みと、どちらも無い状態で、端末・結び付き・長さの根拠・
-    /// 持ち物・トークンの種別・組織の決まりの書き分けが変わる。読めなかったときは案内だけ出す。
+    /// "Status" (task #896): bound + registered vs. neither changes how device, binding, lifetime basis,
+    /// belongings, token kind and organization rules are worded. When unreadable, only guidance is shown.
     #[test]
     fn the_status_section_tells_a_bound_registered_session_from_a_plain_one() {
         let messages = Messages::new(Locale::Ja);
@@ -1972,7 +1972,7 @@ mod tests {
         assert!(!html.contains(r#"id="status""#));
     }
 
-    /// 解釈できない値は落とさずそのまま出す（表示を欠かすより手掛かりを残す）。
+    /// Unparseable values are output as is rather than dropped (leave a clue rather than missing display).
     #[test]
     fn an_unparsable_timestamp_is_left_alone() {
         assert_eq!(
@@ -1981,15 +1981,15 @@ mod tests {
         );
         assert_eq!(utc_short("never"), "never");
         assert_eq!(utc_short(""), "");
-        // オフセット付きでも UTC へ直して出す（api は Z で返すが、値の出所を 1 つに縛らない）。
+        // Values with an offset are also converted to UTC (the api returns Z, but don't tie it to one source).
         assert_eq!(
             utc_short("2026-09-09T20:20:04+09:00"),
             "2026-09-09 11:20 UTC"
         );
     }
 
-    /// アセット参照はデプロイごとに URL が変わるよう `?v={asset_version}` を必ず付ける
-    /// （中間キャッシュ（CDN・ブラウザ）が旧 CSS/JS を配り続けるのを防ぐ）。
+    /// Asset references always carry `?v={asset_version}` so the URL changes per deploy
+    /// (prevents intermediate caches (CDN, browser) from keeping serving old CSS/JS).
     #[test]
     fn rendered_pages_reference_versioned_asset_urls() {
         let messages = Messages::new(Locale::Ja);
@@ -2013,19 +2013,19 @@ mod tests {
             assert!(html.contains(&format!("/assets/react/app.js?v={v}")));
             assert!(!html.contains("/assets/app.css\""));
         }
-        // 確認ダイアログの共通スクリプトは管理コンソールのレイアウト（`console/layout.html`）が
-        // 読み込む。ログイン画面は `page.html` を使い、`data-confirm` を持つフォームも無いため対象外。
+        // The shared confirmation-dialog script is loaded by the admin console layout (`console/layout.html`).
+        // The login screen uses `page.html` and has no forms with `data-confirm`, so it is out of scope.
         assert!(console.contains(&format!("/assets/console.js?v={v}")));
-        // 送信中の目印はどの画面のフォームにも要るので、両方のレイアウトが読み込む。
+        // The submitting marker is needed by forms on every screen, so both layouts load it.
         for html in [&console, &auth] {
             assert!(html.contains(&format!("/assets/submit-feedback.js?v={v}")));
         }
-        // 取り消された送信へ印を付けないため、確認ダイアログより後に読み込む（登録順に走る）。
+        // Loaded after the confirmation dialog so cancelled submissions are not marked (they run in registration order).
         assert!(
             console.find("/assets/console.js") < console.find("/assets/submit-feedback.js"),
             "submit-feedback.js must load after console.js: {console}"
         );
-        // 印を付ける DOM 操作は共有なので、それを呼ぶスクリプトより先に読み込む。
+        // The marking DOM operation is shared, so load it before the scripts that call it.
         for html in [&console, &auth] {
             assert!(html.contains(&format!("/assets/button-pending.js?v={v}")));
             assert!(
@@ -2033,14 +2033,14 @@ mod tests {
                 "button-pending.js must load first: {html}"
             );
         }
-        // 配色は最初の描画より前に確定させる必要があるため、スタイルシートより先に読み込む。
+        // The color scheme must be settled before the first paint, so load it before the stylesheets.
         for html in [&console, &auth] {
             assert!(html.contains(&format!("/assets/theme.js?v={v}")));
             assert!(
                 html.find("/assets/theme.js") < html.find("/assets/vendor/bootstrap.min.css"),
                 "theme.js must load before the stylesheet: {html}"
             );
-            // `defer` を付けると、白い画面が描かれてから黒へ塗り替わる。
+            // With `defer`, a white screen is painted and then repainted black.
             let tag_start = html
                 .find("/assets/theme.js")
                 .expect("theme.js is referenced");
@@ -2052,11 +2052,11 @@ mod tests {
         }
     }
 
-    /// 3 つのログイン画面が、共有スクリプト `passkey-login.js` が必要とするフック
-    /// （ボタン・エラー領域・完了エンドポイント）を揃えて描くこと。
+    /// The three login screens render the hooks the shared script `passkey-login.js` needs
+    /// (button, error area, completion endpoint).
     ///
-    /// スクリプトは 1 本を 3 画面で共有し、完了先だけを `data-complete-path` で受け取る。
-    /// 属性名を片方だけ変えるとボタンが黙って何もしない画面ができるため、描画側で固定する。
+    /// One script is shared by the three screens and receives only the completion target via `data-complete-path`.
+    /// Renaming an attribute on only one side yields a screen whose button silently does nothing, so pin it on the rendering side.
     #[test]
     fn every_login_screen_renders_the_passkey_hooks() {
         let messages = Messages::new(Locale::Ja);
@@ -2083,8 +2083,8 @@ mod tests {
             login_hint: None,
             app_approval_offered: false,
         });
-        // 直接ログインは開始も専用の経路を指す（放置された認可フローの Cookie を拾わないため。
-        // ADR-0040 決定 4）。認可フローはスクリプトの既定値を使うので data 属性を持たない。
+        // Direct login also points its start at a dedicated route (so it never picks up the Cookie of an abandoned
+        // authorization flow; ADR-0040 decision 4). The authorization flow uses the script defaults, so it has no data attributes.
         for (screen, html, paths) in [
             (
                 "admin",
@@ -2136,9 +2136,9 @@ mod tests {
         }
     }
 
-    /// MT20: 管理コンソールの共通レイアウトに言語切替 UI がある（未ログイン画面にも出す。
-    /// ログイン前に言語を変えられないと、読めない言語のままログインを強いられる）。
-    /// `action` を持たない GET フォームなので、レイアウトを継承する全画面で現在のパスへ送信される。
+    /// MT20: the admin console's shared layout has a language switcher (also on logged-out screens;
+    /// if the language cannot be changed before login, users are forced to sign in in a language they cannot read).
+    /// It is a GET form without `action`, so on every screen inheriting the layout it submits to the current path.
     #[test]
     fn console_layout_offers_a_language_switcher() {
         let messages = Messages::new(Locale::Ja);
@@ -2163,13 +2163,13 @@ mod tests {
             );
             assert!(html.contains(r#"name="lang" value="ja""#), "{html}");
             assert!(html.contains(r#"name="lang" value="en""#), "{html}");
-            // 送信先は現在のパス（`action` を持たない）。
+            // The target is the current path (no `action`).
             assert!(!html.contains(r#"<form method="get" action"#), "{html}");
         }
     }
 
-    /// ヘッダのログアウトは CSRF トークン付きで POST する（task #143）。トークンは `ConsoleAdmin`
-    /// 経由で届くので、レイアウトを継承する全画面で同じ欄が付く。
+    /// Logout in the header POSTs with a CSRF token (task #143). The token arrives via `ConsoleAdmin`,
+    /// so every screen inheriting the layout gets the same field.
     #[test]
     fn console_logout_posts_the_token() {
         let messages = Messages::new(Locale::Ja);
@@ -2195,8 +2195,8 @@ mod tests {
         );
     }
 
-    /// 操作中のテナントは管理コンソールの全画面で見えていること（共通レイアウトのヘッダに出す）。
-    /// テナントを取り違えた操作を防ぐための表示なので、ホームだけでなくレイアウト側に置く。
+    /// The tenant being operated on is visible on every admin console screen (shown in the shared layout header).
+    /// It exists to prevent operating on the wrong tenant, so it lives in the layout, not just on home.
     #[test]
     fn console_layout_always_shows_the_current_tenant_for_signed_in_admins() {
         let messages = Messages::new(Locale::Ja);
@@ -2216,10 +2216,10 @@ mod tests {
             html.contains(&messages.get("admin-current-tenant")),
             "{html}"
         );
-        // ヘッダのテナント表示はそのまま切り替え画面への導線を兼ねる。
+        // The tenant label in the header doubles as the link to the switch screen.
         assert!(html.contains(r#"href="/t/admin/switch-tenant""#), "{html}");
 
-        // 名前が取得できないとき（旧 api）は名前の表示だけを省き、画面は壊さない。
+        // When the name cannot be fetched (old api), only the name is omitted; the screen does not break.
         let html = render(&ConsoleHome {
             messages: &messages,
             tenant: "/t",
@@ -2235,8 +2235,8 @@ mod tests {
         assert!(!html.contains("navbar-tenant-label"), "{html}");
     }
 
-    /// 外部 IdP の一覧で、相手に登録する長い URL は折って全文を見せ（`code-wrap`）、
-    /// 写すボタンを添える。⚠ 折らないと 1280px でも表が右へはみ出す。
+    /// In the external IdP list, long URLs to register with the counterpart wrap to show in full (`code-wrap`),
+    /// with a copy button. ⚠ Without wrapping the table overflows to the right even at 1280px.
     #[test]
     fn external_idp_list_wraps_long_urls_and_offers_a_copy_button() {
         let messages = Messages::new(Locale::Ja);
@@ -2271,7 +2271,7 @@ mod tests {
         assert!(!html.contains(r#"<code class="text-break">"#), "{html}");
     }
 
-    /// IdP メタデータのダウンロード導線は api への直接リンクではなく、web のルートであること。
+    /// The IdP metadata download link is a web route, not a direct link to the api.
     #[test]
     fn saml_console_links_idp_metadata_on_the_web_origin() {
         let messages = Messages::new(Locale::Ja);
@@ -2301,10 +2301,10 @@ mod tests {
         assert!(!html.contains("api.idp.example.com"), "{html}");
     }
 
-    /// テンプレートに直書きする `href` / `action` のパスは、必ず **web 自身のルート**であること。
+    /// `href` / `action` paths written directly in templates must always be **web's own routes**.
     ///
-    /// api だけが提供するパスを web オリジン相対で書かない。ブラウザ向け導線が必要なら、web に
-    /// 明示的なユースケースのルートを設ける（値まるごとがテンプレート式のものは静的判定の対象外）。
+    /// Do not write api-only paths relative to the web origin. If a browser-facing link is needed, add an explicit
+    /// use-case route to web (values that are entirely template expressions are excluded from static checking).
     #[test]
     fn template_link_targets_are_routes_this_service_serves() {
         let routes = crate::router::declared_route_paths();
@@ -2317,16 +2317,16 @@ mod tests {
             assert!(
                 routes.contains(&path),
                 "{template} links `{raw}` but web serves no route `{path}`; \
-                 api のエンドポイントならハンドラで issuer 基点の絶対 URL を渡すこと"
+                 for an api endpoint, pass an issuer-based absolute URL from the handler"
             );
         }
         assert!(checked > 0, "expected link targets to check");
     }
 
-    /// テンプレートの `href="…"` / `action="…"` / `src="…"` を (ファイル名, 値) で列挙する。
+    /// Enumerates templates' `href="…"` / `action="…"` / `src="…"` as (file name, value).
     ///
-    /// `src` も見るのは、`<script src="/assets/…">` の配信ルートを足し忘れると 404 になり、
-    /// 画面は描画されたまま挙動だけが黙って消えるため（実際に `client-form.js` で起きた）。
+    /// `src` is checked too because forgetting the serving route for `<script src="/assets/…">` gives 404,
+    /// and behaviour silently disappears while the screen still renders (actually happened with `client-form.js`).
     fn template_link_targets() -> Vec<(String, String)> {
         fn walk(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
             for entry in std::fs::read_dir(dir).expect("read templates dir") {
@@ -2357,10 +2357,10 @@ mod tests {
         out
     }
 
-    /// テンプレートの値を `router.rs` のパスと比較できる形へ正規化する。判定できない値は `None`。
+    /// Normalizes a template value into a form comparable with `router.rs` paths. `None` if undecidable.
     fn normalize_template_path(raw: &str) -> Option<String> {
         let raw = raw.trim();
-        // 外部 URL・アンカー・空値は経路の対象外。
+        // External URLs, anchors and empty values are not routes.
         if raw.is_empty()
             || raw.starts_with("http://")
             || raw.starts_with("https://")
@@ -2369,26 +2369,26 @@ mod tests {
         {
             return None;
         }
-        // 値まるごとがテンプレート式（= ハンドラが組み立てた URL。絶対 URL でありうる）。
+        // The whole value is a template expression (= a URL built by the handler; may be absolute).
         if raw.starts_with("{{") && raw.ends_with("}}") && raw.matches("{{").count() == 1 {
             return None;
         }
         let path = crate::router::collapse_params(raw);
-        // クエリ・フラグメントは経路の同定に関係しない。
+        // Query and fragment do not matter for identifying the route.
         let path = path.split(['?', '#']).next().unwrap_or_default();
-        // 先頭のテナントプレフィクス（`{{ tenant }}…` / `/{{ t.id }}…`）を落とす。
+        // Drop the leading tenant prefix (`{{ tenant }}…` / `/{{ t.id }}…`).
         let path = path.strip_prefix("{}").unwrap_or(path);
         let path = path.strip_prefix("/{}").unwrap_or(path);
         path.starts_with('/').then(|| path.to_string())
     }
 
-    /// `data-confirm` を持つテンプレートは、必ず共通スクリプトを読み込むレイアウトを継承していること。
-    /// 継承していないと確認ダイアログが黙って出ないまま破壊的操作が送信される。
+    /// Templates with `data-confirm` must inherit a layout that loads the shared script.
+    /// Otherwise the confirmation dialog silently never appears and destructive operations are submitted.
     #[test]
     fn templates_using_data_confirm_load_the_confirm_handler() {
-        // `data-confirm` は `assets/console.js` のハンドラが読む属性。属性だけ書いてスクリプトを
-        // 読み込み忘れると、確認ダイアログが出ないまま破壊的操作が通る（画面上は何も変わらないので
-        // 気付けない）。共通レイアウト経由でも直接読み込みでもよいが、どちらかは必須とする。
+        // `data-confirm` is an attribute read by the handler in `assets/console.js`. Writing the attribute but
+        // forgetting to load the script lets destructive operations through with no dialog (nothing changes on
+        // screen, so it goes unnoticed). Via the shared layout or a direct load is fine, but one is required.
         let roots = [
             concat!(env!("CARGO_MANIFEST_DIR"), "/templates"),
             concat!(env!("CARGO_MANIFEST_DIR"), "/templates/console"),
@@ -2407,7 +2407,7 @@ mod tests {
                 checked += 1;
                 let extends_layout =
                     |src: &str| src.contains(r#"{% extends "console/layout.html" %}"#);
-                // 部品（`{% include %}` で差し込む断片）は、差し込む側がすべてレイアウトを継承していればよい。
+                // Partials (fragments inserted via `{% include %}`) are fine if every includer inherits the layout.
                 let name = path
                     .file_name()
                     .and_then(|n| n.to_str())
@@ -2432,8 +2432,8 @@ mod tests {
     }
 }
 
-/// テンプレートを描画して HTML 文字列を返す。描画エラー（実質 fmt エラーのみ）は握りつぶさず
-/// ログに残し、最小限のエラーページへフォールバックする（フェイルソフト）。
+/// Renders a template and returns the HTML string. Render errors (effectively only fmt errors) are not swallowed:
+/// they are logged and fall back to a minimal error page (fail-soft).
 pub fn render<T: Template>(template: &T) -> String {
     template.render().unwrap_or_else(|error| {
         tracing::error!(%error, "failed to render template");
@@ -2441,58 +2441,58 @@ pub fn render<T: Template>(template: &T) -> String {
     })
 }
 
-/// TOTP セットアップ画面（`GET /account/mfa/totp/setup`）。
-/// QR コード SVG と生シークレット（base32）を両方表示する（QR が使えないユーザー向け）。
+/// TOTP setup screen (`GET /account/mfa/totp/setup`).
+/// Shows both the QR code SVG and the raw secret (base32) (for users who cannot use QR).
 #[derive(Template)]
 #[template(path = "mfa_totp_setup.html")]
 pub struct TotpSetupTemplate<'a> {
     pub messages: &'a Messages,
-    /// テナント接頭辞（`/{tenant_id}`）。戻る導線（アカウント設定）の組み立てに使う。
+    /// Tenant prefix (`/{tenant_id}`). Used to build the back link (account settings).
     pub tenant_prefix: &'a str,
-    /// QR コードの SVG 文字列（インライン埋め込み）。
+    /// QR code SVG string (embedded inline).
     pub qr_svg: &'a str,
-    /// base32 エンコードされた生シークレット（QR が使えないユーザー向けに直接表示）。
+    /// Base32-encoded raw secret (shown directly for users who cannot use QR).
     pub secret_base32: &'a str,
     pub error_key: Option<&'a str>,
-    /// 確認コードの送信フォームの CSRF トークン（`console_csrf_token`。task #118）。
+    /// CSRF token of the confirmation code form (`console_csrf_token`; task #118).
     pub csrf: &'a str,
 }
 
-/// アカウント設定から来た TOTP の設定が失敗したときの画面（既に設定済み・セッション切れ・
-/// コード誤りのあとに QR を取り直せなかった。task #119）。
+/// Screen for a failed TOTP setup started from account settings (already set up, session expired,
+/// or the QR could not be regenerated after a wrong code; task #119).
 ///
-/// 失敗を告げるだけの [`MessagePage`] には出口が無く、行き止まりになっていた。設定画面と同じく
-/// アカウント設定へ戻す導線を置く。戻り先の出し分け（サインインか設定か）はテンプレートが持つ。
+/// A plain [`MessagePage`] only reported the failure and had no exit, a dead end. Like the setup screen,
+/// provide a link back to account settings. The template decides the target (sign-in or settings).
 #[derive(Template)]
 #[template(path = "mfa_totp_account_error.html")]
 pub struct TotpAccountErrorTemplate<'a> {
     pub messages: &'a Messages,
-    /// テナント接頭辞（`/{tenant_id}`）。戻る導線の組み立てに使う。
+    /// Tenant prefix (`/{tenant_id}`). Used to build the back link.
     pub tenant_prefix: &'a str,
-    /// 本文の翻訳キー（`mfa-error-*`）。
+    /// Translation key of the body (`mfa-error-*`).
     pub message_key: &'a str,
-    /// サインインし直す必要がある（セッションが無い・切れた）。このときはアカウント設定を
-    /// 開けないので、本文の導線をサインインへ向ける。
+    /// Must sign in again (no session or expired). Account settings cannot be opened then,
+    /// so the body link points to sign-in.
     pub sign_in_required: bool,
 }
 
-/// ログインフロー TOTP 入力ページ（`GET /mfa/totp`）。
+/// Login-flow TOTP input page (`GET /mfa/totp`).
 #[derive(Template)]
 #[template(path = "mfa_totp_verify.html")]
 pub struct TotpVerifyTemplate<'a> {
     pub messages: &'a Messages,
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
-    /// 「メールでコードを送る」導線を出すか（AP9）。
+    /// Whether to show the "send a code by email" link (AP9).
     pub email_otp_available: bool,
-    /// その導線の送信先（テナントごとに変わるため呼び出し側が組み立てる）。
+    /// That link's target (varies per tenant, so the caller builds it).
     pub email_otp_action: &'a str,
-    /// SMS OTP の送信フォームの送信先（AP13）。導線は常に出し、未設定・未登録は送信結果で案内する。
+    /// Target of the SMS OTP send form (AP13). The link is always shown; not configured/registered is explained in the send result.
     pub sms_otp_action: &'a str,
 }
-/// RP-initiated logout の front-channel 通知ページ（`GET /{tenant_id}/logout`。ADR-0018 決定 2 で
-/// api から移設）。各 RP の `frontchannel_logout_uri` を不可視 iframe で読み込み、全 iframe の
-/// ロード後（またはタイムアウト後）に post-logout リダイレクト先へ遷移する。
+/// Front-channel notification page for RP-initiated logout (`GET /{tenant_id}/logout`; moved from the api in
+/// ADR-0018 decision 2). Loads each RP's `frontchannel_logout_uri` in invisible iframes and, after all iframes
+/// load (or time out), navigates to the post-logout redirect target.
 #[derive(Template)]
 #[template(path = "rp_logout.html")]
 pub struct RpLogoutPage<'a> {
@@ -2501,14 +2501,14 @@ pub struct RpLogoutPage<'a> {
     pub redirect_to: Option<&'a str>,
 }
 
-/// `id_token_hint` の無いサインアウト要求の確認画面（task #588）。CSRF 付きの POST で実行する。
+/// Confirmation screen for sign-out requests without `id_token_hint` (task #588). Executed via a CSRF-protected POST.
 #[derive(Template)]
 #[template(path = "rp_logout_confirm.html")]
 pub struct RpLogoutConfirmPage<'a> {
     pub messages: &'a Messages,
-    /// `/{tenant_id}` プレフィクス。
+    /// `/{tenant_id}` prefix.
     pub tenant_prefix: &'a str,
-    /// `console_csrf_token`（SSO セッション由来）。
+    /// `console_csrf_token` (from the SSO session).
     pub csrf_token: &'a str,
     pub client_id: Option<&'a str>,
     pub post_logout_redirect_uri: Option<&'a str>,
@@ -2519,38 +2519,38 @@ pub struct RpLogoutConfirmPage<'a> {
 #[template(path = "login.html")]
 pub struct LoginTemplate<'a> {
     pub messages: &'a Messages,
-    /// `/{tenant_id}` プレフィクス（Passkey JSON API の絶対パス組み立てに使う。ADR-0009 §6）。
+    /// `/{tenant_id}` prefix (used to build absolute paths of the Passkey JSON API; ADR-0009 §6).
     pub tenant_prefix: &'a str,
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
-    /// 認可要求の `login_hint`（G12）。ログイン欄の初期値にするだけの**表示上のヒント**で、
-    /// 実在するアカウントを意味しない（RP が指定した任意の文字列。テンプレートがエスケープする）。
+    /// The authorization request's `login_hint` (G12). Only a **display hint** used as the login field's initial value;
+    /// it does not imply an existing account (an arbitrary string from the RP; the template escapes it).
     pub login_hint: Option<&'a str>,
-    /// 認可要求を出したクライアントの表示名（api が登録済みの値から引いたもの）。見出しを
-    /// 「〇〇 にサインイン」にする。`None` なら既定の見出しを出す。
+    /// Display name of the client that sent the authorization request (looked up by the api from registered values).
+    /// Makes the heading "Sign in to X". `None` shows the default heading.
     pub client_name: Option<&'a str>,
-    /// フローのテナントの表示名。ナビバーの名乗りに出す。`None` なら `IdP` を出す。
+    /// Display name of the flow's tenant, shown as the navbar label. `None` shows `IdP`.
     pub tenant_name: Option<&'a str>,
-    /// 「アプリで続ける」を置くか（認証アプリの口が開いている。task #892）。Android の Chrome の
-    /// ときだけ見せるのは画面のスクリプト（見た目だけ。User-Agent を判定には使わない）。
+    /// Whether to offer "Continue in the app" (the authenticator app endpoint is open; task #892). Showing it only on
+    /// Android Chrome is up to the page script (cosmetic only; User-Agent is never used for decisions).
     pub app_approval_offered: bool,
 }
 
-/// エンドユーザー・ポータルのログイン画面（`GET /{tenant_id}/login`。OIDC の `auth_session` を持たない
-/// 直接ログイン）。IdP 自身のアカウント画面へ入るための画面で、共通レイアウトには載せない。
+/// End-user portal login screen (`GET /{tenant_id}/login`; direct login without an OIDC `auth_session`).
+/// Entry to the IdP's own account screens; not placed in the shared layout.
 #[derive(Template)]
 #[template(path = "portal_login.html")]
 pub struct PortalLogin<'a> {
     pub messages: &'a Messages,
-    /// `/{tenant_id}` プレフィクス（フォーム送信先・リンクの組み立てに使う。ADR-0009 §6）。
+    /// `/{tenant_id}` prefix (used to build form targets and links; ADR-0009 §6).
     pub tenant_prefix: &'a str,
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
-    /// 有効な外部 IdP（AP10）。空ならボタン領域ごと出さない。
+    /// Enabled external IdPs (AP10). If empty, the whole button area is hidden.
     pub external_providers: &'a [assay_contracts::auth::ExternalIdpButton],
 }
 
-/// ポータルの TOTP 入力画面（`GET /{tenant_id}/login/mfa`）。`mfa_ticket` Cookie を保持した状態で表示する。
+/// Portal TOTP input screen (`GET /{tenant_id}/login/mfa`). Shown while holding the `mfa_ticket` Cookie.
 #[derive(Template)]
 #[template(path = "portal_mfa.html")]
 pub struct PortalMfa<'a> {
@@ -2560,7 +2560,7 @@ pub struct PortalMfa<'a> {
     pub error_key: Option<&'a str>,
 }
 
-/// 同意画面（`GET /consent`、F3）。
+/// Consent screen (`GET /consent`, F3).
 #[derive(Template)]
 #[template(path = "consent.html")]
 pub struct ConsentTemplate<'a> {
@@ -2571,32 +2571,32 @@ pub struct ConsentTemplate<'a> {
     pub requested_scopes: &'a [String],
 }
 
-/// SAML SSO の自動 POST ページ（`GET /{tenant_id}/saml/continue`）。署名済み `SAMLResponse` を
-/// SP の ACS へ POST するフォームを描画し、インライン JS で即時送信する（JS 無効時は送信ボタン）。
-/// 送信先が外部オリジンのため、ハンドラは ACS オリジンを `form-action` に許可した CSP を付ける。
+/// SAML SSO auto-POST page (`GET /{tenant_id}/saml/continue`). Renders a form that POSTs the signed
+/// `SAMLResponse` to the SP's ACS and submits it immediately with inline JS (submit button when JS is off).
+/// The target is a foreign origin, so the handler adds a CSP allowing the ACS origin in `form-action`.
 #[derive(Template)]
 #[template(path = "saml_post.html")]
 pub struct SamlPostPage<'a> {
     pub messages: &'a Messages,
     pub acs_url: &'a str,
-    /// base64 済みの SAML Response（テンプレートが hidden input へエスケープして埋め込む）。
+    /// Base64-encoded SAML Response (the template escapes it into a hidden input).
     pub saml_response: &'a str,
     pub relay_state: Option<&'a str>,
 }
 
-/// 「アプリで続ける」を押した後の画面（task #892）。このブラウザに依頼の印を置き、認証アプリを開くリンクを出す。
+/// Screen after pressing "Continue in the app" (task #892). Leaves a request marker in this browser and links to open the authenticator app.
 ///
-/// ⚠ この画面は待つだけで、承認されても自分では先へ進まない（進むのは認証アプリが開いた新しいタブ）。
+/// ⚠ This screen only waits; it does not advance by itself even when approved (the new tab opened by the app does).
 #[derive(Template)]
 #[template(path = "app_approval_wait.html")]
 pub struct AppApprovalWaitPage<'a> {
     pub messages: &'a Messages,
-    /// 認証アプリの App Link（発行者のホストの `/app/approve`）。
+    /// App Link of the authenticator app (`/app/approve` on the issuer's host).
     pub approve_url: &'a str,
     pub tenant_prefix: &'a str,
 }
 
-/// 認証アプリの鍵の登録の確認（task #892）。認証アプリの Auth Tab の中で開く。
+/// Confirmation of registering the authenticator app's key (task #892). Opened inside the app's Auth Tab.
 #[derive(Template)]
 #[template(path = "app_approver_confirm.html")]
 pub struct AppApproverConfirmPage<'a> {
@@ -2604,85 +2604,85 @@ pub struct AppApproverConfirmPage<'a> {
     pub tenant_prefix: &'a str,
     pub csrf: &'a str,
     pub enrollment: &'a str,
-    /// アプリの自己申告の機種名。
+    /// The app's self-reported device model name.
     pub device_name: &'a str,
-    /// 鍵の置き場の表示の翻訳キー。
+    /// Translation key for how the key storage is shown.
     pub level_key: &'a str,
-    /// 受付を始めた時刻（RFC 3339）。
+    /// When acceptance started (RFC 3339).
     pub created_at: &'a str,
 }
 
-/// 登録していない端末で正しく入ろうとしたときの、端末の登録の画面（task #916）。
+/// Device registration screen shown when signing in correctly from an unregistered device (task #916).
 #[derive(Template)]
 #[template(path = "device_enrollment.html")]
 pub struct DeviceEnrollmentPage<'a> {
     pub messages: &'a Messages,
     pub tenant_prefix: &'a str,
-    /// だれのログインか。
+    /// Whose sign-in this is.
     pub username: &'a str,
-    /// 端末の名前の初めの値（ブラウザの名乗りから。打ち直せる）。
+    /// Initial device name (from the browser's self-identification; editable).
     pub device_name: &'a str,
-    /// 登録の後に戻す画面（このテナントの道だけ）。
+    /// Screen to return to after registration (paths of this tenant only).
     pub next: &'a str,
-    /// 「アプリで続ける」が使える環境か（案内を出すだけ）。
+    /// Whether "Continue in the app" is available here (only for showing guidance).
     pub app_approval_offered: bool,
 }
 
-/// タイトルと本文のみの最小ページ（ログインのエラー・権限不足など、共通レイアウトに載せない画面）。
+/// Minimal page with only a title and body (screens outside the shared layout, such as login errors or missing permissions).
 #[derive(Template)]
 #[template(path = "message_page.html")]
 pub struct MessagePage {
-    /// 表示言語のタグ（`ja` / `en`。`Messages::lang()`）。`<html lang>` に出す（ADR-0048）。
+    /// Display language tag (`ja` / `en`; `Messages::lang()`). Output as `<html lang>` (ADR-0048).
     pub lang: &'static str,
     pub title: String,
     pub message: String,
 }
 
-/// アプリの利用が許可されていない画面（ADR-0054 の決定 2）。
+/// Screen for "use of the app is not permitted" (ADR-0054 decision 2).
 ///
-/// ⚠ **理由を伏せない。** 判定は認証の後に行われるので、隠しても総当たりの手掛かりにはならない。
-/// 黙って弾くと利用者からは障害と区別が付かず、資格情報を疑って何度もやり直すことになる。
-/// だから「サインインは通っている」「どのアプリで断られたか」「次に誰へ頼めばよいか」の 3 つを出す。
+/// ⚠ **Do not hide the reason.** The check happens after authentication, so hiding it gives no brute-force clue.
+/// Silently rejecting is indistinguishable from an outage for users, who then doubt their credentials and retry.
+/// So show three things: "sign-in succeeded", "which app refused", "whom to ask next".
 #[derive(Template)]
 #[template(path = "application_not_permitted.html")]
 pub struct ApplicationNotPermittedPage {
-    /// 表示言語のタグ（`ja` / `en`。`Messages::lang()`）。`<html lang>` に出す（ADR-0048）。
+    /// Display language tag (`ja` / `en`; `Messages::lang()`). Output as `<html lang>` (ADR-0048).
     pub lang: &'static str,
     pub title: String,
-    /// 「サインインはできましたが、〇〇 の利用は許可されていません」。
+    /// "You signed in, but you are not permitted to use X".
     pub signed_in: String,
-    /// 「利用するには管理者に頼んでください」。
+    /// "Ask an administrator to use it".
     pub next_step: String,
-    /// 戻り先。**空文字はリンクを出さない**（テナントを特定できない経路）。
+    /// Return target. **An empty string shows no link** (routes where the tenant cannot be identified).
     pub back_href: String,
     pub back_label: String,
 }
 
-/// HTTP エラーページ（全ステータスコード対応。403 / 404 / 500 等）。ステータスコードを大きく表示し、
-/// タイトルと説明文を添える。テナント文脈を持たない未マッチ経路（fallback）でも描画できるよう、
-/// 翻訳済みの文字列と表示言語だけを受け取る（`Messages` へは依存しない）。
-/// 描画の入口は `crate::error_pages`（ハンドラから直接呼ぶ `page()` と、全エラー応答を揃える
-/// ミドルウェア）に集約する。
+/// HTTP error page (any status code: 403 / 404 / 500 etc.). Shows the status code large, with a
+/// title and description. Takes only translated strings and the display language (no dependency on
+/// `Messages`) so it can render even on unmatched routes (fallback) without tenant context.
+/// Rendering entry points are consolidated in `crate::error_pages` (`page()` called directly by handlers, and
+/// the middleware that unifies all error responses).
 #[derive(Template)]
 #[template(path = "error_page.html")]
 pub struct ErrorPage {
-    /// 表示言語のタグ（`ja` / `en`。`Messages::lang()`）。`<html lang>` に出す（ADR-0048）。
+    /// Display language tag (`ja` / `en`; `Messages::lang()`). Output as `<html lang>` (ADR-0048).
     pub lang: &'static str,
-    /// 表示するステータスコード（例 `"404"`）。
+    /// Status code to display (e.g. `"404"`).
     pub code: String,
     pub title: String,
     pub message: String,
-    /// 戻り先の URL。**空文字はリンクを出さない**（テナントを特定できない経路・戻り先が今いる
-    /// 場所と同じ場合）。エラー画面に出口が無いと、利用者はブラウザの戻る以外に手が無くなる。
+    /// Return URL. **An empty string shows no link** (routes where the tenant cannot be identified, or when the
+    /// target equals the current location). Without an exit on an error screen, users have only the browser's back.
     pub back_href: String,
-    /// 戻り先の見出し（翻訳済み）。`back_href` が空のときは使われない。
+    /// Heading of the return target (translated). Unused when `back_href` is empty.
     pub back_label: String,
 }
 
-/// バージョン情報ページ（`GET /{tenant_id}/admin/version`）。
+/// Version information page (`GET /{tenant_id}/admin/version`).
 ///
-/// **管理コンソールの内側にある**（ADR-0034）。稼働中のコミットが分かると、どの既知の不具合が
-/// 塞がっていないかを外から判断できるため、無認証の面には出さない。
+/// **It lives inside the admin console** (ADR-0034). Knowing the running commit lets outsiders judge which known
+/// bugs are still open, so it is never on an unauthenticated surface.
 #[derive(Template)]
 #[template(path = "console/version.html")]
 pub struct VersionTemplate<'a> {
@@ -2690,13 +2690,13 @@ pub struct VersionTemplate<'a> {
     pub tenant: &'a str,
     pub admin: Admin<'a>,
     pub info: VersionInfo,
-    /// DB スキーマ（マイグレーション）の適用状態。api から取得できなければ `None`（画面は
-    /// 「取得できません」を表示）。web は DB を持たないため api 経由で受け取る。
+    /// Applied state of the DB schema (migrations). `None` if it cannot be fetched from the api (the screen
+    /// shows "unavailable"). web has no DB, so it receives this via the api.
     pub schema: Option<SchemaVersionInfo>,
 }
 
-/// 強制パスワード変更画面（`GET /{tenant_id}/password-change`、ADR-0009 §5）。ログインフロー中
-/// （パスワード検証済み・SSO 未発行）に表示する。共通レイアウトには載せない。
+/// Forced password change screen (`GET /{tenant_id}/password-change`, ADR-0009 §5). Shown during the login
+/// flow (password verified, SSO not yet issued). Not placed in the shared layout.
 #[derive(Template)]
 #[template(path = "password_change.html")]
 pub struct PasswordChangeTemplate<'a> {
@@ -2705,89 +2705,89 @@ pub struct PasswordChangeTemplate<'a> {
     pub error_key: Option<&'a str>,
 }
 
-/// 強制パスワード変更画面（初回ログイン時。ADR-0009 §5）。管理コンソールログイン
-/// （`POST /{tenant_id}/admin/password-change`）とポータル（一般）ログイン
-/// （`POST /{tenant_id}/login/password-change`）で共有する。どちらも一時状態を持たないため、
-/// `username`（ログイン識別子）を隠しフィールドで維持し、フォーム送信先は `action` で切り替える。
-/// OIDC ログインの強制変更（[`PasswordChangeTemplate`]）は `auth_session_id` で本人を識別するため別画面。
+/// Forced password change screen (on first login; ADR-0009 §5). Shared by the admin console login
+/// (`POST /{tenant_id}/admin/password-change`) and the portal (general) login
+/// (`POST /{tenant_id}/login/password-change`). Neither keeps temporary state, so
+/// `username` (login identifier) is kept in a hidden field and the form target is switched via `action`.
+/// The forced change in OIDC login ([`PasswordChangeTemplate`]) identifies the user by `auth_session_id`, so it is a separate screen.
 #[derive(Template)]
 #[template(path = "password_change_forced.html")]
 pub struct ForcedPasswordChange<'a> {
     pub messages: &'a Messages,
-    /// フォーム送信先の絶対パス（例 `/{tenant_id}/admin/password-change`）。
+    /// Absolute path of the form target (e.g. `/{tenant_id}/admin/password-change`).
     pub action: &'a str,
     pub csrf: &'a str,
     pub username: &'a str,
     pub error_key: Option<&'a str>,
 }
 
-/// 管理コンソール共通レイアウトのヘッダに載せる管理セッションの文脈。
+/// Admin session context shown in the header of the admin console's shared layout.
 ///
-/// 「いま誰として・どのテナントを操作しているか」はコンソール全画面で常に見えている必要がある
-/// （テナントを取り違えた操作を防ぐ）。両方とも api の whoami 応答から一度に得られるため、
-/// 画面ごとの追加取得はしない。
+/// "Who I am acting as and which tenant I am operating on" must always be visible on every console screen
+/// (prevents operating on the wrong tenant). Both come at once from the api's whoami response, so
+/// nothing extra is fetched per screen.
 #[derive(Debug, Clone, Copy)]
 pub struct ConsoleAdmin<'a> {
-    /// 管理者の表示ラベル（表示名 → ログイン識別子 → 内部 ID）。
+    /// Admin's display label (display name -> login identifier -> internal ID).
     pub label: &'a str,
-    /// 操作中テナントの表示名。api が返さなかった場合のみ `None`（名前の表示だけを省く）。
+    /// Display name of the tenant being operated on. `None` only when the api did not return it (only the name is omitted).
     pub tenant_name: Option<&'a str>,
-    /// この管理者が行使できる権限コード（api が含意を展開済み）。メニューの出し分けに使う。
+    /// Permission codes this admin can exercise (implications expanded by the api). Used to decide which menus to show.
     pub permissions: &'a [String],
-    /// ログイン後の状態変更フォーム用の CSRF トークン（`console_csrf_token`）。ヘッダの言語
-    /// ドロップダウンが `POST /{tenant_id}/settings/display` へ送る（task #79）。ここに置くのは、
-    /// ログイン中の全コンソール画面が共通レイアウトへこの struct を渡しているからで、画面ごとの
-    /// テンプレート struct に欄を足さずに全画面へ届く。
+    /// CSRF token for post-login state-changing forms (`console_csrf_token`). The header language
+    /// dropdown posts to `POST /{tenant_id}/settings/display` (task #79). It lives here because every logged-in
+    /// console screen passes this struct to the shared layout, so it reaches all screens without adding a field
+    /// to each screen's template struct.
     pub csrf_token: &'a str,
 }
 
 impl ConsoleAdmin<'_> {
-    /// 指定の権限を要する画面へのリンクを出すか（メニューを出すかの判定）。
+    /// Whether to show a link to a screen requiring the given permission (decides whether to show the menu).
     ///
-    /// **一覧が空のときは `true` を返す。** 空になるのは api が古くこのフィールドを返さないとき
-    /// （ローリングデプロイの数秒間）で、そこを「権限なし」と読むとメニューがごっそり消える。
-    /// 管理コンソールに入れている時点で最低でも `idp.tenant.admin` は保有しており、空は
-    /// 「絞り込めない」を意味する。押した先で api が 403 を返すのは従来どおり。
+    /// **Returns `true` when the list is empty.** It is empty when the api is too old to return this field
+    /// (the few seconds of a rolling deploy); reading that as "no permission" would wipe out the menu.
+    /// Anyone who got into the admin console holds at least `idp.tenant.admin`, so empty means
+    /// "cannot filter". The api still returns 403 at the destination as before.
     pub fn can(&self, permission_code: &str) -> bool {
         self.permissions.is_empty() || self.permissions.iter().any(|code| code == permission_code)
     }
 }
 
-/// 管理コンソールのメニュー 1 項目。
+/// One admin console menu item.
 ///
-/// サイドバー（`console/layout.html`）とホームのカード（`console/home.html`）は**同じものを
-/// 別の形で見せている**。⚠ **両方を手で書くと必ずずれる** ——実際、サイドバーには「外部 IdP」
-/// だけが、ホームには「認証ポリシー」だけが載っている状態が続いていた。どちらも相手の部分集合に
-/// ならないので、利用者からは「省略」とも読めず違和感だけが残る。定義をここ 1 か所に置き、
-/// 両方をここから描くことで、ずれを**書けなくする**。
+/// The sidebar (`console/layout.html`) and home cards (`console/home.html`) **show the same thing
+/// in different shapes**. ⚠ **Writing both by hand always drifts** -- in fact, the sidebar had only "External IdP"
+/// and home only "Authentication policies" for a while. Neither was a subset of the other, so users could not
+/// read it as "abbreviated" and were just left confused. Keeping the definition in this one place and
+/// rendering both from it makes drift **impossible to write**.
 #[derive(Debug, Clone, Copy)]
 pub struct ConsoleNavItem {
-    /// `{{ tenant }}` に続くパス（先頭の `/` を含む）。
+    /// Path following `{{ tenant }}` (including the leading `/`).
     pub path: &'static str,
-    /// Font Awesome のクラス名（`fa-solid` は付けない）。
+    /// Font Awesome class name (without `fa-solid`).
     pub icon: &'static str,
-    /// 表示名の翻訳キー。
+    /// Translation key of the display name.
     pub label: &'static str,
-    /// 1 行の説明の翻訳キー。⚠ **ホームでしか出さない** ——サイドバーは行き先を選ぶ場所で、
-    /// 説明を並べると縦に伸びて選びにくくなる。
+    /// Translation key of the one-line description. ⚠ **Shown only on home** -- the sidebar is for choosing a
+    /// destination; listing descriptions there would make it tall and harder to pick from.
     pub description: &'static str,
-    /// この画面を出すのに要る権限コード。`None` = 管理コンソールに入れる全員へ出す。
+    /// Permission code required to show this screen. `None` = shown to everyone who can enter the admin console.
     pub requires: Option<&'static str>,
 }
 
-/// メニューのまとまり（サイドバーの見出し ＝ ホームのカード 1 枚）。
+/// A menu group (a sidebar heading = one card on home).
 #[derive(Debug, Clone, Copy)]
 pub struct ConsoleNavGroup {
     pub label: &'static str,
-    /// まとまりの説明の翻訳キー。⚠ **ホームでは見出しの副題として出す** ——項目リストの中へ
-    /// 置くと、字下げも幅も項目と同じになり「押せない 1 行目」に見える。
+    /// Translation key of the group description. ⚠ **Shown on home as the heading's subtitle** -- placing it inside
+    /// the item list gives it the same indent and width as items, so it looks like an "unclickable first row".
     pub description: &'static str,
     pub icon: &'static str,
     pub items: &'static [ConsoleNavItem],
 }
 
 impl ConsoleNavGroup {
-    /// この管理者に見える項目だけを返す。空になったまとまりはホーム側で丸ごと省く。
+    /// Returns only the items visible to this admin. Groups that become empty are omitted entirely on home.
     pub fn visible_items(&self, admin: &ConsoleAdmin<'_>) -> Vec<ConsoleNavItem> {
         self.items
             .iter()
@@ -2798,17 +2798,17 @@ impl ConsoleNavGroup {
 }
 
 impl ConsoleNavItem {
-    /// いま開いている画面がこの項目のものか（サイドバーの `aria-current`）。
+    /// Whether the currently open screen belongs to this item (the sidebar's `aria-current`).
     pub fn is_current(&self) -> bool {
         current_console_nav_item().is_some_and(|current| current.path == self.path)
     }
 }
 
-/// メニューに載らない画面が、どの項目から開く画面か（パスの先頭 → 項目のパス）。
+/// For screens not in the menu, which item they are opened from (path prefix -> item path).
 ///
-/// 利用者の作成・メンバーの詳細・サービスアカウント・招待は「アカウント」から開き、再起動と
-/// システム設定の保存は「設定」から送る。⚠ ここに無いパスは自分のパスで項目を探すので、
-/// 項目の下に画面を足すだけなら書き足さなくてよい（`/admin/clients/new` → `/admin/clients`）。
+/// Creating users, member details, service accounts and invitations open from "Accounts"; restart and
+/// saving system settings are posted from "Settings". ⚠ Paths not listed here look up the item by their own path,
+/// so merely adding a screen under an item needs no entry (`/admin/clients/new` -> `/admin/clients`).
 const CONSOLE_NAV_PARENTS: &[(&str, &str)] = &[
     ("/admin/users", "/admin/accounts"),
     ("/admin/members", "/admin/accounts"),
@@ -2818,16 +2818,16 @@ const CONSOLE_NAV_PARENTS: &[(&str, &str)] = &[
     ("/admin/restart", "/admin/settings"),
 ];
 
-/// `path` が `prefix` そのものか、その下（`prefix/…`）か。
+/// Whether `path` is `prefix` itself or below it (`prefix/…`).
 ///
-/// 区切りで見る —— 文字列の前方一致だけだと `/admin/logs` が `/admin/login` を拾う。
+/// Compares by segment -- a plain string prefix match would let `/admin/logs` capture `/admin/login`.
 fn path_is_under(path: &str, prefix: &str) -> bool {
     path.strip_prefix(prefix)
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
 }
 
-/// テナント配下のパス（`/admin/users/new` など）から、その画面が属するメニューの項目を引く。
-/// ホーム・ログイン・テナント切替のように、どの項目にも属さない画面は `None`。
+/// Looks up the menu item a screen belongs to from its tenant-relative path (e.g. `/admin/users/new`).
+/// Screens belonging to no item, such as home, login and tenant switch, give `None`.
 pub fn console_nav_item_for(path: &str) -> Option<&'static ConsoleNavItem> {
     let mut section = path;
     for (prefix, parent) in CONSOLE_NAV_PARENTS {
@@ -2841,34 +2841,34 @@ pub fn console_nav_item_for(path: &str) -> Option<&'static ConsoleNavItem> {
         .find(|item| path_is_under(section, item.path))
 }
 
-/// いま開いている画面が属するメニューの項目。共通レイアウトがサイドバーの印とタブ名に使う。
+/// The menu item the currently open screen belongs to. The shared layout uses it for the sidebar marker and tab title.
 pub fn current_console_nav_item() -> Option<&'static ConsoleNavItem> {
     crate::tenant::current_relative_path().and_then(|path| console_nav_item_for(&path))
 }
 
-/// いま開いているのが管理コンソールのホームか。
+/// Whether the currently open screen is the admin console home.
 pub fn console_home_is_current() -> bool {
     crate::tenant::current_relative_path().is_some_and(|path| path == "/admin")
 }
 
-/// アカウント（人・サービスアカウント）の管理者メモの上限（入力欄の `maxlength`。値は契約 crate が
-/// 単一の出所。ADR-0063 / ADR-0065）。
+/// Upper limit of admin notes on accounts (people and service accounts) (the input's `maxlength`; the contract crate
+/// is the single source of the value; ADR-0063 / ADR-0065).
 pub const ACCOUNT_NOTE_MAX_LEN: usize = assay_contracts::admin::ACCOUNT_NOTE_MAX_LEN;
 
-/// 管理コンソールのメニュー定義（サイドバーとホームの唯一の出所）。
+/// Admin console menu definition (the single source for the sidebar and home).
 ///
-/// ⚠ **画面を足したらここへ足す。** `crates/web/src/router.rs` の `/admin/*` と突き合わせる
-/// テストが `console_menu_covers_every_admin_screen` にある。
+/// ⚠ **When adding a screen, add it here.** `console_menu_covers_every_admin_screen` is a test that checks it
+/// against `/admin/*` in `crates/web/src/router.rs`.
 pub const CONSOLE_NAV: &[ConsoleNavGroup] = &[
-    // ⚠ **並びは「何を管理するか」が先、「何が起きたか」が後。** 運用・監査を先頭に置いていた頃は、
-    //    管理しに来た人が毎回それを読み飛ばしていた。
+    // ⚠ **Order: "what you manage" first, "what happened" last.** When operations/audit were at the top,
+    //    people coming to manage something skipped over them every time.
     ConsoleNavGroup {
         label: "admin-home-group-access",
         description: "admin-home-group-access-desc",
         icon: "fa-users",
         items: &[
-            // ⚠ **人とサービスアカウントは 1 つの入口**（ADR-0065）。別の項目にしていた頃は、
-            //    人の側に足したもの（メモ・使えるアプリ）がサービスアカウントの側に届かなかった。
+            // ⚠ **People and service accounts share one entry** (ADR-0065). When they were separate items,
+            //    things added on the people side (notes, usable apps) did not reach the service account side.
             ConsoleNavItem {
                 path: "/admin/accounts",
                 icon: "fa-address-book",
@@ -2876,9 +2876,9 @@ pub const CONSOLE_NAV: &[ConsoleNavGroup] = &[
                 description: "admin-nav-accounts-desc",
                 requires: None,
             },
-            // ⚠ **外部 IdP と認証ポリシーは「入ってくる側」。** 連携先（assay が ID を渡す相手）と
-            //    同じ箱に入れていた頃は、向きが逆のものが混ざっていて探しても見つからなかった。
-            //    認証ポリシーは「誰がどの要素でログインできるか」で、中身はアカウントの話である。
+            // ⚠ **External IdPs and authentication policies are the "incoming" side.** When they shared a box with
+            //    connected apps (to which assay passes identities), opposite directions were mixed and could not be found.
+            //    Authentication policies are "who may sign in with which factors", which is about accounts.
             ConsoleNavItem {
                 path: "/admin/external-idps",
                 icon: "fa-right-to-bracket",
@@ -2895,14 +2895,14 @@ pub const CONSOLE_NAV: &[ConsoleNavGroup] = &[
             },
         ],
     },
-    // 「出ていく側」——assay が ID を渡す相手と、相手がそれを検証するための鍵。
+    // The "outgoing" side -- parties assay passes identities to, and the keys they use to verify them.
     ConsoleNavGroup {
         label: "admin-home-group-integration",
         description: "admin-home-group-integration-desc",
         icon: "fa-cubes",
         items: &[
-            // ⚠ **アプリを先頭に置く。** 「連携先」（OIDC / SAML）は、そのアプリが**どう繋がるか**
-            //    でしかない（ADR-0054）。誰が使ってよいかを決めに来た人が最初に着くのはここ。
+            // ⚠ **Apps come first.** "Connections" (OIDC / SAML) are merely **how** an app connects
+            //    (ADR-0054). People coming to decide who may use something land here first.
             ConsoleNavItem {
                 path: "/admin/applications",
                 icon: "fa-layer-group",
@@ -2936,8 +2936,8 @@ pub const CONSOLE_NAV: &[ConsoleNavGroup] = &[
                 icon: "fa-key",
                 label: "admin-nav-signing-keys",
                 description: "admin-nav-signing-keys-desc",
-                // 署名鍵は全テナント共通で、口は root に限る（api の `require_root_tenant`）。
-                // 子テナントでは api がこのコードを行使できる一覧から落とすので、項目も消える。
+                // Signing keys are shared by all tenants and the endpoints are root-only (the api's `require_root_tenant`).
+                // In child tenants the api drops this code from the exercisable list, so the item disappears too.
                 requires: Some("idp.keys:read"),
             },
         ],
@@ -2961,8 +2961,8 @@ pub const CONSOLE_NAV: &[ConsoleNavGroup] = &[
                 description: "admin-nav-audit-desc",
                 requires: None,
             },
-            // エラー警告ログは `idp.system.admin` 必須（`api::handlers::admin_application_logs`）。
-            // 権限が無い管理者に出すと、押した先が 403 の行き止まりになる。
+            // Error/warning logs require `idp.system.admin` (`api::handlers::admin_application_logs`).
+            // Shown to admins without it, the link leads to a 403 dead end.
             ConsoleNavItem {
                 path: "/admin/logs",
                 icon: "fa-triangle-exclamation",
@@ -2984,7 +2984,7 @@ pub const CONSOLE_NAV: &[ConsoleNavGroup] = &[
                 description: "admin-nav-settings-desc",
                 requires: None,
             },
-            // テナント管理も `idp.system.admin` 必須（`api::handlers::admin_tenants`）。
+            // Tenant management also requires `idp.system.admin` (`api::handlers::admin_tenants`).
             ConsoleNavItem {
                 path: "/admin/tenants",
                 icon: "fa-building",
@@ -2996,35 +2996,35 @@ pub const CONSOLE_NAV: &[ConsoleNavGroup] = &[
     },
 ];
 
-/// 共通レイアウトのヘッダ文脈（未認証時は `None`）。
-/// 各コンソール画面テンプレートが持ち、`console/layout.html` から参照される。
+/// Header context of the shared layout (`None` when unauthenticated).
+/// Held by each console screen template and referenced from `console/layout.html`.
 pub type Admin<'a> = Option<ConsoleAdmin<'a>>;
 
-/// 管理コンソールのホーム（`GET /{tenant_id}/admin`）。
+/// Admin console home (`GET /{tenant_id}/admin`).
 #[derive(Template)]
 #[template(path = "console/home.html")]
 pub struct ConsoleHome<'a> {
     pub messages: &'a Messages,
-    /// `/{tenant_id}` プレフィクス（ADR-0009 §6）。
+    /// `/{tenant_id}` prefix (ADR-0009 §6).
     pub tenant: &'a str,
     pub admin: Admin<'a>,
-    /// `?error=csrf`（トークンの合わないログアウトから戻った。task #143）のバナー。
+    /// Banner for `?error=csrf` (returned from a logout with a mismatching token; task #143).
     pub error_key: Option<&'a str>,
 }
 
-/// 管理コンソールのログイン画面（`GET /{tenant_id}/admin/login`）。共通レイアウトには載せない。
+/// Admin console login screen (`GET /{tenant_id}/admin/login`). Not placed in the shared layout.
 #[derive(Template)]
 #[template(path = "console/login.html")]
 pub struct ConsoleLogin<'a> {
     pub messages: &'a Messages,
-    /// `/{tenant_id}` プレフィクス。パスワード忘れの導線（`/forgot-password`）の組み立てに使う。
+    /// `/{tenant_id}` prefix. Used to build the forgotten-password link (`/forgot-password`).
     pub tenant_prefix: &'a str,
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
 }
 
-/// 共通レイアウト上の告知（エラーバナー・404・戻るリンク付きメッセージ）。各コンソール画面の
-/// エラー系レスポンスで再利用する。`is_error` で `role="alert"` の付いたエラーバナー表示を切り替える。
+/// Notice on the shared layout (error banner, 404, message with a back link). Reused by each console screen's
+/// error responses. `is_error` toggles the error banner with `role="alert"`.
 #[derive(Template)]
 #[template(path = "console/notice.html")]
 pub struct ConsoleNotice<'a> {
@@ -3038,8 +3038,8 @@ pub struct ConsoleNotice<'a> {
     pub back_label: &'a str,
 }
 
-/// 監査ログ一覧（`GET /{tenant_id}/admin/audit-logs`）。フィルタ値は再入力用に展開済み文字列で渡す。
-/// ページャの前後リンク（クエリ文字列を組み立て済み）は該当がなければ `None`。
+/// Audit log list (`GET /{tenant_id}/admin/audit-logs`). Filter values are passed as expanded strings for re-entry.
+/// Pager prev/next links (with query strings already built) are `None` when not applicable.
 #[derive(Template)]
 #[template(path = "console/audit_logs.html")]
 pub struct AuditLogs<'a> {
@@ -3058,8 +3058,8 @@ pub struct AuditLogs<'a> {
     pub next_href: Option<String>,
 }
 
-/// エラー・警告ログ一覧（`GET /{tenant_id}/admin/logs`）。フィルタ値は再入力用に展開済み文字列で渡す。
-/// ページャの前後リンク（クエリ文字列を組み立て済み）は該当がなければ `None`。
+/// Error/warning log list (`GET /{tenant_id}/admin/logs`). Filter values are passed as expanded strings for re-entry.
+/// Pager prev/next links (with query strings already built) are `None` when not applicable.
 #[derive(Template)]
 #[template(path = "console/application_logs.html")]
 pub struct ApplicationLogs<'a> {
@@ -3078,7 +3078,7 @@ pub struct ApplicationLogs<'a> {
     pub next_href: Option<String>,
 }
 
-/// クライアント状況一覧（`GET /{tenant_id}/admin/status`）。
+/// Client status list (`GET /{tenant_id}/admin/status`).
 #[derive(Template)]
 #[template(path = "console/client_status.html")]
 pub struct ClientStatus<'a> {
@@ -3088,7 +3088,7 @@ pub struct ClientStatus<'a> {
     pub views: &'a [ClientStatusResponse],
 }
 
-/// 利用者の権限画面（`GET /{tenant_id}/admin/users/{id}/permissions`）。
+/// User permissions screen (`GET /{tenant_id}/admin/users/{id}/permissions`).
 #[derive(Template)]
 #[template(path = "console/users_permissions.html")]
 pub struct UsersPermissions<'a> {
@@ -3096,20 +3096,20 @@ pub struct UsersPermissions<'a> {
     pub tenant: &'a str,
     pub admin: Admin<'a>,
     pub user: &'a UserSummaryResponse,
-    /// この利用者が現在保有している権限コード。
+    /// Permission codes this user currently holds.
     pub codes: &'a [String],
-    /// いま付与できる権限コード（付与可能コードから保有済みを除いたもの）。選択肢として出す。
+    /// Permission codes grantable now (grantable codes minus those held). Shown as choices.
     pub grantable: &'a [String],
-    /// 付与可能コードの一覧を api から取得できなかったか。`true` のときは選択肢を出せないため、
-    /// 「候補が無い」との取り違えを避けて取得失敗であることを伝える。
+    /// Whether the list of grantable codes could not be fetched from the api. When `true` no choices can be shown,
+    /// so say it is a fetch failure rather than letting it be mistaken for "no candidates".
     pub available_load_failed: bool,
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
-    /// プロフィール保存の完了通知（Post/Redirect/Get で戻ったときに成功バナーを出す。MT25）。
+    /// Profile save completion notice (shows a success banner when returning via Post/Redirect/Get; MT25).
     pub saved: bool,
 }
 
-/// 利用者作成フォーム（`GET/POST /{tenant_id}/admin/users/new`、ADR-0009 §5・§6）。
+/// User creation form (`GET/POST /{tenant_id}/admin/users/new`, ADR-0009 §5, §6).
 #[derive(Template)]
 #[template(path = "console/user_form.html")]
 pub struct UserForm<'a> {
@@ -3121,11 +3121,11 @@ pub struct UserForm<'a> {
     pub email: &'a str,
     pub preferred_username: &'a str,
     pub name: &'a str,
-    /// 管理者メモ（ADR-0063）。
+    /// Admin note (ADR-0063).
     pub note: &'a str,
 }
 
-/// 利用者作成結果（`POST /{tenant_id}/admin/users/new` 成功時）。設定リンクを一度だけ表示する。
+/// User creation result (on success of `POST /{tenant_id}/admin/users/new`). Shows the setup link only once.
 #[derive(Template)]
 #[template(path = "console/user_created.html")]
 pub struct UserCreated<'a> {
@@ -3133,71 +3133,71 @@ pub struct UserCreated<'a> {
     pub tenant: &'a str,
     pub admin: Admin<'a>,
     pub email: &'a str,
-    /// 本人へ渡すワンタイムリンク（ADR-0062）。この画面でしか出ない。
+    /// One-time link to hand to the person (ADR-0062). Shown only on this screen.
     pub setup_url: &'a str,
-    /// リンクの失効時刻（RFC3339。画面で閲覧者の時刻へ描き直す）。
+    /// When the link expires (RFC3339; redrawn in the viewer's time on screen).
     pub setup_expires_at: &'a str,
 }
 
-/// アカウント一覧（`GET /{tenant_id}/admin/accounts`。人とサービスアカウント。ADR-0065）。
+/// Account list (`GET /{tenant_id}/admin/accounts`; people and service accounts; ADR-0065).
 #[derive(Template)]
 #[template(path = "console/accounts_list.html")]
 pub struct AccountsList<'a> {
     pub messages: &'a Messages,
     pub tenant: &'a str,
     pub admin: Admin<'a>,
-    /// 現在のページに含まれるアカウント（全件ではない）。
+    /// Accounts on the current page (not all of them).
     pub accounts: &'a [crate::admin_dto::AccountView],
-    /// 絞り込み後の総件数（ページング前）。
+    /// Total count after filtering (before paging).
     pub total: i64,
-    /// 現在の絞り込み語（検索ボックスの再表示用。空なら未絞り込み）。
+    /// Current filter term (to redisplay in the search box; empty means unfiltered).
     pub query: &'a str,
-    /// 現在の種別（`user` / `service_account`。空なら「すべて」）。検索のフォームが持ち回る。
+    /// Current kind (`user` / `service_account`; empty means "all"). Carried by the search form.
     pub kind: &'a str,
-    /// 種別の絞り込み（読める種別が 2 つ以上のときだけ出す）。
+    /// Kind filter (shown only when two or more kinds are readable).
     pub kind_tabs: Vec<AccountKindTab>,
-    /// 検索語を消したときの戻り先（種別は保つ）。
+    /// Where to go when the search term is cleared (keeps the kind).
     pub clear_href: String,
-    /// 人を読めるか（「利用者を作る」「ゲストを招待」を出す）。
+    /// Whether people are readable (shows "Create user" and "Invite guest").
     pub can_read_users: bool,
-    /// サービスアカウントを読めるか（「サービスアカウントを追加」を出す）。
+    /// Whether service accounts are readable (shows "Add service account").
     pub can_read_service_accounts: bool,
     pub error_key: Option<&'a str>,
     pub notice_key: Option<&'a str>,
-    /// ページャの前後リンク（クエリ文字列を組み立て済み）。該当がなければ `None`。
+    /// Pager prev/next links (with query strings already built). `None` when not applicable.
     pub prev_href: Option<String>,
     pub next_href: Option<String>,
 }
 
-/// 種別の絞り込みの 1 つ。
+/// One kind filter.
 #[derive(Debug, Clone)]
 pub struct AccountKindTab {
-    /// 翻訳キー。
+    /// Translation key.
     pub label: &'static str,
     pub href: String,
     pub active: bool,
 }
 
-/// サービスアカウント 1 件の画面（`GET /{tenant_id}/admin/service-accounts/{client_id}`。ADR-0065）。
+/// Screen for one service account (`GET /{tenant_id}/admin/service-accounts/{client_id}`; ADR-0065).
 ///
-/// 人の画面（[`MemberDetail`]）と同じ骨組み（基本 → メモ → 使えるアプリ → 管理権限 → 直す → 危険）。
+/// Same skeleton as the person screen ([`MemberDetail`]) (basics -> note -> usable apps -> admin permissions -> edit -> danger).
 #[derive(Template)]
 #[template(path = "console/service_account_detail.html")]
 pub struct ServiceAccountDetail<'a> {
     pub messages: &'a Messages,
     pub tenant: &'a str,
     pub admin: Admin<'a>,
-    /// アカウントとしての事実（状態・名乗り・メモ）。
+    /// Facts as an account (status, identity, note).
     pub account: &'a crate::admin_dto::ServiceAccountView,
-    /// 接続の設定（認証方式・種別）。
+    /// Connection settings (authentication method, kind).
     pub client: &'a ClientView,
-    /// 使えるアプリ。`idp.applications:read` を持たない管理者には引けないので `None`（欄ごと出さない）。
+    /// Usable apps. Admins without `idp.applications:read` cannot look them up, so `None` (section hidden).
     pub applications: Option<&'a crate::admin_dto::AccountApplicationListView>,
-    /// 保有している管理権限コード（ADR-0037）。
+    /// Admin permission codes held (ADR-0037).
     pub permission_codes: &'a [String],
-    /// いま付与できる権限コード（保有済みを除く）。
+    /// Permission codes grantable now (excluding held ones).
     pub grantable_permissions: &'a [String],
-    /// 付与できるコードを api から取れなかったか（「候補が無い」と取り違えないため）。
+    /// Whether grantable codes could not be fetched from the api (so it is not mistaken for "no candidates").
     pub permissions_load_failed: bool,
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
@@ -3205,12 +3205,12 @@ pub struct ServiceAccountDetail<'a> {
 }
 
 impl ServiceAccountDetail<'_> {
-    /// メモ欄の例文の翻訳キー（種別に合った例を出す）。
+    /// Translation key of the note field's example text (shows an example matching the kind).
     pub fn note_placeholder_key(&self) -> &'static str {
         "admin-service-account-note-placeholder"
     }
 
-    /// このサービスアカウントの画面の URL。共通のメモ・アプリの欄（`account_*_card.html`）の送り先はここから作る。
+    /// URL of this service account's screen. Targets of the shared note/app sections (`account_*_card.html`) are built from it.
     pub fn account_href(&self) -> String {
         format!(
             "{}/admin/service-accounts/{}",
@@ -3218,12 +3218,12 @@ impl ServiceAccountDetail<'_> {
         )
     }
 
-    /// 管理者メモの送り先。
+    /// Target of the admin note.
     pub fn note_action(&self) -> String {
         format!("{}/note", self.account_href())
     }
 
-    /// アプリの割り当ての出し入れの送り先（`verb` は `assign` / `unassign`）。
+    /// Target for assigning/unassigning apps (`verb` is `assign` / `unassign`).
     pub fn assignment_action(&self, application_id: &str, verb: &str) -> String {
         format!(
             "{}/applications/{application_id}/{verb}",
@@ -3232,15 +3232,15 @@ impl ServiceAccountDetail<'_> {
     }
 }
 
-/// メンバー 1 人の画面（`GET /{tenant_id}/admin/members/{user_id}`）。
+/// Screen for one member (`GET /{tenant_id}/admin/members/{user_id}`).
 ///
-/// ⚠ **一覧は「探す・状態を見る」だけにし、操作はここへ集める。** 一覧の 1 セルへ 7 つの
-/// ボタンを並べていた頃は、操作列 168px にボタンが縦 7 段に積まれ、幅の広いものは右端で
-/// 切れていた（行の高さ 282px）。**7 つを 1 セルに収める前提そのものが無理だった。**
+/// ⚠ **The list is only for "finding and viewing state"; operations are gathered here.** When one list cell
+/// held 7 buttons, they stacked 7 high in the 168px action column and wide ones were cut off at the right
+/// (row height 282px). **The very premise of fitting 7 into one cell was impossible.**
 ///
-/// ここでは操作を重さで 3 段に分ける ——見る（移動するだけ）／直す（やり直せる）／
-/// ⚠ **戻せない**（削除・解除）。一覧では全部が同じ大きさの並びで、
-/// 「権限を見る」と「削除」が同じ重さに見えていた。
+/// Here operations are split into 3 tiers by weight -- view (just navigates) / edit (can be redone) /
+/// ⚠ **irreversible** (delete, remove). In the list everything was the same size, and
+/// "View permissions" looked as weighty as "Delete".
 #[derive(Template)]
 #[template(path = "console/member_detail.html")]
 pub struct MemberDetail<'a> {
@@ -3248,10 +3248,10 @@ pub struct MemberDetail<'a> {
     pub tenant: &'a str,
     pub admin: Admin<'a>,
     pub member: &'a crate::admin_dto::MemberView,
-    /// このメンバーが使えるアプリ（ADR-0063）。`idp.applications:read` を持たない管理者には
-    /// 引けないので `None`（欄ごと出さない）。
+    /// Apps this member can use (ADR-0063). Admins without `idp.applications:read` cannot
+    /// look them up, so `None` (section hidden).
     pub applications: Option<&'a crate::admin_dto::AccountApplicationListView>,
-    /// いま有効な refresh token の本数（task #83）。ゲストと、引けなかったときは `None`（出さない）。
+    /// Number of currently valid refresh tokens (task #83). `None` for guests and when not fetched (hidden).
     pub active_tokens: Option<&'a crate::admin_dto::UserActiveTokensView>,
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
@@ -3259,22 +3259,22 @@ pub struct MemberDetail<'a> {
 }
 
 impl MemberDetail<'_> {
-    /// メモ欄の例文の翻訳キー（種別に合った例を出す）。
+    /// Translation key of the note field's example text (shows an example matching the kind).
     pub fn note_placeholder_key(&self) -> &'static str {
         "admin-member-note-placeholder"
     }
 
-    /// この人の画面の URL。共通のメモ・アプリの欄（`account_*_card.html`）の送り先はここから作る。
+    /// URL of this person's screen. Targets of the shared note/app sections (`account_*_card.html`) are built from it.
     pub fn account_href(&self) -> String {
         format!("{}/admin/members/{}", self.tenant, self.member.user_id)
     }
 
-    /// 管理者メモの送り先。
+    /// Target of the admin note.
     pub fn note_action(&self) -> String {
         format!("{}/note", self.account_href())
     }
 
-    /// アプリの割り当ての出し入れの送り先（`verb` は `assign` / `unassign`）。
+    /// Target for assigning/unassigning apps (`verb` is `assign` / `unassign`).
     pub fn assignment_action(&self, application_id: &str, verb: &str) -> String {
         format!(
             "{}/applications/{application_id}/{verb}",
@@ -3283,25 +3283,25 @@ impl MemberDetail<'_> {
     }
 }
 
-/// 管理者によるパスワード再発行の結果画面（一度限りの生成パスワード表示。ADR-0009 §5）。
-/// メンバー一覧（HOME 利用者）とテナント管理（子テナント管理者）の双方から使う。
+/// Result screen of an admin password reissue (shows the one-time generated password; ADR-0009 §5).
+/// Used from both the member list (HOME users) and tenant management (child tenant admins).
 #[derive(Template)]
 #[template(path = "console/password_reset_result.html")]
 pub struct PasswordResetResult<'a> {
     pub messages: &'a Messages,
     pub tenant: &'a str,
     pub admin: Admin<'a>,
-    /// 対象の表示（メールアドレス等）。
+    /// Display of the target (email address etc.).
     pub subject: &'a str,
-    /// 本人へ渡すワンタイムリンク（ADR-0062）。
+    /// One-time link to hand to the person (ADR-0062).
     pub setup_url: &'a str,
     pub setup_expires_at: &'a str,
     pub back_href: &'a str,
-    /// 戻りリンクの文言キー。
+    /// Message key of the back link.
     pub back_label_key: &'a str,
 }
 
-/// ゲスト招待フォーム（`GET/POST /{tenant_id}/admin/invitations`、ADR-0009 §3）。
+/// Guest invitation form (`GET/POST /{tenant_id}/admin/invitations`, ADR-0009 §3).
 #[derive(Template)]
 #[template(path = "console/invitation_form.html")]
 pub struct InvitationForm<'a> {
@@ -3310,11 +3310,11 @@ pub struct InvitationForm<'a> {
     pub admin: Admin<'a>,
     pub csrf: &'a str,
     pub error: Option<&'a str>,
-    /// 入力された相手（メールアドレス、または内部 ID）。失敗時に打ち直させないため差し戻す。
+    /// The entered invitee (email address or internal ID). Returned on failure so it need not be retyped.
     pub invitee: &'a str,
 }
 
-/// ゲスト招待作成結果（`POST /{tenant_id}/admin/invitations` 成功時）。招待トークンを一度だけ表示する。
+/// Guest invitation result (on success of `POST /{tenant_id}/admin/invitations`). Shows the invitation token only once.
 #[derive(Template)]
 #[template(path = "console/invitation_created.html")]
 pub struct InvitationCreated<'a> {
@@ -3323,25 +3323,25 @@ pub struct InvitationCreated<'a> {
     pub admin: Admin<'a>,
     pub token: &'a str,
     pub expires_at: &'a str,
-    /// 招待メール（承諾リンク）を送信できたか（MT17）。false ならトークンの手動伝達を促す。
+    /// Whether the invitation email (accept link) could be sent (MT17). If false, prompts manual delivery of the token.
     pub email_sent: bool,
-    /// メールアドレスで招いたときだけ（内部 ID で招いたときは出さない。task #591）。
+    /// Only when invited by email address (not shown when invited by internal ID; task #591).
     pub invitee_email: Option<&'a str>,
 }
 
-/// パスワードリセット要求画面（`GET/POST /{tenant_id}/forgot-password`。MT18）。未ログイン経路。
-/// 要求受理後はアカウントの有無を問わず同じ完了文言を表示する（列挙防止）。
+/// Password reset request screen (`GET/POST /{tenant_id}/forgot-password`; MT18). Logged-out route.
+/// After accepting a request, the same completion text is shown whether or not the account exists (prevents enumeration).
 #[derive(Template)]
 #[template(path = "forgot_password.html")]
 pub struct ForgotPassword<'a> {
     pub messages: &'a Messages,
-    /// 要求を受理した後の完了表示。
+    /// Completion display after the request is accepted.
     pub accepted: bool,
     pub error_key: Option<&'a str>,
 }
 
-/// パスワード再設定画面（`GET/POST /{tenant_id}/password-reset?token=...`。MT18）。
-/// リセットメールのリンクから開く。
+/// Password reset screen (`GET/POST /{tenant_id}/password-reset?token=...`; MT18).
+/// Opened from the link in the reset email.
 #[derive(Template)]
 #[template(path = "password_reset.html")]
 pub struct PasswordReset<'a> {
@@ -3353,85 +3353,85 @@ pub struct PasswordReset<'a> {
     pub error_key: Option<&'a str>,
 }
 
-/// 招待承諾画面（`GET/POST /{tenant_id}/invitations/accept`。MT17）。被招待者本人が招待メールの
-/// リンクから開く。共通レイアウト（管理コンソール）には載せない。
+/// Invitation acceptance screen (`GET/POST /{tenant_id}/invitations/accept`; MT17). Opened by the invitee from
+/// the link in the invitation email. Not placed in the shared (admin console) layout.
 #[derive(Template)]
 #[template(path = "invitation_accept.html")]
 pub struct InvitationAccept<'a> {
     pub messages: &'a Messages,
-    /// 承諾フォームを表示するか（SSO ログイン済みのときのみ true）。
+    /// Whether to show the acceptance form (true only when signed in via SSO).
     pub show_form: bool,
     pub token: &'a str,
     pub csrf: &'a str,
-    /// 承諾に成功したか（成功画面表示）。
+    /// Whether acceptance succeeded (shows the success screen).
     pub success: bool,
     pub error_key: Option<&'a str>,
 }
 
-/// メール検証画面（`GET/POST /{tenant_id}/verify-email?token=...`。SEC6b）。自己登録の確認メールの
-/// リンクから開く。GET は確認ボタン（POST でトークンを消費）を表示し、リンクのプリフェッチで
-/// トークンを消費しないようにする。未ログイン経路（SSO 不要）。
+/// Email verification screen (`GET/POST /{tenant_id}/verify-email?token=...`; SEC6b). Opened from the link in
+/// the self-registration confirmation email. GET shows a confirm button (POST consumes the token) so that
+/// link prefetching does not consume the token. Logged-out route (no SSO needed).
 #[derive(Template)]
 #[template(path = "verify_email.html")]
 pub struct VerifyEmail<'a> {
     pub messages: &'a Messages,
-    /// 確認フォーム（POST ボタン）を表示するか（トークンがあるとき true）。
+    /// Whether to show the confirmation form (POST button) (true when there is a token).
     pub show_form: bool,
     pub token: &'a str,
-    /// 検証に成功したか（成功画面表示）。
+    /// Whether verification succeeded (shows the success screen).
     pub success: bool,
     pub error_key: Option<&'a str>,
 }
 
-/// クライアント登録・編集フォームの入力値（新規/再表示の両方で使う）。テンプレートの再入力欄へ
-/// そのまま流し込む。`redirect_uris` は 1 行 1 URI、`scopes` は空白区切りの生文字列。
+/// Input values of the client registration/edit form (used for both new and redisplay). Fed as is into the
+/// template's re-entry fields. `redirect_uris` is one URI per line; `scopes` is a raw space-separated string.
 pub struct ClientFormValues {
     pub app_name: String,
     pub client_type: String,
     pub redirect_uris: String,
     pub scopes: String,
     pub client_status: String,
-    /// クライアントの用途（`client_usage` のいずれか）。画面ではこれを最初に選ばせ、以降の入力欄を
-    /// 切り替える。api はこの値を持たず、`redirect_uris` の有無と `client_credentials` の可否という
-    /// 2 つの値で同じことを表す（ADR-0032）。
+    /// The client's usage (one of `client_usage`). The screen asks for this first and switches the following
+    /// fields. The api has no such value; it expresses the same thing with two values: whether there are
+    /// `redirect_uris` and whether `client_credentials` is allowed (ADR-0032).
     pub usage: String,
-    /// クライアント認証方式（G3）。confidential のみ選択でき、public は常に `none`。
+    /// Client authentication method (G3). Selectable only for confidential; public is always `none`.
     pub token_endpoint_auth_method: String,
-    /// `private_key_jwt` の検証鍵（JWK Set の JSON。ADR-0030）。公開鍵しか含まないため、
-    /// 編集フォームへ現在値を出して差し支えない（ローテーション中の確認に要る）。
+    /// Verification keys for `private_key_jwt` (JWK Set JSON; ADR-0030). Contains only public keys, so
+    /// showing the current value in the edit form is fine (needed to check during rotation).
     pub jwks: String,
-    /// 管理者メモ（ADR-0065）。**サービスアカウントの新規登録でだけ**描く。連携先はアカウントでは
-    /// ないのでメモを持たず、登録後のメモは 1 件の画面で書く。
+    /// Admin note (ADR-0065). Rendered **only when registering a new service account**. Connected apps are not
+    /// accounts and have no note; notes after registration are written on the single-item screen.
     pub note: String,
 }
 
-/// クライアントの用途。コンソールの入力単位であって、api のモデルには無い（ADR-0032）。
+/// The client's usage. A console input unit, not part of the api's model (ADR-0032).
 ///
-/// 「redirect_uri を持つか」「`client_credentials` を許すか」は独立した 2 値だが、管理者が実際に
-/// 決めたいのは「何に使うクライアントか」1 つである。2 値のまま見せると、両方を空にした
-/// 何もできないクライアントや、ブラウザから使わないのに URI を捏造した登録が生まれる。
+/// "Has a redirect_uri" and "allows `client_credentials`" are two independent values, but what admins actually
+/// want to decide is one thing: "what is this client for". Exposing the two values yields clients with both
+/// empty that can do nothing, or registrations with fabricated URIs that are never used from a browser.
 pub mod client_usage {
-    /// ブラウザで利用者をログインさせる（authorization_code）。
+    /// Signs users in via a browser (authorization_code).
     pub const USER_LOGIN: &str = "user_login";
-    /// システムが API を呼ぶ（client_credentials）。利用者が不在なので redirect_uri を持たない。
+    /// A system calls the API (client_credentials). No user is present, so no redirect_uri.
     pub const SYSTEM: &str = "system";
 }
 
 impl ClientFormValues {
-    /// この scope が選ばれているか（テンプレートのチェック状態）。
+    /// Whether this scope is selected (the template's checked state).
     ///
-    /// 空白区切りの保持形を分解して照合する。部分一致で見ないのは、`profile` が
-    /// 将来の `profile_extended` のような値に引っかかると、選んでいない欄が
-    /// 選ばれて見えるためである。
+    /// Matches against the split space-separated stored form. No substring match, because `profile`
+    /// would match a future value like `profile_extended`, making an unselected field
+    /// appear selected.
     pub fn has_scope(&self, scope: &str) -> bool {
         self.scopes.split_whitespace().any(|s| s == scope)
     }
 
-    /// 新規登録フォームの初期値（confidential・PKCE 必須・openid スコープ）。
+    /// Initial values of the new registration form (confidential, PKCE required, openid scope).
     ///
-    /// 認証方式の既定は `private_key_jwt`。共有シークレットは IdP 側にも保存され、クライアント側の
-    /// 設定ファイルにも置かれ、要求ごとにネットワークを流れる（ADR-0030）。**既定は、選ぶ人が
-    /// 何も考えなかったときに置かれる値**なので、そこを安全な側にしておく。
+    /// The default authentication method is `private_key_jwt`. A shared secret is stored on the IdP side, placed in
+    /// the client's config file, and travels over the network on every request (ADR-0030). **The default is
+    /// the value set when the chooser did not think about it**, so keep it on the safe side.
     pub fn default_new() -> Self {
         Self {
             app_name: String::new(),
@@ -3446,7 +3446,7 @@ impl ClientFormValues {
         }
     }
 
-    /// 既存クライアントから編集フォームの初期値を作る（URI は改行区切り、scope は空白区切り）。
+    /// Builds the edit form's initial values from an existing client (URIs newline-separated, scopes space-separated).
     pub fn from_client(c: &ClientView) -> Self {
         Self {
             app_name: c.app_name.clone(),
@@ -3454,7 +3454,7 @@ impl ClientFormValues {
             redirect_uris: c.redirect_uris.join("\n"),
             scopes: c.scopes.join(" "),
             client_status: c.client_status.clone(),
-            // 用途の真の出所は api が返す登録内容（G4）。フォームはその写しを表示する。
+            // The true source of the usage is the registration returned by the api (G4). The form shows a copy of it.
             usage: usage_from_registration(&c.grant_types, &c.redirect_uris),
             token_endpoint_auth_method: c.token_endpoint_auth_method.clone(),
             jwks: c.jwks.clone().unwrap_or_default(),
@@ -3463,15 +3463,15 @@ impl ClientFormValues {
     }
 }
 
-/// 登録済みの内容から画面上の用途を決める。
+/// Decides the on-screen usage from the registered content.
 ///
-/// システム用は「`client_credentials` を持ち、かつ redirect_uri を持たない」もの。
-/// `client_credentials` の有無だけで決めないのは、**用途で表せない登録を URI を残す側へ寄せる**ため。
-/// 「両方」の姿（`authorization_code` + `client_credentials` + redirect_uri）は api が登録・更新の
-/// どちらでも拒むので作れないが（ADR-0032 Revised）、DB を直接触るなどして存在した場合に
-/// システム用と読むと、redirect_uri の欄を隠したまま保存させ、表示もしていない登録済み
-/// リダイレクト先を黙って全消しする（＝稼働中のログインが `unauthorized_client` で止まる）。
-/// この読みなら、保存しても api が `api-client-usage-conflict` で断るだけで済む。
+/// System means "has `client_credentials` and has no redirect_uri".
+/// Not deciding by `client_credentials` alone **leans registrations not expressible as a usage toward keeping URIs**.
+/// The "both" shape (`authorization_code` + `client_credentials` + redirect_uri) cannot be created because the api
+/// rejects it on both create and update (ADR-0032 Revised), but if it existed (e.g. via direct DB edits),
+/// reading it as system would let it be saved with the redirect_uri field hidden, silently erasing all
+/// registered redirect targets not even shown (= running logins stop with `unauthorized_client`).
+/// With this reading, saving merely gets refused by the api with `api-client-usage-conflict`.
 fn usage_from_registration(grant_types: &[String], redirect_uris: &[String]) -> String {
     if grant_types.iter().any(|g| g == "client_credentials") && redirect_uris.is_empty() {
         client_usage::SYSTEM
@@ -3481,11 +3481,11 @@ fn usage_from_registration(grant_types: &[String], redirect_uris: &[String]) -> 
     .to_string()
 }
 
-/// 外部 IdP の一覧（`GET /{tenant_id}/admin/external-idps`。AP16。API は AP10）。
+/// External IdP list (`GET /{tenant_id}/admin/external-idps`; AP16; the API is AP10).
 ///
-/// **登録フォームはこの画面に置かない。** プロトコル（OIDC / SAML）で必要な項目がまったく違い、
-/// 1 枚のフォームに両方を並べると「いま何を登録しているのか」が読み取れない。入口でプロトコルを
-/// 選ばせ、以降はそのプロトコルの画面だけを見せる（ADR-0038 が用途で登録を分けたのと同じ形）。
+/// **The registration form is not on this screen.** The fields required differ completely by protocol (OIDC / SAML),
+/// and putting both in one form makes "what am I registering now" unreadable. The entry point asks for the
+/// protocol, and from then on only that protocol's screen is shown (same shape as ADR-0038 splitting registration by usage).
 #[derive(Template)]
 #[template(path = "console/external_idps.html")]
 pub struct ExternalIdpsConsole<'a> {
@@ -3499,10 +3499,10 @@ pub struct ExternalIdpsConsole<'a> {
     pub error_key: Option<&'a str>,
 }
 
-/// 登録するプロトコルの選択（`GET /{tenant_id}/admin/external-idps/new`）。
+/// Choosing the protocol to register (`GET /{tenant_id}/admin/external-idps/new`).
 ///
-/// ここが登録の入口である。OIDC と SAML は「同じものの設定違い」ではなく、相手から何を受け取り
-/// 何で真正性を確かめるかが別なので、先に決めてもらう。
+/// This is the registration entry point. OIDC and SAML are not "different settings of the same thing": what is
+/// received from the counterpart and how authenticity is checked differ, so this is decided first.
 #[derive(Template)]
 #[template(path = "console/external_idp_choose.html")]
 pub struct ExternalIdpProtocolChoice<'a> {
@@ -3511,11 +3511,11 @@ pub struct ExternalIdpProtocolChoice<'a> {
     pub admin: Admin<'a>,
 }
 
-/// 外部 IdP の登録・編集フォーム（`GET /{tenant_id}/admin/external-idps/new/{protocol}` および
-/// `GET /{tenant_id}/admin/external-idps/{id}/edit`）。
+/// External IdP registration/edit form (`GET /{tenant_id}/admin/external-idps/new/{protocol}` and
+/// `GET /{tenant_id}/admin/external-idps/{id}/edit`).
 ///
-/// **プロトコルは画面に入る前に決まっている。** 新規は URL が、編集は登録済みの値が決めるため、
-/// フォームの中に選択肢は無い（登録後のプロトコル変更は api も拒否する）。
+/// **The protocol is decided before entering the screen.** For new ones the URL decides, for edits the registered
+/// value, so there is no choice in the form (the api also rejects changing the protocol after registration).
 #[derive(Template)]
 #[template(path = "console/external_idp_form.html")]
 pub struct ExternalIdpFormPage<'a> {
@@ -3523,55 +3523,55 @@ pub struct ExternalIdpFormPage<'a> {
     pub tenant: &'a str,
     pub admin: Admin<'a>,
     pub csrf: &'a str,
-    /// 編集対象の id（`None` は新規登録）。
+    /// id of the edit target (`None` means new registration).
     pub editing: Option<&'a str>,
-    /// フォームの初期値（編集時は対象の現在値、新規は既定値）。
+    /// Initial form values (the target's current values when editing, defaults when new).
     pub values: &'a ExternalIdpFormValues,
-    /// メタデータ取り込みでフォームに初期値が入った直後か（AP12）。
+    /// Whether initial values were just filled in by metadata import (AP12).
     pub imported: bool,
     pub error_key: Option<&'a str>,
 }
 
-/// 外部 IdP 設定フォームの値（往復用）。可変長の値（`scopes`・SAML の証明書）は 1 つの
-/// 文字列で保持する（scope は空白区切り、証明書は空行区切り）。
+/// Values of the external IdP settings form (round-tripped). Variable-length values (`scopes`, SAML certificates)
+/// are held as one string (scopes space-separated, certificates separated by blank lines).
 ///
-/// **プロトコルで使う欄が変わるが、構造体は 1 つにする。** OIDC 用と SAML 用に分けても、
-/// 画面が持ち回る値の形は変わらない（プロトコルは画面に入る前に決まっており、取り違えは
-/// 起きない）。妥当な組み合わせの判断は api（`ExternalIdpConfig`）が単一の出所として持つ。
+/// **Fields used vary by protocol, but there is one struct.** Splitting into OIDC and SAML structs would not
+/// change the shape of the values the screen carries (the protocol is fixed before the screen, so no mix-up
+/// occurs). The api (`ExternalIdpConfig`) is the single source for judging valid combinations.
 #[derive(Debug, Clone)]
 pub struct ExternalIdpFormValues {
     pub provider_code: String,
     pub display_name: String,
-    /// `oidc` / `saml`。登録後は変更できない（api が拒否する。既存の連携が別プロトコルの
-    /// 識別子を指したまま残るため）。
+    /// `oidc` / `saml`. Cannot be changed after registration (the api rejects it, because existing links would
+    /// keep pointing at identifiers of another protocol).
     pub protocol: String,
     pub issuer: String,
     pub authorization_endpoint: String,
     pub token_endpoint: String,
     pub jwks_uri: String,
     pub client_id: String,
-    /// シークレットは api が返さないため値は持たない。**設定済みかどうか**だけを画面へ渡し、
-    /// 編集時の空欄は「変更しない」を意味する（空欄を削除と解釈すると、他の項目を直しただけで
-    /// 連携が壊れる）。
+    /// The api does not return secrets, so no value is held. Only **whether it is set** is passed to the screen;
+    /// a blank field on edit means "unchanged" (interpreting blank as delete would break the link merely
+    /// by fixing another field).
     pub has_client_secret: bool,
     pub scopes: String,
-    /// SAML: IdP の `SingleSignOnService` URL。
+    /// SAML: the IdP's `SingleSignOnService` URL.
     pub saml_sso_url: String,
-    /// SAML: 署名検証に使う証明書。空行区切りで複数書ける（証明書更新期間は新旧 2 枚が同時に有効）。
+    /// SAML: certificates for signature verification. Several can be written separated by blank lines (during rotation old and new are both valid).
     pub saml_certificates: String,
     pub saml_name_id_format: String,
     pub enabled: bool,
     pub allow_auto_link: bool,
 }
 
-/// チェックボックスで選ばせる scope。`openid` は ID Token を得るために必ず要る（外せない）ので
-/// 含めない —— 選べない項目を選択肢に並べると、外せるように見える。
+/// Scopes chosen via checkboxes. `openid` is always required to get an ID Token (cannot be removed), so it is
+/// not included -- listing an unchoosable item as a choice makes it look removable.
 ///
-/// **ここだけを増やしても選択肢は増えない。** チェックボックスの `name`（`scope_*`）は
-/// `console/external_idp_form.html` に、送信値の組み立ては
-/// `handlers::admin_external_idps_console::selected_scopes` にそれぞれ直接書いてある。片方だけ
-/// 足すと、その scope は自由入力欄から除かれるのにチェックボックスも無い状態になり、**保存の
-/// たびに黙って落ちる**。増やすときは 3 か所を揃える。
+/// **Adding here alone does not add a choice.** The checkbox `name` (`scope_*`) is written directly in
+/// `console/external_idp_form.html`, and building the submitted value in
+/// `handlers::admin_external_idps_console::selected_scopes`. Adding to only one
+/// removes the scope from the free-text field without a checkbox, so it is **silently dropped on every
+/// save**. When adding, align all 3 places.
 pub const EXTERNAL_IDP_OPTIONAL_SCOPES: [&str; 2] = ["profile", "email"];
 
 impl ExternalIdpFormValues {
@@ -3579,18 +3579,18 @@ impl ExternalIdpFormValues {
         self.protocol == "saml"
     }
 
-    /// この scope が選ばれているか（テンプレートのチェック状態）。空白区切りの保持形を分解して
-    /// 照合する。部分一致で見ないのは、`email` が相手方の `email_verified` のような値に
-    /// 引っかかると、選んでいない欄が選ばれて見えるためである。
+    /// Whether this scope is selected (the template's checked state). Matches against the split
+    /// space-separated stored form. No substring match, because `email` would match the counterpart's
+    /// values like `email_verified`, making an unselected field appear selected.
     pub fn has_scope(&self, scope: &str) -> bool {
         self.scopes.split_whitespace().any(|s| s == scope)
     }
 
-    /// チェックボックスに無い scope（空白区切り）。
+    /// Scopes not in the checkboxes (space-separated).
     ///
-    /// **外部 IdP へ要求する scope は相手が定義する**ので、選択肢を固定値に閉じてはいけない
-    /// （`groups`・`User.Read` のような相手固有の値がある）。よく使う 2 つをチェックボックスに
-    /// 出し、それ以外はこの欄で受ける。`openid` は常に付くので、ここには出さない。
+    /// **Scopes requested from an external IdP are defined by the counterpart**, so choices must not be closed to fixed
+    /// values (there are counterpart-specific values like `groups`, `User.Read`). The two common ones are
+    /// checkboxes; the rest go in this field. `openid` is always added, so it is not shown here.
     pub fn extra_scopes(&self) -> String {
         self.scopes
             .split_whitespace()
@@ -3612,19 +3612,19 @@ impl Default for ExternalIdpFormValues {
             jwks_uri: String::new(),
             client_id: String::new(),
             has_client_secret: false,
-            // OIDC の最小構成。api の既定値と同じ。
+            // Minimal OIDC configuration. Same as the api defaults.
             scopes: "openid profile email".to_string(),
             saml_sso_url: String::new(),
             saml_certificates: String::new(),
             saml_name_id_format: String::new(),
             enabled: true,
-            // 自動連携は既定 OFF（検証済みメール一致だけで既存アカウントへ入れる設定のため）。
+            // Auto-linking is OFF by default (it lets a verified-email match alone enter an existing account).
             allow_auto_link: false,
         }
     }
 }
 
-/// ログイン識別子の管理画面（`GET /{tenant_id}/admin/users/{user_id}/login-identifiers`。AP16。API は AP8）。
+/// Login identifier management screen (`GET /{tenant_id}/admin/users/{user_id}/login-identifiers`; AP16; the API is AP8).
 #[derive(Template)]
 #[template(path = "console/login_identifiers.html")]
 pub struct LoginIdentifiersConsole<'a> {
@@ -3639,64 +3639,64 @@ pub struct LoginIdentifiersConsole<'a> {
     pub notice_key: Option<&'a str>,
 }
 
-/// 一覧の 1 行。種別の訳文はハンドラ側で解決して渡す（テンプレートで翻訳キーを組み立てない）。
+/// One list row. The kind's translated label is resolved by the handler (templates do not build translation keys).
 pub struct LoginIdentifierRow<'a> {
-    /// 登録簿の行 id。`None` は主たる識別子（合成行）で、識別子単位の操作ができない。
+    /// Registry row id. `None` is the primary identifier (synthetic row), which has no per-identifier operations.
     pub id: Option<&'a str>,
-    /// 種別コード（`email` 等）。訳文と別に持つのは、主メールへの昇格ボタンを**メール種別の
-    /// 行にだけ**出すため。訳文で判定すると、言語を変えたとたんにボタンが消える。
+    /// Kind code (`email` etc.). Held separately from the label so the promote-to-primary-email button is shown
+    /// **only on email-type rows**. Deciding by the label would make the button vanish when the language changes.
     pub identifier_type: &'a str,
     pub type_label: String,
     pub display_value: &'a str,
     pub normalized_value: &'a str,
     pub is_active: bool,
     pub is_primary: bool,
-    /// 主メールアドレスの行か（ADR-0050）。主識別子と同じく、個別の操作の対象にならない。
+    /// Whether this is the primary email address row (ADR-0050). Like the primary identifier, not subject to individual operations.
     pub is_primary_email: bool,
 }
 
-/// 追加フォームの種別プルダウンの選択肢。
+/// Choices of the kind dropdown in the add form.
 pub struct LoginIdentifierTypeOption<'a> {
     pub code: &'a str,
     pub label: String,
 }
 
-/// `response_mode=form_post` の認可応答ページ（G12）。認可コードを URL ではなくフォーム本文で
-/// RP へ渡す。描画の判断は [`crate::authorization_response`] に集約してある。
+/// Authorization response page for `response_mode=form_post` (G12). Passes the authorization code to the RP in the
+/// form body instead of the URL. Rendering decisions are consolidated in [`crate::authorization_response`].
 #[derive(Template)]
 #[template(path = "authorization_post.html")]
 pub struct AuthorizationPost<'a> {
     pub messages: &'a Messages,
-    /// フォームの送信先（`redirect_uri`。認可応答のパラメータは載っていない）。
+    /// Form target (`redirect_uri`; it carries no authorization response parameters).
     pub action: &'a str,
-    /// hidden フィールド（`code` / `state`、またはエラー）。値はテンプレートが自動エスケープする。
+    /// Hidden fields (`code` / `state`, or an error). Values are auto-escaped by the template.
     pub fields: &'a [(String, String)],
 }
 
-/// クライアント一覧（`GET /{tenant_id}/admin/clients`）。
+/// Client list (`GET /{tenant_id}/admin/clients`).
 #[derive(Template)]
 #[template(path = "console/clients_list.html")]
 pub struct ClientsList<'a> {
     pub messages: &'a Messages,
     pub tenant: &'a str,
     pub admin: Admin<'a>,
-    /// 一覧の見出し。連携先（OIDC）とサービスアカウントで同じテンプレートを使い分ける（ADR-0038）。
+    /// List heading. The same template serves connected apps (OIDC) and service accounts (ADR-0038).
     pub title: String,
-    /// 「新規登録」ボタンの文言と遷移先。用途はこの入口で決まる。
+    /// Text and target of the "New" button. The usage is decided at this entry.
     pub new_label: String,
     pub new_href: String,
-    /// 1 件も無いときの文言。系統によって「まだ登録されていない」の意味が違う。
+    /// Text when there are none. "Nothing registered yet" means different things per family.
     pub none_label: String,
-    /// 現在のページに含まれるクライアント（G7 でページングを導入。全件ではない）。
+    /// Clients on the current page (paging introduced in G7; not all of them).
     pub clients: &'a [ClientView],
-    /// ページング前の総件数。「全 N 件」の表示に使う。
+    /// Total count before paging. Used for the "N total" display.
     pub total: i64,
-    /// ページャの前後リンク（クエリ文字列を組み立て済み）。該当がなければ `None`。
+    /// Pager prev/next links (with query strings already built). `None` when not applicable.
     pub prev_href: Option<String>,
     pub next_href: Option<String>,
 }
 
-/// クライアント登録・編集フォーム（`is_new` で新規/編集を切り替える）。
+/// Client registration/edit form (`is_new` switches new/edit).
 #[derive(Template)]
 #[template(path = "console/client_form.html")]
 pub struct ClientForm<'a> {
@@ -3709,11 +3709,11 @@ pub struct ClientForm<'a> {
     pub action: &'a str,
     pub is_new: bool,
     pub values: &'a ClientFormValues,
-    /// 戻り先の一覧（ADR-0038 でクライアント一覧が系統ごとに分かれたため、固定にできない）。
+    /// The list to return to (since ADR-0038 split the client list per family, it cannot be fixed).
     pub list_href: String,
 }
 
-/// クライアント詳細（`GET /{tenant_id}/admin/clients/{id}`）。
+/// Client detail (`GET /{tenant_id}/admin/clients/{id}`).
 #[derive(Template)]
 #[template(path = "console/client_detail.html")]
 pub struct ClientDetail<'a> {
@@ -3722,30 +3722,30 @@ pub struct ClientDetail<'a> {
     pub admin: Admin<'a>,
     pub client: &'a ClientView,
     pub csrf: &'a str,
-    /// このクライアントが現在保有している管理権限コード（ADR-0037）。
+    /// Admin permission codes this client currently holds (ADR-0037).
     pub permission_codes: &'a [String],
-    /// いま付与できる権限コード（クライアントへ付与可能なコードから保有済みを除いたもの）。
+    /// Permission codes grantable now (codes grantable to clients minus those held).
     pub grantable_permissions: &'a [String],
-    /// 付与可能コードを api から取得できなかったか。`true` のときは選択肢を出せないため、
-    /// 「候補が無い」との取り違えを避けて取得失敗であることを伝える。
+    /// Whether grantable codes could not be fetched from the api. When `true` no choices can be shown,
+    /// so say it is a fetch failure rather than letting it be mistaken for "no candidates".
     pub permissions_load_failed: bool,
-    /// 管理権限の区画を出すか。**システム用クライアント（`client_credentials` が使える）か、
-    /// 既に権限を保有している場合だけ**出す。ブラウザログイン用クライアントに付けても
-    /// 管理トークンを取る手段が無く、効かない操作を見せることになる（ADR-0037）。
+    /// Whether to show the admin permissions section. Shown **only for system clients (able to use `client_credentials`)
+    /// or when permissions are already held**. Granting to a browser-login client is useless since it has
+    /// no way to obtain an admin token, so it would show operations that have no effect (ADR-0037).
     pub shows_permissions: bool,
-    /// 付与フォームを出すか。**システム用クライアントのときだけ** true。剥奪（`shows_permissions`）
-    /// と分けるのは、権限が残っているだけのブラウザログイン用クライアントに対して、効かない権限を
-    /// 新たに足せてしまうのを防ぐため（ADR-0037）。
+    /// Whether to show the grant form. true **only for system clients**. Separated from revocation (`shows_permissions`)
+    /// to prevent newly adding ineffective permissions to a browser-login client that merely has
+    /// leftover permissions (ADR-0037).
     pub shows_grant_form: bool,
     pub error_key: Option<&'a str>,
-    /// 戻り先の一覧（ADR-0038）。登録内容から決まる系統の一覧へ戻す。
+    /// The list to return to (ADR-0038). Returns to the family's list determined by the registration.
     pub list_href: String,
-    /// 宛先（`aud`）の案内を出すか。**システム用クライアントのときだけ**。どの宛名のトークンを
-    /// 取ってよいかは、宛名を名乗るアプリの「使う主体」で決める（ADR-0059 の決定 6）。
+    /// Whether to show audience (`aud`) guidance. **Only for system clients.** Which audience's tokens may be
+    /// taken is decided by the "users" of the app claiming that audience (ADR-0059 decision 6).
     pub shows_resources: bool,
 }
 
-/// secret 表示画面（作成直後・再発行直後。`secret` が `None` なら public で秘密なし）。
+/// Secret display screen (right after creation/reissue; if `secret` is `None`, it is public with no secret).
 #[derive(Template)]
 #[template(path = "console/client_secret.html")]
 pub struct ClientSecret<'a> {
@@ -3755,11 +3755,11 @@ pub struct ClientSecret<'a> {
     pub heading: &'a str,
     pub client_id: &'a str,
     pub secret: Option<&'a str>,
-    /// 戻り先の一覧（ADR-0038）。
+    /// The list to return to (ADR-0038).
     pub list_href: String,
 }
 
-/// アプリの一覧・登録画面（`GET /{tenant_id}/admin/applications`。ADR-0054）。
+/// App list and registration screen (`GET /{tenant_id}/admin/applications`; ADR-0054).
 #[derive(Template)]
 #[template(path = "console/applications.html")]
 pub struct ApplicationsList<'a> {
@@ -3767,14 +3767,14 @@ pub struct ApplicationsList<'a> {
     pub tenant: &'a str,
     pub admin: Admin<'a>,
     pub applications: &'a [ApplicationView],
-    /// 判定がまだ「記録するだけ」か。⚠ **真なら、割り当てはまだ誰も断っていない。**
-    /// これを出さないと、名簿を整えた人が「もう効いている」と思い込む。
+    /// Whether the check is still "record only". ⚠ **If true, assignments are not refusing anyone yet.**
+    /// Without showing this, whoever curated the roster assumes "it is already in effect".
     pub record_only: bool,
     pub csrf: &'a str,
     pub error: Option<&'a str>,
 }
 
-/// アプリ 1 件の画面（`GET /{tenant_id}/admin/applications/{id}`。ADR-0054）。
+/// Screen for one app (`GET /{tenant_id}/admin/applications/{id}`; ADR-0054).
 #[derive(Template)]
 #[template(path = "console/application_detail.html")]
 pub struct ApplicationDetail<'a> {
@@ -3783,29 +3783,29 @@ pub struct ApplicationDetail<'a> {
     pub admin: Admin<'a>,
     pub application: &'a ApplicationView,
     pub assigned: &'a [ApplicationAssignmentView],
-    /// 割り当てられたサービスアカウント（ADR-0059）。人と同じ一覧に種類を添えて並べる。
+    /// Assigned service accounts (ADR-0059). Listed with their kind in the same list as people.
     pub assigned_service_accounts: &'a [ApplicationServiceAccountAssignmentView],
-    /// 「全員」のときに出す、**いま入れている人**（そのまま名簿へ写せる）。
-    /// 「個別」のときは空。
+    /// For "everyone": **the people currently signing in** (can be copied into the roster as is).
+    /// Empty for "individual".
     pub current_users: &'a [ApplicationCurrentUserView],
-    /// 「いま入れている人」を上限で打ち切ったか。⚠ 真なら画面がそう言う。
+    /// Whether "people currently signing in" was cut off at the limit. ⚠ If true, the screen says so.
     pub current_users_truncated: bool,
     pub current_users_total: i64,
-    /// 名乗りの候補を種類ごとに束ねたもの（ADR-0067）。相手は ID の手入力ではなくここから選ぶ。
+    /// Identity candidates grouped by kind (ADR-0067). Counterparts are chosen from here rather than typing IDs.
     pub candidate_groups: &'a [BindingCandidateGroup],
-    /// 候補を読めなかったか（画面は出し、結び付けの欄の代わりにそう言う）。
+    /// Whether candidates could not be read (the screen still renders and says so instead of the binding field).
     pub candidates_unavailable: bool,
-    /// 選んだ相手が別のアプリの名乗りだったときの確認（「○○ から移す」）。
+    /// Confirmation when the chosen counterpart is another app's identity ("move from X").
     pub pending_move: Option<&'a ApplicationBindingCandidateView>,
-    /// 「このアプリを消す」で外れるものの要約（名乗りと使う主体の件数。api の削除の振る舞いと同じ
-    /// ——両方とも外して消す）。
+    /// Summary of what "Delete this app" detaches (counts of identities and users; same as the api's delete
+    /// behaviour -- detach both, then delete).
     pub delete_summary: &'a str,
     pub record_only: bool,
     pub csrf: &'a str,
     pub error: Option<&'a str>,
 }
 
-/// 保護リソース（`aud` に入る宛名）の一覧・管理画面（`GET /{tenant_id}/admin/resources`。ADR-0042）。
+/// Protected resources (audiences in `aud`) list/management screen (`GET /{tenant_id}/admin/resources`; ADR-0042).
 #[derive(Template)]
 #[template(path = "console/resources.html")]
 pub struct ResourcesList<'a> {
@@ -3817,7 +3817,7 @@ pub struct ResourcesList<'a> {
     pub error: Option<&'a str>,
 }
 
-/// 署名鍵一覧・管理画面（`GET /{tenant_id}/admin/signing-keys`、K1）。
+/// Signing key list/management screen (`GET /{tenant_id}/admin/signing-keys`, K1).
 #[derive(Template)]
 #[template(path = "console/signing_keys.html")]
 pub struct SigningKeysList<'a> {
@@ -3829,44 +3829,44 @@ pub struct SigningKeysList<'a> {
     pub error: Option<&'a str>,
 }
 
-/// root 管理者向けのテナント一覧・登録画面（`GET /{tenant_id}/admin/tenants`）。
+/// Tenant list/registration screen for root admins (`GET /{tenant_id}/admin/tenants`).
 #[derive(Template)]
 #[template(path = "console/tenants.html")]
 pub struct TenantsConsole<'a> {
     pub messages: &'a Messages,
     pub tenant: &'a str,
     pub admin: Admin<'a>,
-    /// 現在のページに含まれる子テナント（G7 でページングを導入。全件ではない）。
+    /// Child tenants on the current page (paging introduced in G7; not all of them).
     pub tenants: &'a [TenantView],
-    /// ページング前の総件数。「全 N 件」の表示に使う。
+    /// Total count before paging. Used for the "N total" display.
     pub total: i64,
     pub csrf: &'a str,
     pub error_key: Option<&'a str>,
-    /// 更新完了通知（Post/Redirect/Get で戻ったときに成功バナーを出す。MT23）。
+    /// Update completion notice (shows a success banner when returning via Post/Redirect/Get; MT23).
     pub saved: bool,
-    /// ページャの前後リンク（クエリ文字列を組み立て済み）。該当がなければ `None`。
+    /// Pager prev/next links (with query strings already built). `None` when not applicable.
     pub prev_href: Option<String>,
     pub next_href: Option<String>,
 }
 
-/// テナント切り替え画面（`GET /{tenant_id}/admin/switch-tenant`）。ログイン中ユーザーが `ACTIVE` な
-/// メンバーシップを持つテナントを一覧し、対象テナントの管理コンソールへ遷移する。SSO はホスト共有の
-/// ため再ログインは不要（ADR-0009 §8）。
+/// Tenant switch screen (`GET /{tenant_id}/admin/switch-tenant`). Lists tenants where the logged-in user has an
+/// `ACTIVE` membership and navigates to the target tenant's admin console. SSO is shared per host,
+/// so no re-login is needed (ADR-0009 §8).
 #[derive(Template)]
 #[template(path = "console/switch_tenant.html")]
 pub struct SwitchTenant<'a> {
     pub messages: &'a Messages,
     pub tenant: &'a str,
     pub admin: Admin<'a>,
-    /// 切り替え可能なテナント一覧。
+    /// Switchable tenants.
     pub tenants: &'a [assay_contracts::auth::AccountTenantSummary],
-    /// 現在開いているテナントの内部 ID（現在地の強調に使う）。
+    /// Internal ID of the currently open tenant (used to highlight the current location).
     pub current_tenant_id: &'a str,
-    /// api からの一覧取得に失敗したか（失敗時は注意文言を表示する）。
+    /// Whether fetching the list from the api failed (a caution is shown on failure).
     pub load_failed: bool,
 }
 
-/// テナント作成結果（`POST /{tenant_id}/admin/tenants` 成功時）。
+/// Tenant creation result (on success of `POST /{tenant_id}/admin/tenants`).
 #[derive(Template)]
 #[template(path = "console/tenant_created.html")]
 pub struct TenantCreated<'a> {
@@ -3876,9 +3876,9 @@ pub struct TenantCreated<'a> {
     pub created: &'a TenantCreatedView,
 }
 
-/// 管理コンソールの設定画面（`GET /{tenant_id}/admin/settings`。MT14）。テナント設定区画（自テナント
-/// 表示名）と、root（idp.system.admin）のみ表示するシステム設定区画（SMTP）。`system` が `None` の
-/// ときはシステム設定区画を描画しない。
+/// Admin console settings screen (`GET /{tenant_id}/admin/settings`; MT14). A tenant settings section (own tenant's
+/// display name) and a system settings section (SMTP) shown only to root (idp.system.admin). When `system` is `None`
+/// the system settings section is not rendered.
 #[derive(Template)]
 #[template(path = "console/admin_settings.html")]
 pub struct AdminSettings<'a> {
@@ -3888,53 +3888,53 @@ pub struct AdminSettings<'a> {
     pub tenant_id: &'a str,
     pub tenant_name: &'a str,
     pub tenant_status: &'a str,
-    /// 自己登録（/auth/register）の許可トグル（SEC6）。
+    /// Toggle allowing self-registration (/auth/register) (SEC6).
     pub tenant_self_registration: bool,
-    /// メールアドレスでのログインのトグルの状態（ADR-0050）。
+    /// State of the email-address login toggle (ADR-0050).
     pub tenant_email_login: bool,
     pub csrf: &'a str,
-    /// 保存成功のバナー表示。
+    /// Shows the save-success banner.
     pub saved: bool,
     pub error_key: Option<&'a str>,
-    /// テナントの設定値（ADR-0058）。`idp.tenant-settings:read` が無ければ `None`（区画を出さない）。
+    /// Tenant setting values (ADR-0058). `None` without `idp.tenant-settings:read` (section hidden).
     pub tenant_settings: Option<&'a crate::admin_dto::TenantSettingsListView>,
-    /// テナント自身のメールの経路（ADR-0058 §8）。`idp.smtp:read` が無ければ `None`（区画を出さない）。
+    /// The tenant's own mail route (ADR-0058 §8). `None` without `idp.smtp:read` (section hidden).
     pub tenant_smtp: Option<&'a crate::admin_dto::TenantSmtpView>,
-    /// root のみ `Some`。SMTP 設定区画を描画する。
+    /// `Some` only for root. Renders the SMTP settings section.
     pub system: Option<&'a crate::admin_dto::SystemSettingsView>,
-    /// 保存済みだが api へ未反映のキー名（MT27）。空なら未反映なし。
+    /// Key names saved but not yet applied to the api (MT27). Empty means none pending.
     pub pending_api_keys: &'a [String],
-    /// api は反映済みだが web が古い共有キー名（MT27）。api だけを再起動した状態で残る。
+    /// Shared key names applied in the api but stale in web (MT27). Remains when only the api was restarted.
     pub stale_web_keys: &'a [String],
-    /// 絞り込みの条件（フォームへ書き戻す）。一覧はハンドラで絞ってから渡す。
+    /// Filter conditions (written back to the form). The handler filters the list before passing it.
     pub filter: &'a crate::settings_filter::SettingsFilter,
-    /// 絞る前のテナントの設定の件数（「N 件中 M 件」）。
+    /// Count of tenant settings before filtering ("M of N").
     pub tenant_values_total: usize,
-    /// 絞る前の全体のランタイム設定の件数。
+    /// Count of global runtime settings before filtering.
     pub runtime_total: usize,
 }
 
 impl AdminSettings<'_> {
-    /// テナントの設定の「表示中 / 絞る前」。件数の文言へ 1 つの値として差し込む。
+    /// "Shown / before filtering" for tenant settings. Inserted into the count text as one value.
     pub fn tenant_values_count(&self) -> String {
         let shown = self.tenant_settings.map_or(0, |l| l.settings.len());
         format!("{shown} / {}", self.tenant_values_total)
     }
 
-    /// 全体のランタイム設定の「表示中 / 絞る前」。
+    /// "Shown / before filtering" for global runtime settings.
     pub fn runtime_count(&self) -> String {
         let shown = self.system.map_or(0, |s| s.runtime_settings.len());
         format!("{shown} / {}", self.runtime_total)
     }
 
-    /// 設定キーの表示名。訳が無いキー（定義に足したばかりのキー）はキーそのものを出す
-    /// ——項目は api の定義から並ぶので、訳の書き足し忘れで項目ごと消える形にはしない。
+    /// Display name of a setting key. Keys without a translation (just added to the definition) show the key itself
+    /// -- items are listed from the api's definitions, so a forgotten translation must not make an item vanish.
     pub fn setting_label(&self, key: &str) -> String {
         setting_label(self.messages, key)
     }
 
-    /// 値の表示。真偽値は「有効 / 無効」で、秒の値（`*_SECS`）は「604800（7 日）」のように長さを添えて
-    /// 読ませる（それ以外は保存形式のまま）。
+    /// Value display. Booleans as "enabled / disabled"; second values (`*_SECS`) with a duration, like
+    /// "604800 (7 days)" (others as stored).
     pub fn value_label(&self, item: &crate::admin_dto::TenantSettingView, value: &str) -> String {
         if item.kind == "BOOLEAN" {
             match value {
@@ -3959,19 +3959,19 @@ impl AdminSettings<'_> {
         value.to_string()
     }
 
-    /// 秒で入れる設定か（入力欄の下に早見を出す）。
+    /// Whether the setting is entered in seconds (a quick reference is shown under the input).
     pub fn is_seconds(&self, item: &crate::admin_dto::TenantSettingView) -> bool {
         item.kind == "UNSIGNED_INTEGER" && is_seconds_setting(&item.key)
     }
 }
 
-/// 値が秒の設定か（キーの名前が `_SECS` で終わる）。
+/// Whether the value is a seconds setting (key name ends in `_SECS`).
 pub fn is_seconds_setting(key: &str) -> bool {
     key.ends_with("_SECS")
 }
 
-/// 秒を「7 日」「8 時間」「1 日 2 時間 30 分」のような長さにする。0 は `None`（「無し」の意味を持つ設定があるため、
-/// 長さとしては読ませない）。
+/// Turns seconds into a duration like "7 days", "8 hours", "1 day 2 hours 30 minutes". 0 gives `None` (some settings
+/// use it to mean "none", so it is not read as a duration).
 pub fn duration_label(messages: &Messages, secs: u64) -> Option<String> {
     if secs == 0 {
         return None;
@@ -3999,7 +3999,7 @@ pub fn duration_label(messages: &Messages, secs: u64) -> Option<String> {
     Some(parts.join(" "))
 }
 
-/// 設定キーの表示名（`admin-tenant-setting-<KEY>`）。訳が無ければキーそのもの。
+/// Display name of a setting key (`admin-tenant-setting-<KEY>`). The key itself if untranslated.
 pub fn setting_label(messages: &Messages, key: &str) -> String {
     let id = format!("admin-tenant-setting-{key}");
     let label = messages.get(&id);
@@ -4010,8 +4010,8 @@ pub fn setting_label(messages: &Messages, key: &str) -> String {
     }
 }
 
-/// 締め出し得る値へ変える前の確認画面（`POST /{tenant_id}/admin/settings/tenant/keys` で api が
-/// 409 を返したとき。ADR-0058）。
+/// Confirmation screen before changing to a value that could lock people out (when the api returns 409 for
+/// `POST /{tenant_id}/admin/settings/tenant/keys`; ADR-0058).
 #[derive(Template)]
 #[template(path = "console/admin_tenant_setting_confirm.html")]
 pub struct AdminTenantSettingConfirm<'a> {
@@ -4022,69 +4022,69 @@ pub struct AdminTenantSettingConfirm<'a> {
     pub key: &'a str,
     pub label: &'a str,
     pub description: &'a str,
-    /// いまこのテナントで効いている値（一覧を引けなかったときは `None`）。
+    /// The value currently in effect for this tenant (`None` when the list could not be fetched).
     pub current_value: Option<&'a str>,
-    /// 変更後の値。
+    /// The new value.
     pub value: &'a str,
 }
 
-/// 再起動中の待機画面（`POST /{tenant_id}/admin/restart` の応答。ADR-0017）。
+/// Restart wait screen (response of `POST /{tenant_id}/admin/restart`; ADR-0017).
 ///
-/// これを返した直後に web 自身が停止するため、共通レイアウト（ナビゲーション）は継承しない。
+/// web itself stops right after returning this, so it does not inherit the shared layout (navigation).
 #[derive(Template)]
 #[template(path = "console/restarting.html")]
 pub struct Restarting<'a> {
     pub messages: &'a Messages,
-    /// 再読み込み先（設定画面）。
+    /// Reload target (the settings screen).
     pub settings_href: &'a str,
-    /// 自動再読み込みまでの秒数。両サービスが起動し直すのに要する時間より少し長く取る。
+    /// Seconds until auto reload. A bit longer than both services need to restart.
     pub retry_after_seconds: u64,
 }
 
-/// 利用者のセルフサービス設定画面（`GET /{tenant_id}/settings`。MT15）。パスワード変更・言語設定・
-/// MFA への導線。管理コンソールとは別の利用者向け画面のため共通レイアウトには載せない。
+/// User self-service settings screen (`GET /{tenant_id}/settings`; MT15). Links to password change, language
+/// settings and MFA. A user-facing screen separate from the admin console, so not in the shared layout.
 #[derive(Template)]
 #[template(path = "user_settings.html")]
 pub struct UserSettings<'a> {
     pub messages: &'a Messages,
-    /// `/{tenant_id}` プレフィクス（フォーム送信先・MFA リンクの組み立てに使う。ADR-0009 §6）。
+    /// `/{tenant_id}` prefix (used to build form targets and MFA links; ADR-0009 §6).
     pub tenant: &'a str,
-    /// 現在の表示言語（`ja` / `en`）。言語セレクタの初期選択に使う。
+    /// Current display language (`ja` / `en`). Initial selection of the language selector.
     pub current_lang: &'a str,
-    /// 現在の配色（`light` / `dark` / `system`）。配色セレクタの初期選択に使う。
+    /// Current color scheme (`light` / `dark` / `system`). Initial selection of the scheme selector.
     pub current_theme: &'a str,
-    /// 現在の表示名（プリフィル用。未設定なら空文字）。
+    /// Current display name (for prefill; empty string if unset).
     pub current_name: &'a str,
-    /// ログイン識別子（表示のみ・変更不可。未設定なら空文字）。
+    /// Login identifier (display only, not editable; empty string if unset).
     pub preferred_username: &'a str,
-    /// 保存成功メッセージのキー（`None` なら非表示）。
+    /// Key of the save-success message (`None` hides it).
     pub saved_key: Option<&'a str>,
     pub error_key: Option<&'a str>,
-    /// 管理コンソール（`?from=admin`）から開いたか。左上に戻るリンクを出し、フォーム送信でも維持する。
+    /// Whether opened from the admin console (`?from=admin`). Shows a back link at the top left and keeps it across form posts.
     pub from_admin: bool,
-    /// 状態変更フォーム（表示名・パスワード・言語・配色）の CSRF トークン（`console_csrf_token`。
-    /// task #79・#118）。
+    /// CSRF token of the state-changing forms (display name, password, language, color scheme) (`console_csrf_token`;
+    /// task #79, #118).
     pub csrf: &'a str,
 }
 
-/// 認証器一覧の 1 行（AP9）。種別・状態は翻訳キーに写した状態で受ける。
+/// One row of the authenticator list (AP9). Kind and status arrive already mapped to translation keys.
 pub struct AuthenticatorView {
     pub id: String,
-    /// 種別の翻訳キー。
+    /// Translation key of the kind.
     pub type_key: &'static str,
-    /// 状態の翻訳キー。
+    /// Translation key of the status.
     pub status_key: &'static str,
     pub label: String,
     pub created_at: String,
-    /// 直近の利用時刻（未使用なら空文字）。
+    /// Most recent use time (empty string if never used).
     pub last_used_at: String,
-    /// 一時停止ボタンを出すか（`active` のときだけ）。
+    /// Whether to show the suspend button (only when `active`).
     pub suspendable: bool,
-    /// 再開ボタンを出すか（`suspended` のときだけ）。
+    /// Whether to show the resume button (only when `suspended`).
     pub resumable: bool,
 }
 
-/// 認証器の管理画面（`GET /{tenant_id}/settings/authenticators`。AP9）。
+/// Authenticator management screen (`GET /{tenant_id}/settings/authenticators`; AP9).
 #[derive(Template)]
 #[template(path = "user_authenticators.html")]
 pub struct UserAuthenticators<'a> {
@@ -4092,19 +4092,19 @@ pub struct UserAuthenticators<'a> {
     pub tenant: &'a str,
     pub csrf: &'a str,
     pub authenticators: &'a [AuthenticatorView],
-    /// 未使用のリカバリーコードの残数。
+    /// Number of unused recovery codes left.
     pub recovery_codes_remaining: usize,
-    /// SMS ゲートウェイが設定されているか（AP13）。未設定なら登録導線ごと出さない。
+    /// Whether an SMS gateway is configured (AP13). If not, the registration entry is hidden entirely.
     pub sms_available: bool,
-    /// 確認済みの電話番号が登録されているか（番号そのものは web へ渡さない）。
+    /// Whether a verified phone number is registered (the number itself is not passed to web).
     pub phone_registered: bool,
-    /// 確認コードの入力待ちか（登録開始の直後）。
+    /// Whether awaiting confirmation code input (right after starting registration).
     pub awaiting_phone_code: bool,
     pub saved_key: Option<&'a str>,
     pub error_key: Option<&'a str>,
 }
 
-/// リカバリーコードの発行結果（AP9）。平文はこの画面でしか表示しない。
+/// Result of issuing recovery codes (AP9). The plaintext is shown only on this screen.
 #[derive(Template)]
 #[template(path = "recovery_codes.html")]
 pub struct RecoveryCodes<'a> {
@@ -4113,112 +4113,112 @@ pub struct RecoveryCodes<'a> {
     pub codes: &'a [String],
 }
 
-/// Step-up 認証の本人確認画面（`GET /{tenant_id}/settings/verify`。AP5）。
+/// Step-up authentication verification screen (`GET /{tenant_id}/settings/verify`; AP5).
 #[derive(Template)]
 #[template(path = "step_up_challenge.html")]
 pub struct StepUpChallenge<'a> {
     pub messages: &'a Messages,
-    /// `/{tenant_id}` プレフィクス。
+    /// `/{tenant_id}` prefix.
     pub tenant: &'a str,
-    /// ログイン後フォーム用の同期トークン（`console_csrf_token`）。
+    /// Synchronizer token for post-login forms (`console_csrf_token`).
     pub csrf: &'a str,
-    /// 対象操作（そのまま POST へ載せ、api が要件を決め直す）。
+    /// Target operation (put into the POST as is; the api re-decides the requirements).
     pub operation: &'a str,
-    /// 確認後に戻る先（web 側で同一テナントのパスに限定済み）。
+    /// Where to return after verification (already restricted by web to paths of the same tenant).
     pub next: &'a str,
-    /// TOTP 入力欄を出すか（要件が多要素のとき）。
+    /// Whether to show the TOTP field (when the requirement is multi-factor).
     pub second_factor_required: bool,
-    /// パスキーでの確認を出すか（**いま使える**パスキーを持っている。T38）。持っていない利用者に
-    /// ボタンを見せると、ブラウザのダイアログが出てから失敗する。
+    /// Whether to offer passkey verification (has a passkey **usable now**; T38). Showing the button to users
+    /// without one makes them fail after the browser dialog appears.
     pub passkey_available: bool,
-    /// パスキーでしか確かめられない操作か（端末の登録。task #872）。パスワードの欄を出さない。
+    /// Whether the operation can only be verified by passkey (device registration; task #872). No password field.
     pub passkey_only: bool,
     pub error_key: Option<&'a str>,
 }
 
-/// セキュリティ画面のセッション 1 行（G10）。時刻は api が返した RFC 3339 文字列をそのまま出す。
+/// One session row of the security screen (G10). Times are output as the RFC 3339 strings the api returned.
 pub struct SecuritySessionView {
-    /// 失効フォームに載せる表示用 ID（`session_hash` の非可逆な導出値）。
+    /// Display ID put in the revoke form (an irreversible derivation of `session_hash`).
     pub id: String,
     pub current: bool,
     pub multi_factor: bool,
     pub auth_time: String,
-    /// User-Agent（未記録なら空文字。`Option` を避けてテンプレートを単純に保つ）。
+    /// User-Agent (empty string if not recorded; avoids `Option` to keep the template simple).
     pub user_agent: String,
     pub ip_address: String,
     pub absolute_expires_at: String,
-    /// 「状況」から引いた、このログイン状態の端末・結び付け・入り方・長さの根拠（task #896）。
-    /// 「状況」を読めなかったときは `None`（今までの列だけ出す）。
+    /// Device, binding, sign-in method and lifetime basis of this sign-in state, taken from "Status" (task #896).
+    /// `None` when "Status" could not be read (only the existing columns are shown).
     pub status: Option<SessionStatusView>,
 }
 
-/// ログイン状態 1 つの状況（task #896。ADR-0078）。文言はキーで持ち、テンプレートで訳す。
+/// Status of one sign-in state (task #896; ADR-0078). Text is held as keys and translated by the template.
 #[derive(Clone)]
 pub struct SessionStatusView {
     pub id: String,
     pub current: bool,
     pub auth_time: String,
-    /// 切れる時刻（RFC 3339）。
+    /// Expiry time (RFC 3339).
     pub expires_at: String,
-    /// 入り方（`user-security-signins-method-*`）。
+    /// Sign-in method (`user-security-signins-method-*`).
     pub method_keys: Vec<&'static str>,
     pub multi_factor: bool,
-    /// 「OS・ブラウザ」の要約と元の名乗り。
+    /// "OS / browser" summary and the original self-identification.
     pub browser: String,
     pub user_agent: String,
     pub ip_address: String,
     pub country: String,
     pub device_identified: bool,
-    /// 登録済みの端末の名前（未登録なら空）。
+    /// Name of the registered device (empty if unregistered).
     pub device_name: String,
     pub device_registered_at: String,
     pub device_last_used_at: String,
-    /// `user-security-status-binding-*`。
+    /// `user-security-status-binding-*`.
     pub binding_key: &'static str,
-    /// `user-security-status-basis-*`。
+    /// `user-security-status-basis-*`.
     pub basis_key: &'static str,
-    /// 根拠の短い言い方（「ログイン状態」の表の 1 行。`user-security-status-basis-*-short`）。
+    /// Short wording of the basis (one row of the "sign-in state" table; `user-security-status-basis-*-short`).
     pub basis_short_key: &'static str,
-    /// 長い長さを使っているか（根拠の行の色分け）。
+    /// Whether the long lifetime is used (colors the basis row).
     pub long_lifetime: bool,
     pub key_algorithm: String,
-    /// 公開鍵の指紋の頭（12 文字）。
+    /// Head of the public key fingerprint (12 chars).
     pub key_thumbprint_head: String,
     pub key_bound_at: String,
     pub key_refreshed_at: String,
     pub approver_device_name: String,
-    /// `app-approver-level-*`（承認で入っていなければ空）。
+    /// `app-approver-level-*` (empty if not signed in via approval).
     pub approver_level_key: &'static str,
     pub passkey_fresh_until: String,
 }
 
-/// 信頼している持ち物 1 つ（task #896）。
+/// One trusted belonging (task #896).
 pub struct BelongingView {
-    /// `user-security-status-kind-*`。
+    /// `user-security-status-kind-*`.
     pub kind_key: &'static str,
-    /// 何に使われるか（`user-security-status-use-*`）。
+    /// What it is used for (`user-security-status-use-*`).
     pub use_key: &'static str,
-    /// 強さ（`user-security-status-strength-*`）。
+    /// Strength (`user-security-status-strength-*`).
     pub strength_key: &'static str,
     pub name: String,
-    /// 補足（端末の名乗り・SSH の鍵の型）。
+    /// Supplement (device self-identification, SSH key type).
     pub detail: String,
-    /// 補足を訳すキー（認証アプリの鍵の置き場。無ければ空）。
+    /// Key to translate the supplement (the authenticator app's key storage; empty if none).
     pub detail_key: &'static str,
     pub registered_at: String,
     pub last_used_at: String,
-    /// 最後に使った時刻が assay から見えない（SSH の鍵）。
+    /// The last-used time is not visible to assay (SSH keys).
     pub last_use_invisible: bool,
     pub expires_at: String,
 }
 
-/// アプリ 1 つのトークンの種別（task #896）。
+/// Token kind of one app (task #896).
 pub struct AppTokensView {
     pub app_name: String,
     pub scopes: String,
     pub active_refresh_tokens: u32,
     pub dpop_bound_refresh_tokens: u32,
-    /// `user-security-status-token-*`（リフレッシュトークンの種別の 1 行）。
+    /// `user-security-status-token-*` (one row for the refresh token kind).
     pub token_key: &'static str,
     pub last_issued_at: String,
     pub refresh_use_count: u32,
@@ -4227,156 +4227,156 @@ pub struct AppTokensView {
     pub refresh_reuse_detected_at: String,
 }
 
-/// 自分に効いている組織の決まり（task #896）。
+/// Organization rules in effect for me (task #896).
 pub struct PolicyView {
     pub unregistered_device_alerts: bool,
     pub ssh_keys_enabled: bool,
-    /// 長さ（「30 日」「8 時間」のように読める形）。
+    /// Duration (in a readable form like "30 days", "8 hours").
     pub bound_ttl: String,
     pub absolute_ttl: String,
     pub idle_ttl: String,
     pub device_expiry_days: i64,
 }
 
-/// 注意の 1 行（task #896）。
+/// One caution row (task #896).
 pub struct WarningView {
-    /// `user-security-status-warning-*`。
+    /// `user-security-status-warning-*`.
     pub key: &'static str,
     pub count: u32,
     pub last_at: String,
 }
 
-/// 「状況」の欄（task #896。ADR-0078）。
+/// The "Status" section (task #896; ADR-0078).
 pub struct SecurityStatusView {
-    /// 今見ているログイン状態（無ければ「このブラウザ」の欄は出さない）。
+    /// The sign-in state being viewed now (if none, the "this browser" section is hidden).
     pub current: Option<SessionStatusView>,
-    /// このブラウザの今の要求から読んだもの（ログインしたときではなく、いま）。
+    /// What was read from this browser's current request (now, not at sign-in).
     pub browser: String,
     pub user_agent: String,
     pub ip_address: String,
-    /// 国（信じられないとき・家の中からは空）。
+    /// Country (empty when untrustworthy or from inside the home network).
     pub country: String,
-    /// 短い Cookie（端末の鍵で 10 分ごとに取り直す）の期限（RFC 3339。無ければ空）。
+    /// Expiry of the short Cookie (re-obtained every 10 minutes with the device key) (RFC 3339; empty if none).
     pub bound_cookie_expires_at: String,
     pub belongings: Vec<BelongingView>,
     pub apps: Vec<AppTokensView>,
     pub policy: PolicyView,
     pub warnings: Vec<WarningView>,
-    /// 断られたログインの多かった日（`YYYY-MM-DD`）と回数。
+    /// Days (`YYYY-MM-DD`) with many refused sign-ins and the counts.
     pub failure_days: Vec<(String, u32)>,
     pub warning_window_days: i64,
 }
 
 impl SecurityStatusView {
-    /// 注意が 1 つでもあるか。
+    /// Whether there is at least one caution.
     pub fn has_warnings(&self) -> bool {
         !self.warnings.is_empty() || !self.failure_days.is_empty()
     }
 }
 
-/// セキュリティ画面の連携済みアプリ 1 行（G10）。
+/// One connected-app row of the security screen (G10).
 pub struct ConnectedAppView {
     pub client_id: String,
     pub app_name: String,
-    /// 同意済み scope（空白区切りの表示用文字列）。
+    /// Consented scopes (space-separated display string).
     pub scopes: String,
     pub granted_at: String,
 }
 
-/// セルフサービスのセキュリティ画面（`GET /{tenant_id}/settings/security`。G10）。
+/// Self-service security screen (`GET /{tenant_id}/settings/security`; G10).
 #[derive(Template)]
 #[template(path = "user_security.html")]
 pub struct UserSecurity<'a> {
     pub messages: &'a Messages,
-    /// `/{tenant_id}` プレフィクス（フォーム送信先の組み立てに使う）。
+    /// `/{tenant_id}` prefix (used to build form targets).
     pub tenant: &'a str,
-    /// ログイン後フォーム用の同期トークン（`console_csrf_token`）。
+    /// Synchronizer token for post-login forms (`console_csrf_token`).
     pub csrf: &'a str,
     pub sessions: &'a [SecuritySessionView],
     pub connected_apps: &'a [ConnectedAppView],
-    /// 登録済みの端末（task #872）。
+    /// Registered devices (task #872).
     pub devices: &'a [SecurityDeviceView],
-    /// 今見ているブラウザが登録済みか。
+    /// Whether the browser being used is registered.
     pub current_device_registered: bool,
-    /// 今見ているブラウザに端末の印があるか（無ければ登録の欄の代わりに案内を出す）。
+    /// Whether the browser being used has a device marker (if not, guidance is shown instead of the registration field).
     pub current_device_identified: bool,
-    /// パスキーでの本人確認がまだ有効か（有効なら登録はそのまま通る）。
+    /// Whether passkey verification is still valid (if so, registration goes through as is).
     pub passkey_fresh: bool,
-    /// パスキーでの本人確認から戻ってきたときの端末の名前（task #916）。確認が新しく、このブラウザが
-    /// まだ登録されていなければ、登録のフォームをこの名前で自動で送る（押すのを 1 回にする）。
+    /// Device name when returning from passkey verification (task #916). If the verification is fresh and this browser
+    /// is not yet registered, the registration form is auto-submitted with this name (one press).
     pub resume_device_name: Option<&'a str>,
-    /// この組織で「登録していない端末」の知らせが有効か。
+    /// Whether this organization's "unregistered device" notice is enabled.
     pub devices_alerts_enabled: bool,
-    /// 登録済みの認証アプリの鍵（task #892。「端末」の欄に「認証アプリ」として並ぶ）。
+    /// Registered authenticator app keys (task #892; listed as "Authenticator app" in the "Devices" section).
     pub approver_keys: &'a [SecurityApproverKeyView],
-    /// ログイン履歴（task #879）。新しい順。
+    /// Sign-in history (task #879). Newest first.
     pub sign_ins: &'a [SignInView],
-    /// もっと古い履歴へのリンク（`?history_before=` の値）。無ければ最後のページ。
+    /// Link to older history (the `?history_before=` value). None on the last page.
     pub sign_ins_older: Option<i64>,
-    /// 古い履歴を見ているか（先頭へ戻るリンクを出す）。
+    /// Whether viewing older history (shows a link back to the top).
     pub sign_ins_paged: bool,
-    /// この組織で SSH の鍵を使うか（task #885。無効なら欄を出さない）。
+    /// Whether this organization uses SSH keys (task #885; the section is hidden if disabled).
     pub ssh_keys_enabled: bool,
-    /// 登録済みの SSH の鍵。
+    /// Registered SSH keys.
     pub ssh_keys: &'a [SecuritySshKeyView],
-    /// パスキーでの本人確認がまだ有効か（SSH の鍵の登録・取り消しの条件）。
+    /// Whether passkey verification is still valid (condition for registering/revoking SSH keys).
     pub ssh_keys_passkey_fresh: bool,
-    /// 「状況」（task #896）。読めなかったら `None` で、欄の代わりに案内を出す。
+    /// "Status" (task #896). `None` if unreadable, in which case guidance replaces the section.
     pub status: Option<&'a SecurityStatusView>,
     pub saved_key: Option<&'a str>,
     pub error_key: Option<&'a str>,
 }
 
-/// ログイン履歴の 1 行（task #879）。文言はキーで持ち、テンプレートで訳す。
+/// One sign-in history row (task #879). Text is held as keys and translated by the template.
 pub struct SignInView {
     pub occurred_at: String,
-    /// `user-security-signins-outcome-*`。
+    /// `user-security-signins-outcome-*`.
     pub outcome_key: &'static str,
-    /// 成功したか（バッジの色を変える）。
+    /// Whether it succeeded (changes the badge color).
     pub succeeded: bool,
-    /// 断った理由（`user-security-signins-failure-*`）。成功なら `None`。
+    /// Reason for refusal (`user-security-signins-failure-*`). `None` on success.
     pub failure_key: Option<&'static str>,
     pub ip_address: String,
-    /// 国コード（分からない・信じられないときは空）。
+    /// Country code (empty when unknown or untrustworthy).
     pub country: String,
-    /// 「Windows・Chrome」のような短い要約（分からなければ空）。
+    /// Short summary like "Windows・Chrome" (empty if unknown).
     pub browser_summary: String,
     pub user_agent: String,
-    /// 入り方（`user-security-signins-method-*`）。
+    /// Sign-in method (`user-security-signins-method-*`).
     pub method_keys: Vec<&'static str>,
-    /// 断ったログインを始めたアプリ（分かれば）。
+    /// The app that started the refused sign-in (if known).
     pub attempted_app: String,
     pub current: bool,
-    /// 登録した端末だったか（`None` は分からない）。
+    /// Whether it was a registered device (`None` means unknown).
     pub device_registered: Option<bool>,
     pub apps: Vec<SignInAppView>,
 }
 
-/// ログインで入ったアプリと、リフレッシュトークンの使われ方（task #879）。
+/// The app signed in to and how its refresh token was used (task #879).
 pub struct SignInAppView {
     pub app_name: String,
     pub last_issued_at: String,
     pub refresh: Option<SignInRefreshView>,
 }
 
-/// リフレッシュトークンの使われ方。接続元・名乗りは**更新を送ってきた相手**のもの。
+/// How the refresh token was used. Source and self-identification are those of **whoever sent the refresh**.
 pub struct SignInRefreshView {
     pub use_count: String,
-    /// 一度も更新していなければ空。
+    /// Empty if never refreshed.
     pub last_used_at: String,
     pub last_ip_address: String,
     pub last_browser_summary: String,
     pub last_user_agent: String,
     pub reuse_detected_at: String,
-    /// `user-security-signins-refresh-state-*`。
+    /// `user-security-signins-refresh-state-*`.
     pub state_key: &'static str,
     pub active: bool,
     pub revoked_at: String,
 }
 
-/// ブラウザの名乗り（User-Agent）から「OS・ブラウザ」を短く取り出す（表示用。判定には使わない）。
+/// Extracts a short "OS / browser" from the browser's self-identification (User-Agent) (for display; never for decisions).
 ///
-/// 名乗りは自己申告で偽れる。画面では要約の下に元の文字列も出す。
+/// The self-identification is self-reported and can be forged. The screen also shows the original string below the summary.
 pub fn browser_summary(user_agent: &str) -> String {
     let ua = user_agent;
     let os = if ua.contains("Android") {
@@ -4394,7 +4394,7 @@ pub fn browser_summary(user_agent: &str) -> String {
     } else {
         None
     };
-    // 順番が意味を持つ: Edge・Opera・Samsung は名乗りに "Chrome" も含み、Chrome は "Safari" も含む。
+    // Order matters: Edge, Opera and Samsung also include "Chrome", and Chrome also includes "Safari".
     let browser = if ua.contains("Edg/") || ua.contains("EdgA/") || ua.contains("EdgiOS/") {
         Some("Edge")
     } else if ua.contains("OPR/") {
@@ -4418,26 +4418,26 @@ pub fn browser_summary(user_agent: &str) -> String {
     }
 }
 
-/// 「SSH の鍵」の欄の 1 行（task #885）。時刻は api が返した RFC 3339 文字列のまま。
+/// One row of the "SSH keys" section (task #885). Times stay as the RFC 3339 strings the api returned.
 pub struct SecuritySshKeyView {
     pub id: String,
     pub name: String,
     pub key_type: String,
-    /// `SHA256:…`。
+    /// `SHA256:…`.
     pub fingerprint: String,
     pub created_at: String,
 }
 
-/// 「端末」の欄の 1 行（task #872）。時刻は api が返した RFC 3339 文字列のまま。
-/// 「端末」の欄の「認証アプリ」の 1 行（task #892）。
+/// One row of the "Devices" section (task #872). Times stay as the RFC 3339 strings the api returned.
+/// One "Authenticator app" row of the "Devices" section (task #892).
 pub struct SecurityApproverKeyView {
     pub id: String,
-    /// アプリの自己申告の機種名。
+    /// The app's self-reported device model name.
     pub device_name: String,
-    /// 鍵の置き場の表示（`app-approver-level-*`）。
+    /// Display of the key storage (`app-approver-level-*`).
     pub level_key: &'static str,
     pub registered_at: String,
-    /// 最後に承認に使った時刻（無ければ空）。
+    /// Last time used for approval (empty if none).
     pub last_used_at: String,
 }
 
@@ -4447,59 +4447,59 @@ pub struct SecurityDeviceView {
     pub current: bool,
     pub user_agent: String,
     pub last_used_at: String,
-    /// 国コード（分からなければ空）。
+    /// Country code (empty if unknown).
     pub last_country: String,
     pub expires_at: String,
 }
 
-/// Passkey 一覧画面（`GET /account/passkey`）。登録済みクレデンシャルの一覧と削除ボタン。
+/// Passkey list screen (`GET /account/passkey`). List of registered credentials with delete buttons.
 #[derive(Template)]
 #[template(path = "passkey_list.html")]
 pub struct PasskeyListTemplate<'a> {
     pub messages: &'a Messages,
-    /// `/{tenant_id}` プレフィクス（ADR-0009 §6）。
+    /// `/{tenant_id}` prefix (ADR-0009 §6).
     pub tenant_prefix: &'a str,
     pub credentials: &'a [PasskeyCredentialInfo],
-    /// 削除フォームの CSRF 同期トークン（`console_csrf_token`。task #587）。
+    /// CSRF synchronizer token of the delete form (`console_csrf_token`; task #587).
     pub csrf_token: &'a str,
-    /// 削除の PRG から戻ったときのバナー（成功・失敗）。
+    /// Banner when returning from the delete PRG (success/failure).
     pub saved_key: Option<&'a str>,
     pub error_key: Option<&'a str>,
 }
 
-/// Passkey 登録画面（`GET /account/passkey/register`）。WebAuthn JS フローを起動する。
+/// Passkey registration screen (`GET /account/passkey/register`). Starts the WebAuthn JS flow.
 #[derive(Template)]
 #[template(path = "passkey_register.html")]
 pub struct PasskeyRegisterTemplate<'a> {
     pub messages: &'a Messages,
-    /// `/{tenant_id}` プレフィクス（ADR-0009 §6）。
+    /// `/{tenant_id}` prefix (ADR-0009 §6).
     pub tenant_prefix: &'a str,
     pub error_key: Option<&'a str>,
 }
 
-/// SAML SP（クライアント）一覧・追加画面（`GET /{tenant_id}/admin/saml-clients`）。
+/// SAML SP (client) list/add screen (`GET /{tenant_id}/admin/saml-clients`).
 #[derive(Template)]
 #[template(path = "console/saml_service_providers.html")]
 pub struct SamlServiceProvidersConsole<'a> {
     pub messages: &'a Messages,
     pub tenant: &'a str,
-    /// 管理画面と同じ web オリジンにある IdP メタデータのダウンロード URL。
+    /// IdP metadata download URL on the same web origin as the admin screen.
     pub idp_metadata_url: &'a str,
     pub admin: Admin<'a>,
     pub csrf: &'a str,
     pub saved: bool,
-    /// 更新完了直後か（成功バナー表示に使う）。
+    /// Whether right after an update (used to show the success banner).
     pub updated: bool,
-    /// 削除完了直後か（成功バナー表示に使う）。
+    /// Whether right after a deletion (used to show the success banner).
     pub deleted: bool,
-    /// メタデータ取り込みで初期値を反映した直後か（案内バナー表示・追加パネル展開に使う）。
+    /// Whether initial values were just applied from metadata import (used for the info banner and expanding the add panel).
     pub imported: bool,
     pub error_key: Option<&'a str>,
     pub providers: &'a [SamlServiceProviderView],
     pub values: &'a SamlServiceProviderFormValues,
 }
 
-/// SAML SP（クライアント）追加フォームの入力値。
+/// Input values of the SAML SP (client) add form.
 #[derive(Default)]
 pub struct SamlServiceProviderFormValues {
     pub display_name: String,
@@ -4510,12 +4510,12 @@ pub struct SamlServiceProviderFormValues {
     pub enabled: bool,
 }
 
-/// 認証ポリシー一覧・作成・編集画面（`GET /{tenant_id}/admin/authentication-policies`、AP1）。
+/// Authentication policy list/create/edit screen (`GET /{tenant_id}/admin/authentication-policies`, AP1).
 ///
-/// 一覧と作成・編集フォームを 1 画面に載せる（`?edit={id}` で同じフォームが編集モードになる）。
-/// 更新は**全項目置換**なので、編集時はフォームに現在値をすべて出す必要がある —— 出せない項目が
-/// あると保存の瞬間にその条件が消える。可変長の条件をテキストで往復させているのはこのためで、
-/// 書式は [`crate::authentication_policy_form`] に置く。
+/// The list and the create/edit form are on one screen (`?edit={id}` turns the same form into edit mode).
+/// Updates **replace all fields**, so editing must show every current value in the form -- any field that
+/// cannot be shown loses its condition the moment it is saved. That is why variable-length conditions
+/// round-trip as text; the format lives in [`crate::authentication_policy_form`].
 #[derive(Template)]
 #[template(path = "console/authentication_policies.html")]
 pub struct AuthenticationPoliciesConsole<'a> {
@@ -4523,20 +4523,20 @@ pub struct AuthenticationPoliciesConsole<'a> {
     pub tenant: &'a str,
     pub admin: Admin<'a>,
     pub csrf: &'a str,
-    /// 一致するポリシーが無いときの既定動作（`AUTH_POLICY_DEFAULT_EFFECT`）。ポリシーの意味は
-    /// この既定値と組み合わせて初めて決まるため、一覧を出すときは必ず上に出す。
+    /// Default behaviour when no policy matches (`AUTH_POLICY_DEFAULT_EFFECT`). A policy's meaning is determined
+    /// only in combination with this default, so always show it above the list.
     ///
-    /// ⚠ **api の一覧の応答に載ったテナントの値を描く**（ADR-0058 §10）。web は値を持たない ——
-    /// 起動時スナップショットから出すと、全テナントに全体の値が表示される。一覧を引けなかったとき
-    /// （入力エラーの再表示・api の失敗）は `None` で、推測の値を出さない。
+    /// ⚠ **Render the tenant's value carried in the api's list response** (ADR-0058 §10). web holds no value --
+    /// showing it from the startup snapshot would display the global value for all tenants. When the list could not
+    /// be fetched (redisplay after input error, api failure) it is `None`, and no guessed value is shown.
     pub default_effect: Option<&'a str>,
     pub saved: bool,
     pub updated: bool,
     pub deleted: bool,
     pub error_key: Option<&'a str>,
-    /// 編集中のポリシー ID（`None` = 新規作成）。
+    /// Policy ID being edited (`None` = create new).
     pub editing: Option<&'a str>,
-    /// フォーム区画を最初から開くか（編集・入力エラーからの再表示）。
+    /// Whether to open the form section from the start (edit, redisplay after input error).
     pub form_open: bool,
     pub effect_options: &'a [&'a str],
     pub method_options: &'a [&'a str],
@@ -4545,8 +4545,8 @@ pub struct AuthenticationPoliciesConsole<'a> {
 }
 
 impl AuthenticationPoliciesConsole<'_> {
-    /// 効果コードの翻訳キー。未知の値は素通しせずコードそのものを出す（api が新しい効果を
-    /// 足したとき、画面には出るが訳が無いと分かる形にする）。
+    /// Translation key of the effect code. Unknown values show the code itself rather than passing through (when
+    /// the api adds a new effect, it shows on screen in a way that makes the missing translation obvious).
     pub fn effect_label(&self, effect: &str) -> &'static str {
         match effect {
             "allow" => "admin-auth-policy-effect-allow",
@@ -4557,7 +4557,7 @@ impl AuthenticationPoliciesConsole<'_> {
         }
     }
 
-    /// `require_specific_method` の要求内容を 1 行で示す（無ければ空文字）。
+    /// One-line description of what `require_specific_method` requires (empty string if none).
     pub fn required_methods_summary(&self, policy: &AuthenticationPolicyResponse) -> String {
         match &policy.effect_params {
             Some(params) => {
@@ -4572,8 +4572,8 @@ impl AuthenticationPoliciesConsole<'_> {
         }
     }
 
-    /// 一覧に出す条件の要約。**条件が 1 つも無い = 全員・全クライアントに当たる**ので、
-    /// それが一目で分かる文言を出す（空欄にすると「条件が設定されていない」と読めてしまう）。
+    /// Summary of the conditions shown in the list. **No conditions = applies to everyone and every client**, so
+    /// show wording that makes that obvious at a glance (a blank would read as "no condition configured").
     pub fn condition_summary(&self, policy: &AuthenticationPolicyResponse) -> String {
         let mut parts = Vec::new();
         if !policy.application_ids.is_empty() {
@@ -4599,7 +4599,7 @@ impl AuthenticationPoliciesConsole<'_> {
     }
 }
 
-/// 認証ポリシーのフォーム入力値（新規作成の初期値・編集時の現在値・入力エラー時の再表示に使う）。
+/// Authentication policy form values (initial values when creating, current values when editing, redisplay on input error).
 pub struct AuthenticationPolicyFormValues {
     pub policy_code: String,
     pub policy_name: String,
@@ -4608,7 +4608,7 @@ pub struct AuthenticationPolicyFormValues {
     pub effect: String,
     pub methods: Vec<String>,
     pub user_verification: bool,
-    /// 対象アプリの内部 ID（改行区切り）。
+    /// Internal IDs of target apps (newline-separated).
     pub application_ids: String,
     pub user_ids: String,
     pub ip_cidrs: String,
@@ -4621,7 +4621,7 @@ impl Default for AuthenticationPolicyFormValues {
         Self {
             policy_code: String::new(),
             policy_name: String::new(),
-            // 既定は末尾寄り（既存ポリシーの評価順を崩さない値から始める）。
+            // Default is near the end (start from a value that does not disturb existing policies' evaluation order).
             priority: "100".to_string(),
             enabled: true,
             effect: "deny".to_string(),
@@ -4646,23 +4646,23 @@ impl AuthenticationPolicyFormValues {
     }
 }
 
-/// アカウント設定リンクの画面（`GET /{tenant_id}/account-setup`。ADR-0062）。
+/// Account setup link screen (`GET /{tenant_id}/account-setup`; ADR-0062).
 ///
-/// 未ログインで開く。`token` はフォームへ持ち回すためだけに渡す（画面には出さない）。
+/// Opened while logged out. `token` is passed only to carry it in the form (not shown on screen).
 #[derive(Template)]
 #[template(path = "account_setup.html")]
 pub struct AccountSetup<'a> {
     pub messages: &'a Messages,
     pub tenant: &'a str,
     pub token: &'a str,
-    /// 誰のリンクか（読めたときだけ）。
+    /// Whose link this is (only when readable).
     pub email: Option<&'a str>,
-    /// パスキーを登録してよいリンクか。
+    /// Whether the link allows registering a passkey.
     pub allows_passkey: bool,
-    /// 設定が終わった表示。
+    /// Shows that setup is finished.
     pub done: bool,
-    /// リンクが死んでいるときの文言キー（理由は言い分けない）。
+    /// Message key when the link is dead (reasons are not distinguished).
     pub fatal_key: Option<&'static str>,
-    /// 入力のやり直しで出す文言キー。
+    /// Message key shown when input must be redone.
     pub error_key: Option<&'static str>,
 }

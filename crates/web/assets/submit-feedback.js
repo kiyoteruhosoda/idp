@@ -1,24 +1,24 @@
-// フォーム送信中であることをボタンで示す（全画面共通）。
+// Indicates on the button that a form is being submitted (common to all screens).
 //
-// サーバレンダリングのフォームは、押してから次のページが描かれるまで画面が変わらない。
-// 押せたのかどうかが分からないと利用者は同じボタンを続けて押すので、押した直後に
-// 押したボタンへ処理中の印を付ける（見た目と DOM 操作は `button-pending.js`）。同じフォームの
-// 2 度目の送信も止める（登録・削除が二重に走るのを防ぐ）。
+// With server-rendered forms the screen does not change between pressing and the next page being drawn.
+// If users can't tell whether the press registered they keep pressing the same button, so right after
+// a press the pressed button gets a busy mark (look and DOM handling live in `button-pending.js`). A second
+// submission of the same form is also stopped (prevents registrations/deletions from running twice).
 //
-// 注意点:
+// Notes:
 //
-// - **確認ダイアログで取り消された送信には印を付けない。** 破壊的操作の確認（console.js）は
-//   `preventDefault()` で送信を止めるため、`defaultPrevented` を見てから印を付ける。
-//   そのためこのスクリプトは console.js より後に読み込む（同じ要素のリスナは登録順に走る）。
-// - **戻るボタンで復元されたページは送信中ではない。** bfcache から戻ると DOM が
-//   そのまま復元されるので、`pageshow` で印を落とす（回りっぱなしのボタンを残さない）。
+// - **Submissions cancelled in a confirmation dialog get no mark.** The destructive-action confirmation (console.js)
+//   stops submission with `preventDefault()`, so the mark is applied only after checking `defaultPrevented`.
+//   Hence this script is loaded after console.js (listeners on the same element run in registration order).
+// - **A page restored by the back button is not submitting.** Coming back from bfcache restores the DOM
+//   as is, so the mark is dropped on `pageshow` (no button left spinning forever).
 (function () {
   'use strict';
 
   var pending = window.idpButtonPending;
   if (!pending) {
-    // `button-pending.js` より先に読み込まれている（テンプレートの script 順が崩れた）。
-    // 印が付かないだけで送信自体は動くため、記録して黙って降りる。
+    // Loaded before `button-pending.js` (the template's script order is broken).
+    // Only the mark is missing and submission itself still works, so log it and bail out quietly.
     if (window.console) {
       window.console.error('button-pending.js must be loaded before submit-feedback.js');
     }

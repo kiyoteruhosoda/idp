@@ -1,16 +1,16 @@
-//! `KEY_ENCRYPTION_KEY` の包み直し（`infrastructure::secret_rewrap`、task #618）の統合テスト。
+//! Integration test for rewrapping `KEY_ENCRYPTION_KEY` (`infrastructure::secret_rewrap`, task #618).
 //!
-//! 共有のテスト DB には他のテストが置いた「暗号文ではない値」（`test-ciphertext` など）があり、
-//! 全部を包み直す道具をそこで流すと他のテストを壊す。そこでテストごとに**使い捨ての DB** を作る
-//! （`TEST_DATABASE_URL` の接続先に root で `CREATE DATABASE`。CI は `MARIADB_ROOT_PASSWORD` を持つ）。
+//! The shared test DB holds "non-ciphertext values" placed by other tests (`test-ciphertext` etc.), and
+//! running a tool that rewraps everything there would break other tests. So each test creates **a throwaway DB**
+//! (`CREATE DATABASE` as root on the `TEST_DATABASE_URL` host; CI has `MARIADB_ROOT_PASSWORD`).
 //!
-//! 固定すること:
-//! 1. 途中で落ちたら全部が流す前のまま（＝流す前に取った退避と同じで、古い鍵で全部開ける）
-//! 2. 包み直したあとは全部が新しい鍵で開け、平文は元のまま。包んでいない値（パスキーの JSON・
-//!    リカバリーコードのハッシュ）には触れない
-//! 3. 二重に掛けない（2 回目は何も書かずに「済み」）
-//! 4. 退避の値を書き戻せば、古い鍵で全部開ける状態へ戻り、もう一度流せる
-//! 5. どちらの鍵でも開かない値・古い鍵と新しい鍵の混在があれば、何も書かずに止まる
+//! What is pinned:
+//! 1. If it fails midway, everything is as before the run (= same as the backup taken before; all open with the old key)
+//! 2. After rewrapping, everything opens with the new key and the plain text is unchanged. Unwrapped values (passkey JSON,
+//!    recovery code hashes) are not touched
+//! 3. No double application (the second run writes nothing and reports "done")
+//! 4. Writing back the backup values restores the state where everything opens with the old key, and it can run again
+//! 5. If a value opens with neither key, or old-key and new-key values are mixed, it stops without writing anything
 
 use assay_api::infrastructure::crypto;
 use assay_api::infrastructure::secret_rewrap::{
@@ -25,7 +25,7 @@ const OLD_KEY: [u8; 32] = *b"rewrap-test-old-key-0123456789!!";
 const NEW_KEY: [u8; 32] = *b"rewrap-test-new-key-0123456789!!";
 const OTHER_KEY: [u8; 32] = *b"rewrap-test-other-key-012345678!";
 
-/// テストごとの使い捨て DB。`drop_database` で片付ける。
+/// Per-test throwaway DB. Cleaned up with `drop_database`.
 struct ThrowawayDb {
     admin: MySqlPool,
     pool: MySqlPool,
@@ -41,8 +41,8 @@ impl ThrowawayDb {
             }
             panic!("TEST_DATABASE_URL is required for {test_name}");
         };
-        // DB の接続先があるのに root が無いときは、飛ばさずに落とす（黙って飛ばすと、CI で走っていない
-        // のに緑に見える）。
+        // When a DB host is given but root is not, fail instead of skipping (skipping silently would look green
+        // in CI without having run).
         let root_password = std::env::var("MARIADB_ROOT_PASSWORD").unwrap_or_else(|_| {
             panic!("MARIADB_ROOT_PASSWORD is required for {test_name} (it creates a throwaway database)")
         });
@@ -92,8 +92,8 @@ impl ThrowawayDb {
     }
 }
 
-/// 包んでいる値と、包んでいない値（同じ列に載る別の種別）を一通り置く。
-/// 返すのは包んだ平文（キー → 平文）の一覧。
+/// Places one of each wrapped value and unwrapped value (a different kind in the same column).
+/// Returns the list of wrapped plain texts (key -> plain text).
 async fn seed(pool: &MySqlPool) -> Vec<(String, Vec<u8>)> {
     let root: String = sqlx::query_scalar("SELECT id FROM tenants WHERE parent_tenant_id IS NULL")
         .fetch_one(pool)
@@ -141,7 +141,7 @@ async fn seed(pool: &MySqlPool) -> Vec<(String, Vec<u8>)> {
         .await
         .expect("insert totp");
     }
-    // 包んでいない値: パスキーの JSON とリカバリーコードのハッシュ。
+    // Unwrapped values: passkey JSON and recovery code hashes.
     sqlx::query(
         "INSERT INTO user_authenticators \
          (id, user_id, authenticator_type, status, secret_encrypted, credential_id, created_at) \
@@ -233,7 +233,7 @@ async fn seed(pool: &MySqlPool) -> Vec<(String, Vec<u8>)> {
     plaintexts
 }
 
-/// 包む値が載る列を丸ごと写す（流す前に取る「退避」の代わり）。行は `(表, キー, 値)`。
+/// Copies every column that holds wrapped values (in place of the "backup" taken before the run). Rows are `(table, key, value)`.
 async fn snapshot(pool: &MySqlPool) -> Vec<(String, String, Option<String>)> {
     let queries = [
         ("signing_keys", "SELECT kid AS k, private_key_encrypted AS v FROM signing_keys"),
@@ -262,7 +262,7 @@ async fn snapshot(pool: &MySqlPool) -> Vec<(String, String, Option<String>)> {
     out
 }
 
-/// 退避の値を書き戻す（本番では dump を戻す。ここでは包む値の列だけを戻せば足りる）。
+/// Writes back the backup values (in production, restore the dump; here restoring only the wrapped columns suffices).
 async fn restore(pool: &MySqlPool, backup: &[(String, String, Option<String>)]) {
     for (table, key, value) in backup {
         let sql = match table.as_str() {
@@ -291,7 +291,7 @@ async fn restore(pool: &MySqlPool, backup: &[(String, String, Option<String>)]) 
     }
 }
 
-/// `seed` が包んだ値が全部 `key` で開き、平文が元のままか。
+/// Whether every value `seed` wrapped opens with `key` and the plain text is unchanged.
 fn all_open_with(
     snap: &[(String, String, Option<String>)],
     plaintexts: &[(String, Vec<u8>)],
@@ -307,7 +307,7 @@ fn all_open_with(
     })
 }
 
-/// 包んでいない値（`seed` の平文一覧に無い行）だけを取り出す。
+/// Extracts only the unwrapped values (rows not in `seed`'s plain-text list).
 fn untouched_rows(
     snap: &[(String, String, Option<String>)],
     plaintexts: &[(String, Vec<u8>)],
@@ -356,7 +356,7 @@ async fn an_interrupted_rewrap_leaves_everything_as_it_was_before() {
         assert_eq!(login_requests(&db.pool).await, 1);
     }
 
-    // 落ちたあとでも、そのままもう一度流せば包み直せる。
+    // Even after a failure, simply running it again rewraps.
     let outcome = rewrap_secrets(&db.pool, &OLD_KEY, &NEW_KEY, RewrapMode::Apply)
         .await
         .expect("rewrap after the interruption");
@@ -378,7 +378,7 @@ async fn rewrap_moves_every_secret_to_the_new_key_once() {
     let plaintexts = seed(&db.pool).await;
     let before = snapshot(&db.pool).await;
 
-    // 数えるだけなら何も書かない。
+    // Counting alone writes nothing.
     let checked = rewrap_secrets(&db.pool, &OLD_KEY, &NEW_KEY, RewrapMode::Check)
         .await
         .expect("check");
@@ -422,7 +422,7 @@ async fn rewrap_moves_every_secret_to_the_new_key_once() {
         "values that are not wrapped by the key (passkey JSON, hashes, plain settings) stay as they were"
     );
 
-    // 二重に掛けない: 2 回目は何も書かない。
+    // No double application: the second run writes nothing.
     let again = rewrap_secrets(&db.pool, &OLD_KEY, &NEW_KEY, RewrapMode::Apply)
         .await
         .expect("second run");
@@ -448,13 +448,13 @@ async fn restoring_the_backup_brings_back_the_old_key_state() {
         .expect("apply");
     assert_ne!(snapshot(&db.pool).await, backup);
 
-    // 確かめで問題が見つかった ——退避を戻せば、古い鍵で全部開ける元の状態に戻る。
+    // The check found a problem: restoring the backup returns to the original state where all open with the old key.
     restore(&db.pool, &backup).await;
     let restored = snapshot(&db.pool).await;
     assert_eq!(restored, backup);
     assert!(all_open_with(&restored, &plaintexts, &OLD_KEY));
 
-    // 戻したあとは、もう一度流し直せる。
+    // After restoring, it can be run again.
     let outcome = rewrap_secrets(&db.pool, &OLD_KEY, &NEW_KEY, RewrapMode::Apply)
         .await
         .expect("rewrap again");
@@ -475,13 +475,13 @@ async fn unreadable_or_mixed_secrets_stop_without_writing() {
     };
     seed(&db.pool).await;
 
-    // 同じ鍵では流さない。
+    // Do not run with the same key.
     let err = rewrap_secrets(&db.pool, &OLD_KEY, &OLD_KEY, RewrapMode::Apply)
         .await
         .expect_err("same key");
     assert!(err.to_string().contains("same"), "{err}");
 
-    // どちらの鍵でも開かない値がある。
+    // There is a value that opens with neither key.
     sqlx::query(
         "INSERT INTO system_settings (setting_key, setting_value, is_secret) \
          VALUES ('rewrap.unknown', ?, 1)",
@@ -498,7 +498,7 @@ async fn unreadable_or_mixed_secrets_stop_without_writing() {
     assert_eq!(snapshot(&db.pool).await, before);
     assert_eq!(login_requests(&db.pool).await, 1);
 
-    // 古い鍵の値と新しい鍵の値が混ざっている。
+    // Old-key values and new-key values are mixed.
     sqlx::query(
         "UPDATE system_settings SET setting_value = ? WHERE setting_key = 'rewrap.unknown'",
     )

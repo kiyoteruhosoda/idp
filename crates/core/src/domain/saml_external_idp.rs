@@ -1,23 +1,26 @@
-//! 外部 SAML IdP を認証元として使う（SP 側。AP12。ADR-0027）。
+//! Using an external SAML IdP as an authentication source (SP side; AP12; ADR-0027).
 //!
-//! assay を SAML の **IdP として**振る舞わせる側は [`crate::domain::saml_response`] にある。
-//! ここは向きが逆で、外部の SAML IdP へ利用者を送り、返ってきたアサーションを検証して
-//! 「誰が認証されたか」を取り出す。
+//! The side that makes assay act **as a SAML IdP** is in [`crate::domain::saml_response`]. Here the
+//! direction is reversed: users are sent to an external SAML IdP, and the returned assertion is
+//! verified to extract "who was authenticated".
 //!
-//! # OIDC との違い
+//! # Differences from OIDC
 //!
-//! - サーバ間通信が無い。やり取りはすべてブラウザ経由（HTTP-Redirect で送り、HTTP-POST で
-//!   受ける）なので、[`crate::domain::external_oidc_port`] に当たるポートは要らない。
-//! - `nonce` に当たるものが無い。リプレイ防止は `InResponseTo`（送った AuthnRequest の ID）と
-//!   `RelayState` の単回消費、`NotBefore` / `NotOnOrAfter` の時刻検証で行う。
-//! - 真正性は**署名だけ**が担保する。TLS で運ばれてくるわけではない（ブラウザが POST する）ので、
-//!   署名を確かめずに読んだ値は攻撃者が書いたものと区別できない。
+//! - No server-to-server communication. Everything goes through the browser (sent with
+//!   HTTP-Redirect, received with HTTP-POST), so no port like [`crate::domain::external_oidc_port`]
+//!   is needed.
+//! - Nothing corresponds to `nonce`. Replay prevention relies on `InResponseTo` (ID of the
+//!   AuthnRequest sent), single-use `RelayState`, and time checks of `NotBefore` / `NotOnOrAfter`.
+//! - Authenticity rests **only on the signature**. It is not carried over TLS (the browser POSTs
+//!   it), so values read without checking the signature are indistinguishable from what an attacker
+//!   wrote.
 //!
-//! # 読む順番
+//! # Reading order
 //!
-//! [`consume_response`] は「検証してから読む」を型で守らせる。まず署名を検証し、**検証済みの
-//! 要素の ID** を得てから、その ID の要素の中だけを読み直す。検証と読み出しで別の部分木を
-//! 歩くと、署名ラッピング（XSW）でいくらでも騙される。
+//! [`consume_response`] enforces "verify, then read" by type. It first verifies the signature,
+//! obtains **the ID of the verified element**, and then re-reads only inside the element with that
+//! ID. Walking different subtrees for verification and reading invites endless deception by
+//! signature wrapping (XSW).
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::xml_signature::verify_enveloped_signature;
@@ -30,35 +33,36 @@ use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::io::Write as _;
 
-/// 受け取る XML の上限（`saml_authn_request` と同じ理由・同じ値）。
+/// Upper bound on received XML (same reason and value as `saml_authn_request`).
 const MAX_XML_BYTES: usize = 512 * 1024;
 const STATUS_SUCCESS: &str = "urn:oasis:names:tc:SAML:2.0:status:Success";
-/// 時刻検証の許容ずれ。IdP と assay の時計は完全には合わない。
+/// Allowed skew for time checks. The clocks of the IdP and assay never match perfectly.
 const CLOCK_SKEW_SECS: i64 = 120;
-/// 既定の `NameIDFormat`。IdP 側の設定に合わせて上書きできる。
+/// Default `NameIDFormat`. Can be overridden to match the IdP's settings.
 pub const NAME_ID_FORMAT_UNSPECIFIED: &str =
     "urn:oasis:names:tc:SAML:2.0:nameid-format:unspecified";
 pub const BINDING_HTTP_POST: &str = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST";
 
-/// `AuthnRequest` を組み立てる入力。
+/// Inputs for building an `AuthnRequest`.
 pub struct AuthnRequestInput<'a> {
-    /// 採番済みの要求 ID（`InResponseTo` の照合に使うので保存すること）。
+    /// The numbered request ID (store it; it is used to match `InResponseTo`).
     pub request_id: &'a str,
     pub issued_at: DateTime<Utc>,
-    /// assay の SP としての entityID。
+    /// assay's entityID as an SP.
     pub sp_entity_id: &'a str,
-    /// アサーションを受け取る URL（ACS）。
+    /// URL receiving the assertion (ACS).
     pub acs_url: &'a str,
-    /// 外部 IdP の SSO エンドポイント（`Destination`）。
+    /// The external IdP's SSO endpoint (`Destination`).
     pub sso_url: &'a str,
-    /// 要求する `NameIDFormat`。
+    /// Requested `NameIDFormat`.
     pub name_id_format: &'a str,
 }
 
-/// `AuthnRequest` の XML を組み立てる。
+/// Builds the `AuthnRequest` XML.
 ///
-/// 署名は付けない（ADR-0027）。SP 側の鍵を IdP に登録・更新する運用が要る一方、得られるのは
-/// 「要求の出所の保証」だけで、アサーションの真正性は応答の署名検証で担保されている。
+/// Not signed (ADR-0027). It would require registering / rotating the SP key at the IdP, while all
+/// it gives is "assurance of the request's origin"; assertion authenticity is ensured by verifying
+/// the response signature.
 pub fn build_authn_request_xml(input: &AuthnRequestInput<'_>) -> String {
     let issued = input.issued_at.format("%Y-%m-%dT%H:%M:%SZ");
     format!(
@@ -82,9 +86,9 @@ pub fn build_authn_request_xml(input: &AuthnRequestInput<'_>) -> String {
     )
 }
 
-/// HTTP-Redirect binding の送信先 URL を組み立てる（`SAMLRequest` = base64(raw DEFLATE(XML))）。
+/// Builds the HTTP-Redirect binding destination URL (`SAMLRequest` = base64(raw DEFLATE(XML))).
 ///
-/// 署名しないため `SigAlg` / `Signature` は付けない。
+/// Not signed, so no `SigAlg` / `Signature`.
 pub fn redirect_binding_location(
     sso_url: &str,
     authn_request_xml: &str,
@@ -108,38 +112,40 @@ pub fn redirect_binding_location(
     ))
 }
 
-/// 検証済みアサーションから取り出した主張。
+/// Claims extracted from a verified assertion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedAssertion {
-    /// `Issuer` 本文（IdP の entityID）。設定の `issuer` と完全一致すること。
+    /// `Issuer` text (the IdP's entityID). Must exactly match the configured `issuer`.
     pub issuer: String,
-    /// `Subject/NameID` 本文。外部側の同一性（OIDC の `sub` に当たる）。
+    /// `Subject/NameID` text. The external identity (equivalent to OIDC's `sub`).
     pub name_id: String,
-    /// 属性から取り出したメール（`email` / `mail` / EduPerson の `urn:oid:0.9.2342...`）。
+    /// Email taken from attributes (`email` / `mail` / EduPerson `urn:oid:0.9.2342...`).
     pub email: Option<String>,
-    /// 属性から取り出した表示名。
+    /// Display name taken from attributes.
     pub display_name: Option<String>,
-    /// `SubjectConfirmationData/@InResponseTo`（送った AuthnRequest の ID）。
+    /// `SubjectConfirmationData/@InResponseTo` (ID of the AuthnRequest sent).
     pub in_response_to: Option<String>,
 }
 
-/// 応答の検証に使う設定と文脈。
+/// Settings and context used to verify the response.
 pub struct ResponseVerification<'a> {
-    /// 設定された IdP の entityID。アサーションの `Issuer` と完全一致すること。
+    /// The configured IdP's entityID. Must exactly match the assertion's `Issuer`.
     pub expected_issuer: &'a str,
-    /// assay の SP としての entityID。`AudienceRestriction` に含まれること。
+    /// assay's entityID as an SP. Must be included in `AudienceRestriction`.
     pub sp_entity_id: &'a str,
-    /// 自分が送った `AuthnRequest` の ID。`InResponseTo` と一致すること。
+    /// ID of the `AuthnRequest` we sent. Must match `InResponseTo`.
     pub expected_in_response_to: &'a str,
-    /// 署名検証に使う証明書（base64 DER。複数可 = 更新期間の新旧）。
+    /// Certificates for signature verification (base64 DER; several allowed = old and new during
+    /// rollover).
     pub certificates: &'a [String],
     pub now: DateTime<Utc>,
 }
 
-/// HTTP-POST binding の `SAMLResponse`（base64(XML)）を検証して主張を取り出す。
+/// Verifies an HTTP-POST binding `SAMLResponse` (base64(XML)) and extracts the claims.
 ///
-/// 検証の順番は「署名 → 状態 → 時刻・宛先」。署名の前に読んだ値は攻撃者が書いたものと
-/// 区別できないので、**署名で覆われた要素の中からしか読まない**。
+/// Verification order is "signature → status → time / audience". Values read before the signature
+/// are indistinguishable from what an attacker wrote, so **reading happens only inside elements
+/// covered by the signature**.
 pub fn consume_response(
     saml_response_b64: &str,
     verification: &ResponseVerification<'_>,
@@ -147,8 +153,8 @@ pub fn consume_response(
     let xml = decode_post_binding(saml_response_b64)?;
     let outline = outline_response(&xml)?;
 
-    // 1. アサーションはちょうど 1 つ。0 個・2 個以上は拒否する（複数あると「どれを読んだか」と
-    //    「どれが署名されたか」がずれる余地が生まれる ＝ XSW の入口）。
+    // 1. Exactly one assertion. Zero or two or more are refused (with several, "which was read" and
+    //    "which was signed" could diverge = an entry point for XSW).
     if outline.assertion_ids.len() != 1 {
         return Err(DomainError::InvalidValue(format!(
             "the response must carry exactly one assertion, found {}",
@@ -157,14 +163,15 @@ pub fn consume_response(
     }
     let assertion_id = outline.assertion_ids[0].clone();
 
-    // 2. 署名。アサーション自身に掛かっているのが基本だが、Response 全体に掛ける IdP もある。
-    //    Response 側の署名で通す場合、そのアサーションが**署名された Response の中の**もので
-    //    あることは、Response が署名対象＝アサーションはその子、という構造で担保される
-    //    （`outline` は Response 直下のアサーションだけを数えている）。
+    // 2. Signature. It is normally on the assertion itself, but some IdPs sign the whole Response.
+    //    When passing via the Response signature, that the assertion is **inside the signed
+    //    Response** is ensured by the structure: the Response is signed and the assertion is its
+    //    child (`outline` counts only assertions directly under the Response).
     //
-    //    アサーション側の検証に失敗したときは、**その**理由を返す（Response 側の検証に落ちた
-    //    ときの「署名が無い」で上書きしない）。改竄されたアサーションの理由が「Response に
-    //    署名が無い」と出ると、運用者が原因を追えない。
+    //    When the assertion-side verification fails, return **that** reason (do not overwrite
+    //    it with "no signature" from the failed Response-side verification). If the reason for a
+    //    tampered assertion showed as "Response has no signature", operators could not trace the
+    //    cause.
     if let Err(assertion_error) =
         verify_enveloped_signature(&xml, &assertion_id, verification.certificates)
     {
@@ -176,8 +183,8 @@ pub fn consume_response(
         }
     }
 
-    // 3. 状態コード。`Success` 以外は「利用者が拒否された・IdP が失敗した」なので、
-    //    アサーションを読む前に落とす。
+    // 3. Status code. Anything other than `Success` means "the user was refused / the IdP failed",
+    //    so drop it before reading the assertion.
     if outline.status_code.as_deref() != Some(STATUS_SUCCESS) {
         return Err(DomainError::InvalidValue(format!(
             "the identity provider returned status {}",
@@ -187,7 +194,7 @@ pub fn consume_response(
         )));
     }
 
-    // 4. 検証済みアサーションの中だけを読み直す。
+    // 4. Re-read only inside the verified assertion.
     let assertion = read_assertion(&xml, &assertion_id)?;
 
     if assertion.issuer != verification.expected_issuer {
@@ -216,8 +223,9 @@ pub fn consume_response(
                 "the assertion answers a different authentication request".to_string(),
             ))
         }
-        // IdP-initiated（要求していないのに来た応答）は受け付けない。受け付けると、攻撃者が
-        // 用意したアサーションを被害者のブラウザから POST させるだけでログインが成立する。
+        // IdP-initiated responses (arriving without a request) are not accepted. Accepting them
+        // would let an attacker complete a login just by having the victim's browser POST an
+        // assertion the attacker prepared.
         None => {
             return Err(DomainError::InvalidValue(
                 "unsolicited assertions are not accepted".to_string(),
@@ -253,10 +261,11 @@ pub fn consume_response(
     })
 }
 
-/// 署名検証の前に読む、構造だけの情報。**値は使わない**（署名で覆われていないため）。
+/// Structure-only information read before signature verification. **Values are not used** (they are
+/// not covered by the signature).
 struct ResponseOutline {
     response_id: Option<String>,
-    /// `Response` 直下の `Assertion` の `ID`。
+    /// `ID` of the `Assertion` directly under `Response`.
     assertion_ids: Vec<String>,
     status_code: Option<String>,
 }
@@ -332,7 +341,7 @@ fn outline_response(xml: &str) -> Result<ResponseOutline> {
     })
 }
 
-/// 検証済みアサーションから読み出した値。
+/// Values read from a verified assertion.
 struct AssertionContents {
     issuer: String,
     name_id: String,
@@ -344,7 +353,7 @@ struct AssertionContents {
     display_name: Option<String>,
 }
 
-/// メールとして扱う属性名（`Name` / `FriendlyName` のどちらでも一致させる）。
+/// Attribute names treated as email (matched against either `Name` or `FriendlyName`).
 const EMAIL_ATTRIBUTES: [&str; 4] = [
     "email",
     "mail",
@@ -365,8 +374,8 @@ fn read_assertion(xml: &str, assertion_id: &str) -> Result<AssertionContents> {
 
     let mut depth = 0usize;
     let mut assertion_depth: Option<usize> = None;
-    // アサーションの中の位置。`Issuer` は Assertion 直下のものだけを読む（`Signature` の中や
-    // Response の `Issuer` を拾わない）。
+    // Position within the assertion. Only the `Issuer` directly under Assertion is read (not ones
+    // inside `Signature` or the Response's `Issuer`).
     let mut path: Vec<String> = Vec::new();
     let mut capture: Option<Capture> = None;
     let mut captured = String::new();
@@ -444,7 +453,7 @@ fn read_assertion(xml: &str, assertion_id: &str) -> Result<AssertionContents> {
                 assertion_depth = Some(depth);
             }
         } else {
-            // 署名の中は読まない（`ds:Signature` の中の値は主張ではない）。
+            // Do not read inside the signature (values inside `ds:Signature` are not claims).
             let in_signature = path.iter().any(|p| p == "Signature");
             if !in_signature {
                 match local.as_str() {
@@ -578,7 +587,7 @@ fn finish_capture(
     }
 }
 
-/// HTTP-POST binding の `SAMLResponse`（base64(XML)）をデコードする。
+/// Decodes the HTTP-POST binding `SAMLResponse` (base64(XML)).
 fn decode_post_binding(value: &str) -> Result<String> {
     let cleaned: String = value
         .chars()
@@ -637,9 +646,10 @@ mod tests {
     };
     use chrono::TimeZone;
 
-    /// テスト専用の自己署名証明書と、その鍵（PKCS#1 PEM）。`openssl req -x509` で作った実物で、
-    /// **本番のどこからも参照されない**。署名は IdP 側の生成器（`saml_response`）に作らせ、
-    /// SP 側の検証器で確かめる——正準化が両者で一致していることまで含めて確かめられる。
+    /// A self-signed certificate for tests only and its key (PKCS#1 PEM). Real ones made with
+    /// `openssl req -x509`, **referenced from nowhere in production**. Signatures are made by the
+    /// IdP-side generator (`saml_response`) and checked by the SP-side verifier — this also
+    /// confirms that canonicalization matches between the two.
     const TEST_KEY_PEM: &str = concat!(
         "-----BEGIN RSA PRIVATE KEY-----\n",
         "MIIEpAIBAAKCAQEAtNcidptZa/sP2KxNTbEXiEYxtt4F90gKhG3xx/uAcHlHUdmW\n",
@@ -694,7 +704,8 @@ mod tests {
         Utc.with_ymd_and_hms(2026, 8, 10, 12, 0, 0).unwrap()
     }
 
-    /// IdP 側の生成器で署名付き応答を作り、base64 して返す（HTTP-POST binding の形）。
+    /// Builds a signed response with the IdP-side generator and returns it base64-encoded
+    /// (HTTP-POST binding form).
     fn signed_response(in_response_to: Option<&str>, email: Option<&str>) -> String {
         let signer = SamlSigner::from_pem("RS256", TEST_KEY_PEM).expect("signer");
         let xml = build_signed_response_xml(
@@ -729,8 +740,9 @@ mod tests {
         }
     }
 
-    /// 本物の署名付き応答（IdP 側の生成器が作ったもの）を検証して主張を取り出せる。
-    /// これが通るということは、生成側と検証側の**正準化が一致している**ということでもある。
+    /// A real signed response (made by the IdP-side generator) verifies and its claims can be
+    /// extracted. That this passes also means the generator and verifier **agree on
+    /// canonicalization**.
     #[test]
     fn a_signed_response_round_trips_through_the_verifier() {
         let certificates = vec![TEST_CERTIFICATE.to_string()];
@@ -743,23 +755,24 @@ mod tests {
         assert_eq!(assertion.in_response_to.as_deref(), Some(REQUEST_ID));
     }
 
-    /// 1 バイトでも変えれば通らない（署名が本当に効いている）。
+    /// Changing even one byte makes it fail (the signature really works).
     #[test]
     fn a_tampered_assertion_is_rejected() {
         let certificates = vec![TEST_CERTIFICATE.to_string()];
         let response = signed_response(Some(REQUEST_ID), Some("user@example.com"));
         let xml = String::from_utf8(STANDARD.decode(&response).unwrap()).unwrap();
         let tampered = xml.replace("external-subject-1", "external-subject-2");
-        assert_ne!(tampered, xml, "書き換えが効いていない");
+        assert_ne!(tampered, xml, "the tampering did not take effect");
         let err = consume_response(&STANDARD.encode(tampered), &verification(&certificates))
             .expect_err("a tampered assertion must be rejected");
         assert!(format!("{err}").contains("digest"), "{err}");
     }
 
-    /// 別の鍵で署名された応答は通らない（証明書が合わない）。
+    /// A response signed with a different key fails (the certificate does not match).
     #[test]
     fn a_response_signed_by_another_key_is_rejected() {
-        // 本物の証明書ではなく、別の（この鍵とは無関係な）証明書を設定した状態。
+        // A state where a different certificate (unrelated to this key) is configured instead of
+        // the real one.
         let (other_private_pem, _) = crate::domain::jwt::generate_rsa_keypair().expect("keypair");
         let signer = SamlSigner::from_pem("RS256", &other_private_pem).expect("signer");
         let xml = build_signed_response_xml(
@@ -788,8 +801,9 @@ mod tests {
         );
     }
 
-    /// 要求していない応答（`InResponseTo` 無し）は受け付けない。受け付けると、攻撃者が用意した
-    /// アサーションを被害者のブラウザから POST させるだけでログインが成立する。
+    /// Unrequested responses (no `InResponseTo`) are not accepted. Accepting them would let an
+    /// attacker complete a login just by having the victim's browser POST an assertion the attacker
+    /// prepared.
     #[test]
     fn unsolicited_responses_are_rejected() {
         let certificates = vec![TEST_CERTIFICATE.to_string()];
@@ -799,7 +813,7 @@ mod tests {
         assert!(format!("{err}").contains("unsolicited"), "{err}");
     }
 
-    /// 別の要求への応答は使い回せない。
+    /// A response to a different request cannot be reused.
     #[test]
     fn a_response_to_a_different_request_is_rejected() {
         let certificates = vec![TEST_CERTIFICATE.to_string()];
@@ -812,7 +826,7 @@ mod tests {
         );
     }
 
-    /// 期限切れのアサーションは通らない。
+    /// Expired assertions fail.
     #[test]
     fn an_expired_assertion_is_rejected() {
         let certificates = vec![TEST_CERTIFICATE.to_string()];
@@ -824,7 +838,8 @@ mod tests {
         assert!(format!("{err}").contains("expired"), "{err}");
     }
 
-    /// 設定と違う発行者のアサーションは通らない（証明書が合っていても）。
+    /// Assertions from an issuer other than the configured one fail (even if the certificate
+    /// matches).
     #[test]
     fn an_assertion_from_another_issuer_is_rejected() {
         let certificates = vec![TEST_CERTIFICATE.to_string()];
@@ -834,7 +849,7 @@ mod tests {
         assert!(consume_response(&response, &verification).is_err());
     }
 
-    /// 自分宛でないアサーション（`Audience` が違う）は通らない。
+    /// Assertions not addressed to us (different `Audience`) fail.
     #[test]
     fn an_assertion_addressed_to_another_service_provider_is_rejected() {
         let certificates = vec![TEST_CERTIFICATE.to_string()];
@@ -845,7 +860,7 @@ mod tests {
         assert!(format!("{err}").contains("addressed"), "{err}");
     }
 
-    /// `AuthnRequest` は DEFLATE + base64 で送信先へ載る（HTTP-Redirect binding）。
+    /// The `AuthnRequest` is put on the destination with DEFLATE + base64 (HTTP-Redirect binding).
     #[test]
     fn the_authn_request_is_deflated_into_the_redirect_location() {
         let xml = build_authn_request_xml(&AuthnRequestInput {
@@ -865,7 +880,7 @@ mod tests {
         assert!(location.starts_with("https://idp.corp.example.com/sso?SAMLRequest="));
         assert!(location.contains("&RelayState=relay%2D1"), "{location}");
 
-        // 送った XML は受け手が展開して読める形になっている。
+        // The XML sent is in a form the receiver can inflate and read.
         let encoded = location
             .split("SAMLRequest=")
             .nth(1)

@@ -1,23 +1,23 @@
-//! `UserPermissionRepository` のキャッシュデコレータ（ADR-0009 §7）。
+//! Caching decorator for `UserPermissionRepository` (ADR-0009 §7).
 //!
-//! §4 の権限判定（`has_permission`）はリクエスト毎に評価されるホットパス（`(user_id, permission_code,
-//! tenant_id)` の存在確認）である。汎用 TTL キャッシュ（[`crate::domain::cache::Cache`]）で判定結果を
-//! キャッシュし、`grant` / `revoke` 時に該当エントリを invalidate する。判定・付与・剥奪は同一インスタンス
-//! を共有するため、付与直後の反映漏れ（stale allow/deny）を避けられる。
+//! The §4 permission check (`has_permission`) is a hot path evaluated per request (an existence check of `(user_id, permission_code,
+//! tenant_id)`). Its result is cached with the generic TTL cache ([`crate::domain::cache::Cache`]),
+//! and the matching entry is invalidated on `grant` / `revoke`. Check, grant and revoke share the same instance,
+//! so missed updates right after a grant (stale allow/deny) are avoided.
 //!
-//! 付与可能な権限コードの一覧（`list_available_codes`。`permissions` マスタの全件読み）は、管理コンソールの
-//! 画面描画ごとに `whoami` が含意の展開先として引く。マスタはマイグレーションでしか変わらず、
-//! マスタへ行を足すマイグレーションはそれを使う新しい版の起動と組で入る（ADR-0004。ローリング中に残る
-//! 旧い版は旧い一覧のままだが、その版のコードとは食い違わない）ので、**プロセスの寿命だけ持つ**
-//! （TTL も invalidation も持たない。最初に成功した結果を持ち続け、失敗は持たずに次の呼び出しで引き直す）。
+//! The list of grantable permission codes (`list_available_codes`, a full read of the `permissions` master) is looked up
+//! by `whoami` on every admin console render as the target of implication expansion. The master only changes through migrations,
+//! and a migration adding master rows ships together with the startup of the new version that uses it (ADR-0004; an old version
+//! left during a rolling deploy keeps the old list, but that doesn't disagree with that version's code), so it is **kept for the process lifetime**
+//! (no TTL or invalidation; the first successful result is kept, and failures are not kept but retried on the next call).
 //!
-//! 利用者ごとの参照系のうち `has_permission` のみをキャッシュする。`list_codes_for_user` は素通しする
-//! （キャッシュしない）。ADR-0037 以降このメソッドは管理トークンの発行原資であり、管理コンソールの
-//! **リクエスト毎**に呼ばれる（`AdminAccessService::resolve_session_grant`）が、そこで得た権限は
-//! トークンの寿命だけ持ち回されるため、**発行時点の値が古いと剥奪の効きがそのぶん遅れる**。
-//! 「交換の度に引き直すから剥奪が即座に効く」という ADR-0037 決定 2 の前提を保つために、
-//! ここは意図してキャッシュしない（管理コンソールの流量が少ないことが前提。ADR-0037 却下案参照）。
-//! DIP を保つため、内側の実装は trait オブジェクトとして注入する（sqlx 実装に限定しない）。
+//! Of the per-user lookups, only `has_permission` is cached. `list_codes_for_user` passes through
+//! (not cached). Since ADR-0037 this method is the source for issuing admin tokens, called on **every admin console
+//! request** (`AdminAccessService::resolve_session_grant`), and the permissions obtained there are
+//! carried for the token's lifetime, so **a stale value at issuance delays revocation taking effect by that much**.
+//! To keep the premise of ADR-0037 decision 2, "revocation takes effect immediately because it is re-read on every exchange",
+//! this is intentionally not cached (assuming low admin console traffic; see ADR-0037's rejected alternatives).
+//! To keep DIP, the inner implementation is injected as a trait object (not limited to the sqlx implementation).
 
 use crate::domain::cache::Cache;
 use crate::domain::error::Result;
@@ -29,7 +29,7 @@ use std::sync::Arc;
 use tokio::sync::OnceCell;
 use uuid::Uuid;
 
-/// `has_permission` の判定結果をキャッシュするキー（scope→権限解決のキー空間）。
+/// Key for caching `has_permission` results (the key space of scope -> permission resolution).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PermissionKey {
     pub tenant_id: TenantId,
@@ -40,7 +40,7 @@ pub struct PermissionKey {
 pub struct CachedUserPermissionRepository {
     inner: Arc<dyn UserPermissionRepository>,
     cache: Arc<dyn Cache<PermissionKey, bool>>,
-    /// `permissions` マスタの全件（プロセス寿命。モジュール注記参照）。
+    /// All rows of the `permissions` master (process lifetime; see the module notes).
     available_codes: OnceCell<Vec<String>>,
 }
 
@@ -68,7 +68,7 @@ impl CachedUserPermissionRepository {
 #[async_trait]
 impl UserPermissionRepository for CachedUserPermissionRepository {
     async fn list_available_codes(&self) -> Result<Vec<String>> {
-        // 同時の初回呼び出しは 1 本に束ねられ、失敗（Err）はセルに入らない。
+        // Concurrent first calls are coalesced into one, and failures (Err) are not stored in the cell.
         self.available_codes
             .get_or_try_init(|| self.inner.list_available_codes())
             .await
@@ -80,7 +80,7 @@ impl UserPermissionRepository for CachedUserPermissionRepository {
     }
 
     async fn list_scoped_codes_for_user(&self, user_id: Uuid) -> Result<Vec<(TenantId, String)>> {
-        // 口座の操作の前の確認に使う。古い結果で許さないよう、キャッシュを通さない。
+        // Used for the check before account operations. Bypasses the cache so stale results don't allow it.
         self.inner.list_scoped_codes_for_user(user_id).await
     }
 
@@ -104,14 +104,14 @@ impl UserPermissionRepository for CachedUserPermissionRepository {
         self.inner
             .grant(tenant_id, user_id, code, granted_at)
             .await?;
-        // 付与を判定へ即時反映する（stale deny を避ける）。
+        // Reflect grants in checks immediately (avoids stale deny).
         self.cache.invalidate(&Self::key(tenant_id, user_id, code));
         Ok(())
     }
 
     async fn revoke(&self, tenant_id: TenantId, user_id: Uuid, code: &str) -> Result<()> {
         self.inner.revoke(tenant_id, user_id, code).await?;
-        // 剥奪を判定へ即時反映する（stale allow を避ける）。
+        // Reflect revocations in checks immediately (avoids stale allow).
         self.cache.invalidate(&Self::key(tenant_id, user_id, code));
         Ok(())
     }
@@ -125,7 +125,7 @@ impl UserPermissionRepository for CachedUserPermissionRepository {
             .inner
             .revoke_all_for_user_in_tenant(tenant_id, user_id)
             .await?;
-        // 一括剥奪を判定へ即時反映する（stale allow を避ける）。
+        // Reflect bulk revocations in checks immediately (avoids stale allow).
         for code in &revoked {
             self.cache.invalidate(&Self::key(tenant_id, user_id, code));
         }
@@ -148,13 +148,13 @@ mod tests {
         }
     }
 
-    /// 呼び出し回数を数え、保有状態を保持するフェイク。
+    /// Fake that counts calls and holds the held state.
     #[derive(Default)]
     struct CountingPermissions {
         granted: Mutex<Vec<(TenantId, Uuid, String)>>,
         has_calls: AtomicUsize,
         available_calls: AtomicUsize,
-        /// 残りこの回数だけ `list_available_codes` を失敗させる（失敗を持ち続けないことの確認用）。
+        /// Make `list_available_codes` fail this many more times (to check failures are not kept).
         available_failures: AtomicUsize,
     }
     #[async_trait]
@@ -277,7 +277,7 @@ mod tests {
             .has_permission(tenant, user, "idp.tenant.admin")
             .await
             .unwrap());
-        // 2 回目はキャッシュヒットで内側を叩かない。
+        // The second call is a cache hit and doesn't hit the inner one.
         assert_eq!(inner.has_calls.load(Ordering::SeqCst), 1);
     }
 
@@ -288,12 +288,12 @@ mod tests {
         let inner = Arc::new(CountingPermissions::default());
         let repo = setup(inner.clone());
 
-        // まず未保有（false）をキャッシュ。
+        // First cache not-held (false).
         assert!(!repo
             .has_permission(tenant, user, "idp.tenant.admin")
             .await
             .unwrap());
-        // 付与すると該当エントリが invalidate され、次の判定は再計算されて true。
+        // Granting invalidates the matching entry, and the next check is recomputed to true.
         repo.grant(tenant, user, "idp.tenant.admin", now())
             .await
             .unwrap();
@@ -338,7 +338,7 @@ mod tests {
         }
         let repo = setup(inner.clone());
 
-        // 両コードの許可をキャッシュに載せる。
+        // Put allows for both codes in the cache.
         assert!(repo
             .has_permission(tenant, user, "idp.tenant.admin")
             .await
@@ -348,7 +348,7 @@ mod tests {
             .await
             .unwrap());
 
-        // 一括剥奪 → 剥奪コード一覧が返り、両コードとも stale allow が残らない。
+        // Bulk revoke -> returns the list of revoked codes, and no stale allow remains for either code.
         let mut revoked = repo
             .revoke_all_for_user_in_tenant(tenant, user)
             .await
@@ -380,7 +380,7 @@ mod tests {
             .push((tenant, user, "idp.tenant.admin".to_string()));
         let repo = setup(inner.clone());
 
-        // 別コードを 1 件キャッシュしておく。
+        // Cache one entry for another code.
         assert!(!repo
             .has_permission(tenant, user, "idp.other")
             .await
@@ -389,7 +389,7 @@ mod tests {
             .has_permission(tenant, user, "idp.tenant.admin")
             .await
             .unwrap());
-        // idp.tenant.admin を剥奪しても idp.other のキャッシュは残る。
+        // Revoking idp.tenant.admin leaves the cache for idp.other intact.
         repo.revoke(tenant, user, "idp.tenant.admin").await.unwrap();
         let before = inner.has_calls.load(Ordering::SeqCst);
         assert!(!repo
@@ -410,7 +410,7 @@ mod tests {
         ];
         assert_eq!(repo.list_available_codes().await.unwrap(), expected);
         assert_eq!(repo.list_available_codes().await.unwrap(), expected);
-        // マスタはマイグレーションでしか変わらないので、2 回目以降は内側を叩かない。
+        // The master only changes through migrations, so from the second call on the inner one is not hit.
         assert_eq!(inner.available_calls.load(Ordering::SeqCst), 1);
     }
 
@@ -420,7 +420,7 @@ mod tests {
         inner.available_failures.store(1, Ordering::SeqCst);
         let repo = setup(inner.clone());
 
-        // 1 回目の失敗は持ち続けず、次の呼び出しで引き直して成功する。
+        // The first failure is not kept; the next call re-reads and succeeds.
         assert!(repo.list_available_codes().await.is_err());
         assert_eq!(repo.list_available_codes().await.unwrap().len(), 2);
         assert_eq!(repo.list_available_codes().await.unwrap().len(), 2);

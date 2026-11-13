@@ -3,22 +3,22 @@
 <h1 class="h4 mb-4">{{ messages.get("admin-home-heading") }}</h1>
 {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
 
-{#- サイドバーと同じ定義（`templates::CONSOLE_NAV`）から描く。⚠ **両方を手で書かない**
-    ——書いていた頃は、サイドバーにだけ「外部 IdP」が、ここにだけ「認証ポリシー」が載っていた。
-    どちらも相手の部分集合にならないので、利用者からは「省略」とも読めない。
+{#- Rendered from the same definition as the sidebar (`templates::CONSOLE_NAV`). ⚠ **Do not hand-write both**
+    -- back then, "External IdP" was only in the sidebar and "Authentication policies" only here.
+    Neither was a subset of the other, so users could not read it as "abbreviated".
 
-    ⚠ **`h-100` を付けない。** まとまりごとの項目数が 1〜6 とばらつくため、高さを揃えると
-    伸びたぶんの余白を `card-body` が吸い、**項目 1 つのカードでその項目が底へ押し出される**
-    （説明が主役で行き先がおまけに見える）。高さは中身なりでよい。 -#}
+    ⚠ **Do not add `h-100`.** Item counts per group vary from 1 to 6, so equalizing heights lets
+    `card-body` absorb the extra space, and **in a one-item card that item is pushed to the bottom**
+    (the description looks like the main thing and the destination an afterthought). Let height follow content. -#}
 <div class="row g-3 align-items-start" aria-label="{{ messages.get("admin-home-groups-label") }}">
   {% if let Some(chrome) = admin %}
   {% for group in crate::templates::CONSOLE_NAV %}
   {%- let items = group.visible_items(chrome) -%}
   {% if !items.is_empty() %}
-  {#- ⚠ **まとまりの見出しはカードの外に置く。** カードの見出し（`card-header`）にしていた頃は、
-      暗い配色で見出しと行き先の地の色がほぼ同じになり、どれが押せるのか見分けられなかった
-      （2026-09-25。スマホ）。見出しは小さな大文字の見出し、行き先は枠の中の行で、行には
-      アイコンと「›」を付けて押せることを示す。 -#}
+  {#- ⚠ **Group headings go outside the card.** When they were card headers (`card-header`),
+      in the dark scheme the heading and destination backgrounds were nearly the same color, and one could not tell what was clickable
+      (2026-09-25, smartphone). Headings are small uppercase headings; destinations are rows inside a frame, with
+      an icon and "›" to show they are clickable. -#}
   <section class="col-md-6" aria-labelledby="home-group-{{ loop.index }}">
     <h2 class="console-home-group" id="home-group-{{ loop.index }}"><i class="fa-solid {{ group.icon }} fa-fw me-2" aria-hidden="true"></i>{{ messages.get(group.label) }}</h2>
     <p class="text-muted small mb-2">{{ messages.get(group.description) }}</p>

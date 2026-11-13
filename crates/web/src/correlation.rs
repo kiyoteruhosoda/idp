@@ -1,9 +1,9 @@
-//! correlation_id（requestId）ミドルウェア。
+//! correlation_id (requestId) middleware.
 //!
-//! リクエストごとに追跡キーを採番して `Extension` で共有し、レスポンスの `x-request-id`
-//! ヘッダに反映する。監査ログ（`audit_log.correlation_id`）と HTTP リクエストを一気通貫で
-//! 追跡できる（`CLAUDE.md`「ログ」）。クライアントが `x-request-id` を送ってきた場合は
-//! 妥当な形式に限り引き継ぐ。
+//! Assigns a tracking key per request, shares it via `Extension`, and reflects it in the response's
+//! `x-request-id` header. Audit logs (`audit_log.correlation_id`) and HTTP requests can then be traced
+//! end to end (`CLAUDE.md` "Logging"). If the client sends `x-request-id`, it is carried over only
+//! when it has a valid format.
 
 use axum::extract::Request;
 use axum::http::HeaderValue;
@@ -15,7 +15,7 @@ use uuid::Uuid;
 const REQUEST_ID_HEADER: &str = "x-request-id";
 const MAX_REQUEST_ID_LEN: usize = 64;
 
-/// リクエスト単位の追跡キー。ハンドラは `Extension<CorrelationId>` で受け取る。
+/// Per-request tracking key. Handlers receive it as `Extension<CorrelationId>`.
 #[derive(Debug, Clone)]
 pub struct CorrelationId(pub String);
 
@@ -30,9 +30,9 @@ pub async fn propagate(mut request: Request, next: Next) -> Response {
 
     request.extensions_mut().insert(CorrelationId(id.clone()));
 
-    // 以降の処理を `correlation_id` 付きのスパンで囲う。ハンドラが出す WARN / ERROR は
-    // 取り込み層がこのスパンから追跡キーを拾い、`log.correlation_id` に載せる（CLAUDE.md「ログ」）。
-    // web は同じ id を api へも転送するため、web 側のエラーと api 側の記録が同じキーで並ぶ。
+    // Wrap the rest of the processing in a span carrying `correlation_id`. For WARN / ERROR emitted by
+    // handlers, the ingestion layer picks the tracking key from this span into `log.correlation_id` (CLAUDE.md "Logging").
+    // web forwards the same id to the api, so web-side errors and api-side records line up under the same key.
     let span = tracing::info_span!("http_request", correlation_id = %id);
     let mut response = next.run(request).instrument(span).await;
     if let Ok(value) = HeaderValue::from_str(&id) {

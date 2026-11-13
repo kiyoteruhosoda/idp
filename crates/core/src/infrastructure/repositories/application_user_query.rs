@@ -1,12 +1,12 @@
-//! 名簿の照会（[`ApplicationUserQuery`]）の sqlx 実装（ADR-0057）。
+//! sqlx implementation of the roster lookup ([`ApplicationUserQuery`]) (ADR-0057).
 //!
-//! ⚠ **ここは事実しか読まない。** 「使ってよいか」を決めるのは
-//! [`Application::roster_state`](crate::domain::application::Application::roster_state) であり、
-//! その中身は判定（code 発行地点）と同じ [`Application::admits`] である。SQL 側にも可否の条件を
-//! 書くと規則が 2 か所になり、⚠ **名簿と入口が食い違う**（「名簿に居るのに入れない」）。
+//! ⚠ **This only reads facts.** What decides "may use" is
+//! [`Application::roster_state`](crate::domain::application::Application::roster_state),
+//! whose content is the same [`Application::admits`] as the decision (at code issuance). Writing the allow condition
+//! in SQL too would put the rule in 2 places, and ⚠ **the roster and the entrance would disagree** ("on the roster but can't get in").
 //!
-//! 並びは `sub` の昇順に固定する。`users.sub` は全テナントで一意なので、ページ間で行が重複・欠落
-//! しない安定な並びになる（メール順と違い、表示名の変更でも動かない）。
+//! The order is fixed to `sub` ascending. `users.sub` is unique across all tenants, so rows are neither duplicated nor
+//! missing across pages (unlike email order, it doesn't move when display names change).
 
 use crate::domain::application::ApplicationUserFacts;
 use crate::domain::error::{DomainError, Result};
@@ -34,14 +34,14 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-/// 1 行を事実へ写す。`assigned` は問い合わせごとに決まる（割り当ての表を引いたか）ので引数で渡す。
+/// Maps one row to facts. `assigned` depends on the query (whether the assignment table was consulted), so it is passed as an argument.
 fn map_facts(row: &MySqlRow, assigned: Option<bool>) -> Result<SubjectFacts> {
     let sub: String = row.try_get("sub").map_err(repo_err)?;
     let user_status: String = row.try_get("user_status").map_err(repo_err)?;
     let membership_status: Option<String> = row.try_get("membership_status").map_err(repo_err)?;
     let assigned = match assigned {
         Some(fixed) => fixed,
-        // MariaDB の真偽式は 0 / 1 の整数で返る。
+        // MariaDB boolean expressions come back as 0 / 1 integers.
         None => row.try_get::<i64, _>("assigned").map_err(repo_err)? != 0,
     };
     let membership_status = membership_status
@@ -90,7 +90,7 @@ impl ApplicationUserQuery for SqlxApplicationUserQuery {
         .await
         .map_err(repo_err)?;
 
-        // 「全員」のアプリでは割り当ての行を引かない（判定も引かない。ADR-0054）。
+        // For "everyone" apps the assignment rows are not consulted (the decision doesn't either; ADR-0054).
         let items = rows
             .iter()
             .map(|row| map_facts(row, Some(false)))
@@ -105,7 +105,7 @@ impl ApplicationUserQuery for SqlxApplicationUserQuery {
         page: PageRequest,
     ) -> Result<Page<SubjectFacts>> {
         let total: i64 = sqlx::query(
-            // ⚠ 名簿に載るのは人だけ（ADR-0059 の決定 5）。サービスアカウントの割り当てを数えない。
+            // ⚠ Only people appear on the roster (decision 5 of ADR-0059). Service account assignments are not counted.
             "SELECT COUNT(*) AS total FROM application_assignments \
              WHERE application_id = ? AND kind = 'USER'",
         )
@@ -116,9 +116,9 @@ impl ApplicationUserQuery for SqlxApplicationUserQuery {
         .try_get("total")
         .map_err(repo_err)?;
 
-        // メンバーシップは **LEFT JOIN**。割り当ての外部キーは `users` なので、テナントのメンバー
-        // でない利用者に割り当てが残っていることがある（判定はメンバーシップを見ないので、ここで
-        // 落とすと名簿と入口が食い違う）。
+        // Membership is a **LEFT JOIN**. The assignment's foreign key is `users`, so assignments may remain for users who are
+        // not members of the tenant (the decision doesn't look at membership, so dropping them here
+        // would make the roster and the entrance disagree).
         let rows = sqlx::query(
             "SELECT u.sub, u.status AS user_status, u.pending_setup AS pending_setup, \
              m.status AS membership_status \
@@ -150,8 +150,8 @@ impl ApplicationUserQuery for SqlxApplicationUserQuery {
         if subs.is_empty() {
             return Ok(Vec::new());
         }
-        // メンバーシップ側は **INNER JOIN**。要求テナントに居ない `sub` は行を返さず、呼び出し側が
-        // `unknown`（＝消えた）として扱う。⚠ 他テナントの利用者の存在を答えないための形でもある。
+        // The membership side is an **INNER JOIN**. A `sub` not in the requested tenant returns no row, and the caller
+        // treats it as `unknown` (= gone). ⚠ This shape also avoids revealing the existence of other tenants' users.
         let mut builder = QueryBuilder::<MySql>::new(
             "SELECT u.sub, u.status AS user_status, u.pending_setup AS pending_setup, \
              m.status AS membership_status, \

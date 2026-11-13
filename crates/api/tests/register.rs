@@ -1,6 +1,6 @@
-//! ユーザー登録エンドポイントの統合テスト（DB あり）。
+//! Integration tests (with DB) for the user registration endpoint.
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test register
 
 mod support;
@@ -39,7 +39,7 @@ async fn register_creates_user_and_rejects_duplicates_and_invalid_input() {
     };
     let (app, pool, root_id) = (env.app, env.pool, env.root_tenant_id);
 
-    // 一意なメールで登録 → 201。
+    // Register with a unique email → 201.
     let email = format!("user-{}@example.com", uuid::Uuid::new_v4());
     let (status, body) = post_register(
         &app,
@@ -56,7 +56,7 @@ async fn register_creates_user_and_rejects_duplicates_and_invalid_input() {
     assert_eq!(body["status"], "ACTIVE");
     assert!(!body["sub"].as_str().unwrap().is_empty());
 
-    // 実際に DB へ保存されている（所属元 = root テナント）。
+    // Actually stored in the DB (home = root tenant).
     let count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE email = ? AND tenant_id = ?")
             .bind(&email)
@@ -66,7 +66,7 @@ async fn register_creates_user_and_rejects_duplicates_and_invalid_input() {
             .unwrap();
     assert_eq!(count, 1);
 
-    // HOME メンバーシップも同時に作成される（ADR-0009 §3）。
+    // A HOME membership is created at the same time (ADR-0009 §3).
     let memberships: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM tenant_memberships tm \
          JOIN users u ON u.id = tm.user_id \
@@ -80,7 +80,7 @@ async fn register_creates_user_and_rejects_duplicates_and_invalid_input() {
     .unwrap();
     assert_eq!(memberships, 1, "HOME membership must be auto-created");
 
-    // 同一メールの再登録 → 409。
+    // Re-registering the same email → 409.
     let (status, _) = post_register(
         &app,
         &root_id,
@@ -89,7 +89,7 @@ async fn register_creates_user_and_rejects_duplicates_and_invalid_input() {
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
 
-    // 短いパスワード → 400。
+    // Short password → 400.
     let (status, _) = post_register(
         &app,
         &root_id,
@@ -101,8 +101,8 @@ async fn register_creates_user_and_rejects_duplicates_and_invalid_input() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
-    // 自己登録トグルを無効へ戻すと 403（既定値の挙動。SEC6）。存在するメールでも同じ 403 になり、
-    // 無効テナントでは 409 によるメール存在の列挙ができない。
+    // Turning the self-registration toggle back off gives 403 (default behaviour; SEC6). Existing emails get the same 403,
+    // so a disabled tenant cannot be used to enumerate emails via 409.
     sqlx::query("UPDATE tenants SET self_registration_enabled = 0 WHERE id = ?")
         .bind(&root_id)
         .execute(&pool)
@@ -129,7 +129,7 @@ async fn register_creates_user_and_rejects_duplicates_and_invalid_input() {
         StatusCode::FORBIDDEN,
         "existing email is indistinguishable while disabled"
     );
-    // 後続テスト（oidc_flow / internal_auth の登録ヘルパ）のため有効へ戻す。
+    // Turn it back on for later tests (registration helpers of oidc_flow / internal_auth).
     sqlx::query("UPDATE tenants SET self_registration_enabled = 1 WHERE id = ?")
         .bind(&root_id)
         .execute(&pool)

@@ -1,11 +1,11 @@
-//! アプリの画面の、名乗りの移し替えと削除を**ルータ経由で**通す（api は wiremock で差し替える。ADR-0067）。
+//! Runs moving identities and deleting on the app screen **through the router** (api replaced by wiremock; ADR-0067).
 //!
-//! 要は 3 つ:
+//! Three key points:
 //!
-//! - ⚠ **別のアプリの名乗りを選んだら、すぐには送らない。** 「○○ から移す」確認を出し、確認から
-//!   送り直したときだけ、移す元を名指しして api に頼む（api が外す＋結ぶを 1 回で行う）
-//! - どこにも属していない相手は、確認なしでそのまま結ぶ
-//! - 「このアプリを消す」は api の DELETE へ渡り、一覧へ戻す
+//! - ⚠ **When another app's identity is chosen, do not send immediately.** Show a "move from X" confirmation, and only
+//!   when resent from the confirmation, ask the api naming the source (the api detaches + binds in one go)
+//! - A counterpart belonging nowhere is bound directly without confirmation
+//! - "Delete this app" goes to the api's DELETE and returns to the list
 
 mod support;
 
@@ -100,7 +100,7 @@ async fn stub(env: &WebEnv) {
         .await;
 }
 
-/// api へ届いた、名乗りを足す要求の本文。
+/// Body of the add-identity request that reached the api.
 async fn bind_requests(env: &WebEnv) -> Vec<Value> {
     env.api
         .received_requests()
@@ -118,7 +118,7 @@ async fn a_target_owned_by_another_application_is_moved_only_after_confirmation(
     stub(&env).await;
     let uri = format!("{}/admin/applications/{APP_ID}/bind", env.prefix());
 
-    // 1 回目: 持ち主の居る相手を選ぶ → 確認画面。api にはまだ送らない。
+    // 1st: choose a counterpart that has an owner -> confirmation screen. Nothing is sent to the api yet.
     let response = send(
         &env.app,
         post_form(
@@ -144,7 +144,7 @@ async fn a_target_owned_by_another_application_is_moved_only_after_confirmation(
         "nothing is moved before the confirmation"
     );
 
-    // 2 回目: 確認から送り直す → 移す元を名指しして api へ。
+    // 2nd: resend from the confirmation -> to the api, naming the source.
     let response = send(
         &env.app,
         post_form(
@@ -205,7 +205,7 @@ async fn deleting_an_application_goes_to_the_api_and_back_to_the_list() {
     let env = setup().await;
     stub(&env).await;
 
-    // 消す前に、詳細の画面に「何が外れるか」と消すボタンが出ている。
+    // Before deleting, the detail screen shows "what gets detached" and the delete button.
     let response = send(
         &env.app,
         support::get_with_cookies(

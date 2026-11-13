@@ -1,24 +1,24 @@
-//! ユーザーの表示言語設定更新ユースケース（MT20）。
+//! Use case: update the user's display language setting (MT20).
 //!
-//! ログイン済みユーザーが SSO セッション経由で自分の `language` 列（`ja` / `en` / `NULL`）を
-//! 更新する。DB への書き込みのみで、i18n の適用はリクエストごとに `Accept-Language` で行う。
+//! A logged-in user updates their own `language` column (`ja` / `en` / `NULL`) via the SSO session.
+//! It only writes to the DB; i18n is applied per request from `Accept-Language`.
 
 use crate::domain::crypto;
 use crate::domain::repositories::{SsoSessionRepository, UserRepository};
 use std::sync::Arc;
 
 pub struct UpdateLanguageCommand {
-    /// SSO セッション Cookie の生値（SHA-256 ハッシュで DB 検索する）。
+    /// Raw value of the SSO session cookie (looked up in the DB by its SHA-256 hash).
     pub sso_session_id: String,
-    /// 設定する言語コード（`ja` / `en`）。不正値は Validation エラー。
+    /// Language code to set (`ja` / `en`). Invalid values are a Validation error.
     pub language: String,
 }
 
 pub enum UpdateLanguageOutcome {
     Ok,
-    /// SSO セッションが無い・期限切れ。
+    /// No SSO session, or it has expired.
     SessionExpired,
-    /// 言語コードが非対応（`ja`・`en` 以外）。
+    /// Unsupported language code (anything other than `ja` and `en`).
     InvalidLanguage,
     Internal(String),
 }
@@ -43,7 +43,7 @@ impl AccountLanguageService {
     }
 
     pub async fn update(&self, cmd: UpdateLanguageCommand) -> UpdateLanguageOutcome {
-        // 対応言語の検証（ja / en のみ）。
+        // Validate the supported languages (ja / en only).
         let lang = match cmd.language.trim() {
             "ja" | "en" => cmd.language.trim().to_string(),
             _ => return UpdateLanguageOutcome::InvalidLanguage,
@@ -51,7 +51,7 @@ impl AccountLanguageService {
 
         let now = self.clock.now();
 
-        // SSO セッションから本人を解決する。
+        // Resolve the user from the SSO session.
         let session_hash = crypto::sha256_hex(&cmd.sso_session_id);
         let session = match self.sso_sessions.find_by_hash(&session_hash).await {
             Ok(Some(s)) if s.is_valid_at(now) => s,

@@ -1,8 +1,8 @@
-//! 本人が見る「状況」（`POST /internal/account/security/status`。task #896。ADR-0078）。
+//! The user's own "status" (`POST /internal/account/security/status`, task #896, ADR-0078).
 //!
-//! web だけが呼ぶ内部の口（サービストークンの内側）。利用者は SSO セッションの持ち主で決まり、
-//! 利用者 id は受け取らない。組み立ては Application 層（`SecurityStatusService`）にあり、ここは DTO の
-//! 詰め替えだけを行う。
+//! Internal endpoint called only by web (behind the service token). The user is determined by the SSO session's owner;
+//! no user id is accepted. Assembly is in the application layer (`SecurityStatusService`); this only
+//! repacks DTOs.
 
 use crate::application::security_status::{
     Belonging, PolicyStatus, SecurityStatusOutcome, SessionStatus,
@@ -27,7 +27,7 @@ pub async fn account_security_status(
     State(state): State<AppState>,
     Json(req): Json<InternalAccountSecurityStatusRequest>,
 ) -> Result<Json<InternalAccountSecurityStatusResponse>, Response> {
-    // テナントは必須（他の `/internal/account/*` と同じ fail-closed）。
+    // Tenant is required (fail-closed like the other `/internal/account/*`).
     let tenant =
         require_internal_tenant(&state.tenant_resolution, req.tenant_id.as_deref()).await?;
     let outcome = state

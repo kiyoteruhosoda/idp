@@ -1,22 +1,22 @@
-//! 利用者の端末の一覧と、登録していない端末でのログインの知らせ（task #872。ADR-0071）。
+//! The user's device list, and alerts for logins from unregistered devices (task #872. ADR-0071).
 //!
-//! # 流れ
+//! # Flow
 //!
-//! 1. **ログイン**: 5 つのログイン経路はどれも web が SSO セッションの Cookie を置いて終わる。web は
-//!    その応答に端末の印（Cookie）を添え、[`DeviceRegistryService::observe_sign_in`] を呼ぶ。ここで
-//!    セッションに端末を結び付け、登録済みかを見て、登録していなければ監査に残して知らせる。
-//! 2. **登録**: 利用者が「アカウントのセキュリティ」の「端末」で [`DeviceRegistryService::register`]。
-//!    **パスキーで本人を確かめてから 5 分以内**だけ通す（パスワードの確認では通さない）。
-//! 3. **取り消し**: [`DeviceRegistryService::revoke`]。その端末で作られたログイン状態も切る。
-//! 4. **期限切れ**: 180 日使われなかった端末は [`DeviceRegistryService::purge_unused`] が消す。
+//! 1. **Login**: all five login paths end with web setting the SSO session cookie. web attaches the device marker
+//!    (cookie) to that response and calls [`DeviceRegistryService::observe_sign_in`]. This binds the device to the
+//!    session, checks whether it is registered, and if not, records it in the audit log and sends an alert.
+//! 2. **Registration**: the user calls [`DeviceRegistryService::register`] from "Devices" in "Account security".
+//!    Allowed only **within 5 minutes after verifying the person with a passkey** (password confirmation doesn't count).
+//! 3. **Revocation**: [`DeviceRegistryService::revoke`]. Also ends the login state created on that device.
+//! 4. **Expiry**: devices unused for 180 days are removed by [`DeviceRegistryService::purge_unused`].
 //!
-//! 知らせ（[`SecurityAlertSink`]）は利用者の所属元テナントの `UNREGISTERED_DEVICE_ALERTS_ENABLED` が
-//! 有効なときだけ送る。監査ログには有効・無効にかかわらず残す。
+//! Alerts ([`SecurityAlertSink`]) are sent only when `UNREGISTERED_DEVICE_ALERTS_ENABLED` of the user's home tenant
+//! is enabled. The audit log records it regardless.
 //!
-//! # ログインを止めない
+//! # Don't block the login
 //!
-//! 結び付け・判定・知らせのどこで失敗しても、ログインはもう成立している（web は応答を返している）。
-//! ここで断る手段は無く、断るべきでもない。失敗はエラーとして返し、web がログに残す。
+//! Whether binding, checking or alerting fails, the login has already succeeded (web has returned its response).
+//! There is no way to refuse here, and it shouldn't. Failures are returned as errors and web logs them.
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::audit::{AuditEventType, AuditResult};
@@ -40,38 +40,38 @@ use chrono::{DateTime, Duration, Utc};
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// ログインの結び付けの頼み（web から）。
+/// Request to bind a login (from web).
 pub struct ObserveSignIn<'a> {
-    /// web が置いたばかりの SSO セッションの Cookie の値（平文）。
+    /// Value of the SSO session cookie web just set (plaintext).
     pub sso_session_id: &'a str,
-    /// 端末の印（Cookie の値）。届かなければ `None`。
+    /// Device marker (cookie value). `None` if it didn't arrive.
     pub device_token: Option<&'a str>,
-    /// `CF-IPCountry`（web が信じてよいと判断した値だけ）。
+    /// `CF-IPCountry` (only values web judged trustworthy).
     pub country: Option<&'a str>,
 }
 
-/// 結び付けの結果。
+/// Result of binding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ObserveOutcome {
-    /// 登録済みの端末だった。
+    /// It was a registered device.
     Registered,
-    /// 登録していない端末だった（監査に残し、有効なら知らせた）。
+    /// It was an unregistered device (recorded in the audit log and alerted if enabled).
     Unregistered,
-    /// 何もしなかった（セッションが無い・古い・もう結び付いている）。
+    /// Did nothing (no session, stale, or already bound).
     Ignored,
 }
 
-/// 「端末」の欄に出すもの。
+/// What is shown in the "Devices" section.
 #[derive(Debug, Clone)]
 pub struct DeviceOverview {
-    /// 今見ているブラウザの登録（登録していなければ `None`）。
+    /// Registration of the browser being used now (`None` if not registered).
     pub current_device_id: Option<Uuid>,
-    /// 今見ているブラウザに端末の印があるか（無ければ登録できない）。
+    /// Whether the current browser has a device marker (without one it can't be registered).
     pub current_device_identified: bool,
-    /// パスキーでの本人確認がまだ有効か（有効なら「この端末を登録」をそのまま押せる）。
+    /// Whether the passkey identity verification is still valid (if so, "register this device" can be pressed directly).
     pub passkey_fresh: bool,
     pub devices: Vec<UserDevice>,
-    /// この組織で「登録していない端末」の知らせが有効か（画面で案内を変えるため）。
+    /// Whether alerts for "unregistered devices" are enabled in this organization (to vary guidance on screen).
     pub alerts_enabled: bool,
 }
 
@@ -85,13 +85,13 @@ pub enum DeviceOverviewOutcome {
 #[derive(Debug, PartialEq, Eq)]
 pub enum RegisterDeviceOutcome {
     Registered,
-    /// パスキーで本人を確かめてから 5 分を過ぎている（またはパスキーで確かめていない）。
+    /// More than 5 minutes since verifying with a passkey (or never verified with a passkey).
     PasskeyRequired,
-    /// このブラウザはもう登録してある。
+    /// This browser is already registered.
     AlreadyRegistered,
-    /// 名前が空・長すぎ・制御文字入り。
+    /// Name empty, too long, or containing control characters.
     InvalidName,
-    /// このブラウザに端末の印が無い（Cookie を受け付けない等）。
+    /// This browser has no device marker (doesn't accept cookies, etc.).
     DeviceUnidentified,
     SessionExpired,
     Internal(String),
@@ -99,7 +99,7 @@ pub enum RegisterDeviceOutcome {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum RevokeDeviceOutcome {
-    /// 取り消した（その端末で作られたログイン状態を `sessions` 件切った）。
+    /// Revoked (ended `sessions` login states created on that device).
     Revoked {
         sessions: usize,
     },
@@ -119,7 +119,7 @@ pub struct DeviceRegistryService {
     clock: Arc<dyn Clock>,
 }
 
-/// 認証済みの今のセッションと利用者。
+/// The current authenticated session and user.
 struct ActiveSession {
     session: SsoSession,
     user: User,
@@ -153,7 +153,7 @@ impl DeviceRegistryService {
         TenantContext::new(tenant_id)
     }
 
-    /// ログインしたばかりのセッションへ端末を結び付け、登録済みかを判定する。
+    /// Binds the device to a session that just logged in and checks whether it is registered.
     pub async fn observe_sign_in(
         &self,
         cmd: ObserveSignIn<'_>,
@@ -164,7 +164,7 @@ impl DeviceRegistryService {
         let Some(session) = self.sso_sessions.find_by_hash(&session_hash).await? else {
             return Ok(ObserveOutcome::Ignored);
         };
-        // 作られたばかりのセッションだけを扱う（古いセッションへ後から端末を結び付けさせない）。
+        // Only handle sessions that were just created (don't let a device be bound to an old session afterwards).
         if !session.is_valid_at(now)
             || now - session.created_at > Duration::seconds(OBSERVATION_WINDOW_SECS)
         {
@@ -183,7 +183,7 @@ impl DeviceRegistryService {
                     .link_session(&session_hash, device, country.as_ref(), now)
                     .await?
                 {
-                    // もう結び付いている（同じログインの二重の頼み）。二度知らせない。
+                    // Already bound (a duplicate request for the same login). Don't alert twice.
                     return Ok(ObserveOutcome::Ignored);
                 }
                 self.devices.find(user.id, device).await?
@@ -242,7 +242,7 @@ impl DeviceRegistryService {
         Ok(ObserveOutcome::Unregistered)
     }
 
-    /// 「端末」の欄の中身。
+    /// Contents of the "Devices" section.
     pub async fn overview(
         &self,
         sso_session_id: &str,
@@ -284,7 +284,7 @@ impl DeviceRegistryService {
         }))
     }
 
-    /// 今のブラウザを端末として登録する。
+    /// Registers the current browser as a device.
     #[allow(clippy::too_many_arguments)]
     pub async fn register(
         &self,
@@ -351,7 +351,7 @@ impl DeviceRegistryService {
         RegisterDeviceOutcome::Registered
     }
 
-    /// 端末の登録を取り消し、その端末で作られたログイン状態を切る。
+    /// Revokes a device registration and ends the login states created on that device.
     pub async fn revoke(
         &self,
         tenant: TenantContext,
@@ -402,7 +402,7 @@ impl DeviceRegistryService {
         RevokeDeviceOutcome::Revoked { sessions }
     }
 
-    /// 180 日使われていない端末の登録を消す。消した件数を返す。
+    /// Deletes registrations of devices unused for 180 days. Returns the number deleted.
     pub async fn purge_unused(&self) -> Result<usize, DomainError> {
         let now = self.clock.now();
         let expired = self
@@ -444,7 +444,7 @@ impl DeviceRegistryService {
         Ok(expired.len())
     }
 
-    /// その端末で作られた今の利用者のログイン状態を切る（今見ているセッションは除く）。
+    /// Ends the current user's login states created on that device (excluding the session being viewed now).
     async fn end_device_sessions(
         &self,
         active: &ActiveSession,
@@ -457,14 +457,14 @@ impl DeviceRegistryService {
             .await?;
         let mut ended = 0;
         for hash in hashes {
-            // 今の画面のセッションは残す（自分の端末を取り消した直後に画面から追い出さない。
-            // そのセッションから先は「登録していない端末」として扱われる）。
+            // Keep the current screen's session (don't kick the user off right after revoking their own device;
+            // from then on that session is treated as "an unregistered device").
             if hash == active.session.session_hash {
                 continue;
             }
             self.sso_sessions.delete(&hash).await?;
-            // そのセッションから出た refresh token も落とす（ADR-0044。セッションの行だけ消しても
-            // アプリの更新が通り続ける）。
+            // Also drop refresh tokens issued from those sessions (ADR-0044; deleting only the session rows would
+            // let apps keep refreshing).
             self.refresh_tokens
                 .revoke_all_for_session(active.user.id, &sso_session::sid_of(&hash), now)
                 .await?;
@@ -473,7 +473,7 @@ impl DeviceRegistryService {
         Ok(ended)
     }
 
-    /// パスキーで本人を確かめてから 5 分以内か（パスキーでログインした直後・パスキーで step-up した直後）。
+    /// Whether within 5 minutes after verifying with a passkey (right after a passkey login or passkey step-up).
     async fn passkey_is_fresh(
         &self,
         session: &SsoSession,
@@ -504,8 +504,8 @@ impl DeviceRegistryService {
         }
     }
 
-    /// 知らせる（所属元テナントで知らせが有効か、登録した端末に限る組織のとき。task #916）。設定を
-    /// 読めなければ知らせる側へ倒す。
+    /// Sends an alert (when alerts are enabled in the home tenant, or the organization is limited to registered devices. task #916).
+    /// If the setting can't be read, falls to the side of alerting.
     async fn alert(
         &self,
         user: &User,
@@ -651,7 +651,7 @@ mod tests {
     #[derive(Default)]
     struct FakeDevices {
         rows: Mutex<Vec<UserDevice>>,
-        /// session_hash → 端末
+        /// session_hash -> device
         links: Mutex<Vec<(String, DeviceRef)>>,
     }
     #[async_trait]
@@ -1133,7 +1133,7 @@ mod tests {
     #[tokio::test]
     async fn registering_needs_a_fresh_passkey() {
         let h = harness(true);
-        // パスワードで入ったばかり: パスキーで確かめていないので断る。
+        // Just signed in with a password: not verified with a passkey, so refused.
         h.sessions.rows.lock().unwrap().push(session(
             COOKIE,
             vec![AuthenticationMethod::Password],
@@ -1144,14 +1144,14 @@ mod tests {
             RegisterDeviceOutcome::PasskeyRequired
         );
 
-        // パスキーの step-up から 6 分: 古いので断る。
+        // 6 minutes after a passkey step-up: too old, so refused.
         *h.sessions.passkey_at.lock().unwrap() = Some(now() - Duration::minutes(6));
         assert_eq!(
             register(&h, "pc").await,
             RegisterDeviceOutcome::PasskeyRequired
         );
 
-        // 4 分前: 通る。
+        // 4 minutes ago: passes.
         *h.sessions.passkey_at.lock().unwrap() = Some(now() - Duration::minutes(4));
         assert_eq!(
             register(&h, " pc ").await,
@@ -1223,13 +1223,13 @@ mod tests {
     async fn revoking_ends_that_devices_sessions_but_not_the_current_one() {
         let h = harness(true);
         let phone = registered(&h, 'b', "phone");
-        // 今の画面（PC）のセッション。
+        // Session of the current screen (PC).
         h.sessions.rows.lock().unwrap().push(session(
             COOKIE,
             vec![AuthenticationMethod::WebAuthn],
             now(),
         ));
-        // 電話で作られたセッション。
+        // Session created on a phone.
         sign_in(&h, "phone-session", Some(&token('b'))).await;
         let outcome = h
             .service
@@ -1254,7 +1254,7 @@ mod tests {
         assert_eq!(h.refresh.revoked_sessions.lock().unwrap().len(), 1);
         assert!(events(&h).contains(&AuditEventType::DeviceRevoked));
 
-        // 取り消した端末からの次のログインは、また知らせる。
+        // The next login from the revoked device alerts again.
         h.alerts.sent.lock().unwrap().clear();
         assert_eq!(
             sign_in(&h, "phone-again", Some(&token('b'))).await,

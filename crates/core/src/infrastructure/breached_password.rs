@@ -1,33 +1,33 @@
-//! `BreachedPasswordChecker` の実装（AP7。k-匿名性のレンジ API）。
+//! Implementation of `BreachedPasswordChecker` (AP7; k-anonymity range API).
 //!
-//! # 平文を外へ出さない照合の仕組み
+//! # How matching works without sending the plaintext out
 //!
-//! パスワードの SHA-1 を取り、**先頭 5 桁の 16 進数だけ**をサービスへ送る。サービスはその
-//! 接頭辞で始まるハッシュの残り 35 桁を数百件まとめて返し、一致判定は本プロセス内で行う。
-//! つまり外部に出るのは「同じ 5 桁で始まる何十万件かのうちのどれか」という情報だけで、
-//! パスワードそのものも、どのアカウントの話かも渡らない（Pwned Passwords のレンジ API と
-//! 同じ契約。互換のミラーを自前で立てる場合は `PASSWORD_BREACH_API_BASE_URL` を向ける）。
+//! Takes the password's SHA-1 and sends **only the first 5 hex digits** to the service. The service returns the
+//! remaining 35 digits of hundreds of hashes starting with that prefix, and matching happens in this process.
+//! So all that leaves is "one of some hundreds of thousands starting with the same 5 digits";
+//! neither the password itself nor which account it concerns is handed over (same contract as the Pwned Passwords
+//! range API; when hosting a compatible mirror yourself, point `PASSWORD_BREACH_API_BASE_URL` at it).
 //!
-//! SHA-1 をここで使うのは**照合プロトコルが SHA-1 で定義されている**ためで、保存や認証に
-//! 使うわけではない（保存は argon2 のまま）。
+//! SHA-1 is used here because **the matching protocol is defined in terms of SHA-1**, not for storage or
+//! authentication (storage stays argon2).
 //!
-//! # 到達できないときは通す（fail-open）
+//! # Let it through when unreachable (fail-open)
 //!
-//! 外部サービスが落ちている間パスワードを変更できなくすると、資格情報が漏れた**まさにその
-//! 状況**で交換ができなくなる。判定不能は `Ok(false)`（＝拒否しない）とし、警告ログに残す。
-//! この選択は「漏えい済みの値をたまに取りこぼす」ことより「変更を止める」ことの方が危険だ、
-//! という判断であり、ドメイン側のトレイト定義（`BreachedPasswordChecker`）にも書いてある。
+//! Blocking password changes while the external service is down would prevent rotation in **exactly the situation**
+//! where credentials have leaked. Undecidable is `Ok(false)` (= don't reject) and is recorded in a warning log.
+//! This choice reflects the judgment that "blocking changes" is more dangerous than "occasionally missing a leaked value",
+//! and it is also written in the domain trait definition (`BreachedPasswordChecker`).
 
 use crate::domain::error::Result;
 use crate::domain::password_policy::BreachedPasswordChecker;
 use async_trait::async_trait;
 use sha1::{Digest, Sha1};
 
-/// 照合サービスへ名乗る `User-Agent`。
+/// `User-Agent` presented to the matching service.
 ///
-/// **省略できない。** Pwned Passwords は `User-Agent` の無い要求を 403 で拒否し、reqwest は既定で
-/// このヘッダを付けない。拒否された応答は下の非成功分岐で「判定できなかった」として通されるため、
-/// 付け忘れると**有効にしたはずの漏えい確認が全件素通りになる**（しかも警告ログ以外に兆候が無い）。
+/// **Cannot be omitted.** Pwned Passwords rejects requests without a `User-Agent` with 403, and reqwest does not set
+/// this header by default. Rejected responses pass through the non-success branch below as "could not decide",
+/// so forgetting it makes **the breach check you thought was enabled let everything through** (with no sign other than warning logs).
 const USER_AGENT: &str = "idp-oidc-provider";
 
 pub struct RangeApiBreachedPasswordChecker {
@@ -36,7 +36,7 @@ pub struct RangeApiBreachedPasswordChecker {
 }
 
 impl RangeApiBreachedPasswordChecker {
-    /// `base_url` は接頭辞を付け足す土台（`{base_url}/{prefix}` を GET する）。
+    /// `base_url` is the base the prefix is appended to (GETs `{base_url}/{prefix}`).
     pub fn new(base_url: impl Into<String>, timeout: std::time::Duration) -> Result<Self> {
         let http = reqwest::Client::builder()
             .timeout(timeout)
@@ -54,7 +54,7 @@ impl RangeApiBreachedPasswordChecker {
     }
 }
 
-/// パスワードの SHA-1 を大文字 16 進で返し、送出する接頭辞（5 桁）と手元で照合する残り（35 桁）へ割る。
+/// Returns the password's SHA-1 in upper-case hex, split into the prefix sent out (5 digits) and the rest matched locally (35 digits).
 fn split_hash(password: &str) -> (String, String) {
     let digest = Sha1::digest(password.as_bytes());
     let hex = digest
@@ -65,9 +65,9 @@ fn split_hash(password: &str) -> (String, String) {
     (prefix.to_string(), suffix.to_string())
 }
 
-/// レンジ API の本文（`SUFFIX:COUNT` の行の並び）に該当の接尾辞があるか。
+/// Whether the range API body (lines of `SUFFIX:COUNT`) contains the given suffix.
 ///
-/// 出現回数は見ない。1 度でも漏えいリストに載った値は使わせない。
+/// The occurrence count is ignored. A value that appeared in a breach list even once is not allowed.
 fn body_contains_suffix(body: &str, suffix: &str) -> bool {
     body.lines().any(|line| {
         line.split(':')
@@ -81,8 +81,8 @@ impl BreachedPasswordChecker for RangeApiBreachedPasswordChecker {
     async fn is_breached(&self, password: &str) -> Result<bool> {
         let (prefix, suffix) = split_hash(password);
         let url = format!("{}/{prefix}", self.base_url);
-        // `Add-Padding` は応答の件数から接頭辞を推測されないようダミー行を混ぜてもらう指示
-        // （対応していないミラーは黙って無視する）。
+        // `Add-Padding` asks for dummy rows so the prefix can't be guessed from the number of results
+        // (mirrors that don't support it silently ignore it).
         let response = match self
             .http
             .get(&url)
@@ -125,7 +125,7 @@ mod tests {
 
     #[test]
     fn splits_the_hash_into_a_five_digit_prefix_and_the_rest() {
-        // "password" の SHA-1 は 5BAA61E4C9B93F3F0682250B6CF8331B7EE68FD8（レンジ API の既知の例）。
+        // SHA-1 of "password" is 5BAA61E4C9B93F3F0682250B6CF8331B7EE68FD8 (a well-known range API example).
         let (prefix, suffix) = split_hash("password");
         assert_eq!(prefix, "5BAA6");
         assert_eq!(suffix, "1E4C9B93F3F0682250B6CF8331B7EE68FD8");
@@ -147,7 +147,7 @@ mod tests {
 
     #[test]
     fn does_not_match_a_count_field() {
-        // 接尾辞ではなく出現回数の側にたまたま一致する値が来ても拾わない。
+        // Don't pick up a value that happens to match on the count side instead of the suffix.
         let body = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:12345\r\n";
         assert!(!body_contains_suffix(body, "12345"));
     }

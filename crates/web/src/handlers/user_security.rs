@@ -1,12 +1,12 @@
-//! 利用者セルフサービスのセキュリティ画面（web。`/{tenant_id}/settings/security`。G10）。
+//! User self-service security screen (web. `/{tenant_id}/settings/security`. G10).
 //!
-//! ログイン中のセッション一覧・失効、連携済みアプリ（consent）の確認・取り消し、発行済み
-//! トークンの再発行（ADR-0047）を提供する。
-//! 判定と永続化は api（`/internal/account/security*`）に委ね、web は CSRF 検証・画面描画・
-//! リダイレクトのみを担う（設定画面 `user_settings` と同じ責務分担）。
+//! Provides listing/revoking signed-in sessions, checking/revoking linked apps (consent), and reissuing issued
+//! tokens (ADR-0047).
+//! Decisions and persistence are delegated to the api (`/internal/account/security*`); web only handles CSRF verification,
+//! screen rendering and redirects (same split of duties as the settings screen `user_settings`).
 //!
-//! 破壊的操作（セッション失効・連携解除）は POST とし、ログイン後フォーム用の同期トークン
-//! （`console_csrf_token`。SSO セッション id 由来）で保護する。
+//! Destructive operations (session revocation, unlinking) are POSTs protected by the post-login form synchronizer token
+//! (`console_csrf_token`, derived from the SSO session id).
 
 use super::{api_internal_error, internal_call_status};
 use crate::client_ip::ClientIp;
@@ -45,17 +45,17 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use serde::Deserialize;
 
-/// PRG 後のバナー表示に使うクエリ。
+/// Query used for the banner after PRG.
 #[derive(Debug, Deserialize)]
 pub struct SecurityQuery {
     #[serde(default)]
     pub saved: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
-    /// ログイン履歴のこれより古い行を見る（task #879）。
+    /// Shows login history rows older than this (task #879).
     #[serde(default)]
     pub history_before: Option<i64>,
-    /// 端末の登録の途中でパスキーの本人確認へ回ったとき、戻り先に付ける端末の名前（task #916）。
+    /// Device name attached to the return destination when device registration detoured to passkey re-authentication (task #916).
     #[serde(default)]
     pub resume_device: Option<String>,
 }
@@ -97,13 +97,13 @@ pub struct RevokeDeviceForm {
     pub csrf_token: String,
 }
 
-/// トークンの再発行は対象を選ばない（当人ぶんを全部落とす）ので CSRF トークンだけを受ける。
+/// Token reissue does not select a target (drops all of the user's own), so only the CSRF token is received.
 #[derive(Debug, Deserialize)]
 pub struct ReissueTokensForm {
     pub csrf_token: String,
 }
 
-/// セキュリティ画面（`GET /{tenant_id}/settings/security`）。
+/// Security screen (`GET /{tenant_id}/settings/security`).
 pub async fn page(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -143,7 +143,7 @@ pub async fn page(
         }
     };
 
-    // 「端末」の欄（task #872）。今のブラウザの端末の印を添えて、登録済みかを api に決めさせる。
+    // The "devices" section (task #872). Attach the current browser's device mark and let the api decide whether it is registered.
     let device_request = InternalAccountDevicesRequest {
         tenant_id: Some(tenant.0.clone()),
         sso_session_id: request.sso_session_id.clone(),
@@ -190,7 +190,7 @@ pub async fn page(
         }
     };
 
-    // 「ログイン履歴」の欄（task #879）。本人の分だけ（api が SSO セッションの持ち主で引く）。
+    // The "login history" section (task #879). Only the user's own (the api looks up by the SSO session's owner).
     let history_request = InternalAccountSignInHistoryRequest {
         tenant_id: Some(tenant.0.clone()),
         sso_session_id: request.sso_session_id.clone(),
@@ -221,7 +221,7 @@ pub async fn page(
         }
     };
 
-    // 「SSH の鍵」の欄（task #885）。組織で使っていなければ欄ごと出さない。
+    // The "SSH keys" section (task #885). If the organization does not use it, the whole section is hidden.
     let ssh_request = InternalAccountSshKeysRequest {
         tenant_id: Some(tenant.0.clone()),
         sso_session_id: request.sso_session_id.clone(),
@@ -261,7 +261,7 @@ pub async fn page(
         }
     };
 
-    // 「認証アプリ」の行（task #892）。認証アプリの口が閉じていれば出さない。読めなくても画面は出す。
+    // The "authenticator app" row (task #892). Hidden if the authenticator app endpoint is closed. The screen is shown even if unreadable.
     let approver_keys: Vec<SecurityApproverKeyView> = match state
         .api
         .account_approver_keys(
@@ -294,7 +294,7 @@ pub async fn page(
         }
     };
 
-    // 「状況」（task #896）。読めなくても下の一覧は出す（欄の代わりに案内を出す）。
+    // "Status" (task #896). The lists below are shown even if unreadable (guidance is shown instead of the section).
     let status = match state
         .api
         .account_security_status(
@@ -336,9 +336,9 @@ pub async fn page(
         .unwrap_or_default()
         .to_string();
 
-    // Messages（FluentBundle）は !Send のため、api の await より後・描画の直前に生成する。
+    // Messages (FluentBundle) is !Send, so create it after the api awaits, right before rendering.
     let messages = Messages::new(locale);
-    // ログイン状態ごとの状況は、下の「ログイン状態」の表の行へも添える（同じ id で引く）。
+    // Per-signed-in-state status is also attached to rows of the "signed-in states" table below (looked up by the same id).
     let mut session_statuses: std::collections::HashMap<String, SessionStatusView> =
         std::collections::HashMap::new();
     let status: Option<SecurityStatusView> =
@@ -454,7 +454,7 @@ pub async fn page(
     .into_response()
 }
 
-/// セッションの失効（`POST /{tenant_id}/settings/security/revoke-session`）。
+/// Revokes a session (`POST /{tenant_id}/settings/security/revoke-session`).
 pub async fn revoke_session(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -474,8 +474,8 @@ pub async fn revoke_session(
         );
         return see_other(&format!("{base}?error=csrf"));
     }
-    // 他端末の締め出しは step-up の対象（AP5）。セッションを盗んだ側が、本人の端末を先に
-    // 切って締め出す（＝気付きと復旧を遅らせる）のを防ぐ。
+    // Locking out other devices is subject to step-up (AP5). Prevents a session thief from cutting the owner's
+    // device first and locking them out (= delaying notice and recovery).
     if let Err(response) = step_up::require_step_up(
         &state,
         &correlation,
@@ -524,7 +524,7 @@ pub async fn revoke_session(
     }
 }
 
-/// 連携済みアプリの解除（`POST /{tenant_id}/settings/security/revoke-consent`）。
+/// Unlinks a linked app (`POST /{tenant_id}/settings/security/revoke-consent`).
 pub async fn revoke_consent(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -574,12 +574,12 @@ pub async fn revoke_consent(
     }
 }
 
-/// 発行済みトークンの再発行（`POST /{tenant_id}/settings/security/reissue-tokens`。ADR-0047）。
+/// Reissues issued tokens (`POST /{tenant_id}/settings/security/reissue-tokens`. ADR-0047).
 ///
-/// **step-up は要求しない。** セッションの失効に本人確認を挟むのは、セッションを盗んだ側が
-/// 本人の端末を先に切って締め出せるためだが、この操作は端末を切らない（誰も締め出されず、
-/// アプリは黙って取り直す）。安全側へ倒すための操作に本人確認の壁を置くと、心当たりがある
-/// 利用者ほど押せなくなる。
+/// **No step-up required.** Session revocation requires re-authentication because a session thief could cut
+/// the owner's device first and lock them out, but this operation cuts no devices (nobody is locked out, and
+/// apps silently re-acquire). Putting a re-authentication wall on an operation meant to err on the safe side would make
+/// it hardest to press for the users who suspect something.
 pub async fn reissue_tokens(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -612,8 +612,8 @@ pub async fn reissue_tokens(
         .account_reissue_tokens(&ctx.correlation_id, &request)
         .await
     {
-        // 0 件も成功だが、利用者には区別して伝える（同じ「完了しました」だけを返すと、
-        // 効いていないのか元から無いのかが分からない。管理コンソールの MFA 解除と同じ扱い）。
+        // Zero is also success, but tell the user the difference (returning the same "done" would leave it unclear
+        // whether it did nothing or there was nothing to begin with; same as MFA removal in the admin console).
         Ok(InternalAccountReissueTokensResponse::Ok { revoked: 0 }) => {
             see_other(&format!("{base}?saved=tokens-none"))
         }
@@ -633,17 +633,17 @@ pub async fn reissue_tokens(
     }
 }
 
-/// 「SSH の鍵」の欄の中身（描画まで持ち回る）。
+/// Contents of the "SSH keys" section (carried until rendering).
 struct SshKeysSection {
     enabled: bool,
     passkey_fresh: bool,
     keys: Vec<SecuritySshKeyView>,
 }
 
-/// SSH の公開鍵を登録する（`POST /{tenant_id}/settings/security/register-ssh-key`。task #885）。
+/// Registers an SSH public key (`POST /{tenant_id}/settings/security/register-ssh-key`. task #885).
 ///
-/// **パスキーで確かめてから 5 分以内**だけ通す。まだなら本人確認の画面（パスキーだけ）へ回し、
-/// 戻ってきたら利用者がもう一度貼って押す（フォームの中身は持ち越さない）。
+/// Allowed only **within 5 minutes after a passkey check**. If not yet, redirect to the re-authentication screen (passkey only),
+/// and on return the user pastes and presses again (the form contents are not carried over).
 pub async fn register_ssh_key(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -663,7 +663,7 @@ pub async fn register_ssh_key(
         );
         return see_other(&format!("{base}?error=csrf"));
     }
-    // 秘密鍵らしきものは api へも渡さずここで断る（貼られた値をどこにも運ばない。api も同じ判定で断る）。
+    // Refuse anything that looks like a private key here without passing it to the api (the pasted value goes nowhere; the api refuses with the same check).
     if form.public_key.contains("PRIVATE KEY") {
         tracing::warn!(
             correlation_id = %correlation.0,
@@ -729,9 +729,9 @@ pub async fn register_ssh_key(
     }
 }
 
-/// SSH の公開鍵を取り消す（`POST /{tenant_id}/settings/security/revoke-ssh-key`。task #885）。
+/// Revokes an SSH public key (`POST /{tenant_id}/settings/security/revoke-ssh-key`. task #885).
 ///
-/// 取り消しもパスキーで 5 分以内だけ（盗んだ側に、本人の鍵を外して締め出させない）。
+/// Revocation too is only within 5 minutes of a passkey check (so a thief cannot remove the owner's key to lock them out).
 pub async fn revoke_ssh_key(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -799,7 +799,7 @@ pub async fn revoke_ssh_key(
     }
 }
 
-/// 「端末」の欄の中身（描画まで持ち回る）。
+/// Contents of the "devices" section (carried until rendering).
 struct DevicesSection {
     devices: Vec<SecurityDeviceView>,
     current_registered: bool,
@@ -808,11 +808,11 @@ struct DevicesSection {
     alerts_enabled: bool,
 }
 
-/// 今のブラウザを端末として登録する（`POST /{tenant_id}/settings/security/register-device`。task #872）。
+/// Registers the current browser as a device (`POST /{tenant_id}/settings/security/register-device`. task #872).
 ///
-/// **パスキーで確かめてから 5 分以内**だけ通す。まだなら本人確認の画面（パスキーだけ）へ回し、
-/// 戻り先に打った名前（`resume_device`）を持ち越す。戻った画面は、確認が新しくこのブラウザが未登録なら
-/// 登録のフォームを自動で送る（task #916。前は戻ってからもう一度押す作りで、押し忘れて未登録のままになった）。
+/// Allowed only **within 5 minutes after a passkey check**. If not yet, redirect to the re-authentication screen (passkey only),
+/// carrying the typed name (`resume_device`) in the return destination. If the check is fresh and this browser is unregistered,
+/// the returned screen submits the registration form automatically (task #916; it used to require pressing again, which got forgotten).
 pub async fn register_device(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -832,8 +832,8 @@ pub async fn register_device(
         );
         return see_other(&format!("{base}?error=csrf"));
     }
-    // パスキーでしか通らない本人確認（api が判定する。パスワードの確認では満たされない）。
-    // 戻り先に打った名前を持ち越し、戻った画面が登録を自動で終える（task #916。押すのは 1 回）。
+    // Re-authentication passable only by passkey (decided by the api; a password check does not satisfy it).
+    // Carry the typed name to the return destination, and the returned screen completes registration automatically (task #916; one press).
     let resume = format!(
         "{base}?resume_device={}#devices",
         percent_encoding::utf8_percent_encode(form.name.trim(), percent_encoding::NON_ALPHANUMERIC)
@@ -902,10 +902,10 @@ pub async fn register_device(
     }
 }
 
-/// 端末の登録を取り消す（`POST /{tenant_id}/settings/security/revoke-device`。task #872）。
+/// Revokes a device registration (`POST /{tenant_id}/settings/security/revoke-device`. task #872).
 ///
-/// その端末で作られたログイン状態も切るので、セッションの失効と同じく本人確認を挟む（盗んだ側が
-/// 本人の端末を先に締め出すのを防ぐ）。
+/// It also ends signed-in states created on that device, so re-authentication is required as for session revocation
+/// (prevents a thief from locking out the owner's device first).
 pub async fn revoke_device(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -970,7 +970,7 @@ pub async fn revoke_device(
     }
 }
 
-/// PRG のクエリ値を翻訳キーへ写す（未知の値は表示しない ＝ 任意文字列を画面へ出させない）。
+/// Maps PRG query values to translation keys (unknown values are not displayed = arbitrary strings cannot reach the screen).
 fn saved_key_for(value: &str) -> Option<&'static str> {
     match value {
         "session-revoked" => Some("user-security-saved-session-revoked"),
@@ -1010,10 +1010,10 @@ fn error_key_for(value: &str) -> Option<&'static str> {
     }
 }
 
-/// ログイン履歴の 1 ページの件数（task #879）。
+/// Number of rows per login history page (task #879).
 const SIGN_IN_HISTORY_PAGE_SIZE: u32 = 10;
 
-/// api の 1 行を画面の 1 行へ（文言はキーにして、訳はテンプレートに任せる）。
+/// One api row to one screen row (wording as keys; translation is left to the template).
 fn sign_in_view(e: AccountSignInEntry) -> SignInView {
     let succeeded = e.outcome == "succeeded";
     let user_agent = e.user_agent.unwrap_or_default();
@@ -1083,7 +1083,7 @@ fn failure_key(kind: &str) -> &'static str {
     }
 }
 
-/// 「状況」のログイン状態 1 つを画面の形へ（task #896）。
+/// One signed-in state of "status" to the screen shape (task #896).
 fn session_status_view(s: AccountSessionStatus) -> SessionStatusView {
     let user_agent = s.user_agent.unwrap_or_default();
     SessionStatusView {
@@ -1132,12 +1132,12 @@ fn session_status_view(s: AccountSessionStatus) -> SessionStatusView {
     }
 }
 
-/// 組織の長さの設定（秒）を「30 日」のように読める形へ。
+/// Turns the organization's length setting (seconds) into a readable form like "30 days".
 fn length_label(messages: &Messages, secs: i64) -> String {
     duration_label(messages, u64::try_from(secs).unwrap_or(0)).unwrap_or_else(|| secs.to_string())
 }
 
-/// 長さの根拠の文言のキー（長い言い方と、表の 1 行の短い言い方）。
+/// Wording keys for the basis of the length (a long phrasing and a short one for a table row).
 fn basis_keys(basis: &str) -> (&'static str, &'static str) {
     match basis {
         "bound_on_registered_device" => (
@@ -1163,7 +1163,7 @@ fn basis_keys(basis: &str) -> (&'static str, &'static str) {
     }
 }
 
-/// 持ち物 1 つを画面の形へ（task #896）。種類ごとに「何に使われるか」「強さ」を決める。
+/// One possession to the screen shape (task #896). Decides "what it is used for" and "strength" per kind.
 fn belonging_view(b: AccountBelonging) -> BelongingView {
     let (kind_key, use_key, strength_key) = match b.kind.as_str() {
         "passkey" => (
@@ -1218,7 +1218,7 @@ fn belonging_view(b: AccountBelonging) -> BelongingView {
     }
 }
 
-/// アプリ 1 つのトークンの種別を画面の形へ（task #896）。
+/// One app's token kind to the screen shape (task #896).
 fn app_tokens_view(a: AccountAppTokens) -> AppTokensView {
     let token_key = if a.active_refresh_tokens == 0 {
         "user-security-status-token-none"
@@ -1282,8 +1282,8 @@ fn refresh_state_key(state: &str) -> &'static str {
 mod tests {
     use super::*;
 
-    /// 未知のクエリ値は翻訳キーに写さない（PRG のクエリはブラウザから任意の値を渡せるため、
-    /// そのまま画面に出すと反射型の表示になる）。
+    /// Unknown query values are not mapped to translation keys (PRG queries can carry arbitrary values from the browser,
+    /// and showing them as is would be a reflected display).
     #[test]
     fn only_known_banner_values_map_to_message_keys() {
         assert_eq!(

@@ -1,21 +1,21 @@
-//! 実行中サービスの再起動要求（web。ADR-0017）。
+//! Restart request for the running service (web. ADR-0017).
 //!
-//! 役割は api の `service_restart` と同じ（graceful shutdown を起こし、新しいプロセスの起動は配置側の
-//! 再起動ポリシーへ委ねる）。web は api に依存しない別プロセスで、依存の向きも api → web ではない
-//! ため、共有せずそれぞれのサービスが自分のプロセス制御を持つ。
+//! Its role is the same as the api's `service_restart` (trigger a graceful shutdown and leave starting a new
+//! process to the deployment's restart policy). web is a separate process not depending on the api, and the
+//! dependency does not point api → web either, so nothing is shared and each service owns its process control.
 //!
-//! web 固有の事情として、**再起動の順序は api が先**である。web は起動時に api から共有ランタイム
-//! 設定を取得する（ADR-0013）ので、api より先に立ち上がると古い値を掴んでしまう。順序は
-//! `handlers::admin_restart_console` が担保する。
+//! Specific to web: **the api restarts first**. web fetches the shared runtime settings from the api at
+//! startup (ADR-0013), so starting before the api would pick up stale values. The order is
+//! ensured by `handlers::admin_restart_console`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::Notify;
 
-/// 再起動要求の受け渡し口。`WebState` 経由でハンドラへ、`run()` 経由で graceful shutdown へ渡る。
+/// Hand-off point for restart requests. Reaches handlers via `WebState` and the graceful shutdown via `run()`.
 #[derive(Clone)]
 pub struct ServiceRestart {
-    // `notify_one` を使う理由は api 側と同じ（待機開始前の要求を取りこぼさないため）。
+    // `notify_one` is used for the same reason as on the api side (not to miss a request made before waiting starts).
     notify: Arc<Notify>,
     requested: Arc<AtomicBool>,
 }
@@ -28,18 +28,18 @@ impl ServiceRestart {
         }
     }
 
-    /// 再起動を要求する（graceful shutdown を起こす）。
+    /// Requests a restart (triggers a graceful shutdown).
     pub fn request(&self) {
         self.requested.store(true, Ordering::SeqCst);
         self.notify.notify_one();
     }
 
-    /// 再起動が要求されるまで待つ。
+    /// Waits until a restart is requested.
     pub async fn requested(&self) {
         self.notify.notified().await;
     }
 
-    /// 再起動要求によって終了しようとしているか（シグナル停止と区別してログへ出す）。
+    /// Whether we are shutting down due to a restart request (to log it distinctly from a signal stop).
     pub fn was_requested(&self) -> bool {
         self.requested.load(Ordering::SeqCst)
     }

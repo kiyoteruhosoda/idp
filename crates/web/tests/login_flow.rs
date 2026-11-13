@@ -1,8 +1,8 @@
-//! ログイン画面のルータ経由の統合テスト（G11）。
+//! Router-level integration tests of the login screen (G11).
 //!
-//! api は `wiremock` でスタブする（DB 不要）。検証するのはハンドラの中身ではなく、その外側 ——
-//! Cookie の発行と読み出し、CSRF 同期トークンの往復、リダイレクトの行き先とステータス、
-//! api が落ちているときの処理である。
+//! The api is stubbed with `wiremock` (no DB needed). What is checked is not the handler internals but the outside --
+//! issuing and reading Cookies, the CSRF synchronizer token round trip, redirect targets and statuses,
+//! and handling when the api is down.
 
 mod support;
 
@@ -20,7 +20,7 @@ use wiremock::{Mock, ResponseTemplate};
 #[tokio::test]
 async fn portal_login_page_issues_a_csrf_seed_cookie_and_renders_the_form() {
     let env = setup().await;
-    // 外部 IdP ボタンの取得（失敗してもパスワードログインは出る＝フェイルソフト）。
+    // Fetching external IdP buttons (password login still appears on failure = fail-soft).
     Mock::given(method("POST"))
         .and(path("/internal/external/providers"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -33,7 +33,7 @@ async fn portal_login_page_issues_a_csrf_seed_cookie_and_renders_the_form() {
     let response = send(&env.app, get(&format!("{}/login", env.prefix()))).await;
     assert_eq!(response.status(), StatusCode::OK);
 
-    // CSRF の種は Cookie とフォームの両方に出る（片方だけだと必ず不一致になる）。
+    // The CSRF seed appears in both the Cookie and the form (with only one it would always mismatch).
     let seed = set_cookie(&response, PORTAL_CSRF_COOKIE).expect("csrf seed cookie");
     assert!(!seed.is_empty(), "csrf seed must not be empty");
     let raw = set_cookie_raw(&response, PORTAL_CSRF_COOKIE).expect("raw cookie");
@@ -119,7 +119,7 @@ async fn oidc_login_success_sets_the_sso_cookie_and_redirects_to_the_rp() {
         Some("sso-value"),
         "the SSO cookie must be issued by web, not by api"
     );
-    // フローは終わったので一時セッションの Cookie は掃除される。
+    // The flow is over, so the temporary session Cookie is cleaned up.
     assert_eq!(
         set_cookie(&response, AUTH_SESSION_COOKIE).as_deref(),
         Some(""),
@@ -191,7 +191,7 @@ async fn a_csrf_mismatch_redirects_back_to_a_fresh_form() {
     )
     .await;
 
-    // PRG: 303 で GET へ付け替える（POST のままエラーを返すと、リロードが再送信になり復帰できない）。
+    // PRG: switch to GET with 303 (returning an error to the POST makes reload resubmit, with no way to recover).
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
     assert_eq!(
         location(&response),
@@ -238,12 +238,12 @@ async fn a_non_uuid_tenant_segment_is_not_a_screen() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
-/// 存在しない（または `DISABLED` の）テナント ID を URL に打った送信は、**404** になる（MT28）。
+/// A submission with a nonexistent (or `DISABLED`) tenant ID typed in the URL becomes **404** (MT28).
 ///
-/// `/internal/*` はテナントプレフィクスを持たないため api の `TenantResolver` を通らず、テナントの
-/// 実在・状態は本文の `tenant_id` を見て api が判定して 400 で拒否する。web がその 400 を他の失敗と
-/// 区別していなかった頃は、**URL のテナント ID を打ち間違えただけで素の 502** になっていた ——
-/// 利用者の入力の誤りであって、web の実装/構成エラーではない。
+/// `/internal/*` has no tenant prefix and does not go through the api's `TenantResolver`; the tenant's
+/// existence and state are judged by the api from `tenant_id` in the body and rejected with 400. When web did not
+/// distinguish that 400 from other failures, **merely mistyping the tenant ID in the URL gave a bare 502** --
+/// a user input error, not a web implementation/configuration error.
 #[tokio::test]
 async fn an_unknown_tenant_renders_the_404_page_instead_of_a_bad_gateway() {
     let env = setup().await;
@@ -274,13 +274,13 @@ async fn an_unknown_tenant_renders_the_404_page_instead_of_a_bad_gateway() {
     .await;
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    // 本文は共通のエラーページ middleware が補完する（空のまま返さない）。
+    // The body is filled in by the shared error page middleware (never returned empty).
     let html = body_text(response).await;
-    assert!(html.contains("404"), "404 ページが描画されること: {html}");
+    assert!(html.contains("404"), "404 page not rendered: {html}");
 }
 
-/// api の他の失敗は従来どおり 502（web の実装/構成エラー・api 障害）。MT28 で区別したのは
-/// 「テナントを解決できない」だけで、それ以外の扱いは変えていない。
+/// Other api failures stay 502 as before (web implementation/configuration error, api outage). MT28 only distinguished
+/// "cannot resolve the tenant"; nothing else changed.
 #[tokio::test]
 async fn other_api_failures_still_render_a_bad_gateway() {
     let env = setup().await;

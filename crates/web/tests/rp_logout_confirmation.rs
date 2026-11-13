@@ -1,7 +1,7 @@
-//! `id_token_hint` の無いサインアウト要求は、確認画面を挟んでから実行する（task #588）。
+//! Sign-out requests without `id_token_hint` are executed only after a confirmation screen (task #588).
 //!
-//! 確認なしで終えていた頃は、リンク（`<img src>` でも）を踏ませるだけで他人をサインアウトさせられた。
-//! hint 付きの要求（RP が自分の発行した ID Token を添える正規の経路）は今までどおり確認しない。
+//! When they finished without confirmation, anyone could sign others out by making them follow a link (even `<img src>`).
+//! Requests with a hint (the legitimate route where the RP attaches the ID Token it was issued) are not confirmed, as before.
 
 mod support;
 
@@ -71,7 +71,7 @@ async fn a_logout_link_without_a_hint_only_asks_for_confirmation() {
         )),
         "{html}"
     );
-    // RP のパラメータは隠し項目で持ち回る。
+    // The RP's parameters are carried in hidden fields.
     assert!(html.contains(r#"name="state" value="xyz""#), "{html}");
     assert!(html.contains(r#"name="client_id" value="rp-1""#), "{html}");
     assert_eq!(rp_logout_calls(&env).await, 0, "nothing is ended yet");

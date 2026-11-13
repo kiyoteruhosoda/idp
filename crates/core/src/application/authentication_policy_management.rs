@@ -1,12 +1,12 @@
-//! 認証ポリシーの管理（CRUD）ユースケース（ユーザー認証・認証ポリシー仕様書 §7）。
+//! Authentication policy management (CRUD) use case (user authentication & authentication policy spec §7).
 //!
-//! テナント管理者（`idp.tenant.admin`。判定は Presentation の `RequirePerms`）が、自テナントの
-//! 認証ポリシーを作成・更新・削除する。検証は本 Application 層で完結し、Presentation には結果のみ
-//! 返す。全ての変更は `audit_log` に記録する（`authentication_policy.created` / `.updated` /
-//! `.deleted`。同仕様 §21）。
+//! A tenant admin (`idp.tenant.admin`; checked by Presentation's `RequirePerms`) creates, updates and
+//! deletes the authentication policies of their own tenant. Validation is completed in this Application
+//! layer and only the result is returned to Presentation. Every change is recorded in `audit_log`
+//! (`authentication_policy.created` / `.updated` / `.deleted`; same spec §21).
 //!
-//! ポリシーの**評価**はログインユースケース（`login.rs` / `passkey_authentication.rs`）が
-//! ドメインの純粋関数（`evaluate_policies`）で行う。本サービスは規則の管理のみを担う（SRP）。
+//! Policy **evaluation** is done by the login use cases (`login.rs` / `passkey_authentication.rs`)
+//! with a pure domain function (`evaluate_policies`). This service only manages the rules (SRP).
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::admin_actor::AdminActor;
@@ -23,8 +23,8 @@ use crate::domain::tenant_context::TenantContext;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// 条件リスト（application_ids / user_ids）の 1 ポリシーあたりの上限。評価はログインのホットパスで
-/// 全件走査するため、無制限の肥大化を防ぐ。
+/// Per-policy limit for condition lists (application_ids / user_ids). Evaluation scans every entry
+/// on the login hot path, so unbounded growth is prevented.
 const MAX_CONDITION_ENTRIES: usize = 100;
 
 #[derive(Debug, thiserror::Error)]
@@ -41,25 +41,25 @@ pub enum AuthenticationPolicyManagementError {
 
 type PolicyResult<T> = Result<T, AuthenticationPolicyManagementError>;
 
-/// 作成・更新の入力（Presentation の DTO から Application 層で変換して渡す）。
+/// Input for create/update (converted from the Presentation DTO in the Application layer).
 #[derive(Debug, Clone)]
 pub struct AuthenticationPolicyDraft {
     pub policy_code: String,
     pub policy_name: String,
     pub priority: i32,
     pub enabled: bool,
-    /// `allow` / `deny` / `require_mfa` / `require_specific_method`（不正値は Validation エラー）。
+    /// `allow` / `deny` / `require_mfa` / `require_specific_method` (invalid values are a Validation error).
     pub effect: String,
-    /// `require_specific_method` の要求内容（他の効果では `None`。AP3）。
+    /// What `require_specific_method` requires (`None` for other effects. AP3).
     pub effect_params: Option<RequiredMethods>,
-    /// 対象アプリ（`applications.id`。ADR-0054 の決定 5）。空 = 全アプリ。
+    /// Target applications (`applications.id`. ADR-0054 decision 5). Empty = all applications.
     pub application_ids: Vec<Uuid>,
     pub user_ids: Vec<Uuid>,
-    /// ネットワークゾーン（CIDR 表記。AP3）。
+    /// Network zones (CIDR notation. AP3).
     pub ip_cidrs: Vec<String>,
-    /// 適用時間帯（AP3）。
+    /// Applicable time windows (AP3).
     pub time_windows: Vec<TimeWindow>,
-    /// 認可要求の `acr_values` 条件（AP3）。
+    /// `acr_values` condition of the authorization request (AP3).
     pub requested_acr: Vec<String>,
 }
 
@@ -85,7 +85,7 @@ impl AuthenticationPolicyManagementService {
         }
     }
 
-    /// テナントの全ポリシー（無効を含む）を priority 昇順で返す。
+    /// Returns all of the tenant's policies (including disabled ones) in ascending priority order.
     pub async fn list(&self, tenant: TenantContext) -> PolicyResult<Vec<AuthenticationPolicy>> {
         self.policies
             .list_for_tenant(tenant.tenant_id())
@@ -93,7 +93,7 @@ impl AuthenticationPolicyManagementService {
             .map_err(internal)
     }
 
-    /// ポリシーを作成する。`(tenant, policy_code)` 重複は `Conflict`。
+    /// Creates a policy. A duplicate `(tenant, policy_code)` is `Conflict`.
     pub async fn create(
         &self,
         tenant: TenantContext,
@@ -121,7 +121,7 @@ impl AuthenticationPolicyManagementService {
         Ok(policy)
     }
 
-    /// ポリシーを全項目置換で更新する。対象不存在（他テナント含む）は `NotFound`。
+    /// Updates a policy by replacing every field. A missing target (including another tenant's) is `NotFound`.
     pub async fn update(
         &self,
         tenant: TenantContext,
@@ -146,7 +146,7 @@ impl AuthenticationPolicyManagementService {
         };
         let updated = self.policies.update(&policy).await.map_err(map_conflict)?;
         if !updated {
-            // find 後に別管理者が削除した競合。
+            // Race: another admin deleted it after our find.
             return Err(AuthenticationPolicyManagementError::NotFound);
         }
         self.record(
@@ -160,7 +160,7 @@ impl AuthenticationPolicyManagementService {
         Ok(policy)
     }
 
-    /// ポリシーを削除する。対象不存在（他テナント含む）は `NotFound`。
+    /// Deletes a policy. A missing target (including another tenant's) is `NotFound`.
     pub async fn delete(
         &self,
         tenant: TenantContext,
@@ -215,7 +215,7 @@ impl AuthenticationPolicyManagementService {
     }
 }
 
-/// 入力を検証してエンティティの可変部分へ写す（`id` / `tenant_id` / `created_at` は呼び出し側が設定）。
+/// Validates the input and maps it onto the mutable part of the entity (`id` / `tenant_id` / `created_at` are set by the caller).
 fn validated(
     draft: AuthenticationPolicyDraft,
     now: chrono::DateTime<chrono::Utc>,
@@ -263,8 +263,8 @@ fn validated(
         time_windows: draft.time_windows,
         requested_acr: draft.requested_acr,
     };
-    // CIDR・時間帯の形式は保存前に弾く（壊れた条件は評価時に黙って「一致しない」となり、
-    // deny ポリシーが効かない状態を作る）。
+    // Reject malformed CIDRs and time windows before saving (a broken condition silently becomes
+    // "no match" at evaluation time, leaving a deny policy ineffective).
     conditions.validate().map_err(|_| {
         AuthenticationPolicyManagementError::Validation(MessageKey::new(
             "api-auth-policy-conditions-invalid",
@@ -359,7 +359,7 @@ mod tests {
         }
     }
 
-    /// インメモリのフェイクリポジトリ（`(tenant, code)` 一意制約を再現する）。
+    /// In-memory fake repository (reproduces the `(tenant, code)` unique constraint).
     #[derive(Default)]
     struct FakePolicies {
         rows: Mutex<Vec<AuthenticationPolicy>>,

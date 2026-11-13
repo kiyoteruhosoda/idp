@@ -1,8 +1,8 @@
-//! web が返す HTML は保存させない（task #589。脆弱性確認 2026-10-20 の低-5）。
+//! HTML returned by web must not be stored (task #589; low-5 of the vulnerability review 2026-10-20).
 //!
-//! クライアントシークレット・回復コード・設定リンク・TOTP の秘密・SAML の応答を載せる画面がある。
-//! 共有の端末で「戻る」やディスクのキャッシュから読ませないよう、HTML には `no-store` を付ける。
-//! 静的な資産（CSS・JS）は対象外（毎回取り直させる理由が無い）。
+//! Some screens carry client secrets, recovery codes, setup links, TOTP secrets or SAML responses.
+//! To keep them from being read via "back" or the disk cache on shared devices, HTML gets `no-store`.
+//! Static assets (CSS, JS) are excluded (no reason to refetch them every time).
 
 mod support;
 
@@ -13,7 +13,7 @@ use support::{get, send, setup};
 async fn html_pages_are_not_stored_but_assets_are_left_alone() {
     let env = setup().await;
 
-    // どのルートにも当たらない 404 の画面も、描画した HTML である。
+    // The 404 screen for no matching route is also rendered HTML.
     for uri in ["/".to_string(), format!("{}/no-such-page", env.prefix())] {
         let res = send(&env.app, get(&uri)).await;
         let cache = res

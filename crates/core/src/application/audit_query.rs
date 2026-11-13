@@ -1,8 +1,8 @@
-//! 監査ログ参照のユースケース（状況確認画面 A3、設計仕様 §7）。
+//! Audit log lookup use case (status screen A3, design spec §7).
 //!
-//! `audit_log` を `event_type` / `result`（`failure` 等のエラー絞り込みを主眼）／期間 /
-//! `client_id` / `correlation_id` で絞り込み、新しい順に返す。`correlation_id` により
-//! 「リクエスト → 処理 → 監査イベント」を一気通貫で追跡できる。
+//! Filters `audit_log` by `event_type` / `result` (mainly to narrow to errors such as `failure`) / period /
+//! `client_id` / `correlation_id` and returns newest first. `correlation_id` lets you
+//! trace "request -> processing -> audit event" end to end.
 
 use crate::domain::audit::{AuditLogEntry, AuditLogFilter};
 use crate::domain::error::DomainError;
@@ -11,12 +11,12 @@ use crate::domain::tenant_context::TenantContext;
 use chrono::{DateTime, Utc};
 use std::sync::Arc;
 
-/// 1 ページの既定件数。
+/// Default number of items per page.
 pub const DEFAULT_LIMIT: i64 = 50;
-/// 1 ページの上限件数（過大な取得を防ぐ）。
+/// Maximum number of items per page (prevents oversized fetches).
 pub const MAX_LIMIT: i64 = 200;
 
-/// 検索パラメータ（Presentation から受け取る素の値。`limit`/`offset` は未クランプ）。
+/// Search parameters (raw values from Presentation; `limit`/`offset` not yet clamped).
 #[derive(Debug, Clone, Default)]
 pub struct AuditQueryParams {
     pub event_type: Option<String>,
@@ -44,7 +44,7 @@ impl AuditQueryService {
         params: AuditQueryParams,
     ) -> Result<Vec<AuditLogEntry>, DomainError> {
         let filter = AuditLogFilter {
-            // テナント越しの閲覧を防ぐため常に検索条件へ含める（ADR-0009 §8）。
+            // Always included in the filter to prevent cross-tenant viewing (ADR-0009 §8).
             tenant_id: Some(tenant.tenant_id().as_uuid()),
             event_type: normalize(params.event_type),
             result: normalize(params.result),
@@ -59,7 +59,7 @@ impl AuditQueryService {
     }
 }
 
-/// `limit` を 1..=MAX_LIMIT に収める。未指定・非正値は既定値。
+/// Clamps `limit` into 1..=MAX_LIMIT. Missing or non-positive values become the default.
 fn clamp_limit(limit: Option<i64>) -> i64 {
     match limit {
         Some(l) if l > 0 => l.min(MAX_LIMIT),
@@ -67,7 +67,7 @@ fn clamp_limit(limit: Option<i64>) -> i64 {
     }
 }
 
-/// 空文字列を `None` に正規化する（クエリ未指定の `?event_type=` を無視するため）。
+/// Normalizes an empty string to `None` (so an unset query like `?event_type=` is ignored).
 fn normalize(value: Option<String>) -> Option<String> {
     value
         .map(|v| v.trim().to_string())

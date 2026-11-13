@@ -1,13 +1,13 @@
 {% extends "page.html" %}
 {% block title %}{{ messages.get("login-title") }}{% endblock %}
-{#- どの組織のアカウントで入るのか。同じ IdP が複数テナントを受け持つので、既定の `assay`
-    （製品名）では利用者に何も伝わらない。リンクにはしない（認可フローの途中で外へ出さないため）。 -#}
+{#- Which organization's account is used to sign in. One IdP serves several tenants, so the default `assay`
+    (product name) tells users nothing. Not a link (never leave mid authorization flow). -#}
 {% block brand %}<span class="navbar-brand mb-0 h1">{% if let Some(tenant) = tenant_name %}{{ tenant }}{% else %}assay{% endif %}</span>{% endblock %}
 {% block content %}
 <div class="card border-0 bg-transparent">
   <div class="card-header px-4 pb-3 border-0 bg-transparent">
-    {#- どのアプリへ入るのかを見出しに出す（SSO で飛ばされてきた利用者には、これが無いと
-        目の前のフォームが何のためのものか分からない）。表示名が引けないときは既定の見出し。 -#}
+    {#- Show which app is being signed in to in the heading (users redirected via SSO otherwise cannot tell
+        what the form in front of them is for). The default heading when the display name cannot be looked up. -#}
     <h1 class="h4 mb-0">{% if let Some(client) = client_name %}{{ messages.get_arg("login-title-for-client", "client", client) }}{% else %}{{ messages.get("login-title") }}{% endif %}</h1>
   </div>
   <div class="card-body p-4">
@@ -16,7 +16,7 @@
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <div class="mb-3">
         <label class="form-label" for="login-username">{{ messages.get("login-username") }}{% include "required_mark.html" %}</label>
-        {# 認可要求の login_hint があれば初期値にする（G12）。値は自動 HTML エスケープされる。 #}
+        {# Use the authorization request's login_hint as the initial value if present (G12). The value is auto HTML-escaped. #}
         <input type="text" class="form-control" id="login-username" name="username" autocomplete="username" required autofocus
                {% if let Some(hint) = login_hint %}value="{{ hint }}"{% endif %}>
       </div>
@@ -29,18 +29,18 @@
         <a class="text-decoration-none" href="{{ tenant_prefix }}/forgot-password">{{ messages.get("login-forgot-password") }}</a>
       </div>
     </form>
-    {#- パスキーは JS（WebAuthn）が動く環境でしか使えない。初期状態は隠しておき、
-        `assets/passkey-login.js` が「この環境で使える」と確かめたときだけ出す —— 先に描いてから
-        無効化すると、押しても何も起きないボタンが一瞬見えてしまう。 -#}
+    {#- Passkeys work only where JS (WebAuthn) runs. Hidden initially and shown only when
+        `assets/passkey-login.js` confirms "usable here" -- rendering first and then
+        disabling would briefly show a button that does nothing when pressed. -#}
     <div id="passkey-login" hidden>
       <p class="auth-or">{{ messages.get("login-passkey-or") }}</p>
       <div class="d-grid mb-3">
         <button type="button" class="btn btn-outline-secondary" id="btn-passkey-login"><i class="fa-solid fa-key me-2" aria-hidden="true"></i>{{ messages.get("login-passkey-button") }}</button>
       </div>
-      {# api のエラーコード → 表示文言の対応表。属性値はテンプレートが HTML エスケープし、
-         スクリプトは dataset 経由で復号済みの文言を読む（JS 文字列への直接埋め込みを避ける）。
-         `cancelled` / `server` は api のコードではなく、ブラウザのセレモニーが投げた例外と
-         サーバ不達に当てる（例外の生メッセージは英語のまま出てしまうため画面に出さない）。 #}
+      {# Map of api error codes -> display text. The template HTML-escapes attribute values, and
+         the script reads the decoded text via dataset (avoids embedding directly into JS strings).
+         `cancelled` / `server` are not api codes; they map exceptions thrown by the browser ceremony and
+         server unreachability (raw exception messages would appear in English, so they are not shown). #}
       <div id="passkey-error" style="display:none"
            data-tenant-prefix="{{ tenant_prefix }}"
            data-msg-policy-denied="{{ messages.get("login-error-policy-denied") }}"
@@ -54,8 +54,8 @@
         <p class="text-danger small text-center mb-0" role="alert" id="passkey-error-msg"></p>
       </div>
     </div>
-    {#- 「アプリで続ける」（task #892・ADR-0077）。Android のブラウザでだけ見せる（見た目だけ。
-        `assets/app-approval-login.js`）。押すと、このブラウザに依頼の印を置き、認証アプリを開く画面へ進む。 -#}
+    {#- "Continue in the app" (task #892, ADR-0077). Shown only in Android browsers (cosmetic only;
+        `assets/app-approval-login.js`). Pressing it leaves a request marker in this browser and goes to the screen that opens the app. -#}
     {% if app_approval_offered %}
     <div id="app-approval-login" hidden>
       <p class="auth-or">{{ messages.get("login-passkey-or") }}</p>

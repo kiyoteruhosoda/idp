@@ -1,21 +1,21 @@
-//! 外へ出す HTTP の名前解決（task #585。脆弱性確認 2026-10-20 の中-5）。
+//! Name resolution for outbound HTTP (task #585; medium-5 of the 2026-10-20 vulnerability review).
 //!
-//! テナント管理者が登録する宛先（バックチャネルログアウト・外部 IdP の token / JWKS / discovery）は、
-//! 字面だけ確かめても（`domain::outbound_uri`）、**引いた結果が内部の住所になる公開名**を登録されると
-//! 内部へ届いてしまう（認証済みの blind SSRF。DNS rebinding も含む）。そこで reqwest の名前解決を
-//! 差し替え、**繋ぐ直前に引いた住所を全部確かめる**。1 つでも内部なら繋がない。
+//! Destinations registered by tenant admins (back-channel logout, external IdP token / JWKS / discovery) can,
+//! even after a textual check (`domain::outbound_uri`), reach internal hosts if **a public name resolving to an internal address**
+//! is registered (authenticated blind SSRF, including DNS rebinding). So reqwest's name resolution is
+//! replaced to **check every address resolved right before connecting**. If any one is internal, no connection is made.
 //!
-//! 例外は運用者が名指しした名前だけ（[`OutboundTrust`]。設定 `OUTBOUND_TRUSTED_HOSTS`）。宅内の
-//! split DNS のように、正規の RP の公開名が内側の前段へ引ける配置のためである。
+//! The only exception is names the operator explicitly named ([`OutboundTrust`], setting `OUTBOUND_TRUSTED_HOSTS`). This is for
+//! setups like in-home split DNS, where a legitimate RP's public name resolves to an internal front end.
 //!
-//! ⚠ IP を直接書いた宛先は名前解決を通らない（reqwest が resolver を呼ばない）。それは字面の検査が
-//! 弾く（`is_internal_destination`）。
+//! ⚠ Destinations written as raw IPs don't go through name resolution (reqwest doesn't call the resolver). Those are
+//! rejected by the textual check (`is_internal_destination`).
 
 use crate::domain::outbound_uri::{is_internal_address, OutboundTrust};
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use std::net::SocketAddr;
 
-/// 引いた住所を確かめてから返す resolver。
+/// Resolver that checks the resolved addresses before returning them.
 pub struct GuardedResolver {
     trust: OutboundTrust,
 }
@@ -39,7 +39,7 @@ impl Resolve for GuardedResolver {
     }
 }
 
-/// 引いた住所の判定（純粋部分）。
+/// Decision on resolved addresses (pure part).
 pub(crate) fn check_resolved(
     host: &str,
     addrs: &[SocketAddr],
@@ -57,7 +57,7 @@ pub(crate) fn check_resolved(
     Ok(())
 }
 
-/// 外へ出す HTTP クライアントの組み立ての共通部分（名前解決の差し替え）。
+/// Common part of building outbound HTTP clients (replacing name resolution).
 pub fn guarded_client_builder(trust: OutboundTrust) -> reqwest::ClientBuilder {
     reqwest::Client::builder().dns_resolver(GuardedResolver::new(trust))
 }
@@ -74,7 +74,7 @@ mod tests {
     fn a_name_that_resolves_inside_is_refused() {
         let err = check_resolved("rp.example.com", &[addr("10.10.2.11")], false).unwrap_err();
         assert!(err.contains("internal address"), "{err}");
-        // 1 つでも内部が混ざれば断る（どちらへ繋がるかは選べない）。
+        // Refuse if any internal address is mixed in (we can't choose which one gets connected).
         assert!(check_resolved(
             "rp.example.com",
             &[addr("104.16.0.1"), addr("169.254.169.254")],
@@ -87,7 +87,7 @@ mod tests {
     #[test]
     fn public_and_trusted_names_are_allowed() {
         assert!(check_resolved("rp.example.com", &[addr("104.16.0.1")], false).is_ok());
-        // 運用者が名指しした名前は、内側の前段へ引けても送る（split DNS）。
+        // Names the operator named are sent to even if they resolve to an internal front end (split DNS).
         assert!(check_resolved("wiki.nolumia.com", &[addr("10.10.2.11")], true).is_ok());
     }
 

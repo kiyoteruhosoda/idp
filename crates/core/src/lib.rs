@@ -1,8 +1,8 @@
-//! OIDC IdP のコア（`assay-core`）。
+//! Core of the OIDC IdP (`assay-core`).
 //!
-//! DDD の Domain / Application / Infrastructure と、DB 直結の設定・ログ基盤を提供する。
-//! ADR-0007（API/Web サービス分割）に基づき、DB・sqlx へ依存するのはこの crate に集約する。
-//! presentation（axum）と HTML 画面は `assay-api` / 将来の `assay-web` 側に置く。
+//! Provides DDD Domain / Application / Infrastructure plus the DB-backed settings and log foundation.
+//! Per ADR-0007 (API/Web service split), dependencies on the DB and sqlx are concentrated in this crate.
+//! Presentation (axum) and HTML screens live in `assay-api` / the future `assay-web`.
 
 pub mod application;
 pub mod config;

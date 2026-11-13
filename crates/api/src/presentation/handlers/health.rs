@@ -1,11 +1,11 @@
-//! liveness / readiness ヘルスチェック。
+//! liveness / readiness health checks.
 //!
-//! - `GET /healthz`: プロセスが生きているか（依存先は見ない）。**無認証**。
-//! - `GET /readyz`: DB へ到達可能かを確認する。**無認証**。
-//! - `GET /internal/health`: 版数・稼働時間・依存先の検査結果。**内部トークンの内側**（ADR-0031）。
+//! - `GET /healthz`: whether the process is alive (dependencies not checked). **Unauthenticated**.
+//! - `GET /readyz`: checks that the DB is reachable. **Unauthenticated**.
+//! - `GET /internal/health`: version, uptime and dependency check results. **Behind the internal token** (ADR-0031).
 //!
-//! 公開面（`/healthz`・`/readyz`）に載せるのは「どのサービスが答えたか」までで、それ以上は
-//! `/internal/health` に置く。公開面へ足した情報は無認証で全世界から読めるため（ADR-0031 決定 1）。
+//! The public surface (`/healthz`, `/readyz`) carries only "which service answered"; anything more goes in
+//! `/internal/health`, because anything added to the public surface is readable worldwide without auth (ADR-0031 decision 1).
 
 use crate::infrastructure::db::{self, Db};
 use crate::presentation::state::AppState;
@@ -16,19 +16,19 @@ use assay_contracts::version::{
 use axum::{extract::State, http::StatusCode, Json};
 use serde_json::{json, Value};
 
-/// liveness: プロセスが生きていれば 200。依存先は見ない。
+/// liveness: 200 if the process is alive. Dependencies are not checked.
 ///
-/// 本文に `service` を載せるのは、domain-split（ADR-0019）で web と api が別ホストになった以上、
-/// 「叩いたつもりのサービスと違う方が答えている」取り違えが起こり得るため。ホスト名ではなく
-/// 応答そのものに書いておかないと、その取り違えは切り分けの最後まで残る。
+/// `service` is in the body because, with domain-split (ADR-0019) putting web and api on separate hosts,
+/// "a different service answered than the one I meant to hit" mix-ups can happen. Unless written in the response
+/// itself rather than the host name, such a mix-up survives until the very end of troubleshooting.
 pub async fn liveness() -> (StatusCode, Json<LivenessResponse>) {
     (StatusCode::OK, Json(LivenessResponse::ok(service::API)))
 }
 
-/// 内部向けの詳細ヘルス（`/internal/health`）。ルータが `require_service_token` の内側に置く。
+/// Detailed internal health (`/internal/health`). The router places it behind `require_service_token`.
 ///
-/// 検査するのは api が実際に依存しているもの ——  DB への到達性と、スキーマ version の整合。
-/// 全体の `status` は検査結果から決まるので、監視はこの 1 値だけを見ればよい。
+/// It checks what the api actually depends on -- DB reachability and schema version consistency.
+/// The overall `status` derives from the check results, so monitoring only needs to watch this one value.
 pub async fn internal_health(State(state): State<AppState>) -> Json<ServiceHealth> {
     let mut checks = Vec::new();
 
@@ -36,7 +36,7 @@ pub async fn internal_health(State(state): State<AppState>) -> Json<ServiceHealt
         Ok(_) => checks.push(HealthCheck::pass("database")),
         Err(e) => {
             tracing::error!(error = %e, "health check: database unreachable");
-            // 例外の原文は載せず、ログへ送る（応答は状態の要約に留める）。
+            // The raw error text is not included but sent to the log (the response stays a status summary).
             checks.push(HealthCheck::fail("database", "database unreachable"));
         }
     }
@@ -53,9 +53,9 @@ pub async fn internal_health(State(state): State<AppState>) -> Json<ServiceHealt
     ))
 }
 
-/// スキーマ version の整合（`CLAUDE.md`「schema-version」の fail-fast と同じ判定）。
+/// Schema version consistency (same decision as the fail-fast in `CLAUDE.md` "schema-version").
 ///
-/// 「DB が遅れている」と「DB を読み取れない」は別の障害なので、`detail` で区別できるようにする。
+/// "DB is behind" and "DB cannot be read" are different failures, so `detail` distinguishes them.
 async fn schema_check(pool: &Db) -> HealthCheck {
     let expected = db::embedded_schema_version();
     match db::applied_schema_version(pool).await {
@@ -102,18 +102,18 @@ pub async fn readiness(State(pool): State<Db>) -> (StatusCode, Json<Value>) {
     }
 }
 
-/// version: ビルド時に埋め込まれた Cargo / Git バージョン情報を返す。
+/// version: returns the Cargo / Git version info embedded at build time.
 pub async fn version() -> Json<VersionInfo> {
     let provider = BuildTimeVersionInfoProvider::new(env!("CARGO_PKG_VERSION"));
     Json(provider.version_info())
 }
 
-/// schema version: DB スキーマ（マイグレーション）の適用状態を返す。運用者が DB を直接見られなくても
-/// 「適用済み version」と「アプリが期待する version」を確認できるようにする（web が表示に使う）。
+/// schema version: returns the applied state of the DB schema (migrations). Lets operators check the "applied version"
+/// and the "version the app expects" even without direct DB access (web uses it for display).
 ///
-/// DB を読み取れない場合は `db_readable = false`（`applied = null`）として区別する。**「DB が遅れている」
-/// と「DB を読み取れない（運用障害）」を取り違えないため**、エラーを握り潰さずログにも残す。エンドポイント
-/// 自体は状態レポートが役割なので、DB 読み取り失敗でも 200 で状態（読み取り不可）を返す（fail-soft）。
+/// If the DB cannot be read, it is distinguished as `db_readable = false` (`applied = null`). **To avoid confusing
+/// "DB is behind" with "DB cannot be read (operational failure)"**, the error is not swallowed but logged too. The endpoint
+/// itself is a status report, so even on DB read failure it returns 200 with the state (unreadable) (fail-soft).
 pub async fn schema_version(State(pool): State<Db>) -> Json<SchemaVersionInfo> {
     let (db_readable, applied) = match db::applied_schema_version(&pool).await {
         Ok(applied) => (true, applied),
@@ -133,7 +133,7 @@ pub async fn schema_version(State(pool): State<Db>) -> Json<SchemaVersionInfo> {
 mod tests {
     use super::*;
 
-    /// ADR-0031 決定 1: どのサービスが答えたかを本文で名乗る。
+    /// ADR-0031 decision 1: the body names which service answered.
     #[tokio::test]
     async fn liveness_names_the_api_service() {
         let (status, Json(body)) = liveness().await;

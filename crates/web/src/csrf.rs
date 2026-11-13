@@ -1,14 +1,14 @@
-//! 管理コンソールの CSRF 同期トークン（web 内で生成・検証する。ADR-0007 §4）。
+//! CSRF synchronizer tokens of the admin console (generated and verified within web. ADR-0007 §4).
 //!
-//! 管理コンソールの CSRF は web が閉じて扱う（生成も検証も web）。
-//! - [`admin_csrf_token`]: ログインフォーム（未認証）。GET で発行する推測不能な乱数（HttpOnly Cookie
-//!   `admin_csrf_id`）の HMAC をフォームへ埋め込み、POST 時に Cookie から再計算して照合する。
-//! - [`console_csrf_token`]: ログイン後の状態変更フォーム。SSO セッション id（HttpOnly Cookie）由来の
-//!   同期トークン（名前空間で `admin_csrf_token` と分離）。
+//! The admin console's CSRF is handled entirely in web (both generation and verification).
+//! - [`admin_csrf_token`]: login form (unauthenticated). An HMAC of an unguessable random value issued on GET
+//!   (HttpOnly cookie `admin_csrf_id`) is embedded in the form and recomputed from the cookie on POST for comparison.
+//! - [`console_csrf_token`]: state-changing forms after login. A synchronizer token derived from the SSO session id
+//!   (HttpOnly cookie) (separated from `admin_csrf_token` by namespace).
 //!
-//! **照合はこの module の `*_valid` だけで行う**（task #143）。どれも定数時間の比較
-//! （[`assay_contracts::csrf::verify`]）を通し、種（Cookie）が無い・空なら拒否する。以前は管理画面の
-//! ハンドラごとに `csrf_valid` が書かれ、いくつかは `==`（不一致の位置で早く返る）で比べていた。
+//! **Verification is done only by this module's `*_valid`** (task #143). All go through a constant-time comparison
+//! ([`assay_contracts::csrf::verify`]) and reject when the seed (cookie) is missing or empty. Previously each admin
+//! screen handler had its own `csrf_valid`, and some compared with `==` (returning early at the first mismatch).
 
 use axum::http::HeaderMap;
 use hmac::{Hmac, KeyInit, Mac};
@@ -22,24 +22,24 @@ fn hmac_hex(key: &[u8], input: &str) -> String {
     hex::encode(mac.finalize().into_bytes())
 }
 
-/// 管理ログインフォームの CSRF トークンを Cookie の種から導出する。
+/// Derives the admin login form's CSRF token from the cookie seed.
 pub fn admin_csrf_token(csrf_id: &str, key: &[u8]) -> String {
     hmac_hex(key, &format!("admin-csrf:{csrf_id}"))
 }
 
-/// ログイン後の管理コンソール（状態変更フォーム）用の CSRF トークンを SSO セッション id から導出する。
+/// Derives the CSRF token for the post-login admin console (state-changing forms) from the SSO session id.
 pub fn console_csrf_token(sso_session_id: &str, key: &[u8]) -> String {
     hmac_hex(key, &format!("console-csrf:{sso_session_id}"))
 }
 
-/// エンドユーザー・ポータルのログイン／TOTP フォーム用の CSRF トークンを Cookie の種から導出する
-/// （`admin_csrf_token` と同じ仕組み・別名前空間）。
+/// Derives the CSRF token for the end-user portal's login/TOTP forms from the cookie seed
+/// (same mechanism as `admin_csrf_token`, separate namespace).
 pub fn portal_csrf_token(csrf_id: &str, key: &[u8]) -> String {
     hmac_hex(key, &format!("portal-csrf:{csrf_id}"))
 }
 
-/// 提示されたトークンを、種から導出したトークンと定数時間で照合する。種が無い・空なら `false`
-/// （空の種から導出したトークンを受け入れない）。
+/// Compares the presented token with the token derived from the seed in constant time. `false` if the seed is
+/// missing or empty (a token derived from an empty seed is not accepted).
 fn seeded_valid(
     seed: Option<&str>,
     submitted: &str,
@@ -50,19 +50,19 @@ fn seeded_valid(
         .is_some_and(|s| assay_contracts::csrf::verify(&derive(s, key), submitted))
 }
 
-/// 管理ログイン・強制パスワード変更のフォームの CSRF を、種 Cookie（`admin_csrf_id`）と照合する。
+/// Verifies the CSRF of the admin login and forced password change forms against the seed cookie (`admin_csrf_id`).
 pub fn admin_csrf_valid(csrf_id: Option<&str>, submitted: &str, key: &[u8]) -> bool {
     seeded_valid(csrf_id, submitted, key, admin_csrf_token)
 }
 
-/// エンドユーザー・ポータルのログイン・強制パスワード変更・TOTP のフォームの CSRF を、種 Cookie
-/// （`portal_csrf_id`）と照合する。
+/// Verifies the CSRF of the end-user portal's login, forced password change and TOTP forms against the seed cookie
+/// (`portal_csrf_id`).
 pub fn portal_csrf_valid(csrf_id: Option<&str>, submitted: &str, key: &[u8]) -> bool {
     seeded_valid(csrf_id, submitted, key, portal_csrf_token)
 }
 
-/// 認可の途中のログイン画面のフォーム（「アプリで続ける」。task #892）の CSRF を、`auth_session_id` と照合する。
-/// トークンはログインのフォームと同じもの（`assay_contracts::csrf::login_csrf_token`）。
+/// Verifies the CSRF of the login screen form in the middle of authorization ("Continue in the app"; task #892) against `auth_session_id`.
+/// The token is the same as the login form's (`assay_contracts::csrf::login_csrf_token`).
 pub fn login_csrf_valid(auth_session_id: &str, submitted: &str, key: &[u8]) -> bool {
     assay_contracts::csrf::verify(
         &assay_contracts::csrf::login_csrf_token(auth_session_id, key),
@@ -70,13 +70,13 @@ pub fn login_csrf_valid(auth_session_id: &str, submitted: &str, key: &[u8]) -> b
     )
 }
 
-/// ログイン後の状態変更フォーム（管理コンソール・アカウント設定・ログアウト）の CSRF を、SSO
-/// セッション id と照合する。SSO セッション id を既に取り出しているハンドラ向け。
+/// Verifies the CSRF of post-login state-changing forms (admin console, account settings, logout) against the SSO
+/// session id. For handlers that have already extracted the SSO session id.
 pub fn console_csrf_valid(sso_session_id: &str, submitted: &str, key: &[u8]) -> bool {
     seeded_valid(Some(sso_session_id), submitted, key, console_csrf_token)
 }
 
-/// [`console_csrf_valid`] の SSO Cookie から読む版。SSO Cookie が無ければ `false`。
+/// Version of [`console_csrf_valid`] reading from the SSO cookie. `false` if there is no SSO cookie.
 pub fn console_csrf_valid_in(headers: &HeaderMap, submitted: &str, key: &[u8]) -> bool {
     seeded_valid(
         crate::cookies::get(headers, crate::cookies::SSO_SESSION_COOKIE).as_deref(),
@@ -86,8 +86,8 @@ pub fn console_csrf_valid_in(headers: &HeaderMap, submitted: &str, key: &[u8]) -
     )
 }
 
-/// フォームへ埋める [`console_csrf_token`] を SSO Cookie から導出する。SSO Cookie が無ければ空文字
-/// （空のトークンは [`console_csrf_valid_in`] が必ず拒否する）。
+/// Derives the [`console_csrf_token`] to embed in forms from the SSO cookie. Empty string if there is no SSO cookie
+/// (an empty token is always rejected by [`console_csrf_valid_in`]).
 pub fn console_csrf_from(headers: &HeaderMap, key: &[u8]) -> String {
     crate::cookies::get(headers, crate::cookies::SSO_SESSION_COOKIE)
         .filter(|s| !s.is_empty())
@@ -106,10 +106,10 @@ mod tests {
         assert_eq!(admin_csrf_token("s", key), admin_csrf_token("s", key));
         assert_ne!(admin_csrf_token("a", key), admin_csrf_token("b", key));
         assert_eq!(console_csrf_token("s", key), console_csrf_token("s", key));
-        // 名前空間が違えば同じ種でも一致しない。
+        // With a different namespace, even the same seed does not match.
         assert_ne!(admin_csrf_token("x", key), console_csrf_token("x", key));
         assert_eq!(admin_csrf_token("x", key).len(), 64);
-        // 異なるキーでは同じ入力でも一致しない。
+        // With a different key, even the same input does not match.
         let other_key = b"other-key-for-csrf-32-bytes-xxxx";
         assert_ne!(admin_csrf_token("x", key), admin_csrf_token("x", other_key));
     }
@@ -125,8 +125,8 @@ mod tests {
         headers
     }
 
-    /// 照合は導出したトークンと完全に一致するときだけ通る（名前空間・種・鍵・長さのどれが違っても
-    /// 拒否）。種が無い・空なら、空の種から導出したトークンを出されても拒否する。
+    /// Verification passes only on an exact match with the derived token (rejected if namespace, seed, key or length
+    /// differ). If the seed is missing or empty, even a token derived from an empty seed is rejected.
     #[test]
     fn valid_accepts_only_the_token_derived_from_the_seed() {
         let key = b"test-key-for-csrf-32-bytes-xxxxx";
@@ -141,9 +141,9 @@ mod tests {
             &token,
             b"other-key-for-csrf-32-bytes-xxxx"
         ));
-        // 空の種から導出した値は、種が空なら受け入れない。
+        // A value derived from an empty seed is not accepted when the seed is empty.
         assert!(!console_csrf_valid("", &console_csrf_token("", key), key));
-        // 名前空間が違うトークン（管理ログイン用）は同じ種でも通らない。
+        // A token of another namespace (for admin login) does not pass even with the same seed.
         assert!(!console_csrf_valid(
             "sso-1",
             &admin_csrf_token("sso-1", key),
@@ -160,8 +160,8 @@ mod tests {
         assert!(!portal_csrf_valid(None, &portal, key));
     }
 
-    /// Cookie から読む版は SSO Cookie の値を種にする。Cookie が無ければ埋めるトークンは空で、
-    /// 照合は必ず落ちる。
+    /// The cookie-reading version uses the SSO cookie value as the seed. Without the cookie the embedded token is empty
+    /// and verification always fails.
     #[test]
     fn valid_in_reads_the_sso_cookie() {
         let key = b"test-key-for-csrf-32-bytes-xxxxx";
@@ -178,8 +178,8 @@ mod tests {
         assert!(!console_csrf_valid_in(&none, &token, key));
     }
 
-    /// 照合は必ずこの module を通す（task #143）。ハンドラに照合を書き戻したり、トークンを `==` /
-    /// `!=`（不一致の位置で早く返る）で比べたりした瞬間にここで落ちる。
+    /// Verification must always go through this module (task #143). Writing verification back into a handler or comparing tokens
+    /// with `==` / `!=` (returning early at the first mismatch) fails here immediately.
     #[test]
     fn handlers_do_not_compare_tokens_by_themselves() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/handlers");
@@ -205,7 +205,7 @@ mod tests {
         }
         assert!(
             offenders.is_empty(),
-            "CSRF の照合は crate::csrf の *_valid を使うこと:\n{}",
+            "CSRF verification must use crate::csrf's *_valid:\n{}",
             offenders.join("\n")
         );
     }

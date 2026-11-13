@@ -1,40 +1,40 @@
-//! 接続元 IP の決定（SEC1）。
+//! Determining the client IP (SEC1).
 //!
-//! ADR-0018 以降、ログインの入口は web である。web が組み立てた IP は `/internal/authenticate*` の
-//! ボディで api へ渡り、**api のログインレートリミッタと監査ログの IP になる**。したがって
-//! `X-Forwarded-For` を web が無条件に信じると、api 側の `TRUST_FORWARDED_HEADERS` ゲート
-//! （`crates/api/src/presentation/handlers/mod.rs` の `request_context`）がログイン経路で迂回される:
+//! Since ADR-0018 the entry point for sign-in is web. The IP that web assembles goes to api in the body of
+//! `/internal/authenticate*` and **becomes the IP for api's sign-in rate limiter and the audit log**. So if
+//! web trusted `X-Forwarded-For` unconditionally, api's `TRUST_FORWARDED_HEADERS` gate
+//! (`request_context` in `crates/api/src/presentation/handlers/mod.rs`) would be bypassed on the sign-in path:
 //!
-//! - ヘッダを毎回変える → IP 単位のレート制限（既定 30 回 / 5 分）を素通りできる。
-//! - ヘッダを送らない → IP が `None` になり、レート制限の判定自体が行われない。
-//! - 任意の値を送る → 監査ログの `ip_address` を汚染できる。
+//! - Change the header every time → slip past the per-IP rate limit (default 30 attempts / 5 min).
+//! - Send no header → the IP becomes `None` and the rate-limit check is not performed at all.
+//! - Send an arbitrary value → pollute the audit log's `ip_address`.
 //!
-//! そこで api と**同じ設定キー・同じ既定値**（`TRUST_FORWARDED_HEADERS`、既定 `false`）でゲートし、
-//! 非信頼時は TCP 接続元アドレス（[`axum::extract::ConnectInfo`]）へフォールバックする。
-//! 信頼する場合でも採るのは**最右**の値（信頼するプロキシが追記した接続元）で、先頭の
-//! クライアント申告は採らない（導出は [`assay_contracts::forwarded`] に api と共有で置いてある）。
-//! api には `ConnectInfo` 相当が無い（web からのサーバ間呼び出しなので接続元は常に web）ため、
-//! フォールバック先を持つのは web だけである。
+//! So it is gated with **the same setting key and the same default** as api (`TRUST_FORWARDED_HEADERS`,
+//! default `false`), and when untrusted it falls back to the TCP peer address ([`axum::extract::ConnectInfo`]).
+//! Even when trusted, it takes the **rightmost** value (the peer appended by the trusted proxy), not the
+//! leftmost client-declared one (the derivation lives in [`assay_contracts::forwarded`], shared with api).
+//! api has no equivalent of `ConnectInfo` (its calls are server-to-server from web, so the peer is always web),
+//! so only web has a fallback.
 //!
-//! 決定は middleware 1 箇所で行い、結果を `Extension` でハンドラへ渡す。ハンドラごとにヘッダを
-//! 読むと、画面が増えたときにゲートの掛け忘れが混ざる。
+//! The decision is made in one place, the middleware, and the result is passed to handlers via `Extension`.
+//! If each handler read the header, gates would get forgotten as screens are added.
 
 use axum::extract::{ConnectInfo, Request};
 use axum::middleware::Next;
 use axum::response::Response;
 use std::net::SocketAddr;
 
-/// このリクエストの接続元 IP。ハンドラは `Extension<ClientIp>` で受け取る。
+/// The client IP of this request. Handlers receive it as `Extension<ClientIp>`.
 ///
-/// `None` = 特定できなかった（非信頼構成で `ConnectInfo` も無い場合。テストでルータを直接叩くと
-/// こうなる）。監査ログの IP が空になり、IP 単位のレート制限は適用されない。
+/// `None` = could not be determined (untrusted configuration with no `ConnectInfo` either; this happens when
+/// tests call the router directly). The audit log IP is then empty and the per-IP rate limit does not apply.
 #[derive(Debug, Clone, Default)]
 pub struct ClientIp(pub Option<String>);
 
-/// 接続元 IP を決めて `Extension` へ載せる middleware。
+/// Middleware that determines the client IP and puts it into `Extension`.
 ///
-/// `trust_forwarded` が `true` のときだけ `X-Forwarded-For` を見て**最右**の値を採り、値が無い・
-/// 空・非 ASCII なら `ConnectInfo` へ落とす。`false` のときはヘッダを一切見ない。
+/// Only when `trust_forwarded` is `true` does it look at `X-Forwarded-For` and take the **rightmost** value;
+/// if there is no value, it is empty or non-ASCII, it falls back to `ConnectInfo`. When `false` it never looks at the header.
 pub async fn resolve_client_ip(
     trust_forwarded: bool,
     mut request: Request,
@@ -42,8 +42,8 @@ pub async fn resolve_client_ip(
 ) -> Response {
     let forwarded = trust_forwarded
         .then(|| {
-            // 採るのは**最右**の値（信頼するプロキシが追記した接続元）。先頭はクライアントが
-            // 名乗った値でありうる（`assay_contracts::forwarded` のモジュールドキュメント参照）。
+            // Take the **rightmost** value (the peer appended by the trusted proxy). The leftmost may be
+            // a value the client claimed (see the module docs of `assay_contracts::forwarded`).
             assay_contracts::forwarded::client_ip(
                 request
                     .headers()
@@ -76,7 +76,7 @@ mod tests {
         ip.0.unwrap_or_else(|| "none".to_string())
     }
 
-    /// `ConnectInfo` を差し込んだうえでルータへ 1 回投げ、決定された IP を返す。
+    /// Injects `ConnectInfo`, sends one request to the router, and returns the IP that was determined.
     async fn resolved_ip(trust_forwarded: bool, forwarded_for: Option<&str>) -> String {
         let app = Router::new()
             .route("/", get(echo_ip))
@@ -101,7 +101,7 @@ mod tests {
 
     #[tokio::test]
     async fn ignores_the_forwarded_header_when_it_is_not_trusted() {
-        // 既定構成。攻撃者が偽装しても採用されず、接続元アドレスが使われる。
+        // Default configuration. Even if an attacker spoofs it, it is not used; the peer address is.
         assert_eq!(
             resolved_ip(false, Some("198.51.100.9")).await,
             "203.0.113.7"
@@ -111,12 +111,12 @@ mod tests {
 
     #[tokio::test]
     async fn takes_the_hop_appended_by_the_trusted_proxy() {
-        // 単一の値（同梱 nginx は `$remote_addr` で上書きする）はそのまま採る。
+        // A single value (the bundled nginx overwrites it with `$remote_addr`) is taken as is.
         assert_eq!(
             resolved_ip(true, Some("198.51.100.9")).await,
             "198.51.100.9"
         );
-        // 追記型のプロキシ設定に差し替えられていても、クライアントが先頭へ書いた申告は採らない。
+        // Even if swapped for an appending proxy configuration, the client's leftmost claim is not taken.
         assert_eq!(
             resolved_ip(true, Some("192.0.2.66, 198.51.100.9")).await,
             "198.51.100.9"
@@ -125,7 +125,7 @@ mod tests {
 
     #[tokio::test]
     async fn falls_back_to_the_peer_address_when_the_trusted_header_is_missing() {
-        // プロキシ配下でもヘッダを送らない経路（内部ヘルスチェック等）はある。
+        // Some paths behind the proxy send no header (internal health checks etc.).
         assert_eq!(resolved_ip(true, None).await, "203.0.113.7");
         assert_eq!(resolved_ip(true, Some("   ")).await, "203.0.113.7");
     }

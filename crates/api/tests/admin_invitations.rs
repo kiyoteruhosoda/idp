@@ -1,20 +1,20 @@
-//! ゲスト招待の相手の指し方（ADR-0061）。
+//! How the invitee of a guest invitation is specified (ADR-0061).
 //!
-//! `TEST_DATABASE_URL` 設定時のみ実行:
+//! Runs only when `TEST_DATABASE_URL` is set:
 //!   TEST_DATABASE_URL='mysql://idp:idp@127.0.0.1:3306/idp' cargo test --test admin_invitations
 //!
-//! 招く相手は所属元が他テナントの利用者で、⚠ **参加先の管理者は相手のテナントの名簿を見られない**
-//! （ADR-0009 §3）。そのため内部 ID だけを受け付けていた頃は、assay のどこにも出てこない値を
-//! 入力させていた。ここで確かめるのは、その解決がテナントを跨いで正しく効くこと:
+//! The invitee is a user homed in another tenant, and ⚠ **the inviting tenant's admin cannot see the invitee's tenant roster**
+//! (ADR-0009 §3). So when only internal IDs were accepted, admins had to enter a value that appears nowhere
+//! in assay. What is checked here is that resolution works correctly across tenants:
 //!
-//! 1. **メールアドレスで招ける**（テナントを跨いで 1 人に決まるとき）。
-//! 2. **同じアドレスの利用者が 2 つのテナントに居ると、誰も招かない** —— どちらを招くかを
-//!    索引の都合で決めさせない。⚠ 応答は「見つからない」で、曖昧だったことは言い分けない。
-//! 3. **内部 ID（旧項目名 `user_id`）は従来どおり通る**（既に叩いている機械を壊さない）。
-//! 4. どちらでもない入力は、存在の話をする前に 400 で断る。
+//! 1. **Invitations by email address work** (when it resolves to one person across tenants).
+//! 2. **If users with the same address exist in two tenants, nobody is invited** — which one gets invited must not
+//!    be decided by index order. ⚠ The response is "not found" and does not say it was ambiguous.
+//! 3. **Internal IDs (old field name `user_id`) work as before** (do not break machines already calling it).
+//! 4. Input that is neither is rejected with 400 before talking about existence.
 //!
-//! 解決そのものは SQL（`users` をテナント横断に引く）なので、フェイクを使う単体テスト
-//! （`application::invitation`）では確かめられない。
+//! Resolution itself is SQL (looking up `users` across tenants), so unit tests with fakes
+//! (`application::invitation`) cannot check it.
 
 mod support;
 
@@ -29,12 +29,12 @@ async fn setup() -> Option<TestEnv> {
     support_setup("admin invitations").await
 }
 
-/// SSO セッションを、操作対象テナント向けの管理トークンへ交換する（ADR-0037）。
+/// Exchanges the SSO session for an admin token for the target tenant (ADR-0037).
 async fn tok(env: &TestEnv, sso: &str, tenant_id: &str) -> String {
     exchange_admin_token(&env.app, tenant_id, sso).await
 }
 
-/// root が新しいテナントを作る（作成者 root はそのテナントの ACTIVE GUEST 管理者になる。§4）。
+/// root creates a new tenant (the creator root becomes its ACTIVE GUEST admin; §4).
 async fn create_tenant(env: &TestEnv, root_sso: &str, name: &str) -> String {
     let res = send(
         &env.app,
@@ -52,7 +52,7 @@ async fn create_tenant(env: &TestEnv, root_sso: &str, name: &str) -> String {
         .to_string()
 }
 
-/// 指定テナントへメールアドレスを決めて利用者を作り、その内部 ID を返す。
+/// Creates a user in the given tenant with a chosen email address and returns its internal ID.
 async fn create_user(env: &TestEnv, root_sso: &str, tenant_id: &str, email: &str) -> String {
     let res = send(
         &env.app,
@@ -70,7 +70,7 @@ async fn create_user(env: &TestEnv, root_sso: &str, tenant_id: &str, email: &str
         .to_string()
 }
 
-/// root テナントをゲストの参加先として招待を作る。
+/// Creates an invitation with the root tenant as the guest's destination.
 async fn invite(
     env: &TestEnv,
     root_sso: &str,
@@ -110,9 +110,9 @@ async fn a_guest_can_be_invited_by_email_address() {
     );
 }
 
-/// ⚠ 同じメールアドレスの利用者が 2 つのテナントに居るときは**誰も招かない**。
+/// ⚠ When users with the same email address exist in two tenants, **nobody is invited**.
 ///
-/// `users.email` の一意性はテナントの中にしか無い。片方を選ぶと、招待先が索引の都合で決まる。
+/// `users.email` is unique only within a tenant. Picking one would let index order decide the invitee.
 #[tokio::test]
 async fn an_email_shared_by_two_tenants_invites_nobody() {
     let Some(env) = setup().await else { return };
@@ -125,11 +125,11 @@ async fn an_email_shared_by_two_tenants_invites_nobody() {
 
     let res = invite(&env, &root_sso, json!({ "invitee": email })).await;
 
-    // ⚠ 「曖昧です」と言い分けない（言い分けると他テナントの利用者の存在だけが漏れる）。
+    // ⚠ Do not say "ambiguous" (saying so would leak only the existence of another tenant's user).
     assert_eq!(res.status(), StatusCode::NOT_FOUND, "nobody is invited");
 }
 
-/// 内部 ID での招待と、旧項目名 `user_id` は従来どおり通る。
+/// Invitations by internal ID and the old field name `user_id` work as before.
 #[tokio::test]
 async fn the_old_user_id_field_still_names_the_guest() {
     let Some(env) = setup().await else { return };
@@ -141,8 +141,8 @@ async fn the_old_user_id_field_still_names_the_guest() {
     let res = invite(&env, &root_sso, json!({ "user_id": user_id })).await;
 
     assert_eq!(res.status(), StatusCode::CREATED, "invited by internal id");
-    // ⚠ 内部 ID で招いたときは、相手のアドレスを返さない（task #591。ID だけで他のテナントの
-    //   利用者のアドレスを引き出せてしまう）。
+    // ⚠ When invited by internal ID, the invitee's address is not returned (task #591; otherwise an ID alone
+    //   could extract the addresses of other tenants' users).
     let created = body_json(res).await;
     assert!(created.get("invitee_email").is_none(), "{created}");
     assert!(!created.to_string().contains(&email), "{created}");

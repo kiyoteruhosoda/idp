@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Android の Key Attestation に似せた証明書の鎖を作る（task #892。試験データと stg の確かめ用）。
+"""Builds certificate chains resembling Android Key Attestation (task #892; for test data and checks on stg).
 
-本物の端末の鎖は Google の根で終わるが、試験では自分で作った根を使い、assay の
-`AttestationPolicy` にその根を渡して確かめる。拡張 `KeyDescription`（1.3.6.1.4.1.11129.2.1.17）の
-中身は Android の KeyMint の定義どおりに組む。
+Real device chains end at Google's root, but tests use a self-made root and verify by passing it to assay's
+`AttestationPolicy`. The content of the `KeyDescription` extension (1.3.6.1.4.1.11129.2.1.17) is
+built exactly per Android KeyMint's definition.
 
-    python3 scripts/key-attestation-fixtures.py <出力先>    # 試験データ一式を書く
+    python3 scripts/key-attestation-fixtures.py <output dir>    # writes the full set of test data
 
-モジュールとして読むと `build_chain(...)` が使える（stg の確かめの台本が import する）。
-要るのは `cryptography` だけ。
+Imported as a module, `build_chain(...)` is available (the stg check script imports it).
+Only `cryptography` is required.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ SIGNER_DIGEST = hashlib.sha256(b"authapp-test-signer").digest()
 CHALLENGE = b"assay-test-challenge-0123456789ab"
 
 
-# ── 小さな DER の書き手 ───────────────────────────────────────────────
+# ── A small DER writer ───────────────────────────────────────────────
 
 
 def _len(n: int) -> bytes:
@@ -74,7 +74,7 @@ def set_of(*items: bytes) -> bytes:
 
 
 def context(number: int, inner: bytes) -> bytes:
-    """[number] EXPLICIT（構造化・文脈の印）。31 以上は 7 ビットずつの多バイト形式。"""
+    """[number] EXPLICIT (constructed, context-specific tag). 31 and above use the multi-byte form, 7 bits at a time."""
     if number < 31:
         tag = bytes([0xA0 | number])
     else:
@@ -94,12 +94,12 @@ def context(number: int, inner: bytes) -> bytes:
 
 @dataclass
 class KeyOptions:
-    """鍵の証明に書く値。既定は「TEE・使うたびに指紋・ロック済み・正しいアプリ」。"""
+    """Values written into the key attestation. Default is "TEE, fingerprint on every use, locked, correct app"."""
 
     challenge: bytes = CHALLENGE
     security_level: int = 1  # 0 software / 1 TEE / 2 StrongBox
     no_auth_required: bool = False
-    user_auth_type: int | None = 2  # 2 = 指紋（生体）。3 = 生体＋暗証番号
+    user_auth_type: int | None = 2  # 2 = fingerprint (biometric). 3 = biometric + PIN
     auth_timeout: int | None = None
     origin: int = 0
     device_locked: bool = True
@@ -136,7 +136,7 @@ def key_description(o: KeyOptions) -> bytes:
     app_id = seq(set_of(seq(octets(o.package), integer(1))), set_of(*(octets(d) for d in o.digests)))
     sw: list[tuple[int, bytes]] = [(709, octets(app_id))]
     if o.security_level == 0:
-        # ソフトウェアの鍵は、守りの条件もソフトウェアの一覧に載る。
+        # For software keys, the protection conditions are also listed in the software list.
         sw, hw = sw + [x for x in hw if x[0] != 704], [x for x in hw if x[0] == 704]
     return seq(
         integer(300),
@@ -150,7 +150,7 @@ def key_description(o: KeyOptions) -> bytes:
     )
 
 
-# ── 証明書 ────────────────────────────────────────────────────────────
+# ── Certificates ────────────────────────────────────────────────────────────
 
 NOW = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
 
@@ -184,7 +184,7 @@ def _cert(subject: str, issuer: str, public_key, signing_key, ca: bool, extra: b
 
 @dataclass
 class Chain:
-    certs: list[x509.Certificate]  # 鍵の証明書が先頭
+    certs: list[x509.Certificate]  # key certificate first
     root: x509.Certificate
     leaf_key: ec.EllipticCurvePrivateKey
 
@@ -202,7 +202,7 @@ def make_root(kind: str = "rsa"):
 
 
 def build_chain(options: KeyOptions | None = None, root=None, leaf_key=None, intermediate_ca: bool = True) -> Chain:
-    """根 → 中間（P-256）→ 鍵の証明書（P-256・KeyDescription 付き）。"""
+    """Root -> intermediate (P-256) -> key certificate (P-256, with KeyDescription)."""
     options = options or KeyOptions()
     root_key, root_cert = root or make_root("rsa")
     inter_key = ec.generate_private_key(ec.SECP256R1())
@@ -236,7 +236,7 @@ def write_fixtures(out: Path) -> None:
         "unlocked": build_chain(KeyOptions(device_locked=False), rsa_root),
         "intermediate-not-ca": build_chain(KeyOptions(), rsa_root, intermediate_ca=False),
     }
-    # 攻撃の形: 本物の鍵の証明書の鍵で、偽の「鍵の証明書」に署名して先頭へ足す。
+    # Attack shape: sign a fake "key certificate" with the real key certificate's key and prepend it.
     genuine = build_chain(KeyOptions(), rsa_root)
     fake_key = ec.generate_private_key(ec.SECP256R1())
     fake_leaf = _cert(
@@ -246,7 +246,7 @@ def write_fixtures(out: Path) -> None:
     cases["forged-below-attested-key"] = Chain([fake_leaf, *genuine.certs], genuine.root, fake_key)
     for name, chain in cases.items():
         (out / f"{name}.pem").write_text(chain.pem())
-    # 署名の確かめ（ECDSA P-256・SHA-256・DER）の試験用: 鍵と、決まった文への署名。
+    # For signature verification tests (ECDSA P-256, SHA-256, DER): a key and a signature over a fixed message.
     signer = cases["good"].leaf_key
     message = b"assay-app-approver-v1\napprove\ntenant\nrequest\nchallenge"
     signature = signer.sign(message, ec.ECDSA(hashes.SHA256()))

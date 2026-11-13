@@ -1,9 +1,9 @@
-//! セルフサービスのパスワード変更ユースケース（ログイン済みユーザーの設定画面。MT15）。
+//! Use case: self-service password change (settings screen of a logged-in user; MT15).
 //!
-//! ログインフロー中の強制変更（[`crate::application::change_password`]、`auth_session` ベース）とは別に、
-//! **SSO セッションを持つログイン済みユーザー**が自分の意思でパスワードを変更する経路を提供する。
-//! SSO セッション Cookie から本人を解決し、現行パスワードを再検証したうえで新パスワードを設定する。
-//! OIDC フローの一部ではないため code 再発行や redirect は行わない（成功後は設定画面に留まる）。
+//! Separate from the forced change during the login flow ([`crate::application::change_password`], `auth_session` based),
+//! this provides a route for **a logged-in user with an SSO session** to change their password voluntarily.
+//! It resolves the user from the SSO session cookie, re-verifies the current password, then sets the new one.
+//! It is not part of an OIDC flow, so no code reissue or redirect happens (the user stays on the settings screen).
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::application::password_policy::PasswordPolicyService;
@@ -18,7 +18,7 @@ use crate::domain::repositories::{
 use std::sync::Arc;
 
 pub struct AccountPasswordCommand {
-    /// SSO セッション Cookie の生値（SHA-256 ハッシュで DB 検索する）。
+    /// Raw value of the SSO session cookie (looked up in the DB by its SHA-256 hash).
     pub sso_session_id: String,
     pub current_password: String,
     pub new_password: String,
@@ -26,11 +26,11 @@ pub struct AccountPasswordCommand {
 
 pub enum AccountPasswordOutcome {
     Ok,
-    /// SSO セッションが無い・期限切れ（未ログイン扱い）。
+    /// No SSO session, or it has expired (treated as logged out).
     SessionExpired,
-    /// 現行パスワードが不一致。
+    /// The current password does not match.
     InvalidCurrentPassword,
-    /// 新パスワードがポリシーを満たさない（長さ・漏えい済み・再利用。AP7）。
+    /// The new password does not satisfy the policy (length, breached, reused; AP7).
     WeakPassword(PasswordRejection),
     Internal(String),
 }
@@ -38,7 +38,7 @@ pub enum AccountPasswordOutcome {
 pub struct AccountPasswordService {
     sso_sessions: Arc<dyn SsoSessionRepository>,
     users: Arc<dyn UserRepository>,
-    /// 変更後に他端末ぶんを落とすために引く（ADR-0045）。
+    /// Used to sign out other devices after the change (ADR-0045).
     refresh_tokens: Arc<dyn RefreshTokenRepository>,
     codes: Arc<dyn AuthorizationCodeRepository>,
     hasher: Arc<dyn PasswordHasher>,
@@ -48,7 +48,7 @@ pub struct AccountPasswordService {
 }
 
 impl AccountPasswordService {
-    // 依存の注入で、束ねると却って読めなくなる（`LogoutService::new` と同じ扱い）。
+    // These are injected dependencies; bundling them would only make it harder to read (same as `LogoutService::new`).
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         sso_sessions: Arc<dyn SsoSessionRepository>,
@@ -79,7 +79,7 @@ impl AccountPasswordService {
     ) -> AccountPasswordOutcome {
         let now = self.clock.now();
 
-        // 1. SSO セッションから本人を解決する（有効期限も確認）。
+        // 1. Resolve the user from the SSO session (also checks expiry).
         let session_hash = crypto::sha256_hex(&cmd.sso_session_id);
         let session = match self.sso_sessions.find_by_hash(&session_hash).await {
             Ok(Some(s)) if s.is_valid_at(now) => s,
@@ -92,7 +92,7 @@ impl AccountPasswordService {
             Err(e) => return AccountPasswordOutcome::Internal(e.to_string()),
         };
 
-        // 2. 現行パスワードを再検証する。
+        // 2. Re-verify the current password.
         let verified = match self
             .hasher
             .verify(&cmd.current_password, &user.password_hash)
@@ -104,8 +104,8 @@ impl AccountPasswordService {
             return AccountPasswordOutcome::InvalidCurrentPassword;
         }
 
-        // 3. 新パスワードがポリシーを満たすか検証し（長さ・漏えい済み・再利用。AP7）、
-        //    ハッシュ化して保存する。
+        // 3. Check the new password satisfies the policy (length, breached, reused; AP7),
+        //    then hash and save it.
         match self
             .password_policy
             .validate(
@@ -124,9 +124,9 @@ impl AccountPasswordService {
             Ok(h) => h,
             Err(e) => return AccountPasswordOutcome::Internal(e.to_string()),
         };
-        // 現行ハッシュを条件にした置き換え（AP7）。`false` は読んでから書くまでの間に別の要求が
-        // パスワードを変えたことを意味する。ここで書き込むと相手の変更を消したうえ、履歴には
-        // 既に退役したハッシュを積むことになるので、やり直させる。
+        // Replacement conditioned on the current hash (AP7). `false` means another request changed the
+        // password between our read and write. Writing here would erase their change and push an
+        // already retired hash into the history, so make the user retry.
         match self
             .users
             .update_password(user.id, &user.password_hash, &new_hash)
@@ -143,24 +143,24 @@ impl AccountPasswordService {
             .record_change(user.tenant_id, user.id, &user.password_hash)
             .await;
 
-        // 4. 変えたら、他の端末とアプリを切る（ADR-0045）。
+        // 4. After the change, cut off other devices and apps (ADR-0045).
         //
-        // ここが無いと、リンク経由のリセット（`password_reset`。全部落として画面も
-        // 「既存のセッションはすべてサインアウトされています」と明言する）と食い違う。
-        // 「漏れたかもしれないから変える」という動機の人にとって、**変えたのに前の
-        // パスワードで入られた側が居座り続ける**のは、この操作の意味を失わせる。
+        // Without this it would disagree with the link-based reset (`password_reset`, which drops everything
+        // and whose screen states "all existing sessions have been signed out").
+        // For someone changing it because "it may have leaked", **an intruder who got in with the old
+        // password staying signed in even after the change** defeats the point of this operation.
         //
-        // **今のセッションだけは残す。** `delete_all_for_user` を呼ぶと変えた本人が
-        // その場で締め出される。リセット経路が全部消してよいのは、あれが「忘れた人」の
-        // 経路で手元にセッションが無いからで、ここは事情が違う。
+        // **Only the current session is kept.** Calling `delete_all_for_user` would lock the person who
+        // changed it out on the spot. The reset route may delete everything because it is the route for
+        // "people who forgot" who have no session at hand; the situation here differs.
         //
-        // refresh token は**残さず全部落とす**。SSO セッションと違い、これはアプリが
-        // 持っている合鍵で、パスワードを変えた以上は取り直させてよい。手元のセッションが
-        // 生きているので取り直しは SSO で素通りする。
+        // Refresh tokens are **all dropped, none kept**. Unlike the SSO session, they are duplicate keys
+        // held by apps, and once the password changed, they may be made to re-obtain them. The session at
+        // hand is alive, so re-obtaining passes straight through SSO.
         //
-        // 失敗しても止めない（fail-open）。**パスワードは既に変わっており**、旧パスワードでの
-        // ログインはもうできない。ここで `Internal` を返すと「変わっていない」と読める応答に
-        // なる。リセット経路も同じ判断で警告ログに留めている。
+        // Failure does not stop it (fail-open). **The password has already changed**, and login with the
+        // old password is no longer possible. Returning `Internal` here would read as "not changed".
+        // The reset route makes the same call and only logs a warning.
         match self
             .sso_sessions
             .delete_all_for_user_except(user.id, &session_hash)

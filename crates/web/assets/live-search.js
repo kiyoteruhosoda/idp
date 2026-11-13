@@ -1,22 +1,22 @@
-// 検索欄を打つだけで一覧を絞り込む（「絞り込み」ボタンを押さなくてよい）。
+// Filters a list just by typing in the search box (no need to press the "Filter" button).
 //
-// 絞り込み・ページングはサーバ（api → DB）が行う一覧のためのもの。入力が止まって少し経ったら
-// 同じ URL をフォームの値で取り直し、印を付けた領域だけを差し替える ——ページごと読み直すと
-// 入力欄のフォーカスとカーソル位置が失われるため。アドレスバーも同じ URL に書き換えるので、
-// 再読み込み・共有・戻る（1 件の画面から）で同じ絞り込みに戻れる。
+// For lists whose filtering and paging are done by the server (api -> DB). Shortly after typing stops,
+// the same URL is fetched again with the form values and only the marked regions are replaced -- reloading
+// the whole page would lose the input's focus and cursor position. The address bar is rewritten to the same URL,
+// so reload, share and back (from a single item's screen) return to the same filter.
 //
-// 使い方（テンプレート側）:
+// Usage (template side):
 //   <form method="get" data-live-search>
 //     <input type="search" name="q">
-//     <a data-live-search-clear hidden>…</a>        （語が空なら隠す）
+//     <a data-live-search-clear hidden>…</a>        (hidden when the term is empty)
 //   </form>
-//   <div data-live-search-region="results">…</div> （差し替える領域。名前で対応させる。複数可）
+//   <div data-live-search-region="results">…</div> (region to replace; matched by name; may be several)
 //
-// ⚠ **日本語の変換中は送らない。** 変換を確定するまでの読み（「あかうんと」）で一覧が
-//   揺れないよう、compositionend で初めて数える。
-// ⚠ **古い応答で新しい表示を上書きしない。** 打つたびに前の要求を取り消し、最後の要求の応答
-//   だけを当てる。
-// スクリプトが動かない環境では、今までどおりボタンで送れる（何も変えないのが既定）。
+// ⚠ **Nothing is sent during Japanese IME composition.** So the list does not jitter on the reading before
+//   conversion is committed ("あかうんと"), counting starts only at compositionend.
+// ⚠ **Stale responses never overwrite a newer view.** Each keystroke aborts the previous request and only
+//   the last request's response is applied.
+// Where the script does not run, the button still submits as before (changing nothing is the default).
 (function () {
   "use strict";
 
@@ -36,7 +36,7 @@
       var data = new FormData(form);
       data.forEach(function (value, key) {
         var v = String(value).trim();
-        // 空の語は送らない（`?q=` が残ると「絞り込み中」に見える）。ページ位置は先頭へ戻す。
+        // Don't send an empty term (a leftover `?q=` looks like "filtering"). Reset the page position to the first.
         if (v !== "" && key !== "offset") params.append(key, v);
       });
       var action = form.getAttribute("action") || window.location.pathname;
@@ -58,7 +58,7 @@
           signal: controller ? controller.signal : undefined,
         })
         .then(function (res) {
-          // ログインが切れた等でサインイン画面へ飛ばされたときは、ページごと移る。
+          // When redirected to the sign-in screen (e.g. the login expired), navigate the whole page.
           if (!res.ok || res.redirected) {
             window.location.assign(url);
             return null;
@@ -81,7 +81,7 @@
         })
         .catch(function (err) {
           if (err && err.name === "AbortError") return;
-          // 通信に失敗したら、ページごと送る（ボタンを押したのと同じ結果にする）。
+          // If the request fails, submit the whole page (same result as pressing the button).
           window.location.assign(url);
         })
         .then(function () {
@@ -99,7 +99,7 @@
     input.addEventListener("compositionstart", function () { composing = true; });
     input.addEventListener("compositionend", function () { composing = false; schedule(); });
     input.addEventListener("input", schedule);
-    // Enter やボタンでも、ページを読み直さずに同じ差し替えで済ませる。
+    // Enter and the button also use the same replacement without reloading the page.
     form.addEventListener("submit", function (event) {
       event.preventDefault();
       if (timer) window.clearTimeout(timer);

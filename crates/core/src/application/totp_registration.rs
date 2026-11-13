@@ -1,12 +1,12 @@
-//! TOTP（Time-based One-Time Password）の自己登録ユースケース。
+//! Self-registration use case for TOTP (Time-based One-Time Password).
 //!
-//! MFA は任意でユーザーが自身でセットアップ・削除する。登録フロー:
-//! 1. `setup()` — シークレット生成・仮保存・QR URI と生シークレット（base32）を返す。
-//! 2. `confirm()` — 6 桁コードを検証してシークレットを有効化する。
-//! 3. `delete()` — TOTP 設定を削除する（MFA 無効化）。
+//! MFA is optional; users set it up and delete it themselves. Registration flow:
+//! 1. `setup()`: generate a secret, store it provisionally, return the QR URI and the raw secret (base32).
+//! 2. `confirm()`: verify a 6-digit code and activate the secret.
+//! 3. `delete()`: delete the TOTP settings (disable MFA).
 //!
-//! シークレットは `crypto::encrypt` で AES-256-GCM 暗号化して DB に保存し、
-//! 検証時にのみ復号する（signing_keys と同方式）。
+//! The secret is encrypted with AES-256-GCM via `crypto::encrypt` and stored in the DB,
+//! and decrypted only for verification (same scheme as signing_keys).
 
 use crate::application::authenticator_management::AuthenticatorManagementService;
 use crate::domain::clock::Clock;
@@ -18,13 +18,13 @@ use std::sync::Arc;
 use totp_rs::{Algorithm, Builder, Secret, Totp};
 use uuid::Uuid;
 
-/// TOTP の桁数（RFC 6238 標準の 6 桁）。
+/// Number of TOTP digits (6, the RFC 6238 standard).
 const TOTP_DIGITS: u8 = 6;
-/// TOTP のステップ（秒。RFC 4226 のデフォルト 30 秒）。
+/// TOTP step (seconds. RFC 4226 default of 30 seconds).
 const TOTP_STEP: u64 = 30;
-/// 許容するクロックスキュー（前後 1 ステップ = ±30 秒）。
+/// Allowed clock skew (1 step either way = ±30 seconds).
 const TOTP_SKEW: u16 = 1;
-/// 生成するシークレットのバイト数（160 bit = 20 bytes。HMAC-SHA1 の出力長に合わせる）。
+/// Number of bytes of the generated secret (160 bit = 20 bytes, matching the HMAC-SHA1 output length).
 const SECRET_BYTES: usize = 20;
 
 #[derive(Debug, thiserror::Error)]
@@ -47,32 +47,32 @@ impl From<DomainError> for TotpRegistrationError {
     }
 }
 
-/// TOTP セットアップ開始時に返すデータ。
+/// Data returned when starting TOTP setup.
 pub struct TotpSetupData {
-    /// `otpauth://totp/...` URI（QR コード生成に使う）。
+    /// `otpauth://totp/...` URI (used to generate the QR code).
     pub totp_uri: String,
-    /// base32 エンコードされたシークレット（QR コードが使えないユーザー向けに直接表示する）。
+    /// base32-encoded secret (shown directly for users who cannot use the QR code).
     pub secret_base32: String,
 }
 
 pub struct TotpRegistrationService {
-    /// 認証器の登録簿（AP9）。秘密は本サービス側の表に残しつつ、状態は登録簿へ反映する。
+    /// Authenticator registry (AP9). The secret stays in this service's table, while the state is reflected in the registry.
     authenticators: Arc<AuthenticatorManagementService>,
     totp_secrets: Arc<dyn TotpSecretRepository>,
     sso_sessions: Arc<dyn SsoSessionRepository>,
-    /// QR に載せる宛名（利用者名）を引くため。認証アプリの一覧で「どのアカウントか」を
-    /// 見分ける唯一の手がかりなので、空のまま出すわけにはいかない。
+    /// For looking up the label (user name) placed in the QR. It is the only clue for telling "which account" in
+    /// the authenticator app's list, so it cannot be left empty.
     users: Arc<dyn UserRepository>,
     key_encryption_key: [u8; 32],
-    /// **認証アプリの画面に出る見出し**。OIDC の issuer URL とは別物で、`:` を含められない
-    /// （[`totp_issuer_label`] 参照）。導けなければ `None`（見出し無しの URI になる）。
+    /// **The heading shown in the authenticator app**. Different from the OIDC issuer URL; it cannot contain `:`
+    /// (see [`totp_issuer_label`]). `None` if it cannot be derived (the URI then has no heading).
     totp_issuer: Option<String>,
     clock: Arc<dyn Clock>,
 }
 
 impl TotpRegistrationService {
-    /// `issuer` には OIDC の issuer（URL）をそのまま渡してよい。**見出しへの変換はここで行う**
-    /// —— 呼び出し側に任せると、渡し忘れた 1 箇所で登録が丸ごと失敗する（実際そうなっていた）。
+    /// The OIDC issuer (URL) may be passed to `issuer` as is. **Conversion to the heading happens here**:
+    /// leaving it to callers means one forgotten call site makes registration fail entirely (that actually happened).
     pub fn new(
         authenticators: Arc<AuthenticatorManagementService>,
         totp_secrets: Arc<dyn TotpSecretRepository>,
@@ -93,10 +93,10 @@ impl TotpRegistrationService {
         }
     }
 
-    /// TOTP セットアップを開始する。仮登録中のシークレットを生成・保存し、QR URI と生シークレットを返す。
+    /// Starts TOTP setup. Generates and stores a provisional secret, and returns the QR URI and the raw secret.
     ///
-    /// - すでに有効な（confirmed）TOTP がある場合は `AlreadyConfigured` を返す。
-    /// - `sso_session_id` は Cookie の生値（SHA-256 ハッシュで DB 検索する）。
+    /// - If a valid (confirmed) TOTP already exists, returns `AlreadyConfigured`.
+    /// - `sso_session_id` is the raw Cookie value (looked up in the DB by SHA-256 hash).
     pub async fn setup(
         &self,
         sso_session_id: &str,
@@ -104,14 +104,14 @@ impl TotpRegistrationService {
         let user_id = self.resolve_user(sso_session_id).await?;
         let account_name = self.account_name(user_id).await?;
 
-        // すでに有効な TOTP が設定済みなら拒否する。
+        // Refuse if a valid TOTP is already configured.
         if let Some(existing) = self.totp_secrets.find_by_user_id(user_id).await? {
             if existing.is_confirmed() {
                 return Err(TotpRegistrationError::AlreadyConfigured);
             }
         }
 
-        // 新しいシークレットを生成する。
+        // Generate a new secret.
         let secret_bytes = generate_secret();
         let secret_base32 = to_base32(&secret_bytes);
         let totp_uri = build_totp_uri(&secret_bytes, &account_name, self.totp_issuer.as_deref())?;
@@ -126,8 +126,8 @@ impl TotpRegistrationService {
             created_at: now,
             updated_at: now,
         };
-        // **登録簿の行を先に作る。** 共有鍵の置き場所はその行なので（AP11b）、逆順にすると
-        // 載せる先が無く、鍵は行が無いまま捨てられる（そして直後に作られる行は空になる）。
+        // **Create the registry row first.** The shared key is stored in that row (AP11b), so in the reverse order
+        // there would be nowhere to put it, and the key would be discarded without a row (and the row created right after would be empty).
         self.authenticators
             .register_totp_pending(user_id)
             .await
@@ -140,7 +140,7 @@ impl TotpRegistrationService {
         })
     }
 
-    /// TOTP を確定する。ユーザーが提示した 6 桁コードを検証し、`confirmed_at` を設定する。
+    /// Confirms TOTP. Verifies the 6-digit code the user presented and sets `confirmed_at`.
     pub async fn confirm(
         &self,
         sso_session_id: &str,
@@ -154,7 +154,7 @@ impl TotpRegistrationService {
             .await?
             .ok_or(TotpRegistrationError::NotFound)?;
 
-        // 仮登録中のシークレットのみ確定できる。
+        // Only a provisional secret can be confirmed.
         if record.is_confirmed() {
             return Err(TotpRegistrationError::AlreadyConfigured);
         }
@@ -167,8 +167,8 @@ impl TotpRegistrationService {
         };
 
         let now = self.clock.now();
-        // 確認に使ったコードのステップを記録しておき、同じコードを直後のログインで再利用できない
-        // ようにする（登録→初回ログインの窓を跨いだリプレイを塞ぐ。RFC 6238 §5.2）。
+        // Record the step of the code used for confirmation so the same code cannot be reused in the sign-in right after
+        // (blocks replay across the registration -> first sign-in window. RFC 6238 §5.2).
         self.totp_secrets
             .record_totp_step_if_newer(user_id, step as i64, now)
             .await?;
@@ -180,7 +180,7 @@ impl TotpRegistrationService {
         Ok(())
     }
 
-    /// TOTP 設定を削除する（MFA 無効化）。
+    /// Deletes the TOTP settings (disables MFA).
     pub async fn delete(&self, sso_session_id: &str) -> Result<(), TotpRegistrationError> {
         let user_id = self.resolve_user(sso_session_id).await?;
         self.totp_secrets.delete(user_id).await?;
@@ -191,7 +191,7 @@ impl TotpRegistrationService {
         Ok(())
     }
 
-    /// SSO セッション Cookie 値からユーザー ID を解決する。
+    /// Resolves the user ID from the SSO session Cookie value.
     async fn resolve_user(&self, sso_session_id: &str) -> Result<Uuid, TotpRegistrationError> {
         let hash = crypto::sha256_hex(sso_session_id);
         let session = self
@@ -206,8 +206,8 @@ impl TotpRegistrationService {
         Ok(session.user_id)
     }
 
-    /// QR に載せる宛名。認証アプリはこれを一覧に出すので、利用者が自分の口座だと分かる値にする。
-    /// `preferred_username` が無ければメールへ落とす。`:` は URI の区切りなので取り除く。
+    /// The label placed in the QR. Authenticator apps show it in their list, so use a value by which the user recognizes their own account.
+    /// Falls back to email if there is no `preferred_username`. `:` is removed since it is the URI separator.
     async fn account_name(&self, user_id: Uuid) -> Result<String, TotpRegistrationError> {
         let user = self
             .users
@@ -222,25 +222,25 @@ impl TotpRegistrationService {
     }
 }
 
-/// OIDC の issuer から、認証アプリに出す見出しを導く。
+/// Derives the heading shown in authenticator apps from the OIDC issuer.
 ///
-/// `otpauth://totp/{issuer}:{account}` の区切りが `:` なので、**issuer に `:` を含められない**
-/// （totp-rs は弾く）。`https://identity.example.com` のような URL をそのまま渡すと、TOTP の
-/// 登録が毎回失敗する。ホスト名だけを採り、スキーム・資格情報・ポート・パスは落とす。
-/// 見出しとして使える文字が残らなければ `None`（見出し無しでも登録自体は成立する）。
+/// The separator in `otpauth://totp/{issuer}:{account}` is `:`, so **the issuer cannot contain `:`**
+/// (totp-rs rejects it). Passing a URL like `https://identity.example.com` as is makes TOTP
+/// registration fail every time. Only the host name is taken; scheme, credentials, port and path are dropped.
+/// `None` if no characters usable as a heading remain (registration itself still works without a heading).
 fn totp_issuer_label(issuer: &str) -> Option<String> {
     let after_scheme = issuer.split_once("://").map_or(issuer, |(_, rest)| rest);
     let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
-    // `user:pass@host` の資格情報部を落としてからポートを落とす（順序を逆にすると
-    // 資格情報の `:` をポート区切りと取り違える）。
+    // Drop the `user:pass@host` credentials part before dropping the port (in the reverse order the
+    // credentials' `:` would be mistaken for the port separator).
     let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
     let host = host.split(':').next().unwrap_or("").trim();
     (!host.is_empty()).then(|| host.to_string())
 }
 
-// --- TOTP ユーティリティ ---
+// --- TOTP utilities ---
 
-/// 20 バイトの暗号学的乱数シークレットを生成する。
+/// Generates a 20-byte cryptographically random secret.
 fn generate_secret() -> Vec<u8> {
     use rand::Rng;
     let mut buf = vec![0u8; SECRET_BYTES];
@@ -248,12 +248,12 @@ fn generate_secret() -> Vec<u8> {
     buf
 }
 
-/// バイト列を base32 エンコードする（Google Authenticator 互換。アルファベット大文字 + 数字）。
+/// base32-encodes bytes (Google Authenticator compatible. Uppercase letters + digits).
 pub fn to_base32(bytes: &[u8]) -> String {
     Secret::from(bytes).to_base32()
 }
 
-/// このサービスの TOTP（SHA-1・6 桁・30 秒）を組む。`skew` は前後に許すステップ数。
+/// Builds this service's TOTP (SHA-1, 6 digits, 30 seconds). `skew` is the number of steps allowed either way.
 fn totp(
     secret_bytes: &[u8],
     skew: u16,
@@ -271,7 +271,7 @@ fn totp(
         .build()
 }
 
-/// `otpauth://totp/` URI を構築する。QR コード生成に使う。
+/// Builds the `otpauth://totp/` URI. Used to generate the QR code.
 fn build_totp_uri(
     secret_bytes: &[u8],
     account_name: &str,
@@ -282,20 +282,20 @@ fn build_totp_uri(
         .map_err(|e| TotpRegistrationError::Internal(format!("failed to build TOTP: {e}")))
 }
 
-/// TOTP コードを検証し、一致した **time-step**（unix 秒 / `TOTP_STEP`）を返す。`None` なら無効。
+/// Verifies a TOTP code and returns the matching **time-step** (unix seconds / `TOTP_STEP`). `None` if invalid.
 ///
-/// 単なる真偽ではなくステップを返すのは、受理したコードの**再利用**（リプレイ）を防ぐためである
-/// （RFC 6238 §5.2）。呼び出し側は返ったステップを記録し、同じか古いステップのコードを再受理
-/// しない（`TotpSecretRepository::record_totp_step_if_newer`）。skew を許すため、現在ステップの
-/// 前後 `TOTP_SKEW` 個を新しい側から順に照合し、最初に一致したステップを返す。
+/// It returns the step rather than a plain boolean to prevent **reuse** (replay) of accepted codes
+/// (RFC 6238 §5.2). Callers record the returned step and do not re-accept codes of the same or an older step
+/// (`TotpSecretRepository::record_totp_step_if_newer`). To allow skew, it checks `TOTP_SKEW` steps before and after
+/// the current step, newest first, and returns the first matching step.
 ///
-/// 時刻は `totp-rs` の `check_current` と同じく実時刻（`SystemTime`）を使う。TOTP は元々実時刻に
-/// 束縛される要素で、ステップの算出も同じ時計に合わせる（この 1 か所に集約する）。
+/// Like `totp-rs`'s `check_current`, it uses real time (`SystemTime`). TOTP is inherently bound to real time,
+/// and the step computation uses the same clock (consolidated in this one place).
 pub fn verify_totp_code(
     secret_bytes: &[u8],
     code: &str,
 ) -> Result<Option<u64>, TotpRegistrationError> {
-    // skew はここで自前に扱うため、TOTP 自体は skew=0 で作る（`check` に厳密なステップを問う）。
+    // Skew is handled here ourselves, so the TOTP itself is built with skew=0 (asking `check` about an exact step).
     let totp = totp(secret_bytes, 0, None, "")
         .map_err(|e| TotpRegistrationError::Internal(format!("failed to build TOTP: {e}")))?;
     let now_secs = std::time::SystemTime::now()
@@ -304,15 +304,15 @@ pub fn verify_totp_code(
         .as_secs();
     let base = (now_secs / TOTP_STEP) as i64;
     let skew = TOTP_SKEW as i64;
-    // 新しいステップを優先して返す（同じコードが窓内の複数ステップに現れることは無いが、順序を
-    // 決めておくと記録するステップが一意になる）。
+    // Return newer steps first (the same code never appears at several steps within the window, but fixing the order
+    // makes the recorded step unique).
     for delta in (-skew..=skew).rev() {
         let step = base + delta;
         if step < 0 {
             continue;
         }
         let time = (step as u64) * TOTP_STEP;
-        // `check` は skew=0 のこの TOTP では `time` のステップだけを（定数時間比較で）照合する。
+        // With skew=0, `check` on this TOTP compares only the step of `time` (in constant time).
         if totp.check(code, time).is_some() {
             return Ok(Some(step as u64));
         }
@@ -324,8 +324,8 @@ pub fn verify_totp_code(
 mod tests {
     use super::*;
 
-    /// **OIDC の issuer をそのまま渡しても URI が組めること。** ここが壊れると TOTP の登録は
-    /// 画面から一切できなくなる（api が internal を返し、web が 500 を出す）。実際にそうなっていた。
+    /// **The URI can be built even when the OIDC issuer is passed as is.** If this breaks, TOTP registration
+    /// becomes entirely impossible from the screen (the api returns internal, the web shows 500). That actually happened.
     #[test]
     fn an_issuer_url_still_produces_a_usable_uri() {
         let uri = build_totp_uri(
@@ -339,7 +339,7 @@ mod tests {
         assert!(uri.contains("kyon"), "{uri}");
     }
 
-    /// 見出しはホスト名だけ。スキーム・資格情報・ポート・パスは落とす（`:` が残ると弾かれる）。
+    /// The heading is only the host name. Scheme, credentials, port and path are dropped (a remaining `:` gets rejected).
     #[test]
     fn the_issuer_label_keeps_only_the_host() {
         assert_eq!(
@@ -354,14 +354,14 @@ mod tests {
             totp_issuer_label("https://u:p@idp.example.com:8443/realms/x").as_deref(),
             Some("idp.example.com")
         );
-        // 既に見出しの形なら そのまま。
+        // Already in heading form: as is.
         assert_eq!(totp_issuer_label("assay").as_deref(), Some("assay"));
-        // 何も残らなければ見出し無し（登録自体は成立させる）。
+        // If nothing remains, no heading (registration itself still works).
         assert_eq!(totp_issuer_label("https://"), None);
         assert_eq!(totp_issuer_label(""), None);
     }
 
-    /// 導いた見出しは必ず totp-rs に受け入れられる（`:` が残っていない）。
+    /// A derived heading is always accepted by totp-rs (no `:` remains).
     #[test]
     fn every_derived_label_is_accepted() {
         for issuer in [
@@ -377,7 +377,7 @@ mod tests {
         }
     }
 
-    /// 現在有効なコードを実時刻で生成する（`verify_totp_code` と同じパラメータ）。
+    /// Generates the currently valid code with real time (same parameters as `verify_totp_code`).
     fn current_code(secret: &[u8]) -> (String, u64) {
         let totp = totp(secret, 0, None, "").unwrap();
         let now = std::time::SystemTime::now()
@@ -397,20 +397,20 @@ mod tests {
     #[test]
     fn a_wrong_code_returns_none() {
         let secret = [7u8; SECRET_BYTES];
-        // 現在の正しいコードとは必ず異なる 6 桁を作る（末尾桁をずらす）。
+        // Build a 6-digit code that always differs from the current correct code (shift the last digit).
         let (code, _) = current_code(&secret);
         let last: u32 = code[5..6].parse().unwrap();
         let tampered = format!("{}{}", &code[..5], (last + 1) % 10);
         assert_eq!(verify_totp_code(&secret, &tampered).unwrap(), None);
     }
 
-    /// 返るステップは「今の time-step」であること（記録・再利用判定の基準になる値）。
+    /// The returned step is "the current time-step" (the value that serves as the basis for recording and reuse checks).
     #[test]
     fn the_returned_step_is_the_current_time_step() {
         let secret = [42u8; SECRET_BYTES];
         let (code, step) = current_code(&secret);
         let matched = verify_totp_code(&secret, &code).unwrap().unwrap();
-        // 生成と検証の間に境界を跨ぐと 1 ずれ得るため、±1 を許容する。
+        // Crossing a boundary between generation and verification can shift it by 1, so ±1 is allowed.
         assert!(
             matched == step || matched == step + 1 || matched + 1 == step,
             "matched={matched} step={step}"

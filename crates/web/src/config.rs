@@ -1,14 +1,14 @@
-//! web サービスの設定（ADR-0007）。
+//! Settings of the web service (ADR-0007).
 //!
-//! web は DB を持たないため、api とは別の（小さな）設定を持つ。取得は必ず本モジュール経由で行い、
-//! 生の環境変数を各所で直接参照しない。優先順位は
-//! **「既定値 < 環境変数（ENV）< api 経由の DB 上書き値」**（MT26 / ADR-0013）。
-//! （空文字列は「未設定」として扱う。Compose の `${VAR:-}` 対策は api の config と同じ方針。）
+//! web has no DB, so it has its own (small) settings separate from the api's. They are always obtained through this module,
+//! and raw environment variables are not read directly anywhere else. The precedence is
+//! **"default < environment variable (ENV) < DB override via the api"** (MT26 / ADR-0013).
+//! (An empty string is treated as "unset"; the countermeasure for Compose's `${VAR:-}` follows the api config.)
 //!
-//! api 経由の DB 上書きを受けるのは、api と web の**両方が消費する**共有キー
-//! （`ISSUER`・`COOKIE_SECURE`・`HSTS_MAX_AGE`・`AUTH_SESSION_TTL_SECS`）だけ。web 固有のキー
-//! （`WEB_BIND_ADDR`・`API_BASE_URL`）と bootstrap secret（`INTERNAL_SERVICE_TOKEN`・
-//! `CSRF_SECRET`）、api/web で一致必須の `PUBLIC_WEB_BASE_URL`・`COOKIE_DOMAIN` は ENV > 既定値のまま。
+//! Only shared keys **consumed by both** the api and web take DB overrides via the api
+//! (`ISSUER`, `COOKIE_SECURE`, `HSTS_MAX_AGE`, `AUTH_SESSION_TTL_SECS`). web-specific keys
+//! (`WEB_BIND_ADDR`, `API_BASE_URL`), bootstrap secrets (`INTERNAL_SERVICE_TOKEN`,
+//! `CSRF_SECRET`), and `PUBLIC_WEB_BASE_URL` / `COOKIE_DOMAIN`, which must match between api and web, stay ENV > default.
 #![allow(dead_code)]
 
 use assay_contracts::cookies::CookiePolicy;
@@ -16,13 +16,13 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use std::collections::HashMap;
 use std::env;
 
-/// 内部サービス認証トークンの開発用デフォルト（api 側と同値。ADR-0007 §5）。
-/// 本番では必ず `INTERNAL_SERVICE_TOKEN` を api と共有の値で設定する。
+/// Development default for the internal service auth token (same value as the api; ADR-0007 §5).
+/// In production always set `INTERNAL_SERVICE_TOKEN` to a value shared with the api.
 const DEV_INTERNAL_SERVICE_TOKEN: &str = "idp-dev-insecure-internal-service-token";
-/// CSRF シークレットの開発用デフォルト（api 側 `DEV_CSRF_SECRET` と同値。32 バイト）。
-/// 本番では必ず `CSRF_SECRET` を api と共有の base64 値で設定する。
+/// Development default for the CSRF secret (same value as the api's `DEV_CSRF_SECRET`; 32 bytes).
+/// In production always set `CSRF_SECRET` to a base64 value shared with the api.
 const DEV_CSRF_SECRET: &[u8; 32] = b"idp-dev-insecure-csrf-secret-xxx";
-/// `auth_session_id` Cookie のデフォルト TTL（秒）。api 側と合わせる（600 秒 = 10 分）。
+/// Default TTL (seconds) of the `auth_session_id` cookie. Matches the api (600 seconds = 10 minutes).
 const DEFAULT_AUTH_SESSION_TTL_SECS: u64 = 600;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,50 +35,50 @@ pub enum LogFormat {
 pub struct Config {
     bind_addr: String,
     api_base_url: String,
-    /// api の公開オリジン（= OIDC issuer）。ブラウザから api のエンドポイントへ向かう絶対 URL の
-    /// 基点。`api_base_url`（web→api のサーバ間到達先。Compose 内部アドレスになりうる）とは別物で、
-    /// **ブラウザに出す URL には必ずこちらを使う**。
+    /// The api's public origin (= OIDC issuer). The base of absolute URLs the browser uses to reach api endpoints.
+    /// Distinct from `api_base_url` (web->api server-to-server target; may be a Compose-internal address);
+    /// **always use this one for URLs shown to the browser**.
     issuer: String,
-    /// web 自身の公開オリジン（ADR-0012 §2。Cookie `Secure` 判定・絶対 URL 生成に使う）。
-    /// api 側の `PUBLIC_WEB_BASE_URL` と同一値を設定する。未設定なら issuer と同一オリジン
-    /// （単一オリジン構成）。
+    /// web's own public origin (ADR-0012 §2; used for the cookie `Secure` decision and building absolute URLs).
+    /// Set to the same value as the api's `PUBLIC_WEB_BASE_URL`. If unset, the same origin as the issuer
+    /// (single-origin setup).
     public_web_base_url: String,
     internal_service_token: String,
     internal_service_token_is_dev: bool,
     csrf_secret: [u8; 32],
     csrf_secret_is_dev: bool,
-    /// Cookie の属性方針（`Secure` + 旧 `Domain` 付き Cookie の掃除。ADR-0018 決定 2・4）。
-    /// `COOKIE_DOMAIN` は api 側と同一値を設定する。`None` = 掃除なし（既定）。
+    /// Cookie attribute policy (`Secure` + cleanup of legacy cookies with `Domain`; ADR-0018 decisions 2 and 4).
+    /// Set `COOKIE_DOMAIN` to the same value as the api. `None` = no cleanup (default).
     cookie_policy: CookiePolicy,
     auth_session_ttl_secs: u64,
-    /// HSTS `max-age`（秒）。0 = HSTS ヘッダを付与しない（api 側と同キー `HSTS_MAX_AGE`）。
+    /// HSTS `max-age` (seconds). 0 = no HSTS header (same key `HSTS_MAX_AGE` as the api).
     hsts_max_age: u64,
-    /// リバースプロキシの `X-Forwarded-For` を信頼するか（api 側と同キー `TRUST_FORWARDED_HEADERS`。
-    /// SEC1）。既定 `false` = ヘッダを無視して TCP 接続元を使う。
+    /// Whether to trust the reverse proxy's `X-Forwarded-For` (same key `TRUST_FORWARDED_HEADERS` as the api;
+    /// SEC1). Default `false` = ignore the header and use the TCP peer.
     trust_forwarded_headers: bool,
-    /// 画面を出さずに試す往復を枠に入れてよい親（`SILENT_AUTH_FRAME_ANCESTORS`。api と同キー・環境変数だけ。
-    /// task #888・ADR-0076）。
+    /// Parents allowed to frame the round trip tried without showing a screen (`SILENT_AUTH_FRAME_ANCESTORS`; same key as the api, env var only;
+    /// task #888, ADR-0076).
     silent_auth_frame_ancestors: assay_contracts::frame_ancestors::FrameAncestors,
-    /// 結び付けたログイン状態の短い Cookie の更新を、assay 以外のどのホストから始まった要求でも許すか
-    /// （`DBSC_ALLOWED_REFRESH_INITIATORS`。環境変数だけ。task #934・ADR-0074）。空なら assay 自身からだけ。
+    /// Whether to allow refreshing the short cookie of a bound login state for requests initiated from hosts other than assay
+    /// (`DBSC_ALLOWED_REFRESH_INITIATORS`; env var only; task #934, ADR-0074). If empty, only from assay itself.
     dbsc_allowed_refresh_initiators: Vec<String>,
-    /// 「アプリで続ける」を出すか（`APP_APPROVER_PACKAGE_NAME` が空でない。task #892）。
-    /// 判定そのものは api（口が閉じていれば依頼を断る）。ここは画面に出すかだけ。
+    /// Whether to show "Continue with the app" (`APP_APPROVER_PACKAGE_NAME` is non-empty; task #892).
+    /// The decision itself belongs to the api (it refuses requests when the endpoint is closed). This only decides whether to show it.
     app_approver_enabled: bool,
     log_format: LogFormat,
-    /// api 経由の DB 上書き値を採用した共有キー（起動ログ用。値は含めない）。
+    /// Shared keys whose DB override via the api was adopted (for the startup log; values not included).
     shared_settings_from_api: Vec<String>,
-    /// 起動時に api から受け取った共有ランタイム設定のスナップショット（MT27）。
+    /// Snapshot of the shared runtime settings received from the api at startup (MT27).
     ///
-    /// 設定画面で「web に未反映の共有キー」を出すために保持する。api の再起動でスナップショットが
-    /// 更新されても web は起動時の値を使い続けるため、両者を突き合わせないと**api だけが新しい値で
-    /// 動いている**状態が誰にも見えない（ADR-0013 §Consequences）。secret はこの経路に載らない
-    /// （ADR-0013 §3）ので保持して問題ない。
+    /// Kept so the settings screen can show "shared keys not yet applied to web". Even when an api restart updates the snapshot,
+    /// web keeps using the values from its startup, so unless the two are compared, **the state where only the api runs with the new
+    /// value** is invisible to everyone (ADR-0013 §Consequences). Secrets don't travel this path
+    /// (ADR-0013 §3), so keeping it is fine.
     shared_runtime_settings: HashMap<String, String>,
 }
 
-/// ⚠ 秘密（DB の接続文字列・鍵・サービス間トークン・CSRF の鍵）を `Debug` に出さない（task #593）。
-/// `{:?}` でログへ落としても値が漏れないよう、手書きで載せる項目を選ぶ（足すときは秘密でないものだけ）。
+/// ⚠ Secrets (DB connection string, keys, service-to-service token, CSRF key) are not put in `Debug` (task #593).
+/// Fields are chosen by hand so values don't leak even if `{:?}` ends up in logs (when adding, only non-secret ones).
 impl std::fmt::Debug for Config {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Config")
@@ -93,19 +93,19 @@ impl std::fmt::Debug for Config {
     }
 }
 
-/// api へ問い合わせるために必要な最小の設定（MT26 / ADR-0013）。
+/// Minimal settings needed to query the api (MT26 / ADR-0013).
 ///
-/// **共有キー（`COOKIE_SECURE`・`HSTS_MAX_AGE`・`AUTH_SESSION_TTL_SECS`）には触れない。**
-/// ここで ENV の共有キーをパースしてしまうと、ENV に不正値があるだけで（DB に正しい上書きが
-/// あっても）api へ問い合わせる前に起動が失敗し、`ENV < DB` の優先順位で復旧できなくなる。
+/// **Shared keys (`COOKIE_SECURE`, `HSTS_MAX_AGE`, `AUTH_SESSION_TTL_SECS`) are not touched.**
+/// Parsing ENV shared keys here would make startup fail before querying the api just because ENV has an invalid value
+/// (even if the DB has a correct override), and recovery through the `ENV < DB` precedence would be impossible.
 ///
-/// 一方 bootstrap secret は `EnvLocked` で DB からは直せないため、**ここで fail-fast する**
-/// （api 未到達のときに「api へ繋がらない」ではなく本来の設定誤りを先に見せるため）。
+/// Bootstrap secrets, on the other hand, are `EnvLocked` and can't be fixed from the DB, so **this fails fast here**
+/// (so that when the api is unreachable, the actual misconfiguration is shown first rather than "can't reach the api").
 ///
-/// `ISSUER` は DB 上書きを受ける（ADR-0017）が、ここではまだ api へ問い合わせていないので ENV 値で
-/// 判定する。DB 上書きが https で ENV が http の構成では本段では素通りし、共有設定を受け取ってから
-/// [`Config::from_env_and_shared_settings`] が同じ検査で落とす。api 側も保存時に同じ組み合わせを
-/// 拒否する（`domain::system_setting::ensure_override_is_bootable`）ため、この経路には通常入らない。
+/// `ISSUER` takes DB overrides (ADR-0017), but the api hasn't been queried yet here, so the ENV value is
+/// used. In a setup where the DB override is https and ENV is http, this stage lets it through, and after the shared settings are received
+/// [`Config::from_env_and_shared_settings`] rejects it with the same check. The api also rejects the same combination on save
+/// (`domain::system_setting::ensure_override_is_bootable`), so this path is normally not entered.
 #[derive(Debug, Clone)]
 pub struct Bootstrap {
     api_base_url: String,
@@ -120,7 +120,7 @@ impl Bootstrap {
         let public_web_base_url = normalize_base_url(env_or("PUBLIC_WEB_BASE_URL", &issuer));
         let (internal_service_token, internal_service_token_is_dev) =
             match env_lookup("INTERNAL_SERVICE_TOKEN") {
-                // 最低要件（長さ・プレースホルダ）は api と共有の契約で検査する（SEC11）。
+                // Minimum requirements (length, placeholder) are checked by the contract shared with the api (SEC11).
                 Some(v) => (
                     assay_contracts::deployment::validate_internal_service_token(&v)
                         .map_err(|e| anyhow::anyhow!(e))?,
@@ -128,7 +128,7 @@ impl Bootstrap {
                 ),
                 None => (DEV_INTERNAL_SERVICE_TOKEN.to_string(), true),
             };
-        // base64 の形式検証も兼ねる（DB では直せない値なので早く落とす）。
+        // Also validates the base64 format (a value that can't be fixed in the DB, so fail early).
         let (_, csrf_secret_is_dev) = load_csrf_secret()?;
         ensure_production_secrets(
             &issuer,
@@ -159,31 +159,31 @@ impl Bootstrap {
 }
 
 impl Config {
-    /// 環境変数と既定値だけで組み立てる（api の DB 上書きを反映しない）。api を起動しない
-    /// テスト専用。実際の起動経路は
-    /// [`from_env_and_shared_settings`](Self::from_env_and_shared_settings)。
+    /// Builds from environment variables and defaults only (no api DB overrides). For tests that don't
+    /// start the api. The actual startup path is
+    /// [`from_env_and_shared_settings`](Self::from_env_and_shared_settings).
     pub fn from_env() -> anyhow::Result<Self> {
         Self::from_env_and_shared_settings(&HashMap::new())
     }
 
-    /// api から受け取った共有ランタイム設定の DB 上書き値を最優先に、設定を解決する
-    /// （MT26 / ADR-0013。優先順位は 既定値 < ENV < `shared`）。
+    /// Resolves settings giving top priority to the DB overrides of the shared runtime settings received from the api
+    /// (MT26 / ADR-0013; precedence is default < ENV < `shared`).
     ///
-    /// `shared` に無いキーは従来どおり ENV → 既定値へフォールバックする。とくに `COOKIE_SECURE` の
-    /// 既定は **web 自身の公開オリジン**のスキームであり（ADR-0012 §2）、api の既定を引き継がない。
+    /// Keys absent from `shared` fall back to ENV -> default as before. In particular the default of `COOKIE_SECURE`
+    /// is the scheme of **web's own public origin** (ADR-0012 §2) and does not inherit the api's default.
     pub fn from_env_and_shared_settings(shared: &HashMap<String, String>) -> anyhow::Result<Self> {
         let resolver = SharedSettingResolver::new(shared);
-        // api の公開オリジン（= OIDC issuer。ブラウザを api へ向けるリダイレクトの基点）。
-        // ADR-0017 で DB 管理へ移したため、api から受け取った上書き値を最優先で採る。
+        // The api's public origin (= OIDC issuer; the base of redirects pointing the browser to the api).
+        // Moved to DB management in ADR-0017, so the override received from the api takes top priority.
         let issuer = normalize_base_url(resolver.string("ISSUER", "http://localhost:8080"));
-        // web 自身の公開オリジン（ADR-0012 §2）。未設定は issuer と同一オリジン（単一オリジン構成）。
+        // web's own public origin (ADR-0012 §2). Unset means the same origin as the issuer (single-origin setup).
         let public_web_base_url = normalize_base_url(env_or("PUBLIC_WEB_BASE_URL", &issuer));
-        // Cookie の Secure 属性。既定は自オリジン（PUBLIC_WEB_BASE_URL）のスキームに従う
-        // （ADR-0012 §2。issuer ではなく web 自身の公開スキームで判定する）。
+        // Cookie Secure attribute. Defaults to the scheme of our own origin (PUBLIC_WEB_BASE_URL)
+        // (ADR-0012 §2; decided by web's own public scheme, not the issuer).
         let cookie_secure =
             resolver.parse("COOKIE_SECURE", public_web_base_url.starts_with("https://"))?;
-        // 旧 ADR-0012 構成の Domain 付き Cookie を掃除するための COOKIE_DOMAIN（ADR-0018 決定 4）。
-        // api 側と同じ検証（親ドメイン整合・public suffix 拒否）を起動時に行う（fail-fast）。
+        // COOKIE_DOMAIN for cleaning up cookies with Domain from the old ADR-0012 setup (ADR-0018 decision 4).
+        // The same validation as the api (parent-domain consistency, public suffix rejection) runs at startup (fail-fast).
         let cookie_domain = match env_lookup("COOKIE_DOMAIN") {
             Some(raw) => Some(
                 assay_contracts::cookie_domain::validate_cookie_domain(
@@ -197,7 +197,7 @@ impl Config {
         let cookie_policy = CookiePolicy::new(cookie_secure, cookie_domain.as_deref());
         let (internal_service_token, internal_service_token_is_dev) =
             match env_lookup("INTERNAL_SERVICE_TOKEN") {
-                // 最低要件（長さ・プレースホルダ）は api と共有の契約で検査する（SEC11）。
+                // Minimum requirements (length, placeholder) are checked by the contract shared with the api (SEC11).
                 Some(v) => (
                     assay_contracts::deployment::validate_internal_service_token(&v)
                         .map_err(|e| anyhow::anyhow!(e))?,
@@ -206,7 +206,7 @@ impl Config {
                 None => (DEV_INTERNAL_SERVICE_TOKEN.to_string(), true),
             };
         let (csrf_secret, csrf_secret_is_dev) = load_csrf_secret()?;
-        // 本番（https issuer）では開発用デフォルトのトークンで起動しない（fail-fast。api 側と同方針）。
+        // In production (https issuer), don't start with the development default token (fail-fast; same policy as the api).
         ensure_production_secrets(
             &issuer,
             &public_web_base_url,
@@ -215,7 +215,7 @@ impl Config {
         )?;
         Ok(Self {
             bind_addr: env_or("WEB_BIND_ADDR", "0.0.0.0:8081"),
-            // api への到達先。単一オリジン構成ではプロキシ内部アドレス、ローカルでは api の直アドレス。
+            // Target for reaching the api. A proxy-internal address in single-origin setups; the api's direct address locally.
             api_base_url: normalize_base_url(env_or("API_BASE_URL", "http://localhost:8080")),
             issuer,
             public_web_base_url,
@@ -228,7 +228,7 @@ impl Config {
                 .parse("AUTH_SESSION_TTL_SECS", DEFAULT_AUTH_SESSION_TTL_SECS)?,
             hsts_max_age: resolver.parse("HSTS_MAX_AGE", 0u64)?,
             trust_forwarded_headers: resolver.parse("TRUST_FORWARDED_HEADERS", false)?,
-            // 書けない値では起動しない（fail-fast。api も同じ検査を通す）
+            // Don't start with a value that can't be written (fail-fast; the api runs the same check)
             silent_auth_frame_ancestors: assay_contracts::frame_ancestors::parse_frame_ancestors(
                 &env_or("SILENT_AUTH_FRAME_ANCESTORS", ""),
             )
@@ -249,69 +249,69 @@ impl Config {
     pub fn bind_addr(&self) -> &str {
         &self.bind_addr
     }
-    /// api のベース URL（末尾スラッシュ無し）。API クライアントが各エンドポイントへ結合する。
+    /// The api's base URL (no trailing slash). The API client joins each endpoint to it.
     pub fn api_base_url(&self) -> &str {
         &self.api_base_url
     }
-    /// web→api の `/internal/*` 呼び出しに付与するサービス認証トークン（ADR-0007 §5）。
+    /// Service auth token attached to web->api `/internal/*` calls (ADR-0007 §5).
     pub fn internal_service_token(&self) -> &str {
         &self.internal_service_token
     }
     pub fn internal_service_token_is_dev(&self) -> bool {
         self.internal_service_token_is_dev
     }
-    /// CSRF トークン署名鍵（HMAC-SHA256 用）。api と同じ `CSRF_SECRET` を共有する。
+    /// CSRF token signing key (for HMAC-SHA256). Shares the same `CSRF_SECRET` as the api.
     pub fn csrf_secret(&self) -> &[u8; 32] {
         &self.csrf_secret
     }
     pub fn csrf_secret_is_dev(&self) -> bool {
         self.csrf_secret_is_dev
     }
-    /// api の公開オリジン（= OIDC issuer。末尾スラッシュ無し）。ブラウザを api のエンドポイントへ
-    /// 向ける絶対 URL の基点。別ドメイン公開（ADR-0015）では web と api でオリジンが異なるため、
-    /// api が提供するエンドポイント（`/{tenant_id}/saml/metadata` 等）へのリンクを web オリジン
-    /// 相対で書くと 404 になる。
+    /// The api's public origin (= OIDC issuer; no trailing slash). The base of absolute URLs pointing the browser to api
+    /// endpoints. With separate-domain publishing (ADR-0015) web and api have different origins, so
+    /// links to endpoints served by the api (`/{tenant_id}/saml/metadata` etc.) written relative to the web origin
+    /// would 404.
     pub fn issuer(&self) -> &str {
         &self.issuer
     }
-    /// web 自身の公開オリジン（末尾スラッシュ無し。ADR-0012 §2）。
+    /// web's own public origin (no trailing slash; ADR-0012 §2).
     pub fn public_web_base_url(&self) -> &str {
         &self.public_web_base_url
     }
-    /// web が組み立てる Cookie に `Secure` を付けるか（api の応答値を Cookie 化する際に使う）。
+    /// Whether web adds `Secure` to the cookies it builds (used when turning api responses into cookies).
     pub fn cookie_secure(&self) -> bool {
         self.cookie_policy.secure()
     }
-    /// 旧 ADR-0012 構成の `Domain` 付き Cookie を掃除するための `COOKIE_DOMAIN`（ADR-0018 決定 4）。
-    /// `None` = 掃除なし（既定）。セッション Cookie は常に host-only で発行される。
+    /// `COOKIE_DOMAIN` for cleaning up cookies with `Domain` from the old ADR-0012 setup (ADR-0018 decision 4).
+    /// `None` = no cleanup (default). Session cookies are always issued host-only.
     pub fn cookie_domain(&self) -> Option<&str> {
         self.cookie_policy.legacy_cleanup_domain()
     }
-    /// Cookie の属性方針。Cookie の発行・失効は必ずこれを経由する（ADR-0012 §3。`Domain` を
-    /// 渡し忘れた発行箇所が生まれないようにするため）。通常は `WebState::set_cookies()` を使う。
+    /// Cookie attribute policy. Issuing and expiring cookies always goes through this (ADR-0012 §3; so that no
+    /// issuing site forgets to pass `Domain`). Normally use `WebState::set_cookies()`.
     pub fn cookie_policy(&self) -> &CookiePolicy {
         &self.cookie_policy
     }
-    /// `auth_session_id` Cookie の TTL（秒）。api 側の `AUTH_SESSION_TTL_SECS` と合わせる。
+    /// TTL (seconds) of the `auth_session_id` cookie. Matches the api's `AUTH_SESSION_TTL_SECS`.
     pub fn auth_session_ttl_secs(&self) -> u64 {
         self.auth_session_ttl_secs
     }
-    /// HSTS `max-age`（秒）。0 = HSTS ヘッダを付与しない。
+    /// HSTS `max-age` (seconds). 0 = no HSTS header.
     pub fn hsts_max_age(&self) -> u64 {
         self.hsts_max_age
     }
-    /// 画面を出さずに試す往復を枠に入れてよい親（空なら許さない。task #888・ADR-0076）。
+    /// Parents allowed to frame the round trip tried without showing a screen (not allowed if empty; task #888, ADR-0076).
     pub fn silent_auth_frame_ancestors(&self) -> &assay_contracts::frame_ancestors::FrameAncestors {
         &self.silent_auth_frame_ancestors
     }
-    /// 短い Cookie の更新を許す、assay 以外の要求元のホストの型（登録・更新の応答の `allowed_refresh_initiators`）。
+    /// Types of non-assay initiator hosts allowed to refresh the short cookie (`allowed_refresh_initiators` in registration/refresh responses).
     pub fn dbsc_allowed_refresh_initiators(&self) -> &[String] {
         &self.dbsc_allowed_refresh_initiators
     }
-    /// `X-Forwarded-For` を信頼してクライアント IP を採るか（SEC1）。`false`（既定）なら
-    /// ヘッダを無視し、TCP 接続元アドレス（`ConnectInfo`）を使う。api 側と同じキー・同じ既定で、
-    /// 信頼できるリバースプロキシ配下でのみ `true` にする。
-    /// 「アプリで続ける」を画面に出すか（task #892）。
+    /// Whether to trust `X-Forwarded-For` for the client IP (SEC1). If `false` (default),
+    /// the header is ignored and the TCP peer address (`ConnectInfo`) is used. Same key and default as the api;
+    /// set to `true` only behind a trusted reverse proxy.
+    /// Whether to show "Continue with the app" on screen (task #892).
     pub fn app_approver_enabled(&self) -> bool {
         self.app_approver_enabled
     }
@@ -322,24 +322,24 @@ impl Config {
     pub fn log_format(&self) -> LogFormat {
         self.log_format
     }
-    /// api 経由の DB 上書き値を採用した共有キー名（起動ログ用。**値は含めない**）。
+    /// Names of shared keys whose DB override via the api was adopted (for the startup log; **values not included**).
     pub fn shared_settings_from_api(&self) -> &[String] {
         &self.shared_settings_from_api
     }
 
-    /// 起動時に api から受け取った共有ランタイム設定。設定画面が現在の api のスナップショットと
-    /// 突き合わせ、web への未反映を検出するために使う（MT27）。
+    /// Shared runtime settings received from the api at startup. The settings screen compares them with the api's current snapshot
+    /// to detect what has not yet been applied to web (MT27).
     pub fn shared_runtime_settings(&self) -> &HashMap<String, String> {
         &self.shared_runtime_settings
     }
 }
 
-/// 起動時に web が適用した共有設定と、api が現在配っている共有設定を突き合わせ、**web に未反映の
-/// キー**を返す（MT27）。返すのはキー名だけで、値は含めない。
+/// Compares the shared settings web applied at startup with those the api currently serves, and returns **keys not yet applied
+/// to web** (MT27). Only key names are returned; values are not included.
 ///
-/// api の再起動は新しい値の公開そのもの（ADR-0013 §1-a）なので、api が再起動して web が
-/// そのままなら、api だけが新しい値で動いている。逆向き（web だけが新しい値）はスナップショット
-/// 方式により構造的に起きない。
+/// An api restart is itself the publication of new values (ADR-0013 §1-a), so if the api restarted and web
+/// did not, only the api runs with the new values. The reverse (only web has new values) structurally cannot happen
+/// with the snapshot approach.
 pub fn stale_shared_settings(
     applied: &HashMap<String, String>,
     current: &HashMap<String, String>,
@@ -348,7 +348,7 @@ pub fn stale_shared_settings(
         .iter()
         .filter(|(key, value)| applied.get(*key) != Some(*value))
         .map(|(key, _)| key.clone())
-        // 上書きが解除されたキー（api 側から消えた）も未反映。
+        // Keys whose override was removed (gone from the api side) are also not yet applied.
         .chain(
             applied
                 .keys()
@@ -361,10 +361,10 @@ pub fn stale_shared_settings(
     keys
 }
 
-/// 「既定値 < ENV < api 経由の DB 上書き値」で共有キーを解決する（MT26 / ADR-0013）。
+/// Resolves shared keys as "default < ENV < DB override via the api" (MT26 / ADR-0013).
 ///
-/// どのキーが DB 由来だったかを記録し、起動ログで運用者に見せる（設定画面の値と実際に効いている値が
-/// 食い違ったときの切り分けに要る）。
+/// Records which keys came from the DB and shows operators in the startup log (needed to isolate cases where the value on the
+/// settings screen and the value actually in effect disagree).
 struct SharedSettingResolver<'a> {
     shared: &'a HashMap<String, String>,
     applied: std::cell::RefCell<Vec<String>>,
@@ -378,7 +378,7 @@ impl<'a> SharedSettingResolver<'a> {
         }
     }
 
-    /// 有効値を文字列で解決する（DB 上書き > ENV。どちらも無ければ `None`）。
+    /// Resolves the effective value as a string (DB override > ENV; `None` if neither).
     fn optional_string(&self, key: &str) -> Option<String> {
         if let Some(v) = self.shared.get(key).filter(|v| !v.is_empty()) {
             self.applied.borrow_mut().push(key.to_string());
@@ -400,7 +400,7 @@ impl<'a> SharedSettingResolver<'a> {
         }
     }
 
-    /// 有効値を文字列で解決する（DB 上書き > ENV > 既定値）。
+    /// Resolves the effective value as a string (DB override > ENV > default).
     fn string(&self, key: &str, default: &str) -> String {
         self.optional_string(key)
             .unwrap_or_else(|| default.to_string())
@@ -411,21 +411,21 @@ impl<'a> SharedSettingResolver<'a> {
     }
 }
 
-/// 本番相当で開発用デフォルトのシークレットが使われていたら起動を失敗させる。
+/// Fails startup if development default secrets are used in a production-like setup.
 ///
-/// 本番相当の判定には **issuer と web 自身の公開オリジンの両方**を見る（ADR-0012 §2 で web は
-/// 自身の公開オリジンを持つようになったため）。どちらか一方でも `https://` なら公開配置とみなす。
-/// issuer だけを見ていると、`PUBLIC_WEB_BASE_URL` が https の公開配置で `ISSUER` を内部 http URL に
-/// 取り違えた構成が素通りし、api と共有する `CSRF_SECRET` が既知の開発用値のまま動いてしまう
-/// （CSRF トークンを誰でも偽造できる）。
+/// Production-likeness looks at **both the issuer and web's own public origin** (since ADR-0012 §2 web
+/// has its own public origin). If either is `https://`, it is treated as a public deployment.
+/// Looking only at the issuer would let through a setup where `PUBLIC_WEB_BASE_URL` is a public https deployment but `ISSUER` was
+/// mistakenly set to an internal http URL, running with the `CSRF_SECRET` shared with the api still at the known development value
+/// (anyone could forge CSRF tokens).
 fn ensure_production_secrets(
     issuer: &str,
     public_web_base_url: &str,
     internal_service_token_is_dev: bool,
     csrf_secret_is_dev: bool,
 ) -> anyhow::Result<()> {
-    // 判定は api と共有の契約に置く（SEC11）。https だけでなく、前段で TLS を終端して
-    // http のループバック以外を公開している配置も本番扱いにする。
+    // The decision lives in the contract shared with the api (SEC11). Not only https, but also deployments that terminate TLS
+    // upstream and expose a non-loopback http address are treated as production.
     use assay_contracts::deployment::requires_production_secrets;
     let public_origin = if requires_production_secrets(issuer) {
         issuer
@@ -451,11 +451,11 @@ fn ensure_production_secrets(
     Ok(())
 }
 
-/// `CSRF_SECRET`（base64、32 バイト）を読み込む。未設定なら開発用デフォルトを使う。
+/// Reads `CSRF_SECRET` (base64, 32 bytes). Uses the development default if unset.
 ///
-/// `.env.*.example` のプレースホルダ `CHANGE-ME` が残ったまま起動されるケースが実際に多い
-/// （素の base64 エラーでは原因に辿り着けない）ため、プレースホルダは base64 復号より先に
-/// 検出し、対処（`openssl rand -base64 32`）まで案内する（api 側 `decode_secret_32` と同方針）。
+/// Starting with the `.env.*.example` placeholder `CHANGE-ME` left in place happens often in practice
+/// (a bare base64 error doesn't lead to the cause), so placeholders are detected before base64 decoding
+/// and the fix (`openssl rand -base64 32`) is suggested (same policy as the api's `decode_secret_32`).
 fn load_csrf_secret() -> anyhow::Result<([u8; 32], bool)> {
     match env_lookup("CSRF_SECRET") {
         Some(v) => {
@@ -481,12 +481,12 @@ fn load_csrf_secret() -> anyhow::Result<([u8; 32], bool)> {
     }
 }
 
-/// 公開ベース URL を正規化する: 末尾スラッシュを落とし、**スキームを小文字化**する。
+/// Normalizes a public base URL: drops the trailing slash and **lower-cases the scheme**.
 ///
-/// URI のスキームは大小を区別しない（RFC 3986 §3.1）。`HTTPS://id.example.com` のような表記でも
-/// https と判定できないと、Cookie の `Secure` 判定と本番シークレットの fail-fast（どちらも
-/// スキームを見る）がすり抜ける。ホスト・パスはそのまま残す（issuer は ID Token の `iss` と
-/// 完全一致させる必要があるため、こちらで勝手に変えない）。
+/// URI schemes are case-insensitive (RFC 3986 §3.1). If a notation like `HTTPS://id.example.com` couldn't be
+/// judged https, the cookie `Secure` decision and the production-secret fail-fast (both look at
+/// the scheme) would be bypassed. Host and path are left as is (the issuer must exactly match the ID Token's `iss`,
+/// so we don't change it on our own).
 fn normalize_base_url(raw: String) -> String {
     let trimmed = raw.trim_end_matches('/');
     match trimmed.split_once("://") {
@@ -506,7 +506,7 @@ fn env_or(key: &str, default: &str) -> String {
     env_lookup(key).unwrap_or_else(|| default.to_string())
 }
 
-/// `LOG_FORMAT`（`EnvLocked`）を読む。未知の値は既定の JSON へ倒す（ログ初期化を失敗させない）。
+/// Reads `LOG_FORMAT` (`EnvLocked`). Unknown values fall back to the default JSON (log init must not fail).
 fn parse_log_format() -> LogFormat {
     match env_or("LOG_FORMAT", "json").to_ascii_lowercase().as_str() {
         "pretty" => LogFormat::Pretty,
@@ -519,20 +519,20 @@ mod tests {
     use super::*;
     use std::sync::{Mutex, MutexGuard};
 
-    /// プロセス共有の環境変数を触るテストを直列化するためのロック（`cargo test` はスレッド並列）。
-    /// `Config::from_env*` を呼ぶテストは必ずこれを取得する。
+    /// Lock serializing tests that touch process-wide environment variables (`cargo test` runs threads in parallel).
+    /// Tests calling `Config::from_env*` must always acquire it.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    /// `ENV_LOCK` を取得する。ロック保持中に別テストが panic して poison しても、排他自体は
-    /// 保たれているため内側の値を取り出して継続する。
+    /// Acquires `ENV_LOCK`. Even if another test panics while holding the lock and poisons it, mutual exclusion
+    /// itself is preserved, so the inner value is taken and execution continues.
     fn env_guard() -> MutexGuard<'static, ()> {
         ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// ループバック以外の公開オリジンを使うテストは本番相当と判定される（SEC11）ため、開発用
-    /// 既定 secret のままでは `Config` を組み立てられない。テスト用の値を注入する。
+    /// Tests using non-loopback public origins are judged production-like (SEC11), so `Config` can't be built
+    /// with the development default secrets. Injects test values.
     fn set_production_secrets() {
         std::env::set_var("INTERNAL_SERVICE_TOKEN", "t".repeat(32));
         std::env::set_var("CSRF_SECRET", STANDARD.encode([7u8; 32]));
@@ -553,13 +553,13 @@ mod tests {
 
     #[test]
     fn base_url_scheme_is_lowercased_but_host_is_left_alone() {
-        // スキームは大小を区別しない（RFC 3986 §3.1）。https 判定（Cookie の Secure・本番
-        // シークレットの fail-fast）が `HTTPS://` 表記をすり抜けないように正規化する。
+        // Schemes are case-insensitive (RFC 3986 §3.1). Normalized so https detection (cookie Secure, production
+        // secret fail-fast) isn't bypassed by `HTTPS://` notation.
         assert_eq!(
             normalize_base_url("HTTPS://ID.Example.com/".to_string()),
             "https://ID.Example.com"
         );
-        // スキームを持たない値は素通しする（誤って壊さない）。
+        // Values without a scheme pass through untouched (not broken by mistake).
         assert_eq!(
             normalize_base_url("id.example.com".to_string()),
             "id.example.com"
@@ -583,10 +583,10 @@ mod tests {
 
     #[test]
     fn production_secrets_are_required_when_only_the_web_origin_is_https() {
-        // ADR-0012 §2: web は自身の公開オリジンを持つ。https で公開されている以上、ISSUER の
-        // スキームがどうであれ開発用シークレット（api と共有する CSRF 鍵）では起動させない。
-        // issuer 側は loopback（＝本番判定にならない）にして、web の公開オリジンだけで
-        // 判定されることを固定する。
+        // ADR-0012 §2: web has its own public origin. As long as it is published over https, whatever the ISSUER
+        // scheme, it must not start with the development secret (the CSRF key shared with the api).
+        // The issuer side is loopback (= not judged as production), pinning that the decision is made
+        // by web's public origin alone.
         let err = ensure_production_secrets(
             "http://localhost:8080",
             "https://id.example.com",
@@ -608,8 +608,8 @@ mod tests {
 
     #[test]
     fn uppercase_https_scheme_is_still_treated_as_production() {
-        // `HTTPS://` 表記でも fail-fast が効く（`from_env` は normalize_base_url を通すため、
-        // ensure_production_secrets には小文字化済みの値が渡る）。
+        // Fail-fast works with `HTTPS://` notation too (`from_env` goes through normalize_base_url, so
+        // ensure_production_secrets receives the lower-cased value).
         let public_web_base_url = normalize_base_url("HTTPS://id.example.com".to_string());
         assert!(ensure_production_secrets(
             "http://localhost:8080",
@@ -631,10 +631,10 @@ mod tests {
     #[test]
     fn self_origin_and_cookie_domain_resolution() {
         let _env = env_guard();
-        // ループバック以外のオリジンを使うので本番相当（SEC11）。secret を先に用意する。
+        // Uses a non-loopback origin, so it is production-like (SEC11). Prepare secrets first.
         set_production_secrets();
-        // 別ドメイン構成: Secure 判定は issuer ではなく自オリジン（PUBLIC_WEB_BASE_URL）に従う
-        // （ADR-0012 §2）。http の自オリジンなら Secure なし。
+        // Separate-domain setup: the Secure decision follows our own origin (PUBLIC_WEB_BASE_URL), not the issuer
+        // (ADR-0012 §2). With an http own origin, no Secure.
         std::env::set_var("ISSUER", "http://api.example.com");
         std::env::set_var("PUBLIC_WEB_BASE_URL", "http://id.example.com/");
         std::env::set_var("COOKIE_DOMAIN", "example.com");
@@ -643,24 +643,24 @@ mod tests {
         assert!(!config.cookie_secure());
         assert_eq!(config.cookie_domain(), Some("example.com"));
 
-        // 両オリジンの親でない COOKIE_DOMAIN は起動を失敗させる（fail-fast）。
+        // A COOKIE_DOMAIN that is not a parent of both origins fails startup (fail-fast).
         std::env::set_var("COOKIE_DOMAIN", "other.com");
         assert!(Config::from_env().is_err());
 
-        // 未設定 = host-only、自オリジンは issuer と同一（単一オリジン構成の従来挙動）。
+        // Unset = host-only; own origin same as the issuer (traditional behavior of the single-origin setup).
         std::env::remove_var("COOKIE_DOMAIN");
         std::env::remove_var("PUBLIC_WEB_BASE_URL");
         let config = Config::from_env().unwrap();
         assert_eq!(config.public_web_base_url(), "http://api.example.com");
         assert_eq!(config.cookie_domain(), None);
 
-        // https の自オリジンなら Secure を付ける。判定の基準は issuer ではなく自オリジンであること
-        // （ADR-0012 §2）を、http の issuer と組み合わせて固定する。
+        // With an https own origin, Secure is added. Pins, combined with an http issuer, that the basis of the decision is the own origin
+        // rather than the issuer (ADR-0012 §2).
         std::env::set_var("PUBLIC_WEB_BASE_URL", "https://id.example.com");
         let config = Config::from_env().unwrap();
         assert!(config.cookie_secure(), "Secure follows the web origin");
 
-        // COOKIE_SECURE の明示指定は自オリジンのスキームより優先する（プロキシ終端構成の逃げ道）。
+        // An explicit COOKIE_SECURE takes precedence over the own origin's scheme (escape hatch for proxy-terminated setups).
         std::env::set_var("COOKIE_SECURE", "false");
         assert!(!Config::from_env().unwrap().cookie_secure());
         std::env::set_var("COOKIE_SECURE", "true");
@@ -673,8 +673,8 @@ mod tests {
         std::env::remove_var("ISSUER");
     }
 
-    /// MT26 / ADR-0013: api 経由の DB 上書き値は ENV・既定値より優先する。
-    /// MT27: 起動時に web が適用した共有設定と api の現在値がずれていれば「web に未反映」。
+    /// MT26 / ADR-0013: DB overrides via the api take precedence over ENV and defaults.
+    /// MT27: if the shared settings web applied at startup differ from the api's current values, "not yet applied to web".
     #[test]
     fn stale_shared_settings_reports_keys_the_web_has_not_picked_up() {
         let applied = HashMap::from([
@@ -682,10 +682,10 @@ mod tests {
             ("HSTS_MAX_AGE".to_string(), "31536000".to_string()),
         ]);
 
-        // 完全に一致していれば未反映なし。
+        // If they match exactly, nothing is pending.
         assert!(stale_shared_settings(&applied, &applied).is_empty());
 
-        // 値が変わったキーだけを挙げる。
+        // Only keys whose values changed are listed.
         let changed = HashMap::from([
             ("COOKIE_SECURE".to_string(), "false".to_string()),
             ("HSTS_MAX_AGE".to_string(), "31536000".to_string()),
@@ -695,7 +695,7 @@ mod tests {
             vec!["COOKIE_SECURE".to_string()]
         );
 
-        // api 側に新しく増えたキーも未反映。
+        // Keys newly added on the api side are also pending.
         let added = HashMap::from([
             ("COOKIE_SECURE".to_string(), "true".to_string()),
             ("HSTS_MAX_AGE".to_string(), "31536000".to_string()),
@@ -706,8 +706,8 @@ mod tests {
             vec!["AUTH_SESSION_TTL_SECS".to_string()]
         );
 
-        // **上書きが解除された（api 側から消えた）キーも未反映**。ここを落とすと、
-        // 解除したのに web だけ古い上書きで動き続けている状態が画面から見えない。
+        // **Keys whose override was removed (gone from the api side) are also pending**. Dropping this would hide from the screen
+        // the state where the override was removed but web keeps running with the old override.
         let removed = HashMap::from([("COOKIE_SECURE".to_string(), "true".to_string())]);
         assert_eq!(
             stale_shared_settings(&applied, &removed),
@@ -715,13 +715,13 @@ mod tests {
         );
     }
 
-    /// ADR-0017: `ISSUER` も api 経由の DB 上書きを受ける共有キーになった。web がこれを取りこぼすと、
-    /// 単一オリジン構成で web の自オリジン（`PUBLIC_WEB_BASE_URL` 未設定時 = issuer）だけが古い
-    /// `http://localhost:8080` のまま残り、api とブラウザ経路がずれる。
+    /// ADR-0017: `ISSUER` also became a shared key taking DB overrides via the api. If web missed it,
+    /// in a single-origin setup only web's own origin (= issuer when `PUBLIC_WEB_BASE_URL` is unset) would stay at the old
+    /// `http://localhost:8080`, and the api and browser paths would diverge.
     #[test]
     fn issuer_from_api_overrides_env_for_the_web_origin() {
         let _env = env_guard();
-        // 上書き後の issuer はループバック以外なので本番相当になる（SEC11）。
+        // The overridden issuer is non-loopback, so it is production-like (SEC11).
         set_production_secrets();
         std::env::set_var("ISSUER", "http://localhost:8080");
         std::env::remove_var("PUBLIC_WEB_BASE_URL");
@@ -732,7 +732,7 @@ mod tests {
         assert_eq!(config.public_web_base_url(), "http://idp.example.test");
         assert_eq!(config.shared_settings_from_api(), ["ISSUER"]);
 
-        // 上書きが無ければ ENV に戻る。
+        // Without an override it goes back to ENV.
         let config = Config::from_env_and_shared_settings(&HashMap::new()).unwrap();
         assert_eq!(config.public_web_base_url(), "http://localhost:8080");
 
@@ -746,7 +746,7 @@ mod tests {
         std::env::remove_var("ISSUER");
         std::env::remove_var("PUBLIC_WEB_BASE_URL");
         std::env::remove_var("COOKIE_DOMAIN");
-        // ENV 側にはあえて DB と異なる値を置き、DB が勝つことを固定する。
+        // ENV deliberately has a value different from the DB, pinning that the DB wins.
         std::env::set_var("COOKIE_SECURE", "false");
         std::env::set_var("HSTS_MAX_AGE", "1");
         std::env::set_var("AUTH_SESSION_TTL_SECS", "60");
@@ -767,7 +767,7 @@ mod tests {
             ["AUTH_SESSION_TTL_SECS", "COOKIE_SECURE", "HSTS_MAX_AGE"]
         );
 
-        // DB 上書きが無ければ ENV へ、ENV も無ければ既定値へ落ちる。
+        // Without a DB override it falls to ENV, and without ENV to the default.
         let config = Config::from_env_and_shared_settings(&HashMap::new()).unwrap();
         assert!(!config.cookie_secure());
         assert_eq!(config.hsts_max_age(), 1);
@@ -789,8 +789,8 @@ mod tests {
         );
     }
 
-    /// 空文字列の DB 上書きは「未設定」として ENV へ落とす（api 側が上書き解除に空文字列を
-    /// 使うため。`system_settings.update_runtime_setting`）。
+    /// An empty-string DB override is treated as "unset" and falls to ENV (the api uses an empty string to remove an override;
+    /// `system_settings.update_runtime_setting`).
     #[test]
     fn empty_shared_override_falls_back_to_env() {
         let _env = env_guard();
@@ -802,8 +802,8 @@ mod tests {
         std::env::remove_var("HSTS_MAX_AGE");
     }
 
-    /// 不正な DB 上書き値は起動を失敗させる（値を黙って捨てて既定へ落ちると、設定画面の表示と
-    /// 実挙動が食い違ったまま動いてしまう）。
+    /// An invalid DB override fails startup (silently discarding the value and falling to the default would keep running
+    /// with the settings screen and actual behavior disagreeing).
     #[test]
     fn invalid_shared_override_fails_startup() {
         let _env = env_guard();
@@ -815,9 +815,9 @@ mod tests {
         assert!(err.contains("HSTS_MAX_AGE"), "{err}");
     }
 
-    /// ENV の共有キーが壊れていても bootstrap は通り、DB 上書きで復旧できる（MT26 / ADR-0013）。
-    /// bootstrap が共有キーをパースしてしまうと、`ENV < DB` の優先順位があるのに api へ
-    /// 問い合わせる前に落ちてしまい、DB からは直せなくなる。
+    /// Even if ENV shared keys are broken, bootstrap passes and recovery via DB override is possible (MT26 / ADR-0013).
+    /// If bootstrap parsed shared keys, it would fail before querying the api despite the `ENV < DB` precedence,
+    /// and it could not be fixed from the DB.
     #[test]
     fn bootstrap_ignores_malformed_shared_env_values_so_db_can_recover_them() {
         let _env = env_guard();
@@ -825,11 +825,11 @@ mod tests {
         std::env::set_var("AUTH_SESSION_TTL_SECS", "soon");
         std::env::set_var("API_BASE_URL", "http://api:8080/");
 
-        // bootstrap は api へ到達するための値だけを読む → 壊れた共有キーは無視される。
+        // Bootstrap reads only the values needed to reach the api -> broken shared keys are ignored.
         let bootstrap = Bootstrap::from_env().expect("bootstrap must not parse shared keys");
         assert_eq!(bootstrap.api_base_url(), "http://api:8080");
 
-        // 壊れた ENV は DB 上書きで救える。
+        // Broken ENV can be rescued by a DB override.
         let shared = HashMap::from([
             ("HSTS_MAX_AGE".to_string(), "31536000".to_string()),
             ("AUTH_SESSION_TTL_SECS".to_string(), "900".to_string()),
@@ -838,7 +838,7 @@ mod tests {
         assert_eq!(config.hsts_max_age(), 31_536_000);
         assert_eq!(config.auth_session_ttl_secs(), 900);
 
-        // DB 上書きが無ければ従来どおり構成エラー（壊れた ENV を黙って無視はしない）。
+        // Without a DB override it is a configuration error as before (broken ENV is not silently ignored).
         assert!(Config::from_env_and_shared_settings(&HashMap::new()).is_err());
 
         std::env::remove_var("HSTS_MAX_AGE");
@@ -846,8 +846,8 @@ mod tests {
         std::env::remove_var("API_BASE_URL");
     }
 
-    /// bootstrap でも本番シークレットの fail-fast は効く（`EnvLocked` で DB からは直せないため、
-    /// api 未到達より先に本来の設定誤りを見せる）。
+    /// The production-secret fail-fast works in bootstrap too (`EnvLocked` can't be fixed from the DB, so
+    /// the actual misconfiguration is shown before api unreachability).
     #[test]
     fn bootstrap_still_rejects_development_secrets_on_a_public_origin() {
         let _env = env_guard();
@@ -859,7 +859,7 @@ mod tests {
         std::env::remove_var("ISSUER");
     }
 
-    /// 秘密を `Debug` に出さない（task #593）。`{:?}` でログへ落としても値が漏れない。
+    /// Secrets are not put in `Debug` (task #593). Values don't leak even if `{:?}` ends up in logs.
     #[test]
     fn debug_output_does_not_carry_the_secrets() {
         let _env = env_guard();

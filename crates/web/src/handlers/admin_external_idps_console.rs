@@ -1,47 +1,47 @@
-//! 外部 IdP 設定の管理コンソール画面（`/{tenant_id}/admin/external-idps`。AP16）。
+//! Admin console screen for external IdP settings (`/{tenant_id}/admin/external-idps`. AP16).
 //!
-//! AP10 で外部 IdP（OIDC）の設定 API を入れたが、画面が無く curl でしか触れなかった。
-//! 外部 IdP は**利用者の認証元**であり、間違えるとログインできない／できてはいけない相手で
-//! ログインできてしまう設定である。curl でしか確認・切り戻しができない状態は運用に向かない。
+//! AP10 added the external IdP (OIDC) settings API, but there was no screen and it could only be touched with curl.
+//! An external IdP is **a source of user authentication**; a mistake means users cannot sign in, or someone who
+//! must not be able to sign in can. Being able to check and roll back only with curl is unfit for operations.
 //!
-//! データ操作は api の `/admin/external-idps` へ SSO Cookie 転送で委譲する。HTML フォームは
-//! PATCH/DELETE を送れないため、更新・削除は専用の POST パス（`/{id}/update`・`/{id}/delete`）を
-//! 経由して api の PATCH/DELETE へ変換する（認証ポリシー画面と同じ方式）。
+//! Data operations are delegated to the api's `/admin/external-idps` by forwarding the SSO cookie. HTML forms
+//! cannot send PATCH/DELETE, so updates and deletes go through dedicated POST paths (`/{id}/update`, `/{id}/delete`)
+//! and are converted to the api's PATCH/DELETE (same scheme as the authentication policy screen).
 //!
-//! # プロトコルは登録の入口で決める
+//! # The protocol is chosen at the registration entry
 //!
-//! 外部 IdP は OIDC と SAML の 2 種類あり（ADR-0027）、必要な項目がまったく違う。かつては 1 枚の
-//! フォームに両方の区画を並べ、選択に応じて JS で隠していたが、**画面から「いま何を登録して
-//! いるのか」が読み取れなかった**（埋めるべき欄と、埋めなくてよい欄が同居する）。
+//! There are two kinds of external IdP, OIDC and SAML (ADR-0027), with entirely different fields. Previously one
+//! form had sections for both, hidden by JS depending on the choice, but **the screen did not tell "what am I
+//! registering right now"** (fields to fill and fields not needed lived side by side).
 //!
-//! いまはプロトコルを先に選ばせ、以降はそのプロトコルの画面だけを見せる。
+//! Now the protocol is chosen first, and only that protocol's screens are shown afterwards.
 //!
-//! | 画面 | 役割 |
+//! | Screen | Role |
 //! |---|---|
-//! | `GET /admin/external-idps` | 一覧のみ（登録フォームは置かない） |
-//! | `GET /admin/external-idps/new` | プロトコルの選択 |
-//! | `GET /admin/external-idps/new/oidc` ・ `.../new/saml` | そのプロトコルの登録フォーム |
-//! | `GET /admin/external-idps/{id}/edit` | 編集フォーム（プロトコルは登録済みの値で固定） |
+//! | `GET /admin/external-idps` | List only (no registration form) |
+//! | `GET /admin/external-idps/new` | Choosing the protocol |
+//! | `GET /admin/external-idps/new/oidc` / `.../new/saml` | Registration form for that protocol |
+//! | `GET /admin/external-idps/{id}/edit` | Edit form (protocol fixed to the registered value) |
 //!
-//! 新規登録の画面は、どちらのプロトコルも相手の公開文書からの取り込みを持つ。SAML は IdP メタデータ
-//! XML（貼り付け・ファイル）、OIDC は issuer の discovery ドキュメント（issuer を入れると api が
-//! `/.well-known/openid-configuration` を読む。task #77）。どちらも**登録ではなく**、フォームへの転記である。
+//! The new registration screens for both protocols can import from the peer's public document. SAML takes IdP metadata
+//! XML (pasted or file); OIDC takes the issuer's discovery document (entering the issuer makes the api read
+//! `/.well-known/openid-configuration`. task #77). Neither **registers**; they transcribe into the form.
 //!
-//! この形にしたことで、**サーバが描くのは選ばれたプロトコルの欄だけ**になり、出し分けの JS が
-//! 要らなくなった（JS が動かない環境でも両方のプロトコルを登録できる）。
+//! With this shape, **the server renders only the chosen protocol's fields**, and the JS for switching them
+//! is no longer needed (both protocols can be registered even where JS does not run).
 //!
-//! 登録済みプロバイダの**プロトコルは変更できない**（api が拒否する。同じ `provider_code` のまま
-//! 切り替えると、既存の連携が別プロトコルの識別子を指したまま残る）。フォームには選択肢を置かず、
-//! 値は hidden で持ち回る。
+//! **The protocol of a registered provider cannot be changed** (the api rejects it. Switching with the same
+//! `provider_code` would leave existing links pointing at identifiers of another protocol). The form offers no choice;
+//! the value is carried in a hidden field.
 //!
-//! `protocol` は更新でも必ず送る。api の部分更新はプロトコル固有の設定を**まとめて**差し替える
-//! 作りで、`protocol` を省くとエンドポイントの変更が黙って無視される。
+//! `protocol` is always sent, even on update. The api's partial update replaces protocol-specific settings
+//! **as a whole**, and omitting `protocol` silently ignores endpoint changes.
 //!
-//! # クライアントシークレットの扱い
+//! # Handling the client secret
 //!
-//! api はシークレットを**返さない**（保存は暗号化、復号は外部 IdP へトークン要求を出す瞬間だけ）。
-//! したがって編集フォームに現在値を出せない。空欄は「変更しない」を意味させ、リクエストから
-//! `client_secret` を落とす。空欄を「削除」と解釈すると、表示名を直しただけで連携が壊れる。
+//! The api **never returns** the secret (stored encrypted, decrypted only at the moment of a token request to the external IdP).
+//! So the edit form cannot show the current value. An empty field means "do not change", and `client_secret` is dropped
+//! from the request. Interpreting empty as "delete" would break the link just by fixing the display name.
 
 use super::locale;
 use crate::admin_dto::ExternalIdpView;
@@ -66,7 +66,7 @@ use serde_json::{json, Value};
 
 const SEGMENT: &str = "/admin/external-idps";
 
-/// 一覧の状態（Post/Redirect/Get で持ち回る結果表示）。
+/// List state (result display carried through Post/Redirect/Get).
 #[derive(Debug, Default, Deserialize)]
 pub struct ViewQuery {
     #[serde(default)]
@@ -77,24 +77,24 @@ pub struct ViewQuery {
     pub error: Option<String>,
 }
 
-/// フォーム画面の状態（登録・更新の失敗理由だけ）。
+/// Form screen state (only the reason a registration/update failed).
 #[derive(Debug, Default, Deserialize)]
 pub struct FormQuery {
     #[serde(default)]
     pub error: Option<String>,
 }
 
-/// 登録・更新フォーム。チェックボックスは「チェック時のみ送られる」ため `Option<String>` で受ける。
+/// Registration/update form. A checkbox is "sent only when checked", so it is received as `Option<String>`.
 ///
-/// プロトコル固有の項目はすべて `#[serde(default)]` にする。片方のプロトコルの欄しか出ていない
-/// 画面からの送信でも受け取れる必要があり、**必須かどうかを決めるのは api** だからである
-/// （ここで必須にすると、判断が 2 か所に散る）。
+/// All protocol-specific fields are `#[serde(default)]`. Submissions from a screen showing only one protocol's fields
+/// must be accepted, and **the api decides what is required**
+/// (making them required here would scatter the decision into two places).
 #[derive(Debug, Deserialize)]
 pub struct ExternalIdpForm {
     #[serde(default)]
     pub provider_code: String,
     pub display_name: String,
-    /// `oidc` / `saml`。未指定は `oidc`（既存のフォームからの送信を壊さない）。
+    /// `oidc` / `saml`. Unspecified means `oidc` (do not break submissions from existing forms).
     #[serde(default)]
     pub protocol: String,
     pub issuer: String,
@@ -108,7 +108,7 @@ pub struct ExternalIdpForm {
     pub client_id: String,
     #[serde(default)]
     pub client_secret: String,
-    /// 要求する scope。よく使う 2 つはチェックボックス、それ以外は `scopes_extra` で受ける。
+    /// Requested scopes. The two common ones are checkboxes; others are received in `scopes_extra`.
     #[serde(default)]
     pub scope_profile: Option<String>,
     #[serde(default)]
@@ -173,7 +173,7 @@ pub async fn list(
     .into_response()
 }
 
-/// 登録するプロトコルを選ぶ画面（`GET /admin/external-idps/new`）。
+/// Screen choosing the protocol to register (`GET /admin/external-idps/new`).
 pub async fn choose_protocol(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -193,7 +193,7 @@ pub async fn choose_protocol(
     .into_response()
 }
 
-/// OIDC の登録フォーム（`GET /admin/external-idps/new/oidc`）。
+/// OIDC registration form (`GET /admin/external-idps/new/oidc`).
 pub async fn new_oidc_form(
     state: State<WebState>,
     correlation: Extension<CorrelationId>,
@@ -204,7 +204,7 @@ pub async fn new_oidc_form(
     new_form(state, correlation, tenant, headers, query, "oidc").await
 }
 
-/// SAML の登録フォーム（`GET /admin/external-idps/new/saml`）。メタデータの取り込みもここに出る。
+/// SAML registration form (`GET /admin/external-idps/new/saml`). Metadata import also appears here.
 pub async fn new_saml_form(
     state: State<WebState>,
     correlation: Extension<CorrelationId>,
@@ -215,9 +215,9 @@ pub async fn new_saml_form(
     new_form(state, correlation, tenant, headers, query, "saml").await
 }
 
-/// 登録フォーム。プロトコルは**経路が決める**——パスパラメータで受けて解釈すると、綴りの誤った
-/// URL を既定のプロトコルへ丸めるかどうかの判断がここに生まれる。ルータに 2 本並べておけば、
-/// 知らない綴りはそのまま 404 になる。
+/// Registration form. **The route decides the protocol** — receiving and interpreting it as a path parameter would create
+/// a decision here about whether to round a misspelled URL to the default protocol. With two routes in the router,
+/// unknown spellings simply become 404.
 async fn new_form(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -248,10 +248,10 @@ async fn new_form(
     .into_response()
 }
 
-/// 編集フォーム（`GET /admin/external-idps/{id}/edit`）。
+/// Edit form (`GET /admin/external-idps/{id}/edit`).
 ///
-/// 初期値は一覧から引く（api への追加の往復は要らない）。一覧に無い id（削除済み・別テナント）は
-/// 一覧へ戻して理由を出す —— 空のフォームを出すと、編集のつもりで新規登録することになる。
+/// Initial values come from the list (no extra round trip to the api). An id not in the list (deleted, another tenant)
+/// returns to the list with the reason — showing an empty form would lead to a new registration while meaning to edit.
 pub async fn edit_form(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -298,11 +298,11 @@ pub async fn edit_form(
     .into_response()
 }
 
-/// 外部 IdP のメタデータを取り込み、SAML の登録フォームに初期値を反映して再描画する（AP12）。
+/// Imports external IdP metadata, prefills the SAML registration form with it and re-renders (AP12).
 ///
-/// 取り込みは**登録ではない**ので PRG は挟まない（管理者が値を確認してから登録する）。取り込み元は
-/// ファイルアップロード（`metadata_file`）または貼り付け（`metadata_xml`）で、ファイルを優先する
-/// （SP メタデータ取り込みと同じ操作にする。画面ごとに操作が違うと迷う）。
+/// Importing is **not registration**, so no PRG (the admin registers after checking the values). The source is
+/// a file upload (`metadata_file`) or pasted text (`metadata_xml`), the file taking priority
+/// (same operation as SP metadata import; differing operations per screen would confuse).
 pub async fn import_metadata(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -335,7 +335,7 @@ pub async fn import_metadata(
             Ok(parsed) => (
                 ExternalIdpFormValues {
                     display_name: parsed.display_name,
-                    // entityID がそのまま `issuer`（アサーションの `<Issuer>` と完全一致で照合する値）。
+                    // The entityID is the `issuer` as is (the value matched exactly against the assertion's `<Issuer>`).
                     issuer: parsed.entity_id,
                     saml_sso_url: parsed.sso_url,
                     saml_certificates: parsed.certificates.join("\n\n"),
@@ -351,7 +351,7 @@ pub async fn import_metadata(
                 false,
                 Some("admin-settings-error-forbidden"),
             ),
-            // 解析できない XML（SP のメタデータを貼った・SSO が無い等）は利用者の入力誤り。
+            // Unparseable XML (SP metadata pasted, no SSO, etc.) is a user input error.
             Err(AdminApiError::Validation(_) | AdminApiError::NotFound) => (
                 saml_defaults(),
                 false,
@@ -378,7 +378,7 @@ pub async fn import_metadata(
     .into_response()
 }
 
-/// discovery 取り込みのフォーム。
+/// Form for the discovery import.
 #[derive(Debug, Deserialize)]
 pub struct DiscoveryImportForm {
     #[serde(default)]
@@ -386,12 +386,12 @@ pub struct DiscoveryImportForm {
     pub csrf_token: String,
 }
 
-/// 外部 OIDC IdP の discovery ドキュメントを取り込み、OIDC の登録フォームに初期値を反映して再描画する
-/// （task #77）。
+/// Imports the external OIDC IdP's discovery document, prefills the OIDC registration form with it and re-renders
+/// (task #77).
 ///
-/// SAML のメタデータ取り込みと同じく**登録ではない**ので PRG は挟まない（管理者が値を確認してから
-/// 登録する）。取得・宛先の検査・`issuer` の照合はすべて api が行う（web は外部 IdP へ出ない）。
-/// 失敗したら入れた issuer を残したまま描き直す（直して押し直せるように）。
+/// Like SAML metadata import, it is **not registration**, so no PRG (the admin registers after checking the
+/// values). Fetching, destination checks and `issuer` matching are all done by the api (web never reaches the external IdP).
+/// On failure it re-renders keeping the entered issuer (so it can be fixed and resubmitted).
 pub async fn import_discovery(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -410,7 +410,7 @@ pub async fn import_discovery(
     }
 
     let issuer = form.issuer.trim();
-    // 失敗時の描き直しでも、入れた issuer は残す。
+    // Keep the entered issuer even when re-rendering after a failure.
     let entered = ExternalIdpFormValues {
         issuer: issuer.to_string(),
         ..ExternalIdpFormValues::default()
@@ -425,7 +425,7 @@ pub async fn import_discovery(
         {
             Ok(imported) => (
                 ExternalIdpFormValues {
-                    // 文書の `issuer`（入力と完全一致したもの）。ID Token の `iss` と照合する値。
+                    // The document's `issuer` (exactly matching the input). The value matched against the ID Token's `iss`.
                     issuer: imported.issuer,
                     authorization_endpoint: imported.authorization_endpoint,
                     token_endpoint: imported.token_endpoint,
@@ -439,7 +439,7 @@ pub async fn import_discovery(
             Err(AdminApiError::Forbidden) => {
                 (entered, false, Some("admin-settings-error-forbidden"))
             }
-            // 宛先の検査に通らない・取得できない・issuer が一致しない等。理由（運用言語）はログに残す。
+            // Destination check failed, fetch failed, issuer mismatch, etc. The reason (operational language) is logged.
             Err(AdminApiError::Validation(reason)) => {
                 tracing::info!(reason = %reason, "external idp discovery import was rejected");
                 (entered, false, Some("admin-external-idps-error-discovery"))
@@ -465,7 +465,7 @@ pub async fn import_discovery(
     .into_response()
 }
 
-/// 取り込み後のフォームは SAML で開く（IdP メタデータを読んだ直後なので）。
+/// The form after import opens as SAML (right after reading IdP metadata).
 fn saml_defaults() -> ExternalIdpFormValues {
     ExternalIdpFormValues {
         protocol: "saml".to_string(),
@@ -473,17 +473,17 @@ fn saml_defaults() -> ExternalIdpFormValues {
     }
 }
 
-/// multipart から読み取った取り込み入力。
+/// Import input read from the multipart body.
 struct MetadataUpload {
     csrf_token: String,
     pasted: String,
     uploaded: Option<String>,
-    /// 読み取りに失敗した（サイズ超過・非 UTF-8・壊れた multipart）。
+    /// Reading failed (too large, not UTF-8, broken multipart).
     read_failed: bool,
 }
 
 impl MetadataUpload {
-    /// 取り込みに使う XML。ファイルがあればそちらを優先し、無ければ貼り付けを使う。
+    /// XML used for import. The file takes priority if present; otherwise the pasted text.
     fn metadata_xml(&self) -> Option<String> {
         if self.read_failed {
             return None;
@@ -496,8 +496,8 @@ impl MetadataUpload {
     }
 }
 
-/// アップロードされたメタデータは通常数 KB。リクエスト全体は `DefaultBodyLimit` でも制限されるが、
-/// 念のため上限を設ける（SP メタデータ取り込みと同じ値）。
+/// Uploaded metadata is normally a few KB. The whole request is also limited by `DefaultBodyLimit`, but
+/// a cap is set just in case (same value as SP metadata import).
 const MAX_METADATA_BYTES: usize = 1024 * 1024;
 
 async fn read_metadata_upload(mut multipart: Multipart) -> MetadataUpload {
@@ -547,11 +547,11 @@ pub async fn create(
         AdminResolution::Reject(resp) => return resp,
     }
     let base = format!("{}{SEGMENT}", tenant.prefix());
-    // 失敗したら同じプロトコルのフォームへ戻す（選び直させない）。**戻る先はルータにある 2 本に
-    // 限る** —— `protocol` はフォームから来る値で、`protocol_of` は未知の綴りを丸めずに通す
-    // （api に判断させるため）。それをそのままリダイレクト先の経路に差し込むと、行き先の無い
-    // URL（404）や `?` `#` で壊れたクエリを Location に載せることになる。知らないプロトコルは
-    // 出す先が無いので、理由を表示できる一覧へ落とす。
+    // On failure return to the same protocol's form (do not make them choose again). **The destination is limited to
+    // the two routes in the router** — `protocol` comes from the form, and `protocol_of` passes unknown spellings through
+    // without rounding (to let the api decide). Inserting it as is into the redirect path would put a URL with no
+    // destination (404) or a query broken by `?` `#` into Location. Unknown protocols have nowhere to go,
+    // so fall back to the list, which can show the reason.
     let form_url = match protocol_of(&form) {
         "saml" => format!("{base}/new/saml"),
         "oidc" => format!("{base}/new/oidc"),
@@ -563,7 +563,7 @@ pub async fn create(
     }
     let mut body = common_fields(&form);
     body["provider_code"] = json!(form.provider_code.trim());
-    // 新規登録の空欄は「シークレット無し（public クライアント）」。編集時と意味が違うので分ける。
+    // An empty field on new registration means "no secret (public client)". It means something else when editing, so they are separate.
     if !form.client_secret.is_empty() {
         body["client_secret"] = json!(form.client_secret);
     }
@@ -597,7 +597,7 @@ pub async fn update(
         return found(&format!("{form_url}?error=csrf"));
     }
     let mut body = common_fields(&form);
-    // 編集時の空欄は「変更しない」。api の部分更新は未指定の項目に触れないので、キーごと落とす。
+    // An empty field when editing means "do not change". The api's partial update leaves unspecified fields alone, so drop the key.
     if !form.client_secret.is_empty() {
         body["client_secret"] = json!(form.client_secret);
     }
@@ -639,10 +639,10 @@ pub async fn delete(
     }
 }
 
-/// 作成・更新で共通の項目。`provider_code`（作成時のみ）と `client_secret`（有無で分岐）は呼び出し側で足す。
+/// Fields shared by create and update. `provider_code` (create only) and `client_secret` (branching on presence) are added by the caller.
 ///
-/// プロトコル固有の欄は**選んだ側だけ**を載せる。`protocol` は更新でも必ず送る（api はこれが
-/// 無いとプロトコル固有の設定を差し替えない）。
+/// Protocol-specific fields are included **only for the chosen side**. `protocol` is always sent even on update (without it
+/// the api does not replace protocol-specific settings).
 fn common_fields(form: &ExternalIdpForm) -> Value {
     let protocol = protocol_of(form);
     let mut body = json!({
@@ -666,8 +666,8 @@ fn common_fields(form: &ExternalIdpForm) -> Value {
     body
 }
 
-/// フォームのプロトコル。未知の値は `oidc` に丸めず**そのまま api へ渡す**——丸めると、SAML の
-/// つもりで送った設定が OIDC として登録される。空欄だけは既定（`oidc`）に落とす。
+/// The form's protocol. Unknown values are **passed to the api as is**, not rounded to `oidc` — rounding would register
+/// settings meant for SAML as OIDC. Only an empty field falls back to the default (`oidc`).
 fn protocol_of(form: &ExternalIdpForm) -> &str {
     match form.protocol.trim() {
         "" => "oidc",
@@ -675,14 +675,14 @@ fn protocol_of(form: &ExternalIdpForm) -> &str {
     }
 }
 
-/// 要求する scope を組み立てる。
+/// Builds the requested scopes.
 ///
-/// `openid` は常に先頭に付ける。外部 IdP から ID Token を受け取れなければ `iss` + `sub` が
-/// 得られず、同一性の根拠そのものが無くなる（ADR-0023）。**チェックボックスに出していない
-/// 以上、外れる余地を残してはいけない。**
+/// `openid` is always put first. Without receiving an ID Token from the external IdP, `iss` + `sub` cannot be
+/// obtained and the very basis of identity disappears (ADR-0023). **Since it is not shown as a checkbox,
+/// there must be no way for it to be left out.**
 ///
-/// 自由入力側に `openid` や `profile` を重ねて書かれても 1 回だけにする（重複した scope を
-/// 要求すると、相手によっては要求そのものを拒む）。
+/// Even if `openid` or `profile` is repeated in the free input, it is included only once (requesting duplicate scopes
+/// makes some peers reject the request itself).
 fn selected_scopes(form: &ExternalIdpForm) -> Vec<String> {
     let mut scopes = vec!["openid".to_string()];
     let mut push = |scope: &str| {
@@ -702,15 +702,15 @@ fn selected_scopes(form: &ExternalIdpForm) -> Vec<String> {
     scopes
 }
 
-/// 証明書欄を配列へ。**空行で区切る**——PEM の本文は行で折り返されるため、行区切りにすると
-/// 1 枚の証明書が複数枚に割れる。各証明書内の改行・空白はここで畳む。
+/// Certificate field to an array. **Separated by blank lines** — PEM bodies are wrapped across lines, so separating by
+/// line would split one certificate into several. Newlines and whitespace inside each certificate are collapsed here.
 ///
-/// 区切りは `"\n\n"` の**文字列一致では判定しない**。`textarea` の値はブラウザが送信時に改行を
-/// CRLF へ正規化するため、空行は `"\r\n\r\n"` で届く。文字列一致にすると区切りが 1 つも
-/// 見つからず、全部の証明書が 1 つの base64 に繋がって**どれも読めなくなる**（複数枚を必要と
-/// する証明書更新期間に、まさに効かなくなる）。行に分けて「空白だけの行」を区切りとして扱う。
+/// Separators are **not detected by string match** on `"\n\n"`. Browsers normalize `textarea` newlines to
+/// CRLF on submission, so blank lines arrive as `"\r\n\r\n"`. A string match would find no separators at all,
+/// joining every certificate into one base64 so that **none can be read** (failing exactly during a certificate rollover,
+/// which needs multiple certificates). Split into lines and treat "whitespace-only lines" as separators.
 fn parse_certificates(raw: &str) -> Vec<String> {
-    // 単独の CR（改行として送るクライアントは事実上無いが、来れば区切りが消える）も改行に均す。
+    // Normalize lone CRs to newlines too (practically no client sends them as newlines, but if one did, separators would vanish).
     let normalized = raw.replace("\r\n", "\n").replace('\r', "\n");
     let mut blocks = Vec::new();
     let mut current = String::new();
@@ -742,7 +742,7 @@ fn values_from(provider: &ExternalIdpView) -> ExternalIdpFormValues {
         has_client_secret: provider.has_client_secret,
         scopes: provider.scopes.join(" "),
         saml_sso_url: provider.saml_sso_url.clone().unwrap_or_default(),
-        // 保存済みの証明書は空行区切りで戻す（入力と同じ形。編集で追記・差し替えができる）。
+        // Saved certificates are returned separated by blank lines (same shape as input; can be appended to or replaced when editing).
         saml_certificates: provider.saml_certificates.join("\n\n"),
         saml_name_id_format: provider.saml_name_id_format.clone().unwrap_or_default(),
         enabled: provider.enabled,
@@ -750,7 +750,7 @@ fn values_from(provider: &ExternalIdpView) -> ExternalIdpFormValues {
     }
 }
 
-/// api のエラーをクエリ文字列のコードへ落とす（Post/Redirect/Get で理由を持ち回る）。
+/// Maps api errors to query string codes (carrying the reason through Post/Redirect/Get).
 fn error_code(e: &AdminApiError) -> &'static str {
     match e {
         AdminApiError::Forbidden => "forbidden",
@@ -816,8 +816,8 @@ mod tests {
         }
     }
 
-    /// チェックした scope が配列になる。**`openid` は常に付く** —— 外部 IdP から ID Token を
-    /// 受け取れなければ `iss` + `sub` が得られず、同一性の根拠そのものが無くなる。
+    /// Checked scopes become an array. **`openid` is always included** — without receiving an ID Token from the
+    /// external IdP, `iss` + `sub` cannot be obtained and the very basis of identity disappears.
     #[test]
     fn openid_is_always_requested_and_checked_scopes_follow() {
         assert_eq!(selected_scopes(&form("")), vec!["openid", "email"]);
@@ -828,8 +828,8 @@ mod tests {
         assert_eq!(selected_scopes(&none), vec!["openid"]);
     }
 
-    /// 相手方が定義する scope は自由入力で受ける（選択肢を固定値に閉じない）。**重複は畳む** ——
-    /// 同じ scope を 2 回要求すると、相手によっては要求そのものを拒む。
+    /// Scopes defined by the peer are received as free input (options are not closed to fixed values). **Duplicates are collapsed** —
+    /// requesting the same scope twice makes some peers reject the request itself.
     #[test]
     fn extra_scopes_are_appended_without_duplicating_the_checked_ones() {
         let extra = ExternalIdpForm {
@@ -843,8 +843,8 @@ mod tests {
         );
     }
 
-    /// 証明書は**空行**で区切る。行区切りにすると、折り返された 1 枚の PEM 本文が
-    /// 複数枚の証明書に割れて、どれも読めなくなる。
+    /// Certificates are separated by **blank lines**. Separating by line would split one wrapped PEM body
+    /// into several certificates, none of which could be read.
     #[test]
     fn certificates_are_split_on_blank_lines_not_line_breaks() {
         assert_eq!(
@@ -855,24 +855,24 @@ mod tests {
         assert!(parse_certificates("  \n\n  ").is_empty());
     }
 
-    /// **ブラウザは `textarea` の改行を CRLF にして送る。** 区切りを `"\n\n"` の文字列一致で
-    /// 探すと空行が 1 つも見つからず、全部が 1 つの base64 に繋がって**どれも読めなくなる**
-    /// （複数枚を必要とする証明書更新期間に、まさに効かなくなる）。
+    /// **Browsers send `textarea` newlines as CRLF.** Searching for separators by string match on `"\n\n"`
+    /// finds no blank lines, joining everything into one base64 so that **none can be read**
+    /// (failing exactly during a certificate rollover, which needs multiple certificates).
     #[test]
     fn crlf_from_a_browser_still_separates_the_certificates() {
         assert_eq!(
             parse_certificates("MIIB\r\nAAAA==\r\n\r\nMIIC\r\nBBBB=="),
             vec!["MIIBAAAA==", "MIICBBBB=="]
         );
-        // 区切りの空行に空白が混ざっていても区切りとして扱う（貼り付けで紛れ込む）。
+        // Blank separator lines containing whitespace are still treated as separators (it slips in when pasting).
         assert_eq!(
             parse_certificates("MIIB\r\nAAAA==\r\n \t\r\nMIIC\r\nBBBB=="),
             vec!["MIIBAAAA==", "MIICBBBB=="]
         );
     }
 
-    /// **選んだプロトコルの欄だけ**を送る。両方送ると api が半端な設定を作れてしまい、
-    /// 誤りがログイン時まで表に出ない。
+    /// Only **the chosen protocol's fields** are sent. Sending both would let the api build a half-baked setting,
+    /// and the mistake would not surface until login.
     #[test]
     fn only_the_selected_protocols_fields_are_sent() {
         let oidc = common_fields(&form(""));
@@ -894,18 +894,18 @@ mod tests {
         assert!(saml.get("scopes").is_none());
     }
 
-    /// `protocol` は更新でも必ず送る。api はこれが無いとプロトコル固有の設定を差し替えないため、
-    /// 省くとエンドポイントの変更が黙って無視される。
+    /// `protocol` is always sent even on update. Without it the api does not replace protocol-specific settings,
+    /// so omitting it silently ignores endpoint changes.
     #[test]
     fn the_protocol_is_always_sent_so_endpoint_edits_are_not_ignored() {
         assert_eq!(common_fields(&form("s3cret"))["protocol"], json!("oidc"));
-        // 未知の値は既定へ丸めない（丸めると SAML のつもりの設定が OIDC として登録される）。
+        // Unknown values are not rounded to the default (rounding would register settings meant for SAML as OIDC).
         let unknown = ExternalIdpForm {
             protocol: "ws-fed".into(),
             ..form("")
         };
         assert_eq!(common_fields(&unknown)["protocol"], json!("ws-fed"));
-        // 空欄だけは既定（oidc）に落とす。
+        // Only an empty field falls back to the default (oidc).
         let blank = ExternalIdpForm {
             protocol: String::new(),
             ..form("")
@@ -913,8 +913,8 @@ mod tests {
         assert_eq!(common_fields(&blank)["protocol"], json!("oidc"));
     }
 
-    /// チェックの無いチェックボックスは送られてこない。`false` として送る（未指定にすると
-    /// api の部分更新が「変更しない」と解釈し、チェックを外しても無効化できない）。
+    /// Unchecked checkboxes are not submitted. Send them as `false` (leaving them unspecified would make the api's
+    /// partial update read "do not change", so unchecking could not disable it).
     #[test]
     fn unchecked_boxes_are_sent_as_false_not_omitted() {
         let body = common_fields(&form(""));
@@ -922,8 +922,8 @@ mod tests {
         assert_eq!(body["allow_auto_link"], serde_json::json!(false));
     }
 
-    /// シークレットはフォームの共通項目に含めない。編集時の空欄を「変更しない」と扱うため、
-    /// 有無の判断を呼び出し側に残す（ここで常に載せると、空欄が削除の意味になってしまう）。
+    /// The secret is not among the form's shared fields. Since an empty field when editing means "do not change",
+    /// the presence decision is left to the caller (always including it here would make empty mean delete).
     #[test]
     fn the_client_secret_is_never_part_of_the_common_fields() {
         assert!(common_fields(&form("s3cret"))

@@ -1,21 +1,21 @@
-//! テナント作成・管理ユースケース（ADR-0009 §4・§5・§6）。
+//! Tenant creation and management use cases (ADR-0009 §4, §5, §6).
 //!
-//! テナント作成は「あるテナント配下への子テナント作成」として一律に扱う。`idp.system.admin`（scope =
-//! root のみ存在）を要求するため、**実質的にテナントを作成できるのは root だけ**になる（§4。判定は
-//! Presentation の `RequirePerms<IdpSystemAdmin>` が担う）。
+//! Tenant creation is uniformly treated as "creating a child tenant under some tenant". It requires `idp.system.admin` (scope =
+//! exists only on root), so **in practice only root can create tenants** (§4. The check is done by
+//! Presentation's `RequirePerms<IdpSystemAdmin>`).
 //!
-//! 作成時に、**作成者自身**を新テナントのブートストラップ管理者として登録する（ACTIVE な GUEST
-//! メンバーシップ＋新テナント scope の `idp.tenant.admin`）。作成者は自身の SSO セッションのまま新
-//! テナントの管理コンソールへ入り、正式な管理者（新テナント所属の HOME 利用者）を登録して
-//! `idp.tenant.admin` を付与し、最後に自身のゲストメンバーシップを解除して離脱する（解除時に当該テナント
-//! scope の権限行も後始末される。§3）。初期パスワードの受け渡しを伴わないため、平文パスワードは返さない。
+//! On creation, **the creator themselves** is registered as the new tenant's bootstrap admin (an ACTIVE GUEST
+//! membership + `idp.tenant.admin` scoped to the new tenant). The creator enters the new tenant's admin console with their own
+//! SSO session, registers the real admin (a HOME user belonging to the new tenant), grants
+//! `idp.tenant.admin`, and finally removes their own guest membership to leave (on removal, permission rows scoped to that
+//! tenant are also cleaned up. §3). No initial password is handed over, so no plaintext password is returned.
 //!
-//! テナント行・作成者のブートストラップメンバーシップ・権限付与は
-//! [`TenantProvisioningRepository`] が**単一トランザクション**で永続化する（unit of work。REF2）。
-//! 途中失敗で「管理者のいないテナント」が残ることはない。
+//! The tenant row, the creator's bootstrap membership and the permission grant are persisted by
+//! [`TenantProvisioningRepository`] in a **single transaction** (unit of work. REF2).
+//! A mid-way failure never leaves behind "a tenant without an admin".
 //!
-//! テナントの取得・更新・削除は**当該テナントの直下の子**のみを対象とする（`parent_tenant_id` 照合。
-//! 他テナントの子は不存在として扱う）。root テナントはアプリ層で削除を禁止する（§1）。
+//! Getting, updating and deleting tenants targets **only direct children of the tenant** (`parent_tenant_id` match.
+//! Children of other tenants are treated as nonexistent). The root tenant cannot be deleted, enforced in the app layer (§1).
 
 use crate::application::audit::{AuditService, RequestContext};
 use crate::domain::admin_actor::AdminActor;
@@ -36,11 +36,11 @@ use crate::domain::values::TenantStatus;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// 作成者（ブートストラップ管理者）へ付与する権限（scope = 新テナント。ADR-0009 §4）。
+/// Permission granted to the creator (bootstrap admin) (scope = the new tenant. ADR-0009 §4).
 const TENANT_ADMIN_PERMISSION: &str = "idp.tenant.admin";
-/// 子テナント一覧 1 ページの既定件数（G7）。
+/// Default number of items per page of the child tenant list (G7).
 pub const DEFAULT_PAGE_LIMIT: i64 = 50;
-/// 子テナント一覧 1 ページの上限件数（過大な取得を防ぐ）。
+/// Max number of items per page of the child tenant list (prevents oversized fetches).
 pub const MAX_PAGE_LIMIT: i64 = 200;
 
 #[derive(Debug, Clone)]
@@ -48,7 +48,7 @@ pub struct CreateTenantCommand {
     pub name: String,
 }
 
-/// 部分更新コマンド。`None` のフィールドは変更しない。
+/// Partial update command. Fields that are `None` are not changed.
 #[derive(Debug, Clone, Default)]
 pub struct UpdateTenantCommand {
     pub name: Option<String>,
@@ -71,7 +71,7 @@ pub enum TenantManagementError {
 
 pub struct TenantManagementService {
     tenants: Arc<dyn TenantRepository>,
-    /// テナントへ割り当てたドメイン（ADR-0029）。ログインの解決と同じ表を管理側からも触る。
+    /// Domains assigned to tenants (ADR-0029). The admin side touches the same table as sign-in resolution.
     tenant_domains: Arc<dyn TenantDomainRepository>,
     provisioning: Arc<dyn TenantProvisioningRepository>,
     audit: Arc<AuditService>,
@@ -98,10 +98,10 @@ impl TenantManagementService {
         }
     }
 
-    /// `requesting` テナント配下に子テナントを作成し、**作成者自身**（`actor`）を新テナントの
-    /// ブートストラップ管理者として登録する（ACTIVE な GUEST メンバーシップ＋新テナント scope の
-    /// `idp.tenant.admin`）。3 行（テナント・メンバーシップ・権限）は単一トランザクションで永続化する
-    /// （unit of work。REF2）。作成者は以後、正式な管理者を登録・付与してから自身を解除する（§3・§4）。
+    /// Creates a child tenant under the `requesting` tenant and registers **the creator themselves** (`actor`) as the new tenant's
+    /// bootstrap admin (an ACTIVE GUEST membership + `idp.tenant.admin` scoped to the new tenant).
+    /// The 3 rows (tenant, membership, permission) are persisted in a single transaction
+    /// (unit of work. REF2). The creator then registers and grants the real admin, and removes themselves (§3, §4).
     pub async fn create_tenant(
         &self,
         requesting: TenantContext,
@@ -111,11 +111,11 @@ impl TenantManagementService {
     ) -> Result<Tenant, TenantManagementError> {
         let name = validate_name(cmd.name)?;
 
-        // 作成者は新テナントのブートストラップ管理者になる（下記）。クライアント主体には
-        // メンバーシップも `idp.tenant.admin` も持たせられないため、作成した瞬間に**誰も
-        // 管理者が居ないテナント**ができてしまう。そうなる前に断る。
-        // （`idp.system.admin` はクライアントへ付与できないので実際には到達しないが、
-        //  「到達しないから書かない」にすると、将来この前提が変わったときに静かに壊れる。）
+        // The creator becomes the new tenant's bootstrap admin (below). A client principal cannot hold
+        // a membership or `idp.tenant.admin`, so the moment it is created **a tenant with no
+        // admin** would exist. Refuse before that happens.
+        // (`idp.system.admin` cannot be granted to clients, so this is not actually reached, but
+        //  "not writing it because it is unreachable" would break silently if this assumption changes in the future.)
         let Some(bootstrap_admin) = actor.user_id() else {
             return Err(TenantManagementError::Forbidden(MessageKey::new(
                 "api-tenant-create-requires-user-actor",
@@ -128,32 +128,32 @@ impl TenantManagementService {
             parent_tenant_id: Some(requesting.tenant_id()),
             name,
             status: TenantStatus::Active,
-            // 自己登録は既定で無効（fail-closed。SEC6。有効化はテナント管理者が設定画面から行う）。
+            // Self-registration is disabled by default (fail-closed. SEC6. Tenant admins enable it from the settings screen).
             self_registration_enabled: false,
-            // メールでのログインは既定で無効（fail-closed。ADR-0050 決定 3）。
+            // Sign-in by email is disabled by default (fail-closed. ADR-0050 decision 3).
             email_login_enabled: false,
             created_at: now,
             updated_at: now,
         };
 
-        // 作成者を新テナントのブートストラップ管理者にする（ACTIVE GUEST。所属元は親テナントのまま）。
+        // Make the creator the new tenant's bootstrap admin (ACTIVE GUEST. Their home tenant stays the parent tenant).
         let membership = TenantMembership::new_active_guest(tenant.id, bootstrap_admin, now);
 
-        // テナント・作成者メンバーシップ・idp.tenant.admin 付与を原子的に永続化する（§4）。
-        // 権限付与はキャッシュ付きリポジトリを経由しないが、テナント ID は今生成したものであり、
-        // 判定キャッシュに該当キーが載っていることはない（stale deny は起きない）。
+        // Atomically persist the tenant, the creator's membership, and the idp.tenant.admin grant (§4).
+        // The permission grant does not go through the cached repository, but the tenant ID was just generated,
+        // so the decision cache can never hold that key (no stale deny occurs).
         self.provisioning
             .provision(&tenant, &membership, TENANT_ADMIN_PERMISSION, now)
             .await
             .map_err(|e| match e {
-                // テナントの一意キーは単一 root の番兵列のみ（表示名は一意でない）。到達は競合時のみ。
+                // The tenant's only unique key is the single-root sentinel column (display names are not unique). Reached only on a race.
                 DomainError::Conflict(_) => {
                     TenantManagementError::Conflict(MessageKey::new("api-tenant-create-conflict"))
                 }
                 other => TenantManagementError::Internal(other.to_string()),
             })?;
 
-        // 監査には内部 ID のみ記録する。
+        // Only internal IDs are recorded in the audit.
         self.audit
             .record(
                 AuditEventType::TenantCreated,
@@ -172,7 +172,7 @@ impl TenantManagementService {
         Ok(tenant)
     }
 
-    /// `requesting` テナントの直下の子テナントを一覧する（§6）。
+    /// Lists the direct child tenants of the `requesting` tenant (§6).
     pub async fn list_children(
         &self,
         requesting: TenantContext,
@@ -183,8 +183,8 @@ impl TenantManagementService {
             .map_err(|e| TenantManagementError::Internal(e.to_string()))
     }
 
-    /// 直下の子テナントを 1 ページ分返す（G7）。`limit` / `offset` は未検証の要求値を受け取り、
-    /// 許容範囲へ収めたうえで**適用値**を結果に添える。
+    /// Returns one page of direct child tenants (G7). `limit` / `offset` take unvalidated request values,
+    /// clamp them into the allowed range, and attach the **applied values** to the result.
     pub async fn list_children_page(
         &self,
         requesting: TenantContext,
@@ -200,7 +200,7 @@ impl TenantManagementService {
         Ok(PagedResult::new(page, request))
     }
 
-    /// `requesting` テナントの直下の子テナント 1 件を取得する。他テナントの子・不存在は `NotFound`。
+    /// Gets one direct child tenant of the `requesting` tenant. Children of other tenants and missing ones are `NotFound`.
     pub async fn get_child(
         &self,
         requesting: TenantContext,
@@ -209,7 +209,7 @@ impl TenantManagementService {
         self.load_child(requesting, child_id).await
     }
 
-    /// 子テナントの表示名・状態を更新する（`parent_tenant_id` は変更しない。§1）。
+    /// Updates a child tenant's display name and status (`parent_tenant_id` is not changed. §1).
     pub async fn update_tenant(
         &self,
         requesting: TenantContext,
@@ -244,8 +244,8 @@ impl TenantManagementService {
         Ok(tenant)
     }
 
-    /// 現在（要求）テナント自身を取得する（設定画面のテナント設定区画。MT14）。子テナント限定の
-    /// `update_tenant` とは異なり、テナント管理者（`idp.tenant.admin`）が自テナントを参照するために使う。
+    /// Gets the current (requested) tenant itself (the tenant settings section of the settings screen. MT14). Unlike
+    /// `update_tenant`, which is limited to child tenants, this is used by tenant admins (`idp.tenant.admin`) to view their own tenant.
     pub async fn get_current(
         &self,
         current: TenantContext,
@@ -257,10 +257,10 @@ impl TenantManagementService {
             .ok_or(TenantManagementError::NotFound)
     }
 
-    /// 現在（要求）テナント自身の設定を更新する（設定画面のテナント設定区画。MT14・SEC6）。
-    /// 表示名と 2 つのトグル（`self_registration_enabled`・`email_login_enabled`。`None` は
-    /// 現状維持）を対象とし、認可は Presentation の `RequirePerms<IdpAdmin>`
-    /// （`idp.tenant.admin`）が担う。`parent_tenant_id`・`status` は変更しない。
+    /// Updates the settings of the current (requested) tenant itself (the tenant settings section of the settings screen. MT14, SEC6).
+    /// Targets the display name and two toggles (`self_registration_enabled`, `email_login_enabled`. `None` keeps
+    /// the current value); authorization is handled by Presentation's `RequirePerms<IdpAdmin>`
+    /// (`idp.tenant.admin`). `parent_tenant_id` and `status` are not changed.
     pub async fn update_current_settings(
         &self,
         current: TenantContext,
@@ -296,8 +296,8 @@ impl TenantManagementService {
         Ok(tenant)
     }
 
-    /// 子テナントを削除する。root は削除不可（§1）。配下に子が居る場合は `Conflict`。当該テナント自身に
-    /// ユーザー/クライアントが存在する場合は DB の `ON DELETE RESTRICT` により `Conflict`（§1）。
+    /// Deletes a child tenant. Root cannot be deleted (§1). `Conflict` if it has children. If the tenant itself
+    /// still has users/clients, the DB's `ON DELETE RESTRICT` makes it `Conflict` (§1).
     pub async fn delete_tenant(
         &self,
         requesting: TenantContext,
@@ -306,13 +306,13 @@ impl TenantManagementService {
         ctx: &RequestContext,
     ) -> Result<(), TenantManagementError> {
         let tenant = self.load_child(requesting, child_id).await?;
-        // root は構造的に誰の子でもない（load_child で既に弾かれる）が、明示的に禁止して二重防御とする。
+        // Root is structurally nobody's child (already rejected by load_child), but it is explicitly forbidden as a second line of defense.
         if tenant.is_root() {
             return Err(TenantManagementError::Forbidden(MessageKey::new(
                 "api-tenant-root-cannot-delete",
             )));
         }
-        // 配下に子テナントが存在しないこと（アプリ層の事前検証。§1）。
+        // There must be no child tenants underneath (app-layer pre-validation. §1).
         let grandchildren = self
             .tenants
             .list_children(tenant.id)
@@ -324,9 +324,9 @@ impl TenantManagementService {
             )));
         }
 
-        // ユーザー/クライアントの残存は DB の FK（ON DELETE RESTRICT）が Conflict に倒す（§1）。
+        // Remaining users/clients are turned into Conflict by the DB FK (ON DELETE RESTRICT) (§1).
         self.tenants.delete(tenant.id).await.map_err(|e| match e {
-            // FK（ON DELETE RESTRICT）による拒否 = 配下に利用者・クライアントが残っている（§1）。
+            // Refusal by FK (ON DELETE RESTRICT) = users or clients remain underneath (§1).
             DomainError::Conflict(_) => {
                 TenantManagementError::Conflict(MessageKey::new("api-tenant-has-dependents"))
             }
@@ -347,8 +347,8 @@ impl TenantManagementService {
         Ok(())
     }
 
-    /// `child_id` が `requesting` の直下の子テナントであることを確かめて取得する（他テナントの子・
-    /// 不存在は `NotFound` に倒し、存在を漏らさない。§6）。
+    /// Gets `child_id` after checking it is a direct child tenant of `requesting` (children of other tenants
+    /// and missing ones become `NotFound`, without leaking existence. §6).
     async fn load_child(
         &self,
         requesting: TenantContext,
@@ -365,13 +365,13 @@ impl TenantManagementService {
         }
     }
 
-    // ── ドメインの割り当て（ADR-0029）─────────────────────────────────────────
+    // ── Domain assignments (ADR-0029) ─────────────────────────────────────────
 
-    /// ドメインの操作対象は**自テナントまたは直下の子**とする。
+    /// The target of domain operations is **the own tenant or a direct child**.
     ///
-    /// 子だけに限らないのは、root 自身にもドメインが要るためである（root の利用者は作成した
-    /// テナントへゲストとして入るので、ドメイン修飾で入れなければ意味がない）。root は誰の子でも
-    /// ないので `load_child` では到達できない。
+    /// It is not limited to children because root itself also needs domains (root's users enter the tenants
+    /// they created as guests, so it is pointless if they cannot enter with domain qualification). Root is nobody's
+    /// child, so it cannot be reached by `load_child`.
     async fn load_self_or_child(
         &self,
         requesting: TenantContext,
@@ -391,7 +391,7 @@ impl TenantManagementService {
         self.load_child(requesting, target_id).await
     }
 
-    /// 割り当て済みのドメインを一覧する。
+    /// Lists assigned domains.
     pub async fn list_domains(
         &self,
         requesting: TenantContext,
@@ -404,10 +404,10 @@ impl TenantManagementService {
             .map_err(|e| TenantManagementError::Internal(e.to_string()))
     }
 
-    /// ドメインを割り当てる。
+    /// Assigns a domain.
     ///
-    /// 一意性は**グローバル**なので、他テナントが押さえていても `Conflict` になる。どのテナントが
-    /// 持っているかは返さない —— 他テナントの構成を、ドメインを総当たりして覗けるようにしない。
+    /// Uniqueness is **global**, so it is `Conflict` even if another tenant holds it. Which tenant
+    /// holds it is not returned: other tenants' configuration must not be discoverable by brute-forcing domains.
     pub async fn add_domain(
         &self,
         requesting: TenantContext,
@@ -435,8 +435,8 @@ impl TenantManagementService {
                 }
                 other => TenantManagementError::Internal(other.to_string()),
             })?;
-        // 監査にはドメインを残す（PII ではなく、テナントの構成そのもの）。ログインをどのテナントへ
-        // 向けるかを決める操作であり、権限付与と同じ重さで追跡できる必要がある。
+        // The domain is kept in the audit (not PII, but the tenant's configuration itself). It is an operation that decides
+        // which tenant sign-ins go to, and must be traceable with the same weight as permission grants.
         self.record_domain_event(
             AuditEventType::TenantDomainAdded,
             tenant.id,
@@ -448,7 +448,7 @@ impl TenantManagementService {
         Ok(record)
     }
 
-    /// 割り当てを解除する。
+    /// Removes an assignment.
     pub async fn remove_domain(
         &self,
         requesting: TenantContext,
@@ -458,7 +458,7 @@ impl TenantManagementService {
         ctx: &RequestContext,
     ) -> Result<(), TenantManagementError> {
         let tenant = self.load_self_or_child(requesting, target_id).await?;
-        // 監査へ残す値のため、消す前に読む（消えた後では何を解除したか分からない）。
+        // Read before deleting, for the value kept in the audit (after deletion we cannot tell what was removed).
         let removed = self
             .tenant_domains
             .list_for_tenant(tenant.id)
@@ -613,9 +613,9 @@ mod tests {
         }
     }
 
-    /// テナント開通 unit of work のフェイク。成功時は全行を「まとめて」記録し（原子性を模す）、
-    /// `fail = true` なら何も書かずに失敗する（途中失敗＝全ロールバックの相当）。
-    /// ドメインを持たないテナント（既定実装のまま）。既存のテストはドメイン経路を通らない。
+    /// Fake of the tenant provisioning unit of work. On success records all rows "together" (mimicking atomicity);
+    /// with `fail = true` it fails without writing anything (equivalent to a mid-way failure = full rollback).
+    /// A tenant without domains (default implementation as is). Existing tests do not go through the domain path.
     struct NoTenantDomains;
 
     #[async_trait]
@@ -701,7 +701,7 @@ mod tests {
     }
 
     fn root() -> TenantContext {
-        // root として作成側テナントを表す（parent 照合には使わない）。
+        // Represents the creating tenant as root (not used for the parent match).
         TenantContext::new(TenantId::from(Uuid::from_u128(0xAAAA)))
     }
 
@@ -724,20 +724,20 @@ mod tests {
 
         assert_eq!(tenant.name, "Acme");
         assert_eq!(tenant.parent_tenant_id, Some(root().tenant_id()));
-        // 新テナント scope で作成者へ idp.tenant.admin が付与される。
+        // idp.tenant.admin scoped to the new tenant is granted to the creator.
         let granted = h.provisioning.granted.lock().unwrap().clone();
         assert_eq!(
             granted,
             vec![(tenant.id, actor, "idp.tenant.admin".to_string())]
         );
-        // 作成者の ACTIVE GUEST メンバーシップが同一 unit of work に含まれる。
+        // The creator's ACTIVE GUEST membership is included in the same unit of work.
         let memberships = h.provisioning.memberships.lock().unwrap();
         assert_eq!(memberships.len(), 1);
         assert_eq!(memberships[0].membership_type, MembershipType::Guest);
         assert_eq!(memberships[0].status, MembershipStatus::Active);
         assert_eq!(memberships[0].tenant_id, tenant.id);
         assert_eq!(memberships[0].user_id, actor);
-        // 監査に tenant.created が記録され、初期管理者ユーザーは作られない（user.created は無し）。
+        // tenant.created is recorded in the audit, and no initial admin user is created (no user.created).
         let events = h.sink.events.lock().unwrap();
         assert!(events
             .iter()
@@ -762,11 +762,11 @@ mod tests {
             )
             .await;
         assert!(matches!(result, Err(TenantManagementError::Internal(_))));
-        // unit of work が失敗したらテナント・メンバーシップ・権限は一切残らない。
+        // If the unit of work fails, no tenant, membership or permission remains.
         assert!(h.tenants.rows.lock().unwrap().is_empty());
         assert!(h.provisioning.memberships.lock().unwrap().is_empty());
         assert!(h.provisioning.granted.lock().unwrap().is_empty());
-        // 成功監査（tenant.created）も記録されない。
+        // The success audit (tenant.created) is not recorded either.
         assert!(h.sink.events.lock().unwrap().is_empty());
     }
 
@@ -805,20 +805,20 @@ mod tests {
             .unwrap();
         let child_id = created.id;
 
-        // 別テナントからは見えない（NotFound）。
+        // Not visible from another tenant (NotFound).
         let other = TenantContext::new(TenantId::from(Uuid::from_u128(0xBBBB)));
         assert!(matches!(
             h.svc.get_child(other, child_id).await,
             Err(TenantManagementError::NotFound)
         ));
 
-        // 直下の子は取得できる。
+        // A direct child can be fetched.
         assert_eq!(
             h.svc.get_child(root(), child_id).await.unwrap().id,
             child_id
         );
 
-        // 更新（表示名・状態）。
+        // Update (display name, status).
         let updated = h
             .svc
             .update_tenant(
@@ -836,7 +836,7 @@ mod tests {
         assert_eq!(updated.name, "Renamed");
         assert_eq!(updated.status, TenantStatus::Disabled);
 
-        // 削除できる（子・ユーザーは fake では検査しないが list_children は空）。
+        // Can be deleted (the fake does not check children/users, but list_children is empty).
         h.svc
             .delete_tenant(root(), child_id, &AdminActor::User(Uuid::new_v4()), &ctx())
             .await
@@ -865,7 +865,7 @@ mod tests {
             )
             .await
             .unwrap();
-        // parent の下に孫を作る（parent を requesting として）。
+        // Create a grandchild under parent (with parent as requesting).
         h.svc
             .create_tenant(
                 TenantContext::new(parent.id),

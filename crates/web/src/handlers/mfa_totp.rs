@@ -1,13 +1,13 @@
-//! MFA TOTP 自己登録ハンドラ（`GET/POST /account/mfa/totp/*`）と
-//! ログインフロー TOTP 入力ハンドラ（`GET/POST /mfa/totp`）。
+//! MFA TOTP self-enrollment handlers (`GET/POST /account/mfa/totp/*`) and
+//! login flow TOTP input handlers (`GET/POST /mfa/totp`).
 //!
-//! * セットアップ画面（`/account/mfa/totp/setup`）: SSO 認証済みユーザーが TOTP を自己登録する。
-//!   QR コード（SVG）と生シークレット（base32）を表示する。QR が使えない場合は生コードを入力する。
-//!   確認コードの送信（有効化）と削除の POST は、ログイン後の他のアカウント画面と同じ CSRF 同期
-//!   トークン（`console_csrf_token`。SSO セッション id 由来）で守る（task #118）。ログイン側の
-//!   TOTP 入力（`login_csrf_token`。認可セッション由来）とは種が違うだけで、作法は同じ
-//!   （合わなければ何もせず PRG で戻し、`?error=csrf` のバナーで伝える）。
-//! * ログイン TOTP 画面（`/mfa/totp`）: パスワード認証後に TOTP 入力を求める。
+//! * Setup screen (`/account/mfa/totp/setup`): an SSO-authenticated user self-enrolls TOTP.
+//!   Shows a QR code (SVG) and the raw secret (base32). If the QR cannot be used, the raw code is entered.
+//!   The POSTs for sending the confirmation code (enabling) and deletion are protected by the same CSRF synchronizer
+//!   token as other post-login account screens (`console_csrf_token`, derived from the SSO session id) (task #118). It differs
+//!   from the login-side TOTP input (`login_csrf_token`, derived from the authorization session) only in the seed; the practice
+//!   is the same (on mismatch do nothing, return via PRG and report with the `?error=csrf` banner).
+//! * Login TOTP screen (`/mfa/totp`): asks for TOTP input after password authentication.
 
 use super::{api_internal_error, internal_call_status, locale};
 use crate::client_ip::ClientIp;
@@ -35,12 +35,12 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use serde::Deserialize;
 
-// ── TOTP セットアップ ────────────────────────────────────────────────────────
+// ── TOTP setup ────────────────────────────────────────────────────────
 
-/// TOTP セットアップ画面（`GET /account/mfa/totp/setup`）。
+/// TOTP setup screen (`GET /account/mfa/totp/setup`).
 ///
-/// SSO Cookie が必要。api から QR URI と生シークレットを取得し、QR SVG + 生コードを表示する。
-/// `?error=csrf` は CSRF 不一致の確認 POST から PRG で戻ったときのエラーバナー表示。
+/// Requires the SSO cookie. Fetches the QR URI and raw secret from the api and shows the QR SVG + raw code.
+/// `?error=csrf` shows the error banner when coming back via PRG from a confirmation POST with a CSRF mismatch.
 pub async fn setup_page(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -48,8 +48,8 @@ pub async fn setup_page(
     headers: HeaderMap,
     Query(query): Query<FormPageQuery>,
 ) -> Response {
-    // 認証器の追加は step-up の対象（AP5）。盗まれたセッションで自分の認証器を足されると、
-    // 以後は正規の資格情報として振る舞われてしまう。
+    // Adding an authenticator is subject to step-up (AP5). If a stolen session could add its own authenticator,
+    // it would afterwards act as a legitimate credential.
     if let Err(response) = step_up::require_step_up(
         &state,
         &correlation,
@@ -63,7 +63,7 @@ pub async fn setup_page(
         return response;
     }
     let Some(sso_session_id) = cookies::get(&headers, cookies::SSO_SESSION_COOKIE) else {
-        // FluentBundle は !Send なので await の前に作成・消費する。
+        // FluentBundle is !Send, so create and consume it before the await.
         let messages = Messages::new(locale(&headers));
         return account_error_page(
             &messages,
@@ -73,7 +73,7 @@ pub async fn setup_page(
         );
     };
 
-    // 認証アプリに出す宛名は api が SSO セッションの利用者から引く（web は利用者名を知らない）。
+    // The account label shown in the authenticator app is looked up by the api from the SSO session's user (web does not know the user name).
     let req = InternalTotpSetupRequest {
         sso_session_id: sso_session_id.clone(),
     };
@@ -84,7 +84,7 @@ pub async fn setup_page(
             return internal_call_status(&e).into_response();
         }
     };
-    // FluentBundle は !Send なので await の後に作成する。
+    // FluentBundle is !Send, so create it after the await.
     let messages = Messages::new(locale(&headers));
 
     use assay_contracts::auth::InternalTotpSetupResponse;
@@ -120,7 +120,7 @@ pub async fn setup_page(
     }
 }
 
-/// TOTP 確認フォーム（`POST /account/mfa/totp/setup`）。6 桁コードを検証して有効化する。
+/// TOTP confirmation form (`POST /account/mfa/totp/setup`). Verifies the 6-digit code and enables it.
 pub async fn setup_confirm(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -137,8 +137,8 @@ pub async fn setup_confirm(
             "mfa-error-not-signed-in",
         );
     };
-    // CSRF は step-up より先に見る（認証器の画面の状態変更と同じ順）。合わなければ api へは
-    // 何も送らず、設定画面を取り直させる。
+    // Check CSRF before step-up (same order as state changes on the authenticator screen). On mismatch send nothing
+    // to the api and make the user reload the settings screen.
     if !console_csrf_valid(
         &sso_session_id,
         &form.csrf_token,
@@ -150,7 +150,7 @@ pub async fn setup_confirm(
             tenant.prefix()
         ));
     }
-    // 認証器を有効化するのはこの POST（画面のゲートだけでは守れない。passkey と同じ理由）。
+    // This POST is what enables the authenticator (the screen gate alone cannot protect it; same reason as passkey).
     if let Err(response) = step_up::require_step_up(
         &state,
         &correlation,
@@ -176,7 +176,7 @@ pub async fn setup_confirm(
         }
     };
 
-    // InvalidCode の場合は QR を再取得するため先にもう一度 await する（Messages 取得前）。
+    // For InvalidCode, await once more first to re-fetch the QR (before getting Messages).
     use assay_contracts::auth::InternalTotpConfirmResponse;
     let refetch_qr = matches!(result, InternalTotpConfirmResponse::InvalidCode);
     let qr_data = if refetch_qr {
@@ -188,12 +188,12 @@ pub async fn setup_confirm(
         None
     };
 
-    // FluentBundle は !Send なので全 await の後に作成する。
+    // FluentBundle is !Send, so create it after all awaits.
     let messages = Messages::new(locale(&headers));
 
     match result {
-        // 完了は認証器の画面へ戻してバナーで伝える（PRG）。完了だけを告げる画面は行き止まりで、
-        // 次にどこへ行けばよいかが画面に無かった（task #82）。
+        // On completion return to the authenticator screen and report with a banner (PRG). A screen that only announced completion
+        // was a dead end with nothing telling where to go next (task #82).
         InternalTotpConfirmResponse::Ok => see_other(&format!(
             "{}/settings/authenticators?saved=totp",
             tenant.prefix()
@@ -243,10 +243,10 @@ pub async fn setup_confirm(
     }
 }
 
-/// TOTP 削除（`POST /account/mfa/totp/delete`）。MFA を無効化する。
+/// TOTP deletion (`POST /account/mfa/totp/delete`). Disables MFA.
 ///
-/// 設定（確認 POST）と同じ CSRF 同期トークンを要る（task #118）。MFA を外す操作を SameSite=Lax
-/// だけで守らない。合わなければ何もせず認証器の画面へ戻し、`?error=csrf` のバナーで伝える。
+/// Requires the same CSRF synchronizer token as setup (the confirmation POST) (task #118). Removing MFA is not protected by
+/// SameSite=Lax alone. On mismatch do nothing, return to the authenticator screen and report with the `?error=csrf` banner.
 pub async fn setup_delete(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -263,7 +263,7 @@ pub async fn setup_delete(
             ));
         }
     }
-    // 認証器の削除も step-up の対象（AP5）。MFA を外せれば以後は単一要素で入れてしまう。
+    // Deleting an authenticator is also subject to step-up (AP5). If MFA can be removed, single-factor sign-in is possible from then on.
     if let Err(response) = step_up::require_step_up(
         &state,
         &correlation,
@@ -294,13 +294,13 @@ pub async fn setup_delete(
             return internal_call_status(&e).into_response();
         }
     };
-    // FluentBundle は !Send なので await の後に作成する。
+    // FluentBundle is !Send, so create it after the await.
     let messages = Messages::new(locale(&headers));
 
     use assay_contracts::auth::InternalTotpDeleteResponse;
     match result {
-        // 削除も認証器の画面へ戻してバナーで伝える（PRG。設定の完了と同じ形・task #82）。
-        // 完了だけを告げる画面にはアカウント設定へ戻る導線が無かった（task #121）。
+        // Deletion also returns to the authenticator screen with a banner (PRG; same shape as setup completion, task #82).
+        // The screen that only announced completion had no path back to account settings (task #121).
         InternalTotpDeleteResponse::Ok => see_other(&format!(
             "{}/settings/authenticators?saved=totp-deleted",
             tenant.prefix()
@@ -315,10 +315,10 @@ pub async fn setup_delete(
     }
 }
 
-// ── ログインフロー TOTP 入力 ─────────────────────────────────────────────────
+// ── Login flow TOTP input ─────────────────────────────────────────────────
 
-/// TOTP 入力ページ（`GET /mfa/totp`）。ログインフロー中（パスワード認証後）に表示する。
-/// `?error=csrf` は CSRF 不一致の POST から PRG で戻ったときのエラーバナー表示。
+/// TOTP input page (`GET /mfa/totp`). Shown during the login flow (after password authentication).
+/// `?error=csrf` shows the error banner when coming back via PRG from a POST with a CSRF mismatch.
 pub async fn verify_page(
     State(state): State<WebState>,
     Extension(tenant): Extension<WebTenant>,
@@ -337,19 +337,19 @@ pub async fn verify_page(
     let body = render_verify_form(
         &messages,
         &login_csrf_token(&auth_session_id, state.config.csrf_secret()),
-        // 送信結果の案内も同じ `?error=` に載せる（PRG のため）。
+        // Guidance about send results is carried in the same `?error=` (because of PRG).
         verify_banner_key(query.error.as_deref()),
         &tenant.prefix(),
     );
-    // 同意が要らなければ TOTP の送信はそのまま RP へリダイレクトして終わる。ログイン画面と
-    // 同じく RP のオリジンだけ `form-action` に許可する（SEC3）。
+    // If no consent is needed, the TOTP submission ends in a redirect straight to the RP. As on the login
+    // screen, only the RP's origin is allowed in `form-action` (SEC3).
     crate::security_headers::html_with_form_action_csp(
         rp_context.redirect_uri.as_deref().unwrap_or_default(),
         body,
     )
 }
 
-/// TOTP 入力処理（`POST /mfa/totp`）。コードを検証し、成功時に SSO Cookie を発行してリダイレクトする。
+/// TOTP input processing (`POST /mfa/totp`). Verifies the code and, on success, issues the SSO cookie and redirects.
 pub async fn verify(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -397,7 +397,7 @@ pub async fn verify(
                     sso_absolute_ttl_secs,
                 )
                 .expire_session(cookies::AUTH_SESSION_COOKIE);
-            // ユーザーの DB 言語設定があれば lang Cookie に同期する（MT20: DB > Cookie の優先順）。
+            // If the user has a DB language setting, sync it into the lang cookie (MT20: DB > Cookie priority).
             if let Some(lang) = user_language
                 .as_deref()
                 .and_then(crate::i18n::Locale::from_tag)
@@ -446,7 +446,7 @@ pub async fn verify(
             &tenant.prefix(),
             rp_context.redirect_uri.as_deref().unwrap_or_default(),
         ),
-        // レート制限・ロックはフォームを出しても再試行できないため、案内だけのページにする（SEC3）。
+        // Rate limiting/lockout cannot be retried by showing the form, so make it a guidance-only page (SEC3).
         InternalVerifyTotpResponse::RateLimited => error_page(
             &messages,
             StatusCode::TOO_MANY_REQUESTS,
@@ -455,8 +455,8 @@ pub async fn verify(
         InternalVerifyTotpResponse::Locked => {
             error_page(&messages, StatusCode::FORBIDDEN, "mfa-error-locked")
         }
-        // 第二要素まで通ったが、このアプリの利用が許可されていない（ADR-0054）。
-        // SSO Cookie は発行する（assay には入れている）。
+        // The second factor passed, but use of this app is not permitted (ADR-0054).
+        // The SSO cookie is issued (the user is signed in to assay).
         InternalVerifyTotpResponse::ApplicationNotPermitted {
             application_name,
             sso_session_id,
@@ -474,7 +474,7 @@ pub async fn verify(
             crate::application_denied::page(&messages, &tenant.prefix(), &application_name),
         )
             .into_response(),
-        // 登録した端末に限る組織で、登録していない端末だった（task #916）。札を置いて登録の画面へ。
+        // Organization limited to registered devices, and this device is not registered (task #916). Place the ticket and go to enrollment.
         InternalVerifyTotpResponse::DeviceEnrollmentRequired { ticket } => {
             crate::handlers::device_enrollment::redirect(
                 &state,
@@ -489,8 +489,8 @@ pub async fn verify(
             "login-error-policy-denied",
         ),
         InternalVerifyTotpResponse::CsrfMismatch => {
-            // PRG: 303 で GET へ付け替え、現在の Cookie から導出した新しいトークンのフォームを自動で
-            // 再表示する（従来はエラーページを返すだけで、リロードすると POST が再送されて復帰できなかった）。
+            // PRG: switch to GET with 303 and automatically re-show the form with a new token derived from the
+            // current cookie (previously it just returned an error page, and reloading resent the POST with no recovery).
             tracing::warn!(
                 correlation_id = %ctx.correlation_id,
                 "totp verify failed: csrf token mismatch; redirecting to fresh form"
@@ -512,10 +512,10 @@ pub async fn verify(
     }
 }
 
-// ── QR コード生成 ────────────────────────────────────────────────────────────
+// ── QR code generation ────────────────────────────────────────────────────────────
 
-/// `otpauth://` URI から QR コードを SVG 文字列として生成する。
-/// テンプレートへ直接埋め込む（`|safe` で rawに出力する）。
+/// Generates a QR code as an SVG string from an `otpauth://` URI.
+/// Embedded directly in the template (output raw with `|safe`).
 pub fn generate_qr_svg(uri: &str) -> String {
     use qrcode::render::svg;
     use qrcode::{EcLevel, QrCode};
@@ -532,12 +532,12 @@ pub fn generate_qr_svg(uri: &str) -> String {
         .build()
 }
 
-// ── ヘルパー ────────────────────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────────
 
-/// TOTP 入力画面のバナー用に、`?error=` の値を翻訳キーへ写す。
+/// Maps the `?error=` value to a translation key for the TOTP input screen's banner.
 ///
-/// CSRF・再試行のエラー（`form_retry_error_key`）に加えて、email OTP の送信結果も同じクエリで
-/// 運ぶ（PRG のため）。未知の値は何も出さない。
+/// Besides CSRF/retry errors (`form_retry_error_key`), email OTP send results are carried in the same query
+/// (because of PRG). Unknown values show nothing.
 fn verify_banner_key(value: Option<&str>) -> Option<&'static str> {
     match value {
         Some("email-sent") => Some("mfa-verify-email-sent"),
@@ -561,20 +561,20 @@ fn render_verify_form(
         messages,
         csrf,
         error_key,
-        // メール送信の可否（SMTP 設定の有無）は api しか知らないため、導線は常に出し、
-        // 未設定なら送信結果として案内する（画面から設定状況を推測させない）。
+        // Whether email can be sent (SMTP configured or not) is known only to the api, so the entry point is always shown,
+        // and if not configured it is reported as the send result (do not let the screen reveal the configuration state).
         email_otp_available: true,
         email_otp_action: &format!("{tenant_prefix}/mfa/totp/email-code"),
-        // SMS も同じ理由で導線は常に出す（未設定・未登録は送信結果として案内する）。
-        // 画面から「この利用者は電話番号を登録しているか」を推測させない。
+        // SMS also always shows the entry point for the same reason (not configured / not registered are reported as send results).
+        // Do not let the screen reveal "whether this user has registered a phone number".
         sms_otp_action: &format!("{tenant_prefix}/mfa/totp/sms-code"),
     })
 }
 
-/// email OTP の送信要求（`POST /{tenant_id}/mfa/totp/email-code`。AP9）。
+/// email OTP send request (`POST /{tenant_id}/mfa/totp/email-code`. AP9).
 ///
-/// MFA 待ちの `auth_session_id` を api へ渡し、登録済みメールアドレスへ短命コードを送らせる。
-/// 送信の成否は画面のバナーで返し、いずれの場合も TOTP 入力画面に留まる。
+/// Passes the MFA-pending `auth_session_id` to the api and has it send a short-lived code to the registered email address.
+/// The outcome is returned via the screen banner; in either case it stays on the TOTP input screen.
 pub async fn send_email_code(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -592,7 +592,7 @@ pub async fn send_email_code(
             "mfa-error-session-expired",
         );
     };
-    // CSRF は TOTP フォームと同じ同期トークン（`auth_session_id` 由来）で照合する。
+    // CSRF is verified with the same synchronizer token as the TOTP form (derived from `auth_session_id`).
     if !assay_contracts::csrf::verify(
         &login_csrf_token(&auth_session_id, state.config.csrf_secret()),
         &form.csrf_token,
@@ -628,11 +628,11 @@ pub async fn send_email_code(
     see_other(&format!("{}/mfa/totp?error={error}", tenant.prefix()))
 }
 
-/// SMS OTP の送信要求（`POST /{tenant_id}/mfa/totp/sms-code`。AP13）。
+/// SMS OTP send request (`POST /{tenant_id}/mfa/totp/sms-code`. AP13).
 ///
-/// email OTP と同じ形。登録済みの電話番号へ短命コードを送らせ、結果はバナーで返す。
-/// **未登録と未設定を別の文言で返す**のは、利用者にできること（登録する / 管理者へ聞く）が
-/// 違うためで、どちらも「送れませんでした」に丸めると詰まる。
+/// Same shape as email OTP. Has a short-lived code sent to the registered phone number and returns the result via a banner.
+/// **Not registered and not configured return different wording** because what the user can do (register / ask an admin)
+/// differs; rounding both to "could not send" leaves them stuck.
 pub async fn send_sms_code(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -686,14 +686,14 @@ pub async fn send_sms_code(
     see_other(&format!("{}/mfa/totp?error={error}", tenant.prefix()))
 }
 
-/// email OTP / SMS OTP の送信フォーム（CSRF トークンのみ）。
+/// email OTP / SMS OTP send form (CSRF token only).
 #[derive(Debug, Deserialize)]
 pub struct EmailCodeForm {
     pub csrf_token: String,
 }
 
-/// **CSP は初回描画と同じものを付ける。** 既定のままにすると、コードを打ち間違えて出し直された
-/// フォームからの再送信だけが RP へ戻れなくなる。
+/// **Attach the same CSP as the first render.** With the default one, only resubmission from a form re-shown after
+/// a mistyped code would be unable to return to the RP.
 fn reshow_verify_form(
     messages: &Messages,
     status: StatusCode,
@@ -725,11 +725,11 @@ fn reshow_verify_form(
     }
 }
 
-/// アカウント設定から来た TOTP の設定（`/account/mfa/totp/*`）の失敗の画面。
+/// Failure screen for TOTP setup coming from account settings (`/account/mfa/totp/*`).
 ///
-/// ログインフローの [`error_page`] と分けるのは、出口の有無が違うから。こちらはアカウント設定の
-/// 枝葉なので戻る導線を置く（task #119）。ログインフローは RP へ戻る途中で、外へ出す動線を
-/// 置かない。401 はサインインし直すしかない状態なので、導線をサインインへ向ける。
+/// Separate from the login flow's [`error_page`] because the exits differ. This one is a branch of account settings,
+/// so it has a back path (task #119). The login flow is on its way back to the RP and gets no path
+/// leading out. 401 is a state where signing in again is the only option, so the path points to sign-in.
 fn account_error_page(
     messages: &Messages,
     tenant_prefix: &str,
@@ -745,10 +745,10 @@ fn account_error_page(
     (status, Html(body)).into_response()
 }
 
-/// セットアップ画面の `?error=` → バナーの翻訳キー（知らない値は出さない）。
+/// Setup screen `?error=` → banner translation key (unknown values show nothing).
 fn setup_banner_key(value: Option<&str>) -> Option<&'static str> {
     match value {
-        // 認証器・セッション一覧の画面と同じ文言（task #118）。
+        // Same wording as the authenticator and session list screens (task #118).
         Some("csrf") => Some("user-security-error-csrf"),
         _ => None,
     }
@@ -763,7 +763,7 @@ fn error_page(messages: &Messages, status: StatusCode, error_key: &str) -> Respo
     (status, Html(body)).into_response()
 }
 
-/// ログインフロー TOTP 入力フォーム。
+/// Login flow TOTP input form.
 #[derive(Deserialize)]
 pub struct TotpLoginForm {
     pub totp_code: String,

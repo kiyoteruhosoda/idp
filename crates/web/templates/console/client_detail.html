@@ -21,9 +21,9 @@
     </dl>
   </div>
 </div>
-{#- 管理権限（ADR-0037）。システム用クライアント（`client_credentials`）が IdP 自身の管理 API を
-    呼ぶための権限。ブラウザログイン用クライアントには管理トークンを取る手段が無いので出さない
-    （ただし既に保有していれば、剥奪できるよう区画を出す）。 -#}
+{#- Admin permissions (ADR-0037). Permissions for system clients (`client_credentials`) to call the IdP's own
+    admin API. Browser-login clients have no way to get an admin token, so hidden
+    (but if already held, the section is shown so they can be revoked). -#}
 {% if shows_permissions %}
 <h3 class="h5 mb-3">{{ messages.get("admin-client-permissions-title") }}</h3>
 <p class="text-muted small">{{ messages.get("admin-client-permissions-hint") }}</p>
@@ -49,13 +49,13 @@
   </table>
 </div>
 {% endif %}
-{#- 付与はシステム用クライアントにだけ。ブラウザログイン用クライアントは管理トークンを取れないので、
-    保有分の剥奪だけを見せて新たな付与は見せない。 -#}
+{#- Grants only for system clients. Browser-login clients cannot get admin tokens, so
+    only revoking held ones is shown, not new grants. -#}
 {% if shows_grant_form %}
 <div class="card mb-4">
   <div class="card-body">
-    {#- 選択肢は api が絞った「クライアントへ付与できるコード」。包括的な管理権限
-        （idp.tenant.admin / idp.system.admin）はそもそも候補に出ない。 -#}
+    {#- Choices are the api-filtered "codes grantable to clients". Broad admin permissions
+        (idp.tenant.admin / idp.system.admin) are never candidates. -#}
     {% if permissions_load_failed %}
     <div class="alert alert-warning mb-0" role="alert">{{ messages.get("admin-permissions-grant-load-failed") }}</div>
     {% else if grantable_permissions.is_empty() %}
@@ -77,8 +77,8 @@
 </div>
 {% endif %}
 {% endif %}
-{#- 宛先（`aud` に入る名前）。どの宛名のトークンを取ってよいかは、ここではなく宛名を名乗るアプリの
-    「このアプリを使う主体」で決める（ADR-0059 の決定 6）。ここでは行き先だけを案内する。 -#}
+{#- Audience (name in `aud`). Which audience's tokens may be taken is decided not here but by the
+    "users of this app" of the app claiming that audience (ADR-0059 decision 6). Here we only point the way. -#}
 {% if shows_resources %}
 <h3 class="h5 mb-3">{{ messages.get("admin-client-resources-title") }}</h3>
 <p class="text-muted">{{ messages.get("admin-client-resources-hint") }}</p>
@@ -92,8 +92,8 @@
     <button type="submit" class="btn btn-outline-warning"><i class="fa-solid fa-rotate me-2" aria-hidden="true"></i>{{ messages.get("admin-client-rotate-secret") }}</button>
   </form>
   {% endif %}
-  {# 論理削除（ADR-0035）。実体は残るが、このクライアントでのログイン・トークン取得は即座に
-     できなくなる。取り消せない操作なので確認を挟む。 #}
+  {# Logical deletion (ADR-0035). The record remains, but sign-in and token acquisition with this client stop
+     immediately. It cannot be undone, so a confirmation is inserted. #}
   <form method="post" action="{{ tenant }}/admin/clients/{{ client.client_id }}/delete" class="d-inline" data-confirm="{{ messages.get("admin-client-delete-confirm") }}">
     <input type="hidden" name="csrf_token" value="{{ csrf }}">
     <button type="submit" class="btn btn-outline-danger"><i class="fa-solid fa-trash me-2" aria-hidden="true"></i>{{ messages.get("admin-client-delete") }}</button>

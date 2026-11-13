@@ -1,4 +1,4 @@
-//! `SsoSessionRepository` の sqlx 実装。DB には `session_hash = SHA-256(session_id)` のみ保存する。
+//! sqlx implementation of `SsoSessionRepository`. Only `session_hash = SHA-256(session_id)` is stored in the DB.
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::SsoSessionRepository;
@@ -116,7 +116,7 @@ impl SsoSessionRepository for SqlxSsoSessionRepository {
     }
 
     async fn extend_idle(&self, session_hash: &str, idle_expires_at: DateTime<Utc>) -> Result<()> {
-        // ⚠ 短くはしない（端末の鍵に結び付いたログイン状態は idle を absolute まで延ばしてある。ADR-0074）。
+        // ⚠ Not shortened (login states bound to a device key have idle extended up to absolute; ADR-0074).
         sqlx::query(
             "UPDATE sso_sessions SET idle_expires_at = GREATEST(idle_expires_at, ?) \
              WHERE session_hash = ?",
@@ -176,10 +176,10 @@ impl SsoSessionRepository for SqlxSsoSessionRepository {
         verified_at: DateTime<Utc>,
     ) -> Result<()> {
         let strength = AuthenticationStrength::from_methods(methods);
-        // 第二要素を通した step-up だけが `mfa_completed_at` を進める。単一要素の再確認で
-        // MFA の鮮度まで回復させると、パスワードを知る攻撃者が第二要素を迂回できてしまう。
-        // 既存値を残すため、単一要素のときは `mfa_completed_at` を触らない（COALESCE ではなく
-        // 更新対象から外す）。
+        // Only a step-up through a second factor advances `mfa_completed_at`. Restoring MFA freshness through
+        // single-factor re-verification would let an attacker who knows the password bypass the second factor.
+        // To keep the existing value, `mfa_completed_at` is not touched for single factor (it is left out of the
+        // update targets rather than using COALESCE).
         if strength == AuthenticationStrength::MultiFactor {
             sqlx::query(
                 "UPDATE sso_sessions \
@@ -196,8 +196,8 @@ impl SsoSessionRepository for SqlxSsoSessionRepository {
             .await
             .map_err(repo_err)?;
         } else {
-            // 単一要素の再確認では強度も下げない（多要素で確立したセッションを、パスワードの
-            // 再入力で単一要素へ格下げしてはいけない）。更新するのは step-up の時刻だけ。
+            // Single-factor re-verification doesn't lower the strength either (a session established with multiple factors must not be
+            // downgraded to single factor by re-entering the password). Only the step-up time is updated.
             sqlx::query("UPDATE sso_sessions SET step_up_at = ? WHERE session_hash = ?")
                 .bind(verified_at.naive_utc())
                 .bind(session_hash)
@@ -205,8 +205,8 @@ impl SsoSessionRepository for SqlxSsoSessionRepository {
                 .await
                 .map_err(repo_err)?;
         }
-        // パスキーで確かめた時刻を、端末の登録の条件のために別に残す（task #872）。`step_up_at` は
-        // パスワードの再確認でも進むので、「パスキーで確かめたか」はそこからは分からない。
+        // Keep the passkey verification time separately for the device registration condition (task #872). `step_up_at`
+        // also advances on password re-verification, so it can't tell "was it verified with a passkey".
         if methods.contains(&AuthenticationMethod::WebAuthn) {
             sqlx::query(
                 "INSERT INTO sso_session_contexts (session_hash, passkey_verified_at) \
@@ -294,13 +294,13 @@ mod tests {
         );
     }
 
-    /// AP4 導入前に確立したセッション（NULL）は「記録なし」＝空配列として読む。
+    /// Sessions established before AP4 (NULL) are read as "no record" = empty array.
     #[test]
     fn null_methods_read_as_no_record() {
         assert!(authentication_methods_json::from_json(None).is_empty());
     }
 
-    /// 未知の方式を含む行でも、読めるものだけを拾って壊れない（前方互換）。
+    /// Even rows containing unknown methods are read without breaking, picking up only what is readable (forward compatibility).
     #[test]
     fn unknown_methods_are_skipped() {
         let raw = br#"["password","quantum_handshake","totp"]"#.to_vec();

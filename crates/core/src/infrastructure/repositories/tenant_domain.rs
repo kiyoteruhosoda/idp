@@ -1,4 +1,4 @@
-//! `TenantDomainRepository` の sqlx 実装（ADR-0029）。
+//! sqlx implementation of `TenantDomainRepository` (ADR-0029).
 
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::TenantDomainRepository;
@@ -49,9 +49,9 @@ fn map_row(row: &MySqlRow) -> Result<TenantDomain> {
 
 #[async_trait]
 impl TenantDomainRepository for SqlxTenantDomainRepository {
-    /// 一意キー `tenant_domains_domain_uk` の等値検索 1 本。**テナントの状態はここでは見ない** ——
-    /// 所属元テナントが `ACTIVE` かは解決の後段（`is_active_member`）が見ており、そちらに寄せると
-    /// 「ドメインは引けたがメンバーではない」と「所属元が止まっている」を 1 か所で扱える。
+    /// A single equality lookup on the unique key `tenant_domains_domain_uk`. **Tenant status is not checked here** --
+    /// whether the owning tenant is `ACTIVE` is checked later in resolution (`is_active_member`), and leaving it there lets
+    /// "the domain resolved but the user isn't a member" and "the owning tenant is stopped" be handled in one place.
     async fn find_tenant_by_domain(&self, domain: &str) -> Result<Option<TenantId>> {
         let found: Option<String> =
             sqlx::query_scalar("SELECT tenant_id FROM tenant_domains WHERE domain = ?")
@@ -88,8 +88,8 @@ impl TenantDomainRepository for SqlxTenantDomainRepository {
         .execute(&self.pool)
         .await
         .map_err(|e| match &e {
-            // 一意キーはテナントを含まないので、他テナントが押さえている場合もここへ来る
-            // （値そのものは秘密ではないが、どのテナントが持っているかは返さない）。
+            // The unique key does not include the tenant, so a domain held by another tenant also lands here
+            // (the value itself isn't secret, but which tenant holds it is not returned).
             sqlx::Error::Database(db) if db.is_unique_violation() => {
                 DomainError::Conflict("domain is already assigned to a tenant".to_string())
             }
@@ -98,8 +98,8 @@ impl TenantDomainRepository for SqlxTenantDomainRepository {
         Ok(())
     }
 
-    /// `tenant_id` も条件に入れる。id だけで消せると、root の管理者が誤って（あるいは id を
-    /// 取り違えて）他テナントのドメインを解除できてしまう。
+    /// `tenant_id` is also part of the condition. If deleting by id alone were possible, a root admin could by mistake (or by
+    /// mixing up ids) remove another tenant's domain.
     async fn delete(&self, tenant_id: TenantId, id: Uuid) -> Result<bool> {
         let result = sqlx::query("DELETE FROM tenant_domains WHERE id = ? AND tenant_id = ?")
             .bind(id.to_string())

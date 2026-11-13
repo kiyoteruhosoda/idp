@@ -1,20 +1,21 @@
-//! テナント別 issuer（`iss`）の合成（ADR-0009 §6）。
+//! Building the per-tenant issuer (`iss`) (ADR-0009 §6).
 //!
-//! 発行トークン（ID Token / Access Token）および discovery の `issuer` は
-//! `<基底 issuer>/<tenant_id>` を canonical 形式とする。基底 issuer（`https://<host>` 部分）は
-//! **設定値（`config.issuer()`）由来**であり、リクエストの Host ヘッダから導出しない
-//! （host header injection の余地を作らない）。
+//! The canonical form of the `issuer` in issued tokens (ID Token / Access Token) and discovery is
+//! `<base issuer>/<tenant_id>`. The base issuer (the `https://<host>` part) **comes from
+//! configuration (`config.issuer()`)** and is never derived from the request's Host header (leaving
+//! no room for host header injection).
 //!
-//! リソースサーバは `iss` の厳密一致を検証し、A テナント発行トークンの B テナントへの流用を防ぐ。
-//! そのため、発行側（`TokenService`）と検証側（`UserInfoService`/`IntrospectionService`）は
-//! 本関数で同一の合成規則を共有する。root も特別扱いせず、同じ規則で `iss` を合成する。
+//! Resource servers verify `iss` by exact match, preventing tenant A's tokens from being reused at
+//! tenant B. Therefore the issuing side (`TokenService`) and the verifying side
+//! (`UserInfoService`/`IntrospectionService`) share the same composition rule through this
+//! function. root is not special-cased; its `iss` follows the same rule.
 //!
-//! WebAuthn の RP ID・origin は**基底 issuer のホストから導出**し、テナントパスを含めない
-//! （WebAuthn はプロトコル上ホスト単位。§6）。したがって本合成は WebAuthn には適用しない。
+//! The WebAuthn RP ID and origin are **derived from the base issuer's host** and exclude the tenant
+//! path (WebAuthn is per-host by protocol; §6). So this composition does not apply to WebAuthn.
 
 use crate::domain::tenant::TenantId;
 
-/// 基底 issuer（末尾スラッシュ無し）とテナント ID から per-tenant issuer を合成する。
+/// Builds the per-tenant issuer from the base issuer (no trailing slash) and the tenant ID.
 pub fn tenant_issuer(base_issuer: &str, tenant_id: TenantId) -> String {
     format!("{base_issuer}/{tenant_id}")
 }

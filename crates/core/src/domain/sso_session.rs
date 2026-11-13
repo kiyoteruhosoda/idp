@@ -1,9 +1,10 @@
-//! SsoSessions エンティティ（設計仕様 §3.4）。
-//! Cookie には `session_id`、DB には `session_hash = SHA-256(session_id)` のみ保存する。
+//! SsoSessions entity (design spec §3.4).
+//! The cookie holds `session_id`; the DB stores only `session_hash = SHA-256(session_id)`.
 //!
-//! セッションは「いつ・どの認証方式で・どの強度で本人確認したか」も保持する
-//! （ユーザー認証・認証ポリシー仕様書 §14.3・§18.1）。この記録が、MFA 経過時間による再認証
-//! （§18.2 `max_authentication_age`）と Step-up 認証（§15）の唯一の判定材料になる。
+//! A session also records "when, by which methods, and at what strength the user was verified"
+//! (user authentication / auth policy spec §14.3, §18.1). This record is the sole input for
+//! re-authentication by elapsed time since MFA (§18.2 `max_authentication_age`) and step-up
+//! authentication (§15).
 #![allow(dead_code)]
 
 use crate::domain::crypto;
@@ -15,20 +16,24 @@ use uuid::Uuid;
 pub struct SsoSession {
     pub session_hash: String,
     pub user_id: Uuid,
-    /// 初回ログイン時刻。SSO 復元時も ID Token の `auth_time` にコピーする（設計仕様 §5.1）。
+    /// Initial login time. Also copied into the ID Token's `auth_time` on SSO restore (design spec
+    /// §5.1).
     pub auth_time: DateTime<Utc>,
     pub idle_expires_at: DateTime<Utc>,
     pub absolute_expires_at: DateTime<Utc>,
-    /// 本セッションを確立するために実際に検証された認証方式（仕様 §14.3）。順序は検証順。
+    /// Authentication methods actually verified to establish this session (spec §14.3). Ordered as
+    /// verified.
     pub authentication_methods: Vec<AuthenticationMethod>,
-    /// 認証強度（`authentication_methods` からの導出値。保存もして判定を 1 往復で済ませる）。
+    /// Authentication strength (derived from `authentication_methods`; also stored so checks take
+    /// one round trip).
     pub authentication_strength: AuthenticationStrength,
-    /// 第二要素の検証が完了した時刻（未完了なら `None`）。MFA 経過時間による再認証（§18.2）と
-    /// Step-up（§15）はこの時刻を基準にする（`auth_time` ではない。パスワードだけ入れ直しても
-    /// MFA の鮮度は回復しない）。
+    /// Time the second factor was verified (`None` if not done). Re-authentication by elapsed time
+    /// since MFA (§18.2) and step-up (§15) are based on this time (not `auth_time`; re-entering
+    /// only the password does not restore MFA freshness).
     pub mfa_completed_at: Option<DateTime<Utc>>,
-    /// 重要操作の直前に本人確認（step-up）を通した時刻（AP5。仕様 §15）。`auth_time` は SSO の
-    /// 起点で復元では動かないため、「今この操作をしてよいか」の新しさは別に測る。
+    /// Time the user passed re-verification (step-up) right before a sensitive operation (AP5; spec
+    /// §15). `auth_time` is the SSO origin and does not move on restore, so the freshness of "may
+    /// this operation be done now" is measured separately.
     pub step_up_at: Option<DateTime<Utc>>,
     pub user_agent: Option<String>,
     pub ip_address: Option<String>,
@@ -37,11 +42,12 @@ pub struct SsoSession {
 }
 
 impl SsoSession {
-    /// ログイン成功時に新しい SSO セッションを組み立てる。
+    /// Builds a new SSO session on successful login.
     ///
-    /// 強度と `mfa_completed_at` は `methods` から導出する（呼び出し側に渡させない）。ログイン経路は
-    /// 5 つ（OIDC・MFA・パスキー・ポータル・管理コンソール）あり、そのどれかが強度の計算を間違えると
-    /// Step-up・再認証の判定が丸ごと狂うため、導出はここ 1 箇所に閉じる。
+    /// Strength and `mfa_completed_at` are derived from `methods` (callers do not pass them). There
+    /// are five login paths (OIDC, MFA, passkey, portal, admin console); if any of them computed
+    /// strength wrongly, step-up and re-authentication decisions would all go wrong, so the
+    /// derivation is confined to this one place.
     #[allow(clippy::too_many_arguments)]
     pub fn establish(
         session_hash: String,
@@ -62,9 +68,11 @@ impl SsoSession {
             absolute_expires_at: now + absolute_ttl,
             authentication_methods: methods,
             authentication_strength: strength,
-            // 第二要素は「たった今」検証されている（ログイン経路以外からは establish しない）。
+            // The second factor has been verified "just now" (establish is not called outside login
+            // paths).
             mfa_completed_at: (strength == AuthenticationStrength::MultiFactor).then_some(now),
-            // ログインそのものが本人確認なので、確立直後は step-up 済みとして扱う。
+            // Login itself is a re-verification, so right after establishment it counts as stepped
+            // up.
             step_up_at: Some(now),
             user_agent,
             ip_address,
@@ -73,70 +81,76 @@ impl SsoSession {
         }
     }
 
-    /// 確立時に決めた絶対期限までの長さ（秒）。web が SSO Cookie の `Max-Age` に使う。
+    /// Length (seconds) until the absolute expiry decided at establishment. web uses it for the SSO
+    /// cookie's `Max-Age`.
     ///
-    /// 寿命の設定はテナントごとに違う（ADR-0058）ので、Cookie 側で設定を引き直さず、**確立した
-    /// セッションそのもの**から取る（引き直すと、値を変えた瞬間に Cookie とセッションがずれる）。
+    /// Lifetime settings differ per tenant (ADR-0058), so the cookie side does not re-read settings
+    /// but takes it from **the established session itself** (re-reading would make cookie and
+    /// session diverge the moment the value changes).
     pub fn absolute_ttl_secs(&self) -> u64 {
         u64::try_from((self.absolute_expires_at - self.created_at).num_seconds()).unwrap_or(0)
     }
 
-    /// 指定時刻時点で有効か（idle・absolute の双方が未超過）。
+    /// Whether valid at the given time (neither idle nor absolute exceeded).
     pub fn is_valid_at(&self, now: DateTime<Utc>) -> bool {
         self.idle_expires_at > now && self.absolute_expires_at > now
     }
 
-    /// 第二要素まで完了しているか（仕様 §14.3）。
+    /// Whether the second factor is complete (spec §14.3).
     pub fn is_multi_factor(&self) -> bool {
         self.authentication_strength == AuthenticationStrength::MultiFactor
     }
 
-    /// 指定方式で本人確認済みか。
+    /// Whether the user was verified with the given method.
     pub fn used_method(&self, method: AuthenticationMethod) -> bool {
         self.authentication_methods.contains(&method)
     }
 
-    /// `max_age`（秒）を満たすか（OIDC Core §3.1.2.1 の `max_age` / 仕様 §18.2）。
-    /// 満たさない場合は再認証（`prompt=login` 相当）が要る。
+    /// Whether `max_age` (seconds) is satisfied (OIDC Core §3.1.2.1 `max_age` / spec §18.2).
+    /// If not, re-authentication (equivalent to `prompt=login`) is required.
     pub fn satisfies_max_age(&self, max_age_secs: u64, now: DateTime<Utc>) -> bool {
         now - self.auth_time <= Duration::seconds(max_age_secs as i64)
     }
 
-    /// MFA の完了からの経過時間が `max_age_secs` 以内か（仕様 §18.2）。
-    /// MFA 未完了のセッションは常に満たさない（`false`）。
+    /// Whether the elapsed time since MFA completion is within `max_age_secs` (spec §18.2).
+    /// Sessions without completed MFA never satisfy it (`false`).
     pub fn satisfies_mfa_age(&self, max_age_secs: u64, now: DateTime<Utc>) -> bool {
         self.mfa_completed_at
             .is_some_and(|at| now - at <= Duration::seconds(max_age_secs as i64))
     }
 
-    /// 画面に提示できるセッション識別子（セルフサービスのセッション一覧・失効。G10）。
+    /// Session identifier that can be shown on screen (self-service session list / revocation;
+    /// G10).
     ///
-    /// `session_hash` は Cookie の生値ではないため提示しても認証には使えないが、DB 上の主キーを
-    /// そのまま画面へ出す必要も無い。ドメイン分離した非可逆の導出値を返し、照合は当人のセッション
-    /// 集合に対する走査で行う（値から `session_hash` を復元する経路を作らない）。
+    /// `session_hash` is not the raw cookie value, so showing it would not allow authentication,
+    /// but there is no need to put the DB primary key on screen either. A domain-separated
+    /// irreversible derivation is returned, and matching is done by scanning the user's own
+    /// sessions (no path restores `session_hash` from the value).
     pub fn display_id(&self) -> String {
         display_id_of(&self.session_hash)
     }
 
-    /// back-channel / front-channel logout と ID Token が共有するセッション識別子 `sid`
-    /// （OpenID Connect Back-Channel Logout 1.0 §2.1。G5）。
+    /// Session identifier `sid` shared by back-channel / front-channel logout and the ID Token
+    /// (OpenID Connect Back-Channel Logout 1.0 §2.1; G5).
     ///
-    /// RP はこの値でセッション単位のログアウトを実施する。`session_hash` から非可逆に導出するため
-    /// 追加のカラムは要らず、RP へ渡っても SSO セッションの乗っ取りには使えない。
+    /// RPs perform per-session logout with this value. It is derived irreversibly from
+    /// `session_hash`, so no extra column is needed, and even if it reaches an RP it cannot be used
+    /// to hijack the SSO session.
     pub fn sid(&self) -> String {
         sid_of(&self.session_hash)
     }
 }
 
-/// `session_hash` から表示用 ID を導出する（[`SsoSession::display_id`] の実体）。
+/// Derives the display ID from `session_hash` (the body of [`SsoSession::display_id`]).
 pub fn display_id_of(session_hash: &str) -> String {
     crypto::sha256_hex(&format!("sso-session-display:{session_hash}"))[..32].to_string()
 }
 
-/// `session_hash` から `sid` を導出する（[`SsoSession::sid`] の実体）。
+/// Derives `sid` from `session_hash` (the body of [`SsoSession::sid`]).
 ///
-/// ログアウト時は SSO セッション行を削除してから logout_token を組み立てるため、行が消えた後でも
-/// `session_hash` さえあれば同じ `sid` を再現できる必要がある。そのため導出は関数として公開する。
+/// On logout the SSO session row is deleted before the logout_token is built, so the same `sid`
+/// must be reproducible from `session_hash` alone after the row is gone. That is why the derivation
+/// is a public function.
 pub fn sid_of(session_hash: &str) -> String {
     crypto::sha256_hex(&format!("sso-session-sid:{session_hash}"))[..32].to_string()
 }
@@ -188,7 +202,8 @@ mod tests {
         assert!(!s.satisfies_max_age(300, now() + Duration::seconds(301)));
     }
 
-    /// MFA 未完了のセッションは MFA 経過時間の要件を満たさない（パスワードだけでは回復しない）。
+    /// Sessions without completed MFA do not satisfy the MFA elapsed-time requirement (a password
+    /// alone does not restore it).
     #[test]
     fn mfa_age_requires_a_completed_second_factor() {
         let password_only = session(vec![AuthenticationMethod::Password], None);
@@ -202,7 +217,7 @@ mod tests {
         assert!(!mfa.satisfies_mfa_age(300, now() + Duration::seconds(301)));
     }
 
-    /// 表示用 ID・`sid` はセッション毎に異なり、`session_hash` をそのまま漏らさない。
+    /// Display ID and `sid` differ per session and do not leak `session_hash` as is.
     #[test]
     fn derived_identifiers_are_stable_and_do_not_leak_the_hash() {
         let s = session(vec![AuthenticationMethod::Password], None);

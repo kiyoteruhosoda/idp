@@ -1,12 +1,12 @@
-//! ログイン画面（`GET /login`）とログイン処理（`POST /login`、設計仕様 §4.3）。
+//! Login screen (`GET /login`) and login processing (`POST /login`, design spec §4.3).
 //!
-//! ADR-0007: web はフォーム描画とリダイレクトのみを担い、資格情報検証・SSO/code 発行は api の
-//! `POST /internal/authenticate` に委ねる。web は接続元情報（`X-Forwarded-For` 由来 IP・User-Agent）を
-//! 転送し、成功時に api が返す `sso_session_id` を Cookie 化して `redirect_to` へ 302 する。エラーは
-//! ローカライズして再描画する。CSRF は `auth_session_id` 由来の同期トークン（`assay-contracts`）で、
-//! api の LoginService が検証する。
+//! ADR-0007: web only renders forms and redirects; credential verification and SSO/code issuance are delegated to the api's
+//! `POST /internal/authenticate`. web forwards connection origin information (IP from `X-Forwarded-For`, User-Agent),
+//! and on success stores the `sso_session_id` returned by the api in a cookie and 302s to `redirect_to`. Errors are
+//! localized and re-rendered. CSRF uses a synchronizer token derived from `auth_session_id` (`assay-contracts`),
+//! verified by the api's LoginService.
 //!
-//! 画面文言は `fluent` の翻訳リソースで管理する（`Accept-Language` で en / ja を切替）。
+//! Screen wording is managed in `fluent` translation resources (en / ja switched by `Accept-Language`).
 
 use super::{api_internal_error, internal_call_status, locale};
 use crate::client_ip::ClientIp;
@@ -29,9 +29,9 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 
-/// ログインフォームを表示する。OIDC フローは api の `/authorize` からのハンドオフ
-/// （`?auth_session=` の単回ハンドル。ADR-0018 決定 2）または host-only の `auth_session_id`
-/// Cookie で継続する。
+/// Shows the login form. The OIDC flow continues via the hand-off from the api's `/authorize`
+/// (the single-use handle `?auth_session=`; ADR-0018 decision 2) or the host-only `auth_session_id`
+/// cookie.
 pub async fn login_page(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -41,8 +41,8 @@ pub async fn login_page(
     headers: HeaderMap,
     Query(query): Query<LoginPageQuery>,
 ) -> Response {
-    // ハンドオフ受領: ハンドルを即座に `/internal/authorize/resume` で交換し（SSO 判定を含む）、
-    // `auth_session_id` を自ドメインの host-only Cookie へ移して 303 で URL から除去する。
+    // Hand-off received: immediately exchange the handle via `/internal/authorize/resume` (including the SSO check),
+    // move `auth_session_id` into a host-only cookie on our domain and remove it from the URL with a 303.
     if let Some(handle) = query.auth_session.filter(|h| !h.is_empty()) {
         return resume_authorize_handoff(
             &state,
@@ -55,17 +55,17 @@ pub async fn login_page(
         .await;
     }
 
-    // PRG で戻ったときのエラーバナー（CSRF 不一致 → `?error=csrf`）。
+    // Error banner when returning via PRG (CSRF mismatch → `?error=csrf`).
     let error_key = form_retry_error_key(query.error.as_deref());
 
     let Some(auth_session_id) = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE) else {
-        // OIDC の `auth_session_id` が無い直接アクセスは、IdP 自身のアカウント画面へ入るための
-        // ポータルログインとして扱う（`/{tenant_id}/login` を単独で開けるようにする）。
-        // 注: `Messages`（FluentBundle）は !Send のため、await をまたぐ前に生成してはならない。
+        // Direct access without OIDC's `auth_session_id` is treated as the portal login for entering the IdP's own
+        // account screen (so `/{tenant_id}/login` can be opened on its own).
+        // Note: `Messages` (FluentBundle) is !Send, so it must not be created before crossing an await.
         return portal::login_page(&state, &correlation, &tenant, &headers, error_key).await;
     };
-    // 別のタブで認証を済ませてから開き直した: その SSO セッションで認可を続ける。
-    // 続けられなければ（未ログイン・`prompt=login` 等）ふつうにフォームを出す。
+    // Reopened after authenticating in another tab: continue authorization with that SSO session.
+    // If it cannot continue (not signed in, `prompt=login` etc.), show the form as usual.
     if let Some(response) = continue_with_sso(
         &state,
         &correlation,
@@ -84,26 +84,26 @@ pub async fn login_page(
         &tenant.prefix(),
         &login_csrf_token(&auth_session_id, state.config.csrf_secret()),
         error_key,
-        // 認可要求の `login_hint` をユーザー名欄へ入れる（G12）。空文字は初期値にしない。
+        // Put the authorization request's `login_hint` in the username field (G12). An empty string is not used as the initial value.
         rp_context.login_hint.as_deref().filter(|h| !h.is_empty()),
-        // どのアプリのどの組織へ入るのかを画面に出す。api が登録済みの値から引いた表示名で、
-        // 引けなければ出さない（空文字も出さない）。
+        // Show on screen which organization of which app is being entered. Display names looked up by the api from registered values;
+        // if not found, nothing is shown (not even an empty string).
         display_name(rp_context.client_name.as_deref()),
         display_name(rp_context.tenant_name.as_deref()),
         state.config.app_approver_enabled(),
     );
-    // SSO と同意が揃っていれば、ログインフォームの送信はそのまま RP へリダイレクトして終わる。
-    // Chrome は `form-action` を送信後のリダイレクト先にも適用するので、その RP のオリジンだけ
-    // 許可する（SEC3。同意画面と同じ事情）。
+    // If SSO and consent are in place, submitting the login form ends in a redirect straight to the RP.
+    // Chrome applies `form-action` to post-submission redirect targets too, so allow only that RP's origin
+    // (SEC3; same situation as the consent screen).
     crate::security_headers::html_with_form_action_csp(
         rp_context.redirect_uri.as_deref().unwrap_or_default(),
         body,
     )
 }
 
-/// `/authorize` ハンドオフの再開（ADR-0018 決定 2）。web が自ドメインの `sso_session_id` を読み、
-/// 単回ハンドルとともに api へ渡す。SSO 有効なら code 付き RP URL が返り、ログイン画面を出さずに
-/// フローが完了する（従来 api が Cookie で行っていた SSO 復元と同じ振る舞い）。
+/// Resumes the `/authorize` hand-off (ADR-0018 decision 2). web reads our domain's `sso_session_id` and
+/// passes it to the api with the single-use handle. If SSO is valid, an RP URL with a code is returned and the flow
+/// completes without showing the login screen (same behavior as the SSO restoration the api used to do with cookies).
 async fn resume_authorize_handoff(
     state: &WebState,
     correlation: &CorrelationId,
@@ -144,12 +144,12 @@ async fn resume_authorize_handoff(
                     state.config.auth_session_ttl_secs(),
                 )
                 .into_headers(),
-            // 303 で自 URL へ付け替え、ハンドルをアドレスバー・履歴から除去する。
+            // Switch to our own URL with 303, removing the handle from the address bar and history.
             see_other(&format!("{}/login", tenant.prefix())),
         )
             .into_response(),
         Err(InternalAuthorizeResumeResponse::ExpiredHandle) => {
-            // リロード等で消費済みのハンドル。初回受領時の Cookie が残っていれば通常表示へ戻す。
+            // A handle already consumed by a reload etc. If the cookie from the first receipt remains, fall back to the normal display.
             if cookies::get(headers, cookies::AUTH_SESSION_COOKIE).is_some() {
                 see_other(&format!("{}/login", tenant.prefix()))
             } else {
@@ -164,11 +164,11 @@ async fn resume_authorize_handoff(
     }
 }
 
-/// ログイン画面の開き直しで、別のタブで確立された SSO セッションから認可を続ける。
+/// When the login screen is reopened, continue authorization from an SSO session established in another tab.
 ///
-/// 手元に SSO Cookie が無ければ api を呼ばない。続けられない（未ログイン・api の失敗も含む）
-/// ときは `None` を返し、呼び出し側がフォームを描く——ここで画面を壊さない（入れ替えの数秒間に
-/// この口を持たない古い api へ当たっても、今まで通りのフォームに戻るだけにする）。
+/// Without an SSO cookie at hand, the api is not called. When it cannot continue (not signed in, including api failures)
+/// it returns `None` and the caller draws the form — the screen is not broken here (even when hitting an old api without
+/// this endpoint during the few seconds of rollover, it just falls back to the usual form).
 async fn continue_with_sso(
     state: &WebState,
     correlation: &CorrelationId,
@@ -201,8 +201,8 @@ async fn continue_with_sso(
     restored_response(state, tenant, headers, Some(&sso_session_id), outcome).ok()
 }
 
-/// SSO 復元の結果のうち、ログインフォームを出さずに終わるもの（RP へ返す・同意画面へ・断る）を
-/// 応答にする。フォームを出す・やり直しになる結果は `Err` でそのまま返し、呼び出し側が決める。
+/// Turns the SSO restoration results that finish without showing the login form (return to the RP, go to consent, refuse)
+/// into a response. Results that show the form or start over are returned as is in `Err`, and the caller decides.
 fn restored_response(
     state: &WebState,
     tenant: &WebTenant,
@@ -210,10 +210,10 @@ fn restored_response(
     sso_session_id: Option<&str>,
     outcome: InternalAuthorizeResumeResponse,
 ) -> Result<Response, InternalAuthorizeResumeResponse> {
-    // SSO 復元に成功した応答では、手元の `sso_session_id` を host-only で再発行する。
-    // `COOKIE_DOMAIN`（旧 ADR-0012 構成の掃除）設定中は旧 `Domain` 付き Cookie の削除が併送される
-    // ため、明示的なログイン・ログアウトを経ない既存セッションもサイレント復元の時点で host-only へ
-    // 移行し、旧親ドメイン配下へ bearer credential が送信され続ける露出を閉じる（ADR-0018 決定 4）。
+    // In a response where SSO restoration succeeded, reissue the local `sso_session_id` as host-only.
+    // While `COOKIE_DOMAIN` (cleanup of the old ADR-0012 setup) is set, deletion of the old `Domain`-scoped cookie is sent
+    // alongside, so existing sessions that never went through an explicit login/logout also migrate to host-only at silent
+    // restoration, closing the exposure of bearer credentials still being sent under the old parent domain (ADR-0018 decision 4).
     let refresh_sso = |set_cookies: crate::cookies::SetCookies, ttl_secs: u64| match sso_session_id
     {
         Some(sso) => set_cookies.set_session(cookies::SSO_SESSION_COOKIE, sso, ttl_secs),
@@ -222,8 +222,8 @@ fn restored_response(
 
     let messages = Messages::new(locale(headers));
     let auth_session_ttl = state.config.auth_session_ttl_secs();
-    // RP へ返す 302 は、画面を出さずに試す往復（見えない枠）でも通す（task #888・ADR-0076）。
-    // 描く応答（自動送信フォーム・同意・断りの画面）は枠に入れない
+    // The 302 back to the RP is allowed even in the round trip tried without showing a screen (hidden frame) (task #888, ADR-0076).
+    // Responses that render (auto-submit form, consent, refusal screens) are not framed
     let framed = |mut response: Response| {
         if response.status() == StatusCode::FOUND {
             crate::security_headers::allow_silent_auth_framing(
@@ -234,7 +234,7 @@ fn restored_response(
         response
     };
     Ok(match outcome {
-        // SSO 復元で code 発行済み。残っている古い auth_session Cookie を掃除して RP へ返す。
+        // Code already issued by SSO restoration. Clean up the leftover old auth_session cookie and return to the RP.
         InternalAuthorizeResumeResponse::Redirect {
             redirect_to,
             form_post,
@@ -252,7 +252,7 @@ fn restored_response(
             )
                 .into_response(),
         ),
-        // フロー終了のエラー（prompt=none 失敗等）。RP へエラーを返す。
+        // An error ending the flow (prompt=none failure etc.). Return the error to the RP.
         InternalAuthorizeResumeResponse::ErrorRedirect {
             redirect_to,
             form_post,
@@ -282,7 +282,7 @@ fn restored_response(
             see_other(&format!("{}/consent", tenant.prefix())),
         )
             .into_response(),
-        // SSO は復元できたが、このアプリの利用が許可されていない（ADR-0054）。RP へは戻さない。
+        // SSO was restored, but use of this app is not permitted (ADR-0054). Do not return to the RP.
         InternalAuthorizeResumeResponse::ApplicationNotPermitted { application_name } => (
             state
                 .set_cookies()
@@ -295,8 +295,8 @@ fn restored_response(
     })
 }
 
-/// ログインフォームの HTML をテンプレートから描画する。埋め込む値（翻訳文言・CSRF トークン）は
-/// テンプレート側で自動 HTML エスケープされる。
+/// Renders the login form HTML from the template. Embedded values (translated wording, CSRF token) are
+/// auto-escaped by the template.
 #[allow(clippy::too_many_arguments)]
 fn render_form(
     messages: &Messages,
@@ -320,7 +320,7 @@ fn render_form(
     })
 }
 
-/// ログインを実行する。api の内部認証を呼び、成功時は SSO Cookie を発行して `redirect_to` へ 302 する。
+/// Performs login. Calls the api's internal authentication and, on success, issues the SSO cookie and 302s to `redirect_to`.
 pub async fn login(
     State(state): State<WebState>,
     Extension(correlation): Extension<CorrelationId>,
@@ -333,7 +333,7 @@ pub async fn login(
     let ctx = forwarded_context(&headers, &correlation, &client_ip);
     let auth_session_id = cookies::get(&headers, cookies::AUTH_SESSION_COOKIE);
 
-    // OIDC の `auth_session_id` を持たない POST はポータルログイン（クライアント非依存）として処理する。
+    // A POST without OIDC's `auth_session_id` is processed as portal login (client-independent).
     if auth_session_id.is_none() {
         return portal::login(&state, &correlation, &client_ip, &tenant, &headers, form).await;
     }
@@ -356,7 +356,7 @@ pub async fn login(
         }
     };
 
-    // FluentBundle は Send でないため、await をまたがないようここで生成する。
+    // FluentBundle is not Send, so create it here so it does not live across an await.
     let messages = Messages::new(locale(&headers));
     match outcome {
         InternalAuthenticateResponse::Success {
@@ -366,7 +366,7 @@ pub async fn login(
             sso_absolute_ttl_secs,
             user_language,
         } => {
-            // SSO Cookie を発行し、短命の auth_session_id Cookie は失効させる。
+            // Issue the SSO cookie and expire the short-lived auth_session_id cookie.
             let mut set_cookies = state
                 .set_cookies()
                 .set_session(
@@ -375,7 +375,7 @@ pub async fn login(
                     sso_absolute_ttl_secs,
                 )
                 .expire_session(cookies::AUTH_SESSION_COOKIE);
-            // ユーザーの DB 言語設定があれば lang Cookie に同期する（MT20: DB > Cookie の優先順）。
+            // If the user has a DB language setting, sync it into the lang cookie (MT20: DB > Cookie priority).
             if let Some(lang) = user_language
                 .as_deref()
                 .and_then(crate::i18n::Locale::from_tag)
@@ -393,7 +393,7 @@ pub async fn login(
                 .into_response()
         }
         InternalAuthenticateResponse::MfaRequired { auth_session_id } => {
-            // パスワード認証成功・MFA 必要: auth_session_id Cookie を維持して TOTP 入力画面へ。
+            // Password authenticated, MFA required: keep the auth_session_id cookie and go to the TOTP input screen.
             let set_cookies = state.set_cookies().set_session(
                 cookies::AUTH_SESSION_COOKIE,
                 &auth_session_id,
@@ -406,8 +406,8 @@ pub async fn login(
                 .into_response()
         }
         InternalAuthenticateResponse::PasswordChangeRequired { auth_session_id } => {
-            // パスワード認証成功・強制変更必要（ADR-0009 §5）: auth_session_id Cookie を維持して
-            // パスワード変更画面へ。
+            // Password authenticated, forced change required (ADR-0009 §5): keep the auth_session_id cookie and
+            // go to the password change screen.
             let set_cookies = state.set_cookies().set_session(
                 cookies::AUTH_SESSION_COOKIE,
                 &auth_session_id,
@@ -420,9 +420,9 @@ pub async fn login(
                 .into_response()
         }
         InternalAuthenticateResponse::SessionExpired => {
-            // 期限切れ・不正な auth_session_id はここでクリアして `/login` へ戻す。Cookie が無くなれば
-            // 次の GET はポータルログイン（クライアント非依存）を表示するため、放置された OIDC セッション
-            // Cookie が残ってもエンドユーザーが自分のアカウント画面へ入れなくなる状態を自己回復する。
+            // Clear an expired/invalid auth_session_id here and return to `/login`. Without the cookie the next GET
+            // shows the portal login (client-independent), self-healing the state where a leftover abandoned OIDC session
+            // cookie keeps end users from entering their own account screen.
             tracing::warn!(
                 correlation_id = %ctx.correlation_id,
                 "login failed: auth session expired; clearing cookie and redirecting to /login"
@@ -437,8 +437,8 @@ pub async fn login(
                 .into_response()
         }
         InternalAuthenticateResponse::CsrfMismatch => {
-            // PRG: 303 で GET へ付け替え、現在の Cookie から導出した新しいトークンのフォームを自動で
-            // 再表示する（従来はエラーページを返すだけで、リロードすると POST が再送されて復帰できなかった）。
+            // PRG: switch to GET with 303 and automatically re-show the form with a new token derived from the
+            // current cookie (previously it just returned an error page, and reloading resent the POST with no recovery).
             tracing::warn!(
                 correlation_id = %ctx.correlation_id,
                 "login failed: csrf token mismatch; redirecting to fresh login form"
@@ -470,14 +470,14 @@ pub async fn login(
             state.config.app_approver_enabled(),
             &rp_context,
         ),
-        // 自己登録アカウントのメール未検証（SEC6b）。確認リンクを踏むよう案内する。
+        // Email of a self-registered account not verified (SEC6b). Guide the user to follow the confirmation link.
         InternalAuthenticateResponse::EmailVerificationRequired => error_page(
             &messages,
             StatusCode::FORBIDDEN,
             "login-error-email-not-verified",
         ),
-        // 認証は通ったが、このアプリの利用が許可されていない（ADR-0054）。SSO Cookie は発行する
-        // ——assay には入れているので、他のアプリへはそのまま進める。
+        // Authentication passed, but use of this app is not permitted (ADR-0054). The SSO cookie is issued
+        // — the user is signed in to assay, so other apps can proceed as is.
         InternalAuthenticateResponse::ApplicationNotPermitted {
             application_name,
             sso_session_id,
@@ -495,7 +495,7 @@ pub async fn login(
             crate::application_denied::page(&messages, &tenant.prefix(), &application_name),
         )
             .into_response(),
-        // 登録した端末に限る組織で、登録していない端末だった（task #916）。札を置いて登録の画面へ。
+        // Organization limited to registered devices, and this device is not registered (task #916). Place the ticket and go to enrollment.
         InternalAuthenticateResponse::DeviceEnrollmentRequired { ticket } => {
             crate::handlers::device_enrollment::redirect(
                 &state,
@@ -504,7 +504,7 @@ pub async fn login(
                 &format!("{}/login", tenant.prefix()),
             )
         }
-        // 認証ポリシーによる拒否。資格情報は検証済みのため、資格情報エラーとは別の文言で表示する。
+        // Denied by the authentication policy. The credentials are verified, so show wording different from a credential error.
         InternalAuthenticateResponse::PolicyDenied => reshow_form(
             &messages,
             &tenant.prefix(),
@@ -515,7 +515,7 @@ pub async fn login(
             state.config.app_approver_enabled(),
             &rp_context,
         ),
-        // ポリシーが MFA 必須だが認証器（TOTP）が未設定。ポータルで設定するよう案内する。
+        // Policy requires MFA but no authenticator (TOTP) is set up. Guide the user to set it up in the portal.
         InternalAuthenticateResponse::MfaEnrollmentRequired => error_page(
             &messages,
             StatusCode::FORBIDDEN,
@@ -526,9 +526,9 @@ pub async fn login(
             sso_session_id,
             sso_absolute_ttl_secs,
         } => {
-            // SSO Cookie を発行し、同意画面用の auth_session_id Cookie を設定する。
-            // auth_session_id はまだ有効（同意画面で使う）ので期限をそのまま保持する。
-            // 具体的な TTL は api 側で設定済みのため、ここでは既存の Cookie を上書きする。
+            // Issue the SSO cookie and set the auth_session_id cookie for the consent screen.
+            // auth_session_id is still valid (used on the consent screen), so keep its expiry as is.
+            // The concrete TTL is already set by the api, so the existing cookie is overwritten here.
             let set_cookies = state
                 .set_cookies()
                 .set_session(
@@ -551,17 +551,17 @@ pub async fn login(
     }
 }
 
-/// 画面へ出す表示名を選ぶ。空白だけの名前は「無い」と同じに扱う（登録時に空文字が入っていても
-/// 見出しが空欄になったり、名乗りが消えたりしないため）。
+/// Picks the display name shown on screen. A whitespace-only name is treated as absent (so that even if an empty string
+/// was registered, the heading does not become blank and the identity does not disappear).
 fn display_name(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|v| !v.is_empty())
 }
 
-/// エラー付きでフォームを再表示する（AuthSession はまだ有効なため再入力できる）。
+/// Re-shows the form with an error (the AuthSession is still valid, so the user can re-enter).
 ///
-/// **CSP は初回描画と同じものを付ける。** ここを既定のままにすると、打ち間違えて出し直された
-/// フォームからの再送信だけが RP へ戻れない——1 回目で成功した利用者は通り、間違えた利用者だけが
-/// 無言で止まる、という見つけにくい壊れ方をする。
+/// **Attach the same CSP as the first render.** Leaving the default here would make only resubmission from a form
+/// re-shown after a typo unable to return to the RP — users who succeed the first time pass, and only those who
+/// mistyped stop silently, a hard-to-find breakage.
 #[allow(clippy::too_many_arguments)]
 fn reshow_form(
     messages: &Messages,
@@ -583,11 +583,11 @@ fn reshow_form(
                     tenant_prefix,
                     &login_csrf_token(id, csrf_secret),
                     Some(error_key),
-                    // 再表示では `login_hint` を入れ直さない（利用者が別の識別子を入れて失敗した
-                    // 場合に、RP の指定へ黙って戻すと入力し直しに気付けない）。
+                    // On re-display `login_hint` is not re-inserted (if the user entered another identifier and failed,
+                    // silently reverting to the RP's value would hide that they need to re-enter it).
                     None,
-                    // 見出しと名乗りは初回描画と同じにする。打ち間違えた画面だけ「どこへ
-                    // サインインするのか」が消えると、やり直す利用者ほど手がかりを失う。
+                    // Heading and identity are the same as the first render. If only the mistyped screen lost "where
+                    // am I signing in to", the users retrying would lose the clue the most.
                     display_name(rp_context.client_name.as_deref()),
                     display_name(rp_context.tenant_name.as_deref()),
                     app_approval_offered,

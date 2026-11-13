@@ -1,24 +1,24 @@
-//! パスワードポリシーの適用（AP7。ユーザー認証・認証ポリシー仕様書 §11.2）。
+//! Applying the password policy (AP7. User authentication & authentication policy spec §11.2).
 //!
-//! 「新しいパスワードを受け付けてよいか」を判定し、受け付けたときに履歴を更新する。パスワードを
-//! 設定する経路は 7 つある（自己登録・強制変更・管理コンソールの強制変更・ポータルの強制変更・
-//! セルフサービス変更・パスワードリセット・管理者による再発行）ので、判定と記録を各経路に書くと
-//! **一つ書き忘れた経路がポリシーの抜け穴**になる。ここに 1 本化して各経路はこのサービスを呼ぶ。
+//! Decides "may this new password be accepted" and updates the history when it is. There are seven paths that set
+//! a password (self-registration, forced change, forced change in the admin console, forced change in the portal,
+//! self-service change, password reset, reissue by an admin), so writing the decision and recording in each path
+//! makes **any one forgotten path a hole in the policy**. It is unified here and every path calls this service.
 //!
-//! # 判定の順序
+//! # Order of checks
 //!
-//! 1. 長さ（同期・材料不要）
-//! 2. 漏えい済みか（外部 API。設定で無効化可）
-//! 3. 過去パスワードの再利用（argon2 照合）
+//! 1. Length (synchronous, no inputs needed)
+//! 2. Breached or not (external API; can be disabled in settings)
+//! 3. Reuse of past passwords (argon2 comparison)
 //!
-//! 安いものから順に見る。3 の照合は履歴の件数だけ argon2 を回すため、長さ不足のような
-//! 明らかな入力でメモリハード関数を走らせない。
+//! Cheapest first. Check 3 runs argon2 once per history entry, so a memory-hard function isn't run
+//! for obviously bad input such as being too short.
 //!
-//! # どのテナントのポリシーか（ADR-0058）
+//! # Whose tenant policy (ADR-0058)
 //!
-//! ポリシーは参照のたびに [`EffectiveTenantSettings`] から引く。渡すのは**利用者の所属元テナント**
-//! である ——パスワードは利用者の行にあり、所属元だけが管理する（ADR-0009 §2）。ゲストが参加先の
-//! 画面からパスワードを変えても、効くのは所属元のポリシーである。
+//! The policy is looked up from [`EffectiveTenantSettings`] every time. What is passed is **the user's home tenant**
+//! ——the password is on the user row and only the home tenant manages it (ADR-0009 §2). Even if a guest changes
+//! the password from the host tenant's screen, the home tenant's policy applies.
 
 use crate::domain::clock::Clock;
 use crate::domain::effective_tenant_settings::EffectiveTenantSettings;
@@ -32,7 +32,7 @@ use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// 履歴を保持しない実装（`PASSWORD_HISTORY_COUNT=0` の構成と、履歴を持たないテストで使う）。
+/// An implementation that keeps no history (used with `PASSWORD_HISTORY_COUNT=0` and by tests without history).
 pub struct NoPasswordHistory;
 
 #[async_trait]
@@ -77,7 +77,7 @@ impl PasswordPolicyService {
         }
     }
 
-    /// 履歴・漏えい確認を持たない構成（他のサービスの試験の土台）。長さなどの値は `settings` から引く。
+    /// A configuration without history or breach checks (a base for testing other services). Values such as length come from `settings`.
     #[cfg(test)]
     pub fn without_history(
         settings: Arc<dyn EffectiveTenantSettings>,
@@ -93,20 +93,20 @@ impl PasswordPolicyService {
         )
     }
 
-    /// テナントのパスワードポリシー（有効期限の判定など、検証以外で値が要る経路が使う）。
-    /// `tenant_id` は利用者の**所属元**。
+    /// The tenant's password policy (used by paths that need the values outside validation, e.g. expiry checks).
+    /// `tenant_id` is the user's **home tenant**.
     pub async fn policy(&self, tenant_id: TenantId) -> Result<PasswordPolicy> {
         self.settings.password_policy(tenant_id).await
     }
 
-    /// 新しいパスワードを検証する。
+    /// Validates a new password.
     ///
-    /// `current_hash` は再利用判定に使う現行パスワードのハッシュ（自己登録のように現行が存在
-    /// しない経路では `None`）。`user_id` が `None` のときは履歴を引かない（同上）。
+    /// `current_hash` is the current password's hash used for the reuse check (`None` on paths with no current
+    /// password, like self-registration). When `user_id` is `None`, history is not looked up (same).
     ///
-    /// 判定材料の取得に失敗した場合（DB エラー）は `Err` を返す。**ここは fail-open にしない**:
-    /// 履歴は自前の DB にあり、読めない状態は外部サービスの不調と違って IdP 自身の異常だからである
-    /// （黙って再利用を通すより、変更を失敗させて異常を見せる）。
+    /// Returns `Err` if fetching the inputs fails (DB error). **This is not fail-open**:
+    /// the history is in our own DB, and being unable to read it is a fault of the IdP itself, unlike an external service outage
+    /// (better to fail the change and surface the fault than silently allow reuse).
     pub async fn validate(
         &self,
         tenant_id: TenantId,
@@ -122,11 +122,11 @@ impl PasswordPolicyService {
             .await
     }
 
-    /// 利用者が誰かに依らない要件だけを見る（長さ・漏えい済み）。
+    /// Checks only the requirements that don't depend on who the user is (length, breached).
     ///
-    /// パスワードリセットのように、**利用者を解決する前**に入力の妥当性を見たい経路が使う
-    /// （単回トークンを入力ミスで消費させないため）。解決後に
-    /// [`Self::validate_reuse`] を続けて呼ぶ。
+    /// Used by paths like password reset that want to validate input **before resolving the user**
+    /// (so a single-use token isn't consumed by a typo). After resolving, call
+    /// [`Self::validate_reuse`] next.
     pub async fn validate_input(
         &self,
         tenant_id: TenantId,
@@ -150,7 +150,7 @@ impl PasswordPolicyService {
         Ok(Ok(()))
     }
 
-    /// 現行・過去のパスワードの再利用だけを見る。
+    /// Checks only reuse of current and past passwords.
     pub async fn validate_reuse(
         &self,
         tenant_id: TenantId,
@@ -191,13 +191,13 @@ impl PasswordPolicyService {
         Ok(Ok(()))
     }
 
-    /// パスワードの置き換えを履歴へ記録する（**保存が成功した後**に呼ぶ）。
+    /// Records a password replacement in the history (call **after saving succeeded**).
     ///
-    /// `retired_hash` は置き換えられた（＝これまでの）ハッシュ。履歴を見ない設定では、
-    /// 残す件数が 0 になるので積んだ行はその場で剪定される。
+    /// `retired_hash` is the replaced (= previous) hash. With settings that don't look at history,
+    /// the number to keep is 0, so the inserted row is pruned on the spot.
     ///
-    /// 履歴の記録に失敗してもパスワード変更自体は成立している。ここでエラーを返して呼び出し側に
-    /// 失敗を伝えると「変わったのに失敗と表示される」ことになるため、警告を残して握る。
+    /// Even if recording the history fails, the password change itself has succeeded. Returning an error here to tell
+    /// the caller it failed would mean "it changed but shows as failed", so it logs a warning and swallows it.
     pub async fn record_change(&self, tenant_id: TenantId, user_id: Uuid, retired_hash: &str) {
         let policy = match self.policy(tenant_id).await {
             Ok(policy) => policy,
@@ -230,14 +230,14 @@ mod tests {
     use crate::application::tenant_settings::testing::tenant_settings;
     use crate::domain::password_policy::NoBreachCheck;
 
-    /// 行を入れない限り全体に従うテナント。
+    /// A tenant that follows the global value unless a row is inserted.
     fn home() -> TenantId {
         Uuid::from_u128(0x0190_0000_0000_7000_8000_0000_0000_0001).into()
     }
     use crate::domain::error::DomainError;
     use std::sync::Mutex;
 
-    /// 平文をそのまま「ハッシュ」として扱う検証用実装（照合の呼び分けだけを見る）。
+    /// A test implementation treating the plaintext as the "hash" as-is (only checks which comparison is called).
     struct EchoHasher;
 
     impl PasswordHasher for EchoHasher {
@@ -266,7 +266,7 @@ mod tests {
         ) -> Result<()> {
             let mut rows = self.rows.lock().unwrap();
             rows.push((user_id, password_hash.to_string()));
-            // 当該利用者の行を古い順に数え、`retain` 件を超える先頭側（古い側）を落とす。
+            // Count this user's rows oldest first and drop the leading (older) ones beyond `retain`.
             let mut excess = rows
                 .iter()
                 .filter(|(u, _)| *u == user_id)
@@ -303,8 +303,8 @@ mod tests {
         }
     }
 
-    /// 全体の値を `values` にした解決器で組む。指定の無いキーは履歴なし（`PasswordPolicy::default()`
-    /// と同じ）から始める。
+    /// Builds with a resolver whose global values are `values`. Unspecified keys start from no history
+    /// (same as `PasswordPolicy::default()`).
     fn build(values: &[(&str, &str)], breached: bool) -> (PasswordPolicyService, Arc<FakeHistory>) {
         let fixture = tenant_settings();
         fixture.set_global("PASSWORD_HISTORY_COUNT", "0");
@@ -406,7 +406,7 @@ mod tests {
     async fn rejects_a_retired_password_within_the_configured_depth() {
         let (service, history) = build(&[("PASSWORD_HISTORY_COUNT", "3")], false);
         let user_id = Uuid::now_v7();
-        // 新しい順に retired2, retired1（履歴の深さは 3 - 現行 1 = 2 件）。
+        // Newest first: retired2, retired1 (history depth is 3 - 1 current = 2 entries).
         history
             .push(user_id, "hashed:retired1", Utc::now(), 2)
             .await
@@ -459,13 +459,13 @@ mod tests {
                 .record_change(home(), user_id, &format!("hashed:{old}"))
                 .await;
         }
-        // 深さ 3（現行 1 + 退役 2）なので、退役側に残るのは新しい 2 件だけ。
+        // Depth 3 (1 current + 2 retired), so only the 2 newest remain on the retired side.
         let kept = history.recent(user_id, 10).await.unwrap();
         assert_eq!(kept, vec!["hashed:p4".to_string(), "hashed:p3".to_string()]);
     }
 
-    /// ⚠ 2 テナントで違う値を入れる（1 テナントだけだと、全体の値を読んでいても通ってしまう）。
-    /// 行の無いテナントは全体に従う。
+    /// ⚠ Put different values in 2 tenants (with only 1 tenant, it would pass even when reading the global value).
+    /// A tenant without a row follows the global value.
     #[tokio::test]
     async fn each_tenant_is_judged_by_its_own_policy() {
         let fixture = tenant_settings();
@@ -477,7 +477,7 @@ mod tests {
         fixture.set_tenant(lenient, "PASSWORD_MIN_LENGTH", "6");
         let (service, _) = build_with(fixture.service.clone(), false);
 
-        // 12 文字: strict は短すぎ、lenient と全体（10）に従うテナントは通る。
+        // 12 chars: too short for strict; passes for lenient and for the tenant following the global value (10).
         let password = "abcdefghijkl";
         assert!(matches!(
             service.validate_input(strict, password).await.unwrap(),
@@ -493,7 +493,7 @@ mod tests {
             .await
             .unwrap()
             .is_ok());
-        // 8 文字: lenient だけが通る（全体に従うテナントは 10 未満で弾かれる）。
+        // 8 chars: only lenient passes (the tenant following the global value rejects anything under 10).
         let short = "abcdefgh";
         assert!(service
             .validate_input(lenient, short)
@@ -506,7 +506,7 @@ mod tests {
         ));
     }
 
-    /// 履歴の深さもテナントごと。記録の剪定と照合が同じテナントの値で動く。
+    /// History depth is also per tenant. Pruning and comparison run with the same tenant's value.
     #[tokio::test]
     async fn history_depth_follows_the_users_home_tenant() {
         let fixture = tenant_settings();

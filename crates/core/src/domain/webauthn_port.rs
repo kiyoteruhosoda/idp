@@ -1,7 +1,7 @@
-//! WebAuthn の DIP 境界。
+//! DIP boundary for WebAuthn.
 //!
-//! Application 層は `webauthn-rs` を直接ラップする具象サービスではなく、この port に依存する。
-//! composition root が Infrastructure 実装を選択することで、テスト時には別実装へ差し替えられる。
+//! The Application layer depends on this port rather than on a concrete service wrapping `webauthn-rs`.
+//! The composition root picks the Infrastructure implementation, so tests can swap in another one.
 
 use uuid::Uuid;
 use webauthn_rs::prelude::{

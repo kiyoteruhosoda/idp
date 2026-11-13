@@ -1,19 +1,23 @@
-//! 利用者へ返すメッセージの翻訳キー（MT19）。
+//! Translation keys for messages returned to users (MT19).
 //!
-//! Domain / Application 層は**訳文を持たず**、翻訳キーと差し込み値だけを返す。実際の訳出は
-//! Presentation 層が `Accept-Language` に応じて行う（`CLAUDE.md`「国際化」の責務分離）。
-//! これにより、同じユースケースのエラーが api の応答では利用者の言語、内部ログでは運用言語（英語）
-//! という二重の要求を、文言をコピーせずに満たせる。
+//! The Domain / Application layers **hold no translated text**; they return only translation keys
+//! and interpolation values. Actual translation is done by the Presentation layer per
+//! `Accept-Language` (separation of duties in `CLAUDE.md` "Internationalization"). This meets the
+//! dual need of the user's language in api responses and the operations language (English) in
+//! internal logs without copying text.
 //!
-//! `Display` はキー（と差し込み値）をそのまま出す。運用ログ・監査ログには翻訳前のキーが残るため、
-//! 言語設定に関係なくグレップでき、訳文を変えてもログの検索性が壊れない。
+//! `Display` prints the key (and values) as is. Operational and audit logs keep the untranslated
+//! key, so they are greppable regardless of language settings, and changing translations does not
+//! break log search.
 
 use std::fmt;
 
-/// 翻訳キーと、翻訳文の `{ $value }` へ差し込む値（対象の URI・scope 名など）。
+/// A translation key and the value interpolated into the translation's `{ $value }` (target URI,
+/// scope name, etc.).
 ///
-/// キーは静的文字列に限る（動的キーは翻訳リソースとの対応が実行時までわからず、
-/// 「訳が無いキー」を静かに増やす）。値だけを実行時に受け取る。
+/// Keys are limited to static strings (with dynamic keys, the mapping to translation resources is
+/// unknown until runtime and "keys without translations" silently multiply). Only values are taken
+/// at runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MessageKey {
     key: &'static str,
@@ -21,12 +25,12 @@ pub struct MessageKey {
 }
 
 impl MessageKey {
-    /// 差し込み値を持たないメッセージ。
+    /// A message without an interpolation value.
     pub const fn new(key: &'static str) -> Self {
         Self { key, value: None }
     }
 
-    /// 差し込み値を持つメッセージ（翻訳文の `{ $value }` に入る）。
+    /// A message with an interpolation value (inserted into the translation's `{ $value }`).
     pub fn with_value(key: &'static str, value: impl Into<String>) -> Self {
         Self {
             key,

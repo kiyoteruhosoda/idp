@@ -1,11 +1,11 @@
-//! OIDC IdP の Web（`assay-web`）。
+//! Web of the OIDC IdP (`assay-web`).
 //!
-//! ADR-0007（API/Web サービス分割）の web サービス。HTML 画面（ログイン画面・管理コンソール）を
-//! 描画し、データ取得/操作は api へ HTTP 越しに行う。**DB（sqlx）/ infrastructure には依存しない**
-//! （crate 境界で強制）。
+//! The web service of ADR-0007 (API/Web service split). Renders HTML screens (login screen, admin console)
+//! and fetches/operates on data via HTTP to the api. **Does not depend on the DB (sqlx) / infrastructure**
+//! (enforced by the crate boundary).
 //!
-//! ログイン画面（`/login`）と i18n は web へ移設済み（P3-2）。管理コンソール（`/admin/console/*`）の
-//! 移設は後続ステージで行う。
+//! The login screen (`/login`) and i18n have been moved to web (P3-2). Moving the admin console (`/admin/console/*`)
+//! happens in a later stage.
 
 pub mod admin_dto;
 pub mod api_client;
@@ -44,17 +44,17 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// web サービスを起動する（bootstrap 設定読み込み → ログ初期化 → api から共有ランタイム設定を取得
-/// → 設定の再解決 → API クライアント組立 → HTTP サーバ起動）。
+/// Starts the web service (load bootstrap settings → init logging → fetch shared runtime settings from the api
+/// → re-resolve settings → build the API client → start the HTTP server).
 pub async fn run() -> anyhow::Result<()> {
     let _ = dotenvy::dotenv();
 
-    // 1 段目: api へ問い合わせるための最小の設定だけを読む（`API_BASE_URL`・
-    // `INTERNAL_SERVICE_TOKEN`・`LOG_FORMAT`）。共有キーはここでは**パースしない** — ENV に
-    // 不正値があっても、DB 上書き（優先順位で ENV より上）で復旧できるようにするため。
+    // Stage 1: read only the minimal settings needed to query the api (`API_BASE_URL`,
+    // `INTERNAL_SERVICE_TOKEN`, `LOG_FORMAT`). Shared keys are **not parsed** here — so that even if ENV
+    // has an invalid value, it can be recovered via a DB override (which takes priority over ENV).
     let bootstrap = config::Bootstrap::from_env().context("failed to load web configuration")?;
-    // ログ初期化は api への問い合わせより前に要る。転送用の受信端だけ受け取っておき、
-    // `ApiClient` が組み上がってから転送タスクを起こす（CLAUDE.md「ログ」）。
+    // Logging must be initialized before querying the api. Only take the receiving end for forwarding now,
+    // and start the forwarding task once the `ApiClient` is built (CLAUDE.md "Logging").
     let log_forwarder = telemetry::init(bootstrap.log_format());
 
     if bootstrap.internal_service_token_is_dev() {
@@ -63,8 +63,8 @@ pub async fn run() -> anyhow::Result<()> {
         );
     }
 
-    // 2 段目: api と共有する DB 管理設定（COOKIE_SECURE 等）を取得して設定を解決し直す
-    // （MT26 / ADR-0013）。api が唯一の DB 所有者なので、web はここでしか DB 値を知り得ない。
+    // Stage 2: fetch the DB-managed settings shared with the api (COOKIE_SECURE etc.) and re-resolve settings
+    // (MT26 / ADR-0013). The api is the sole DB owner, so this is the only place web can learn DB values.
     let shared = fetch_shared_runtime_settings(&bootstrap).await?;
     let config = config::Config::from_env_and_shared_settings(&shared)
         .context("failed to resolve web configuration from api/env/defaults")?;
@@ -82,9 +82,9 @@ pub async fn run() -> anyhow::Result<()> {
     let api_base_url = config.api_base_url().to_string();
 
     let state = state::WebState::build(Arc::new(config));
-    // web の WARN / ERROR を api の `log` テーブルへ流す（web は DB を持たないため）。
+    // Ship web's WARN / ERROR to the api's `log` table (web has no DB).
     telemetry::spawn_forwarder(state.api.clone(), log_forwarder);
-    // 設定画面からの再起動要求（ADR-0017）。ハンドラは `WebState` 越しに同じ値を持つ。
+    // Restart request from the settings screen (ADR-0017). Handlers hold the same value via `WebState`.
     let restart = state.restart.clone();
     let app = router::build(state);
 
@@ -94,8 +94,8 @@ pub async fn run() -> anyhow::Result<()> {
 
     tracing::info!(%addr, api_base_url, "IdP web server started");
 
-    // `ConnectInfo` を有効にする（SEC1）。`TRUST_FORWARDED_HEADERS` が false のとき、
-    // `client_ip` middleware はここで入る TCP 接続元アドレスを採用する。
+    // Enable `ConnectInfo` (SEC1). When `TRUST_FORWARDED_HEADERS` is false,
+    // the `client_ip` middleware uses the TCP peer address provided here.
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -111,14 +111,14 @@ pub async fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// api から共有ランタイム設定（DB 上書き値）を取得する。一過性の失敗は指数バックオフで再試行し、
-/// 全試行が失敗したら**起動を失敗させる**（MT26 / ADR-0013）。
+/// Fetches the shared runtime settings (DB override values) from the api. Transient failures are retried with
+/// exponential backoff, and if every attempt fails, **startup fails** (MT26 / ADR-0013).
 ///
-/// fail-soft（ENV だけで起動）にしない理由: 共有キーは値がずれると壊れるものばかりで、しかも
-/// 壊れ方が静かである。`COOKIE_SECURE` がずれれば api の発行した Cookie を web が上書きで
-/// 非 Secure にし得るし、`AUTH_SESSION_TTL_SECS` がずれれば Cookie だけ先に切れてログインが
-/// 進まなくなる。設定を取り違えたまま動く web より、起動しない web の方が原因に辿り着ける
-/// （Compose では `depends_on: api(service_healthy)` と `restart` で回復する）。
+/// Why not fail-soft (start with ENV only): shared keys all break when values diverge, and they
+/// break silently. If `COOKIE_SECURE` diverges, web may overwrite a cookie issued by the api as
+/// non-Secure; if `AUTH_SESSION_TTL_SECS` diverges, only the cookie expires early and login stops
+/// progressing. A web that refuses to start leads to the cause more easily than one running on mixed-up settings
+/// (with Compose, `depends_on: api(service_healthy)` and `restart` recover it).
 async fn fetch_shared_runtime_settings(
     bootstrap: &config::Bootstrap,
 ) -> anyhow::Result<HashMap<String, String>> {
@@ -158,7 +158,7 @@ async fn fetch_shared_runtime_settings(
         )))
 }
 
-/// graceful shutdown のきっかけ: OS のシグナルか、設定画面からの再起動要求（ADR-0017）。
+/// Trigger for graceful shutdown: an OS signal or a restart request from the settings screen (ADR-0017).
 async fn shutdown_signal(restart: service_restart::ServiceRestart) {
     tokio::select! {
         result = tokio::signal::ctrl_c() => {

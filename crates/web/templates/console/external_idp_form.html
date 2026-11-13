@@ -1,7 +1,7 @@
 {% extends "console/layout.html" %}
 {% block content %}
-{# プロトコルはこの画面に入る前に決まっている（新規は URL、編集は登録済みの値）。フォームの中に
-   選択肢は無く、値は hidden で持ち回る —— 登録後の変更は api も拒否する。 #}
+{# The protocol is decided before entering this screen (URL for new, registered value for edits). There is no
+   choice in the form; the value is carried as hidden -- the api also rejects changes after registration. #}
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
   <h2 class="h4 mb-0">
     {%- if editing.is_some() -%}
@@ -17,9 +17,9 @@
 {% if let Some(key) = error_key %}<div class="alert alert-danger" role="alert">{{ messages.get(key) }}</div>{% endif %}
 {% if imported %}<div class="alert alert-info" role="status"><i class="fa-solid fa-file-import me-2" aria-hidden="true"></i>{% if values.is_saml() %}{{ messages.get("admin-external-idps-imported") }}{% else %}{{ messages.get("admin-external-idps-imported-discovery") }}{% endif %}</div>{% endif %}
 
-{# SAML の新規登録だけ、メタデータからの読み込みを先に出す。読み込みは登録ではなく、下のフォームへ
-   転記するだけである（管理者が値を確認してから登録する）。編集中に別の IdP のメタデータで
-   上書きすると、何を保存しようとしていたのか分からなくなるので出さない。 #}
+{# Only for new SAML registrations, offer loading from metadata first. Loading is not registering; it only
+   copies into the form below (the admin checks the values before registering). Overwriting with another IdP's metadata
+   while editing would lose track of what was about to be saved, so it is not offered. #}
 {% if editing.is_none() && values.is_saml() %}
 <div class="card mb-4">
   <div class="card-header">
@@ -44,9 +44,9 @@
 </div>
 {% endif %}
 
-{# OIDC の新規登録では、issuer の discovery ドキュメントからの読み込みを先に出す（task #77）。
-   読み込むのは api で（web は外部 IdP へ出ない）、読み込みは登録ではなく下のフォームへの転記である。
-   クライアント ID とシークレットは discovery ドキュメントに無いので、手で入れてもらう。 #}
+{# For new OIDC registrations, offer loading from the issuer's discovery document first (task #77).
+   The api does the loading (web never reaches external IdPs); loading is not registering but copying into the form below.
+   Client ID and secret are not in the discovery document, so they are entered by hand. #}
 {% if editing.is_none() && !values.is_saml() %}
 <div class="card mb-4">
   <div class="card-header">
@@ -82,10 +82,10 @@
       <input type="hidden" name="protocol" value="{{ values.protocol }}">
       <div class="row g-3">
         <div class="col-md-6">
-          {# 編集時は readonly なので印も出さない（下の input の required と表裏を合わせる）。 #}
+          {# Read-only when editing, so no marker either (keeps it consistent with the input's required below). #}
           <label class="form-label" for="provider_code">{{ messages.get("admin-external-idps-field-code") }}{% if editing.is_none() %}{% include "required_mark.html" %}{% endif %}</label>
-          {# provider_code は識別子であり、外部 IdP を指す既存の連携（external_identities）の対応付けに使う。
-             作成後に変えると連携済み利用者の紐づけが切れるため、編集時は変更させない。 #}
+          {# provider_code is an identifier used to map existing links (external_identities) to the external IdP.
+             Changing it after creation breaks the links of already-linked users, so it cannot be changed when editing. #}
           <input class="form-control" id="provider_code" name="provider_code" value="{{ values.provider_code }}" {% if editing.is_some() %}readonly{% else %}required{% endif %}>
           <div class="form-text">{{ messages.get("admin-external-idps-field-code-hint") }}</div>
         </div>
@@ -143,14 +143,14 @@
         <div class="col-md-6">
           <label class="form-label" for="client_secret">{{ messages.get("admin-external-idps-field-client-secret") }}</label>
           <input class="form-control" id="client_secret" name="client_secret" type="password" autocomplete="new-password" value="">
-          {# api はシークレットを返さないため、編集時の空欄は「変更しない」を意味する。
-             空欄を「削除」と解釈すると、他の項目を直しただけで連携が壊れる。 #}
+          {# The api does not return secrets, so a blank field when editing means "unchanged".
+             Interpreting blank as "delete" would break the link merely by fixing another field. #}
           <div class="form-text">{% if editing.is_some() %}{% if values.has_client_secret %}{{ messages.get("admin-external-idps-field-client-secret-set") }}{% else %}{{ messages.get("admin-external-idps-field-client-secret-unset") }}{% endif %}{% else %}{{ messages.get("admin-external-idps-field-client-secret-hint") }}{% endif %}</div>
         </div>
-        {# 要求する scope は選択にする。空白区切りの自由入力は綴りの誤りがログイン時まで表に出ない。
-           `openid` は ID Token を得るために必ず要るので、外せないことが分かる形で出す（値は
-           ハンドラが必ず付ける）。**選択肢は固定にしない** —— 何が要求できるかを決めるのは相手方で、
-           `groups` のような相手固有の scope がある。よく使う 2 つを出し、残りは自由入力で受ける。 #}
+        {# Requested scopes are a choice. With space-separated free input, typos stay hidden until sign-in.
+           `openid` is always needed to get an ID Token, so it is shown as not removable (the
+           handler always adds the value). **Choices are not fixed** -- the counterpart decides what can be requested, and
+           there are counterpart-specific scopes like `groups`. The two common ones are shown; the rest go in free input. #}
         <div class="col-12">
           <fieldset>
             <legend class="form-label fs-6">{{ messages.get("admin-external-idps-field-scopes") }}</legend>

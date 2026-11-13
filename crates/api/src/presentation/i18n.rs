@@ -1,26 +1,26 @@
-//! API 層の国際化（MT19）。
+//! Internationalization of the API layer (MT19).
 //!
-//! `Accept-Language` ヘッダから表示言語を決定し、API のエラーメッセージを翻訳する。
-//! **エラーコードは言語不変**（`error` フィールドは固定値）で、`message` のみ翻訳する。
-//! 既定ロケールは `ja`（システム既定。`CLAUDE.md`「国際化」）。参照するのは `Accept-Language`
-//! だけで、Cookie・セッション・URL クエリ・DB のユーザー設定は見ない（表示言語の決定は web の責務）。
+//! Decides the display language from the `Accept-Language` header and translates API error messages.
+//! **Error codes are language-invariant** (the `error` field is fixed); only `message` is translated.
+//! Default locale is `ja` (system default, `CLAUDE.md` "国際化"). Only `Accept-Language` is consulted;
+//! cookies, sessions, URL queries and DB user settings are not (deciding the display language is web's job).
 //!
-//! Domain / Application 層は訳文を持たず [`crate::domain::message::MessageKey`] を返す。
-//! [`ApiMessages::get_message`] がそれを訳出する（層をまたいで文言をコピーしないための境界）。
+//! The Domain / Application layers hold no translations and return [`crate::domain::message::MessageKey`].
+//! [`ApiMessages::get_message`] translates it (a boundary so wording is not copied across layers).
 //!
-//! **翻訳の対象外**:
+//! **Not translated**:
 //!
-//! * OAuth 2.0 / OIDC のプロトコルエラー（`/token`・`/authorize`・`/introspect`・`/revoke`・
-//!   `/userinfo`）。`error` はもちろん `error_description` も RFC 6749 §4.1.2.1 が
-//!   「クライアント開発者向け」と定める機械/開発者向けの値であり、RP に届く固定文字列として扱う。
-//!   RP のログや自動処理が文言に依存し得るため、リクエストごとに言語を変えない。
-//! * 500（`server_error`）の本文。内部エラーの詳細はクライアントへ出さず固定文字列を返す
-//!   （[`crate::presentation::error::ApiError`]）。利用者に取れる行動が無く、翻訳しても
-//!   得られるものが無い一方、ロケール解決の経路を増やす。
-//! * 内部ログ・監査ログ（運用言語＝英語で統一する。`CLAUDE.md`「ログ」）。
+//! * OAuth 2.0 / OIDC protocol errors (`/token`, `/authorize`, `/introspect`, `/revoke`,
+//!   `/userinfo`). Not only `error` but also `error_description` are machine/developer values that RFC 6749 §4.1.2.1
+//!   defines as "for client developers", treated as fixed strings reaching the RP.
+//!   RP logs and automation may depend on the wording, so the language does not vary per request.
+//! * The body of 500 (`server_error`). Internal error details are not exposed to clients; a fixed string is returned
+//!   ([`crate::presentation::error::ApiError`]). The user has no action to take, so translating gains
+//!   nothing while adding locale-resolution paths.
+//! * Internal logs and audit logs (unified in the ops language = English, `CLAUDE.md` "ログ").
 //!
-//! `FluentBundle` は `!Send` のためリクエスト境界を跨いだ保持が不可。
-//! `ApiMessages::new(locale)` でリクエストごとに生成する。
+//! `FluentBundle` is `!Send`, so it cannot be held across request boundaries.
+//! Created per request with `ApiMessages::new(locale)`.
 
 use crate::domain::message::MessageKey;
 use fluent::{FluentArgs, FluentBundle, FluentResource};
@@ -35,7 +35,7 @@ const JA_FTL: &str = include_str!(concat!(
     "/../../i18n/ja/main.ftl"
 ));
 
-/// API 応答に使うロケール（`Accept-Language` から決定。既定 `Ja`）。
+/// Locale used for API responses (decided from `Accept-Language`; default `Ja`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApiLocale {
     En,
@@ -43,9 +43,9 @@ pub enum ApiLocale {
 }
 
 impl ApiLocale {
-    /// `Accept-Language` ヘッダ値からロケールを決める。
-    /// 品質値は見ず先着優先。非対応・未指定は既定 `Ja` にフォールバックする。
-    /// 地域コードは無視する（`ja-JP` → `Ja`、`en-US` → `En`）。
+    /// Decides the locale from the `Accept-Language` header value.
+    /// Quality values are ignored; first match wins. Unsupported or unspecified falls back to the default `Ja`.
+    /// Region codes are ignored (`ja-JP` -> `Ja`, `en-US` -> `En`).
     pub fn from_accept_language(header: Option<&str>) -> Self {
         let Some(header) = header else {
             return ApiLocale::Ja;
@@ -82,8 +82,8 @@ impl ApiLocale {
     }
 }
 
-/// axum extractor: `Accept-Language` → `ApiLocale`。
-/// ヘッダが無い・非対応の場合は既定 `Ja` を返す。
+/// axum extractor: `Accept-Language` -> `ApiLocale`.
+/// Returns the default `Ja` if the header is missing or unsupported.
 impl<S> axum::extract::FromRequestParts<S> for ApiLocale
 where
     S: Send + Sync,
@@ -102,7 +102,7 @@ where
     }
 }
 
-/// API リクエスト 1 件分の翻訳辞書。リクエストごとに生成する（`FluentBundle` は `!Send`）。
+/// Translation dictionary for one API request. Created per request (`FluentBundle` is `!Send`).
 pub struct ApiMessages {
     bundle: FluentBundle<FluentResource>,
 }
@@ -122,13 +122,13 @@ impl ApiMessages {
         Self { bundle }
     }
 
-    /// 翻訳キーからメッセージを取得する。未定義キーはキー名をそのまま返す（フェイルソフト）。
+    /// Gets a message by translation key. Undefined keys return the key name as is (fail-soft).
     pub fn get(&self, key: &str) -> String {
         self.format(key, None)
     }
 
-    /// Domain / Application 層が返した [`MessageKey`] を訳出する（MT19）。
-    /// 差し込み値は翻訳文の `{ $value }` に入る。
+    /// Translates a [`MessageKey`] returned by the Domain / Application layers (MT19).
+    /// The placeholder value goes into the translation's `{ $value }`.
     pub fn get_message(&self, message: &MessageKey) -> String {
         match message.value() {
             Some(value) => {
@@ -226,9 +226,9 @@ mod tests {
         assert!(msg.contains('8'), "{msg}");
     }
 
-    /// コード側で使う `api-*` キーは **en / ja の両方**に訳が無ければならない。
-    /// 片方だけだと、その言語の利用者にキー名（`api-client-scope-unsupported`）がそのまま出る。
-    /// 訳文を足し忘れたまま気付けないので、ソースからキーを抽出して突き合わせる。
+    /// `api-*` keys used in code must have translations in **both en and ja**.
+    /// With only one, users of the other language see the key name (`api-client-scope-unsupported`) as is.
+    /// A missing translation would go unnoticed, so keys are extracted from source and compared.
     #[test]
     fn every_api_message_key_used_in_code_is_translated_in_both_locales() {
         let sources = [
@@ -245,7 +245,7 @@ mod tests {
             include_str!("handlers/invitations.rs"),
             include_str!("handlers/register.rs"),
             include_str!("handlers/mod.rs"),
-            // Domain / Application 層が返す MessageKey の定義元。
+            // Where the MessageKey returned by the Domain / Application layers is defined.
             include_str!("../../../core/src/domain/values.rs"),
             include_str!("../../../core/src/domain/password.rs"),
             include_str!("../../../core/src/domain/saml_service_provider.rs"),
