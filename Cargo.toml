@@ -97,10 +97,10 @@ wiremock = "0.6"
 # WebAuthn (FIDO2 passkey) authentication library.
 # danger-allow-state-serialisation: needed to store challenge state in the DB (safe because it is managed server-side).
 # conditional-ui: support for discoverable credentials (username-less passkey login).
-webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation", "conditional-ui"] }
+webauthn-rs = { version = "0.6", features = ["danger-allow-state-serialisation", "conditional-ui"] }
 # `ResidentKeyRequirement` is not in webauthn-rs's prelude, so the protocol types are referenced directly
 # (the same crate and same version webauthn-rs uses internally).
-webauthn-rs-proto = { version = "0.5" }
+webauthn-rs-proto = { version = "0.6" }
 # Metrics (G6). `metrics` is the instrumentation facade (positioned like `tracing`), used by both core and api.
 # Only the api owns collection and rendering (since the api is the one serving `/metrics`).
 # metrics-exporter-prometheus pulls in a push gateway and HTTP listener by default, so default features are off
