@@ -35,9 +35,7 @@ use chrono::Duration;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 use uuid::Uuid;
-use webauthn_rs::prelude::{
-    DiscoverableAuthentication, DiscoverableKey, Passkey, PublicKeyCredential,
-};
+use webauthn_rs::prelude::{DiscoverableAuthentication, Passkey, PublicKeyCredential};
 
 /// Challenge lifetime (5 minutes).
 const CHALLENGE_TTL: StdDuration = StdDuration::from_secs(300);
@@ -276,11 +274,10 @@ impl PasskeyAssertionService {
         }
 
         // 5. WebAuthn verification.
-        let dk = DiscoverableKey::from(&passkey);
         let auth_result =
             match self
                 .webauthn
-                .finish_authentication(&public_key_credential, auth_state, &[dk])
+                .finish_authentication(&public_key_credential, auth_state, &passkey)
             {
                 Ok(r) => r,
                 Err(_) => {
@@ -697,7 +694,7 @@ mod tests {
             &self,
             _credential: &PublicKeyCredential,
             _state: DiscoverableAuthentication,
-            _creds: &[DiscoverableKey],
+            _passkey: &Passkey,
         ) -> Result<webauthn_rs::prelude::AuthenticationResult, String> {
             unreachable!()
         }

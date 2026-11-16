@@ -14,8 +14,8 @@ use crate::domain::webauthn_port::WebAuthnPort;
 use url::Url;
 use uuid::Uuid;
 use webauthn_rs::prelude::{
-    AuthenticationResult, CreationChallengeResponse, DiscoverableAuthentication, DiscoverableKey,
-    Passkey, PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential,
+    AuthenticationResult, CreationChallengeResponse, DiscoverableAuthentication, Passkey,
+    PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential,
     RequestChallengeResponse, Webauthn, WebauthnBuilder,
 };
 use webauthn_rs_proto::ResidentKeyRequirement;
@@ -164,16 +164,16 @@ impl WebAuthnPort for WebAuthnService {
 
     /// Finish authentication: verifies the credential and returns an `AuthenticationResult`.
     ///
-    /// `creds` is `&[DiscoverableKey]`. Only the one credential looked up by the credential ID in the
-    /// authentication response is converted with `Passkey::from` and passed.
+    /// `passkey` is the one credential looked up by the credential ID in the authentication response.
+    /// The library still rejects it when its ID differs from the response's `rawId`.
     fn finish_authentication(
         &self,
         credential: &PublicKeyCredential,
         state: DiscoverableAuthentication,
-        creds: &[DiscoverableKey],
+        passkey: &Passkey,
     ) -> Result<AuthenticationResult, String> {
         self.inner
-            .finish_discoverable_authentication(credential, state, creds)
+            .finish_discoverable_authentication_v2(credential, state, passkey)
             .map_err(|e| e.to_string())
     }
 }

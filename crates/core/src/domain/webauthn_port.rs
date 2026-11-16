@@ -5,8 +5,8 @@
 
 use uuid::Uuid;
 use webauthn_rs::prelude::{
-    AuthenticationResult, CreationChallengeResponse, DiscoverableAuthentication, DiscoverableKey,
-    Passkey, PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential,
+    AuthenticationResult, CreationChallengeResponse, DiscoverableAuthentication, Passkey,
+    PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential,
     RequestChallengeResponse,
 };
 
@@ -33,6 +33,6 @@ pub trait WebAuthnPort: Send + Sync {
         &self,
         credential: &PublicKeyCredential,
         state: DiscoverableAuthentication,
-        creds: &[DiscoverableKey],
+        passkey: &Passkey,
     ) -> Result<AuthenticationResult, String>;
 }
