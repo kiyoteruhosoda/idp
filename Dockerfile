@@ -11,7 +11,7 @@
 # To match the glibc ABI with the runtime stage (debian:bookworm-slim), the Rust builder is also
 # pinned to bookworm. rust:slim may move to trixie etc. on tag updates, so this prevents
 # `GLIBC_2.39 not found` on deploy targets such as the NAS.
-FROM rust:slim-bookworm@sha256:f2c004e3d2d8b547e8cf7ffbc29205385f4e71d23e53e4e383065db5e9f822cd AS builder
+FROM rust:slim-bookworm@sha256:7c7d4eb4d05b7781187a327809466cfddf29753f6defdc3d19a0e291951b7a37 AS builder
 WORKDIR /build
 
 RUN apt-get update \
@@ -64,7 +64,7 @@ RUN find crates -name '*.rs' -exec touch {} + \
 # Building sqlx-cli needs the Rust toolchain and C build deps, but bringing those into the migrate runtime image
 # would bloat assay-migrate.tar. Confine them to a build-only stage, and pass only the sqlx binary and
 # migrations to the runtime stage.
-FROM rust:slim-bookworm@sha256:f2c004e3d2d8b547e8cf7ffbc29205385f4e71d23e53e4e383065db5e9f822cd AS migrate-tool-builder
+FROM rust:slim-bookworm@sha256:7c7d4eb4d05b7781187a327809466cfddf29753f6defdc3d19a0e291951b7a37 AS migrate-tool-builder
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential perl pkg-config \
     && rm -rf /var/lib/apt/lists/* \
