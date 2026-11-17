@@ -482,7 +482,9 @@ pub async fn asset_links(State(state): State<AppState>) -> Response {
 pub async fn app_link_fallback(State(state): State<AppState>) -> Response {
     (
         [(header::CACHE_CONTROL, "no-store")],
-        Html(app_link_fallback_page(state.config.app_approver_install_url())),
+        Html(app_link_fallback_page(
+            state.config.app_approver_install_url(),
+        )),
     )
         .into_response()
 }
