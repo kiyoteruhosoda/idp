@@ -169,6 +169,10 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/docker"
           echo "DOCKER_CONFIG=$RUNNER_TEMP/docker" >> "$GITHUB_ENV"
+          # ⚠ The host daemon is shared by every run, so a fixed tag (`latest`) lets one run's
+          #   clean-up delete the image another run is still bundling ("No such image: idp/api:latest").
+          #   Each run builds, checks and removes its own tag.
+          echo "IMAGE_TAG=ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT:-1}" >> "$GITHUB_ENV"
 
       - name: Docker build and deploy bundle
         run: ./scripts/build.sh
@@ -189,4 +193,5 @@ jobs:
       - name: Clean up (remove built images)
         if: always()
         run: |
-          docker image rm -f idp/api:latest idp/web:latest idp/migrate:latest || true
+          tag="${IMAGE_TAG:-latest}"
+          docker image rm -f "idp/api:$tag" "idp/web:$tag" "idp/migrate:$tag" || true

@@ -1556,6 +1556,7 @@ curl -sS -X POST "$ISSUER/$TENANT_ID/admin/external-idps" \
 | `APP_APPROVER_SIGNING_CERT_SHA256` | 空 | 認証アプリの署名の証明書の SHA-256（`AB:CD:…`・カンマ区切り）。Key Attestation と `assetlinks.json` に使う。**ENV でのみ設定可** |
 | `APP_APPROVER_EXTRA_ATTESTATION_ROOTS_FILE` | 空 | Google の根に加えて信じる Key Attestation の根（PEM のファイル）。**stg の確かめ用。本番では空** |
 | `APP_APPROVER_ALLOW_SOFTWARE_ATTESTATION` | `false` | ソフトウェアの鍵・起動が検証されていない端末の鍵も受けるか。**stg の確かめ用。本番では false** |
+| `APP_APPROVER_INSTALL_URL` | 空（リンクを出さない） | 認証アプリの入手先（`https://` の URL。いまは Google Play の内部テストの参加リンク）。App Link（`/app/approve`・`/app/enrolled`）がブラウザで開かれたときの案内に出す。`https://` でない値なら起動しない。**ENV でのみ設定可** |
 | `EXPIRED_RECORD_PURGE_INTERVAL_SECS` | `3600` | 期限切れレコード（認可セッション・authorization code・refresh token・SSO セッション・失効 jti・パスキーチャレンジ・各種一時トークン）を掃除する間隔（秒）。`0` = 掃除しない（表が際限なく増えるため非推奨）。**DB 上書き可** |
 | `CORS_ALLOWED_ORIGINS` | 空 | ブラウザからの越境アクセスを追加で許可するオリジン（カンマ区切り）。既定ではテナント内 public クライアントの `redirect_uris` から導いたオリジンのみ許可する。**DB 上書き可** |
 | `API_DOCS_ENABLED` | `false` | Swagger UI（`/api/docs`）と OpenAPI 文書（`/api/openapi.json`）を配信するか。api 面は公開されるため、有効にすると管理 API を含む全仕様が無認証で読める。開発・検証環境でのみ `true` にする。**DB 上書き可** |

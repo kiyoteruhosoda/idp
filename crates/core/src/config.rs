@@ -154,6 +154,8 @@ pub struct Config {
     app_approver_signing_cert_sha256: String,
     app_approver_extra_attestation_roots_file: String,
     app_approver_allow_software_attestation: bool,
+    /// Where to get the authenticator app, linked from the App Link fallback page (empty: no link).
+    app_approver_install_url: Option<url::Url>,
     /// Timeout of one request of the breached password check.
     password_breach_check_timeout: Duration,
     /// TTL of the tenant resolution cache (ADR-0009 §7. The id -> tenant hot path).
@@ -332,6 +334,10 @@ impl Config {
                 .string("APP_APPROVER_EXTRA_ATTESTATION_ROOTS_FILE", ""),
             app_approver_allow_software_attestation: resolver
                 .parse("APP_APPROVER_ALLOW_SOFTWARE_ATTESTATION", false)?,
+            // Do not start with a link that cannot be put on the page (fail-fast)
+            app_approver_install_url: parse_install_url(
+                &resolver.string("APP_APPROVER_INSTALL_URL", ""),
+            )?,
             password_breach_check_timeout: secs(
                 resolver.parse("PASSWORD_BREACH_CHECK_TIMEOUT_SECS", 3u64)?,
             ),
@@ -455,6 +461,10 @@ impl Config {
     /// Whether software keys are also accepted (for checks on stg).
     pub fn app_approver_allow_software_attestation(&self) -> bool {
         self.app_approver_allow_software_attestation
+    }
+    /// Where to get the authenticator app (no link on the fallback page if unset).
+    pub fn app_approver_install_url(&self) -> Option<&url::Url> {
+        self.app_approver_install_url.as_ref()
     }
     /// Names allowed to be sent to even if they resolve to internal addresses (task #585).
     pub fn outbound_trust(&self) -> crate::domain::outbound_uri::OutboundTrust {
@@ -794,6 +804,23 @@ fn normalize_issuer(raw: String) -> String {
     }
 }
 
+/// Reads `APP_APPROVER_INSTALL_URL`: empty means no link; anything else must be an absolute `https://` URL.
+///
+/// The parsed form is what goes on the page. `url::Url` percent-encodes `"`, `<` and `>`, so it can sit
+/// inside a double-quoted attribute as is.
+fn parse_install_url(raw: &str) -> anyhow::Result<Option<url::Url>> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let parsed = url::Url::parse(raw)
+        .map_err(|e| anyhow::anyhow!("APP_APPROVER_INSTALL_URL is not a URL: {e}"))?;
+    if parsed.scheme() != "https" || parsed.host_str().is_none() {
+        anyhow::bail!("APP_APPROVER_INSTALL_URL must be an https:// URL");
+    }
+    Ok(Some(parsed))
+}
+
 /// Fails startup if development default secrets are used in a production-like deployment.
 ///
 /// The development defaults (`DEV_KEY_ENCRYPTION_KEY`, `DEV_INTERNAL_SERVICE_TOKEN`, `DEV_CSRF_SECRET`) are
@@ -926,6 +953,27 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn install_url_is_optional_and_must_be_https() {
+        assert!(parse_install_url("").unwrap().is_none());
+        assert!(parse_install_url("  ").unwrap().is_none());
+        let url = parse_install_url(" https://play.google.com/apps/internaltest/1 ")
+            .unwrap()
+            .expect("set");
+        assert_eq!(url.as_str(), "https://play.google.com/apps/internaltest/1");
+        assert!(parse_install_url("http://play.google.com/").is_err());
+        assert!(parse_install_url("javascript:alert(1)").is_err());
+        assert!(parse_install_url("/relative").is_err());
+    }
+
+    #[test]
+    fn install_url_cannot_break_out_of_an_attribute() {
+        let url = parse_install_url("https://example.com/a\"b<c>?q=\"<x>#\"<y>")
+            .unwrap()
+            .expect("set");
+        assert!(!url.as_str().contains(['"', '<', '>']), "{url}");
+    }
     use std::sync::{Mutex, MutexGuard};
 
     /// Lock for serializing tests that touch process-wide environment variables.

@@ -1026,6 +1026,19 @@ pub const RUNTIME_SETTING_DEFINITIONS: &[SettingDefinition] = &[
                       ⚠ stg の確かめの台本のためだけに使い、本番では false のままにする。",
     },
     SettingDefinition {
+        key: "APP_APPROVER_INSTALL_URL",
+        scope: SettingScope::Global,
+        shared_with_web: false,
+        owner: SettingOwner::EnvLocked,
+        secret: false,
+        restart_required: true,
+        default_risk: DefaultRisk::Safe,
+        kind: SettingKind::Text,
+        default_value: Some(""),
+        description: "認証アプリの入手先（`https://` の URL）。App Link（`/app/approve`・`/app/enrolled`）が \
+                      ブラウザで開かれたときの案内に、このリンクを出す。空ならリンクを出さない。",
+    },
+    SettingDefinition {
         key: "INTERNAL_SERVICE_TOKEN",
         scope: SettingScope::Global,
         shared_with_web: false,
