@@ -478,19 +478,59 @@ pub async fn asset_links(State(state): State<AppState>) -> Response {
 /// Guidance shown when an App Link (`/app/approve`, `/app/enrolled`) is opened in the browser.
 ///
 /// If the authenticator app is installed and the App Link works, this is never reached.
-pub async fn app_link_fallback() -> Response {
+/// When `APP_APPROVER_INSTALL_URL` is set, the page links to where the app can be installed.
+pub async fn app_link_fallback(State(state): State<AppState>) -> Response {
     (
         [(header::CACHE_CONTROL, "no-store")],
-        Html(
-            "<!doctype html><html lang=\"ja\"><meta charset=\"utf-8\">\
-             <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
-             <title>nolumia 認証</title>\
-             <body style=\"font-family:sans-serif;max-width:32rem;margin:2rem auto;padding:0 1rem\">\
-             <h1 style=\"font-size:1.25rem\">nolumia 認証アプリで開きます</h1>\
-             <p>このページは nolumia 認証アプリが開くためのものです。アプリが入っていないか、\
-             アプリがこのリンクを受け取れませんでした。アプリを入れてから、ログイン画面の\
-             「アプリで続ける」からやり直してください。</p></body></html>",
-        ),
+        Html(app_link_fallback_page(state.config.app_approver_install_url())),
     )
         .into_response()
+}
+
+fn app_link_fallback_page(install_url: Option<&url::Url>) -> String {
+    // `url::Url` percent-encodes `"`, `<` and `>`, so the serialized URL is safe in a quoted attribute.
+    let install = install_url
+        .map(|url| {
+            format!(
+                "<p><a href=\"{url}\" rel=\"noopener\" \
+                 style=\"display:inline-block;padding:.6rem 1rem;border-radius:.5rem;\
+                 background:#1f3a5f;color:#fff;text-decoration:none\">\
+                 nolumia 認証アプリを入れる</a></p>\
+                 <p style=\"font-size:.875rem;color:#555\">いまはテスト中のため、招待された人だけが入れられます。</p>"
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "<!doctype html><html lang=\"ja\"><meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+         <title>nolumia 認証</title>\
+         <body style=\"font-family:sans-serif;max-width:32rem;margin:2rem auto;padding:0 1rem\">\
+         <h1 style=\"font-size:1.25rem\">nolumia 認証アプリで開きます</h1>\
+         <p>このページは nolumia 認証アプリが開くためのものです。アプリが入っていないか、\
+         アプリがこのリンクを受け取れませんでした。アプリを入れてから、ログイン画面の\
+         「アプリで続ける」からやり直してください。</p>{install}</body></html>"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_page_has_no_install_link_when_unset() {
+        let page = app_link_fallback_page(None);
+        assert!(page.contains("nolumia 認証アプリで開きます"));
+        assert!(!page.contains("<a "), "unexpected link: {page}");
+    }
+
+    #[test]
+    fn fallback_page_links_to_the_install_url() {
+        let url = url::Url::parse("https://play.google.com/apps/internaltest/4701258252950953427")
+            .expect("valid url");
+        let page = app_link_fallback_page(Some(&url));
+        assert!(
+            page.contains("href=\"https://play.google.com/apps/internaltest/4701258252950953427\""),
+            "link missing: {page}"
+        );
+    }
 }

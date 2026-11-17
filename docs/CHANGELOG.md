@@ -1,3 +1,8 @@
+## 2026-11-17（App Link の案内から認証アプリを入れられるようにする）
+
+- App Link（`/app/approve`・`/app/enrolled`）をブラウザで開いたときの案内に、認証アプリの入手先へのリンクを出すようにした。
+  入手先は環境変数 `APP_APPROVER_INSTALL_URL`（空ならリンクを出さない。`https://` でなければ起動しない）。
+
 ## 2026-11-09（各アプリの枠からの往復でも DBSC の短い Cookie を取り直す。task #934・ADR-0074 決定 8）
 
 - DBSC の登録・更新の応答に `allowed_refresh_initiators`（環境変数 `DBSC_ALLOWED_REFRESH_INITIATORS`）を足した。前は
