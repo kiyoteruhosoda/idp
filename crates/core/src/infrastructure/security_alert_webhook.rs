@@ -1,7 +1,7 @@
 //! Sends security notices via webhook (task #872, ADR-0071).
 //!
 //! The format is the same JSON as nolumia notice's intake (`POST /api/notices`, `Authorization: Bearer <intake key>`)
-//! (`source` / `level` / `headline` / `items` / `key`). Destination and key are set **only by environment variables**
+//! (`source` / `level` / `headline` / `items` / `key` / `kind`). Destination and key are set **only by environment variables**
 //! (`SECURITY_ALERT_WEBHOOK_URL` / `SECURITY_ALERT_WEBHOOK_TOKEN_FILE`; the destination can't be changed from a screen).
 //!
 //! Sending doesn't make the caller wait (`tokio::spawn`). On failure it retries up to 3 times with a delay, and if
@@ -300,8 +300,11 @@ pub(crate) fn notice_body(alert: &SecurityAlert) -> Value {
             "details": details,
         }],
         "look": look,
-        // Bundle notices of the same kind for the same device into one (added to until marked handled).
+        // Bundle notices of the same kind for the same device into one.
         "key": format!("assay-{key_prefix}-{}", alert.group_key),
+        // Event only (notice ADR-0113, task #932): each alert reports something that happened and assay never sends
+        // a recovery, so it must not stay open. Omitting `kind` means "awaiting recovery" and left it open forever.
+        "kind": "event",
     })
 }
 
@@ -361,6 +364,20 @@ mod tests {
         assert!(body["headline"].as_str().unwrap().contains("kyon-pc"));
         let details = body["items"][0]["details"].as_array().unwrap();
         assert!(details.iter().any(|d| d == "指紋: SHA256:abc"));
+    }
+
+    #[test]
+    fn every_alert_is_event_only() {
+        for kind in [
+            SecurityAlertKind::DeviceRegistered {
+                device_name: "pc".to_string(),
+            },
+            SecurityAlertKind::DeviceExpired {
+                device_name: "pc".to_string(),
+            },
+        ] {
+            assert_eq!(notice_body(&alert(kind))["kind"], "event");
+        }
     }
 
     #[test]
