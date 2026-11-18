@@ -502,7 +502,7 @@ pub mod aes256kw {
 
 pub mod rsa {
     use rsa::pkcs1v15::{Signature, SigningKey, VerifyingKey};
-    use rsa::{RsaPrivateKey, RsaPublicKey};
+    use rsa::{PrivateKey, PublicKey};
 
     pub use rand;
     pub use rsa::BoxedUint as BigUint;
@@ -511,8 +511,8 @@ pub mod rsa {
 
     pub const MIN_BITS: usize = 2048;
 
-    pub type RS256PrivateKey = RsaPrivateKey;
-    pub type RS256PublicKey = RsaPublicKey;
+    pub type RS256PrivateKey = PrivateKey;
+    pub type RS256PublicKey = PublicKey;
     pub type RS256Signature = Signature;
     pub type RS256Digest = Sha256;
     pub type RS256VerifyingKey = VerifyingKey<Sha256>;
@@ -522,14 +522,14 @@ pub mod rsa {
     pub type RS384VerifyingKey = VerifyingKey<Sha384>;
     pub type RS384SigningKey = SigningKey<Sha384>;
 
-    pub fn new_key(bits: usize) -> rsa::errors::Result<RsaPrivateKey> {
+    pub fn new_key(bits: usize) -> rsa::errors::Result<PrivateKey> {
         let bits = std::cmp::max(bits, MIN_BITS);
         let mut rng = rand::rng();
-        RsaPrivateKey::new(&mut rng, bits)
+        PrivateKey::new(&mut rng, bits)
     }
 
     pub fn oaep_sha256_encrypt(
-        public_key: &RsaPublicKey,
+        public_key: &PublicKey,
         data: &[u8],
     ) -> rsa::errors::Result<Vec<u8>> {
         let mut rng = rand::rng();
@@ -538,7 +538,7 @@ pub mod rsa {
     }
 
     pub fn oaep_sha256_decrypt(
-        private_key: &RsaPrivateKey,
+        private_key: &PrivateKey,
         ciphertext: &[u8],
     ) -> rsa::errors::Result<Vec<u8>> {
         let padding = Oaep::<Sha256>::new();

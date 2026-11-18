@@ -15,9 +15,10 @@ crypto-glue の最新 0.2.2 は rsa を `^0.10.0-rc.18` と `features = ["sha2"]
 
 ## 決定
 
-1. crypto-glue 0.2.2 の公開版をそのまま `vendor/crypto-glue/` に写し、`Cargo.toml` の rsa の行だけを
+1. crypto-glue 0.2.2 の公開版を `vendor/crypto-glue/` に写し、`Cargo.toml` の rsa の行を
    `version = "0.10"`・`features = ["pkcs1v15"]` に直す（PKCS#1 v1.5 の署名は 0.10.0 から opt-in）。
-   ワークスペースの `[patch.crates-io]` で差し替える。`vendor/` はワークスペースの member から外す（`exclude`）
+   0.10.0 で改名された `RsaPrivateKey`・`RsaPublicKey` を `src/lib.rs` の `rsa` の節で新しい名前に直す（crate が警告を
+   エラーにしているため。外へ見せる別名 `RS256PrivateKey` などは同じ）。ワークスペースの `[patch.crates-io]` で差し替える。`vendor/` はワークスペースの member から外す（`exclude`）
 2. Docker の組み立ては依存のビルドの前に `vendor/` を写す
 3. crypto-glue の新しい版が rsa 0.10 を受け付けたら、`vendor/crypto-glue/` と patch を消す
 
@@ -25,7 +26,7 @@ crypto-glue の最新 0.2.2 は rsa を `^0.10.0-rc.18` と `features = ["sha2"]
 
 - 例外（見直す日つき）にしても、上流が動かない限り見直す日ごとに同じ判断が残る。直した版が出ているので、
   中継ぎの 1 行を直せば弱点そのものが消える
-- 中継ぎの写しはソースの変更が無く、差分は依存の指定 1 行だけ。上流を追うときの手間が小さい
+- 中継ぎの写しの差分は、依存の指定 1 行と改名された 2 つの名前だけ。上流を追うときの手間が小さい
 
 ## 影響
 
