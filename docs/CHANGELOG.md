@@ -1,3 +1,9 @@
+## 2026-11-18（依存の弱点を CI で調べる。task #1016・ADR-0080）
+
+- `.forgejo/workflows/security-audit.yml` を置いた（Cargo.lock は osv-scanner、画面の npm は `--omit=dev` の high 以上で止める）。
+- 置いた時点の 2 件を lock から消した: sqlx 0.9.1 へ上げて libsqlite3-sys 0.40.0（RUSTSEC-2026-0459）、askama の
+  使っていない feature `config` を外して basic-toml（RUSTSEC-2026-0374）。画面のビルドの道具は `devDependencies` へ移した。
+
 ## 2026-11-17（App Link の案内から認証アプリを入れられるようにする）
 
 - App Link（`/app/approve`・`/app/enrolled`）をブラウザで開いたときの案内に、認証アプリの入手先へのリンクを出すようにした。
