@@ -82,9 +82,9 @@ fn auto_si_fraction(t: OffsetDateTime) -> String {
     let nanos = t.nanosecond();
     if nanos == 0 {
         String::new()
-    } else if nanos % 1_000_000 == 0 {
+    } else if nanos.is_multiple_of(1_000_000) {
         format!(".{:03}", nanos / 1_000_000)
-    } else if nanos % 1_000 == 0 {
+    } else if nanos.is_multiple_of(1_000) {
         format!(".{:06}", nanos / 1_000)
     } else {
         format!(".{nanos:09}")
