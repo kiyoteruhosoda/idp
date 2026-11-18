@@ -39,10 +39,10 @@ use crate::domain::user_device::{
     normalize_device_name, CountryCode, DeviceRef, RequestDevice, UserDevice,
 };
 use crate::domain::values::AuthenticationMethod;
-use chrono::{DateTime, Utc};
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use std::sync::Arc;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -118,7 +118,7 @@ impl DeviceGate {
         &self,
         attempt: AdmissionAttempt<'_>,
         ctx: &RequestContext,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<Admission, DomainError> {
         if attempt.app_approved {
             return Ok(Admission::Admitted);
@@ -171,7 +171,7 @@ impl DeviceGate {
             user_id: attempt.user_id,
             device: device.map(|d| d.as_str().to_string()).unwrap_or_default(),
             methods: attempt.methods.to_vec(),
-            expires_at: now.timestamp() + ENROLLMENT_TICKET_TTL_SECS,
+            expires_at: now.unix_timestamp() + ENROLLMENT_TICKET_TTL_SECS,
         };
         Ok(Admission::EnrollmentRequired {
             ticket: ticket.sign(&self.ticket_key),
@@ -183,9 +183,9 @@ impl DeviceGate {
         &self,
         tenant_id: TenantId,
         raw: &str,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Option<EnrollmentTicket> {
-        let ticket = EnrollmentTicket::verify(&self.ticket_key, raw, now.timestamp())?;
+        let ticket = EnrollmentTicket::verify(&self.ticket_key, raw, now.unix_timestamp())?;
         if ticket.tenant_id != tenant_id || ticket.device.is_empty() {
             return None;
         }
@@ -302,7 +302,7 @@ async fn send_alert(
     alerts: &dyn SecurityAlertSink,
     user: &User,
     kind: SecurityAlertKind,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     country: Option<CountryCode>,
     ctx: &RequestContext,
     device: Option<&DeviceRef>,

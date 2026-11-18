@@ -8,7 +8,7 @@
 
 use crate::domain::crypto;
 use crate::domain::tenant::TenantId;
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// SHA-256 of `saml_request_id` (a random value web keeps in a host-only cookie).
@@ -36,18 +36,18 @@ pub struct SamlSsoRequest {
     /// SHA-256 of the web handoff handle (single-use; consumed to `None` on exchange).
     pub handle_hash: Option<String>,
     /// Expiry of the handle (shorter-lived than the main `expires_at`).
-    pub handle_expires_at: Option<DateTime<Utc>>,
-    pub expires_at: DateTime<Utc>,
-    pub created_at: DateTime<Utc>,
+    pub handle_expires_at: Option<OffsetDateTime>,
+    pub expires_at: OffsetDateTime,
+    pub created_at: OffsetDateTime,
 }
 
 impl SamlSsoRequest {
-    pub fn is_expired_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_expired_at(&self, now: OffsetDateTime) -> bool {
         self.expires_at <= now
     }
 
     /// Whether the web handoff handle can be exchanged at `now` (unconsumed and unexpired).
-    pub fn handle_is_valid_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn handle_is_valid_at(&self, now: OffsetDateTime) -> bool {
         self.handle_hash.is_some() && self.handle_expires_at.is_some_and(|exp| exp > now)
     }
 }
@@ -55,11 +55,11 @@ impl SamlSsoRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Duration;
+    use time::Duration;
 
     #[test]
     fn handle_validity_requires_both_hash_and_deadline() {
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         let mut request = SamlSsoRequest {
             id_hash: id_hash("r"),
             tenant_id: Uuid::now_v7().into(),

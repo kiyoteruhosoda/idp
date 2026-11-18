@@ -25,13 +25,14 @@
 use crate::domain::error::{DomainError, Result};
 use crate::domain::xml_signature::verify_enveloped_signature;
 use crate::domain::xml_text;
+use assay_contracts::utc::UtcInstant;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use chrono::{DateTime, Duration, Utc};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::io::Write as _;
+use time::{Duration, OffsetDateTime};
 
 /// Upper bound on received XML (same reason and value as `saml_authn_request`).
 const MAX_XML_BYTES: usize = 512 * 1024;
@@ -47,7 +48,7 @@ pub const BINDING_HTTP_POST: &str = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-P
 pub struct AuthnRequestInput<'a> {
     /// The numbered request ID (store it; it is used to match `InResponseTo`).
     pub request_id: &'a str,
-    pub issued_at: DateTime<Utc>,
+    pub issued_at: OffsetDateTime,
     /// assay's entityID as an SP.
     pub sp_entity_id: &'a str,
     /// URL receiving the assertion (ACS).
@@ -64,7 +65,7 @@ pub struct AuthnRequestInput<'a> {
 /// it gives is "assurance of the request's origin"; assertion authenticity is ensured by verifying
 /// the response signature.
 pub fn build_authn_request_xml(input: &AuthnRequestInput<'_>) -> String {
-    let issued = input.issued_at.format("%Y-%m-%dT%H:%M:%SZ");
+    let issued = input.issued_at.to_rfc3339_seconds_z();
     format!(
         concat!(
             r#"<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol""#,
@@ -138,7 +139,7 @@ pub struct ResponseVerification<'a> {
     /// Certificates for signature verification (base64 DER; several allowed = old and new during
     /// rollover).
     pub certificates: &'a [String],
-    pub now: DateTime<Utc>,
+    pub now: OffsetDateTime,
 }
 
 /// Verifies an HTTP-POST binding `SAMLResponse` (base64(XML)) and extracts the claims.
@@ -347,8 +348,8 @@ struct AssertionContents {
     name_id: String,
     audiences: Vec<String>,
     in_response_to: Option<String>,
-    not_before: Option<DateTime<Utc>>,
-    not_on_or_after: Option<DateTime<Utc>>,
+    not_before: Option<OffsetDateTime>,
+    not_on_or_after: Option<OffsetDateTime>,
     email: Option<String>,
     display_name: Option<String>,
 }
@@ -606,11 +607,11 @@ fn decode_post_binding(value: &str) -> Result<String> {
         .map_err(|_| DomainError::InvalidValue("SAMLResponse is not valid UTF-8".to_string()))
 }
 
-fn parse_instant(value: Option<String>) -> Result<Option<DateTime<Utc>>> {
+fn parse_instant(value: Option<String>) -> Result<Option<OffsetDateTime>> {
     let Some(value) = value else { return Ok(None) };
-    let parsed = DateTime::parse_from_rfc3339(value.trim())
+    let parsed = assay_contracts::utc::parse_rfc3339(value.trim())
         .map_err(|e| DomainError::InvalidValue(format!("invalid SAML instant `{value}`: {e}")))?;
-    Ok(Some(parsed.with_timezone(&Utc)))
+    Ok(Some(parsed))
 }
 
 fn local_name(name: &str) -> Result<String> {
@@ -644,7 +645,7 @@ mod tests {
     use crate::domain::saml_response::{
         build_signed_response_xml, generate_saml_id, SamlResponseInput, SamlSigner,
     };
-    use chrono::TimeZone;
+    use time::macros::datetime;
 
     /// A self-signed certificate for tests only and its key (PKCS#1 PEM). Real ones made with
     /// `openssl req -x509`, **referenced from nowhere in production**. Signatures are made by the
@@ -700,8 +701,8 @@ mod tests {
     const SP_ENTITY_ID: &str = "https://idp.example.com/saml/sp";
     const REQUEST_ID: &str = "_request-0123456789abcdef";
 
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 8, 10, 12, 0, 0).unwrap()
+    fn now() -> OffsetDateTime {
+        datetime!(2026-08-10 12:00:00 UTC)
     }
 
     /// Builds a signed response with the IdP-side generator and returns it base64-encoded

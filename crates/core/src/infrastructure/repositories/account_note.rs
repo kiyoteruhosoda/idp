@@ -6,9 +6,10 @@ use crate::domain::id_generator::IdGenerator;
 use crate::domain::repositories::AccountNoteRepository;
 use crate::domain::tenant::TenantId;
 use crate::infrastructure::db::Db;
+use assay_contracts::utc::UtcInstant;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use std::sync::Arc;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 pub struct SqlxAccountNoteRepository {
@@ -34,7 +35,7 @@ impl AccountNoteRepository for SqlxAccountNoteRepository {
         account: AccountRef,
         text: &str,
         updated_by: Option<Uuid>,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<()> {
         // Replace when hitting the per-kind UNIQUE (`(tenant_id, user_id)` / `(tenant_id, client_id)`).
         // `id` keeps the value from the first write.

@@ -10,18 +10,19 @@ use crate::domain::repositories::{
 };
 use crate::domain::tenant::TenantId;
 use crate::infrastructure::db::Db;
+use assay_contracts::utc::{from_naive_utc, UtcInstant};
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::mysql::MySqlRow;
 use sqlx::Row;
+use time::{OffsetDateTime, PrimitiveDateTime};
 use uuid::Uuid;
 
 fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
-    Utc.from_utc_datetime(&naive)
+fn to_utc(naive: PrimitiveDateTime) -> OffsetDateTime {
+    from_naive_utc(naive)
 }
 
 fn parse_uuid(value: &str, column: &str) -> Result<Uuid> {
@@ -324,7 +325,7 @@ fn map_identity(row: &MySqlRow) -> Result<ExternalIdentity> {
         external_subject: row.try_get("external_subject").map_err(repo_err)?,
         created_at: to_utc(row.try_get("created_at").map_err(repo_err)?),
         last_used_at: row
-            .try_get::<Option<NaiveDateTime>, _>("last_used_at")
+            .try_get::<Option<PrimitiveDateTime>, _>("last_used_at")
             .map_err(repo_err)?
             .map(to_utc),
     })
@@ -392,7 +393,7 @@ impl ExternalIdentityRepository for SqlxExternalIdentityRepository {
         rows.iter().map(map_identity).collect()
     }
 
-    async fn touch_last_used(&self, id: Uuid, at: DateTime<Utc>) -> Result<()> {
+    async fn touch_last_used(&self, id: Uuid, at: OffsetDateTime) -> Result<()> {
         sqlx::query("UPDATE user_external_identities SET last_used_at = ? WHERE id = ?")
             .bind(at.naive_utc())
             .bind(id.to_string())
@@ -499,7 +500,7 @@ impl ExternalLoginRequestRepository for SqlxExternalLoginRequestRepository {
         Ok(result.rows_affected() == 1)
     }
 
-    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64> {
+    async fn delete_expired(&self, now: OffsetDateTime) -> Result<u64> {
         let result = sqlx::query("DELETE FROM external_login_requests WHERE expires_at <= ?")
             .bind(now.naive_utc())
             .execute(&self.pool)

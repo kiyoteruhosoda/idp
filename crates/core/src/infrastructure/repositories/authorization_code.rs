@@ -15,10 +15,11 @@ use crate::domain::tenant::TenantId;
 use crate::domain::values::CodeChallengeMethod;
 use crate::infrastructure::db::Db;
 use crate::infrastructure::repositories::authentication_methods_json;
+use assay_contracts::utc::{from_naive_utc, UtcInstant};
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::mysql::MySqlRow;
 use sqlx::Row;
+use time::{OffsetDateTime, PrimitiveDateTime};
 use uuid::Uuid;
 
 pub struct SqlxAuthorizationCodeRepository {
@@ -45,8 +46,8 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
-    Utc.from_utc_datetime(&naive)
+fn to_utc(naive: PrimitiveDateTime) -> OffsetDateTime {
+    from_naive_utc(naive)
 }
 
 fn map_row(row: &MySqlRow) -> Result<AuthorizationCode> {
@@ -55,7 +56,7 @@ fn map_row(row: &MySqlRow) -> Result<AuthorizationCode> {
     // MariaDB JSON columns come back as BLOB in sqlx, so receive bytes and parse.
     let scope: Vec<u8> = row.try_get("scope").map_err(repo_err)?;
     let ccm: String = row.try_get("code_challenge_method").map_err(repo_err)?;
-    let used_at: Option<NaiveDateTime> = row.try_get("used_at").map_err(repo_err)?;
+    let used_at: Option<PrimitiveDateTime> = row.try_get("used_at").map_err(repo_err)?;
     let authentication = Authentication::new(
         Uuid::parse_str(&user_id)
             .map_err(|e| DomainError::Repository(format!("invalid UUID `{user_id}`: {e}")))?,
@@ -122,7 +123,7 @@ impl AuthorizationCodeRepository for SqlxAuthorizationCodeRepository {
         &self,
         tenant_id: TenantId,
         hash: &AuthorizationCodeHash,
-        used_at: DateTime<Utc>,
+        used_at: OffsetDateTime,
     ) -> Result<Option<AuthorizationCode>> {
         let result = sqlx::query(
             "UPDATE authorization_codes SET used_at = ? \
@@ -168,7 +169,7 @@ impl AuthorizationCodeRepository for SqlxAuthorizationCodeRepository {
         row.as_ref().map(map_row).transpose()
     }
 
-    async fn revoke_all_active_for_user(&self, user_id: Uuid, now: DateTime<Utc>) -> Result<()> {
+    async fn revoke_all_active_for_user(&self, user_id: Uuid, now: OffsetDateTime) -> Result<()> {
         sqlx::query(
             "UPDATE authorization_codes SET used_at = ? \
              WHERE user_id = ? AND used_at IS NULL AND expires_at > ?",

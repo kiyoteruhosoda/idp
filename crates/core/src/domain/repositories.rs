@@ -75,7 +75,7 @@ use crate::domain::values::{
 };
 use crate::domain::webauthn_credential::WebAuthnCredential;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// Persistence of tenants (ADR-0009 §1). Tenants are mutually independent administrative
@@ -178,7 +178,7 @@ pub trait TenantProvisioningRepository: Send + Sync {
         tenant: &Tenant,
         admin_membership: &TenantMembership,
         admin_permission_code: &str,
-        granted_at: DateTime<Utc>,
+        granted_at: OffsetDateTime,
     ) -> Result<()>;
 }
 
@@ -264,7 +264,7 @@ pub trait AccountNoteRepository: Send + Sync {
         account: AccountRef,
         text: &str,
         updated_by: Option<Uuid>,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<()>;
     /// Deletes a note (no error if there is none).
     async fn clear(&self, tenant_id: TenantId, account: AccountRef) -> Result<()>;
@@ -425,7 +425,7 @@ pub trait UserRepository: Send + Sync {
         &self,
         id: Uuid,
         failed_login_count: i32,
-        locked_until: Option<DateTime<Utc>>,
+        locked_until: Option<OffsetDateTime>,
     ) -> Result<()>;
     /// Records one login failure and returns the state after recording (SEC13).
     ///
@@ -440,7 +440,7 @@ pub trait UserRepository: Send + Sync {
         &self,
         id: Uuid,
         lockout: LockoutPolicy,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<LoginFailureRecord>;
     /// Updates the password hash and clears `must_change_password` (password change, ADR-0009 §5).
     ///
@@ -601,7 +601,7 @@ pub trait ClientAssertionReplayRepository: Send + Sync {
         tenant_id: TenantId,
         client_id: &str,
         jti: &str,
-        retain_until: DateTime<Utc>,
+        retain_until: OffsetDateTime,
     ) -> Result<bool>;
 }
 
@@ -616,8 +616,11 @@ pub trait DpopProofReplayRepository: Send + Sync {
     ///
     /// `retain_until` is **the time the acceptance window closes** (when it passes the past window
     /// allowed for `iat`).
-    async fn record_if_unused(&self, proof_hash: &str, retain_until: DateTime<Utc>)
-        -> Result<bool>;
+    async fn record_if_unused(
+        &self,
+        proof_hash: &str,
+        retain_until: OffsetDateTime,
+    ) -> Result<bool>;
 }
 
 #[async_trait]
@@ -731,7 +734,7 @@ pub trait SamlSsoRequestRepository: Send + Sync {
     /// consumed, `false` = must not issue).
     async fn delete(&self, id_hash: &str) -> Result<bool>;
     /// Deletes expired rows and returns the count (called from G2's bulk GC).
-    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64>;
+    async fn delete_expired(&self, now: OffsetDateTime) -> Result<u64>;
 }
 
 /// Persistence of the AuthSession aggregate (temporary state from `/authorize` to code issuance).
@@ -783,7 +786,7 @@ pub trait AuthSessionRepository: Send + Sync {
     async fn save_authentication(&self, completion: &AuthenticationCompletion) -> Result<()>;
     async fn delete(&self, id: &AuthSessionIdHash) -> Result<()>;
     /// Deletes expired rows and returns the count (called from G2's bulk GC).
-    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64>;
+    async fn delete_expired(&self, now: OffsetDateTime) -> Result<u64>;
 }
 
 /// Persistence of authentication policies (user authentication / auth policy spec §7). The tenant
@@ -831,15 +834,15 @@ pub trait SsoSessionRepository: Send + Sync {
         Ok(Vec::new())
     }
     /// Extends the idle expiry on SSO restore (absolute is not changed; design spec §3.4).
-    async fn extend_idle(&self, session_hash: &str, idle_expires_at: DateTime<Utc>) -> Result<()>;
+    async fn extend_idle(&self, session_hash: &str, idle_expires_at: OffsetDateTime) -> Result<()>;
     /// Resets the expiries (when binding to a device key changed the length; task #887, ADR-0074).
     /// The default implementation is an unsupported error (only the production sqlx implementation
     /// overrides it).
     async fn set_lifetime(
         &self,
         _session_hash: &str,
-        _idle_expires_at: DateTime<Utc>,
-        _absolute_expires_at: DateTime<Utc>,
+        _idle_expires_at: OffsetDateTime,
+        _absolute_expires_at: OffsetDateTime,
     ) -> Result<()> {
         Err(crate::domain::error::DomainError::Repository(
             "set_lifetime is not supported by this repository".to_string(),
@@ -855,7 +858,7 @@ pub trait SsoSessionRepository: Send + Sync {
         &self,
         _session_hash: &str,
         _methods: &[AuthenticationMethod],
-        _completed_at: DateTime<Utc>,
+        _completed_at: OffsetDateTime,
     ) -> Result<()> {
         Err(crate::domain::error::DomainError::Repository(
             "record_second_factor is not supported by this repository".to_string(),
@@ -870,7 +873,7 @@ pub trait SsoSessionRepository: Send + Sync {
         &self,
         _session_hash: &str,
         _methods: &[AuthenticationMethod],
-        _verified_at: DateTime<Utc>,
+        _verified_at: OffsetDateTime,
     ) -> Result<()> {
         Err(crate::domain::error::DomainError::Repository(
             "record_step_up is not supported by this repository".to_string(),
@@ -882,7 +885,7 @@ pub trait SsoSessionRepository: Send + Sync {
     /// A login made with a passkey itself is known from `auth_time` and `authentication_methods`,
     /// so what this returns is the time verified with a passkey **afterwards** (step-up). The
     /// default implementation is `None` (keeps no record).
-    async fn passkey_verified_at(&self, _session_hash: &str) -> Result<Option<DateTime<Utc>>> {
+    async fn passkey_verified_at(&self, _session_hash: &str) -> Result<Option<OffsetDateTime>> {
         Ok(None)
     }
     async fn delete(&self, session_hash: &str) -> Result<()>;
@@ -909,7 +912,7 @@ pub trait SsoSessionRepository: Send + Sync {
     }
     /// Deletes expired sessions (idle or absolute exceeded) in bulk and returns the count (GC).
     /// The default implementation does nothing (test fakes are not called).
-    async fn delete_expired(&self, _now: DateTime<Utc>) -> Result<u64> {
+    async fn delete_expired(&self, _now: OffsetDateTime) -> Result<u64> {
         Ok(0)
     }
 }
@@ -930,12 +933,12 @@ pub trait UserDeviceRepository: Send + Sync {
     async fn touch(
         &self,
         device_id: Uuid,
-        used_at: DateTime<Utc>,
+        used_at: OffsetDateTime,
         country: Option<&CountryCode>,
         ip: Option<&str>,
     ) -> Result<()>;
     /// Deletes devices unused since before `cutoff` and returns the deleted rows (expiry).
-    async fn delete_unused_before(&self, cutoff: DateTime<Utc>) -> Result<Vec<UserDevice>>;
+    async fn delete_unused_before(&self, cutoff: OffsetDateTime) -> Result<Vec<UserDevice>>;
 
     /// Binds a device to an SSO session. Writes **only when not yet bound**, returning `true` if it
     /// wrote.
@@ -944,7 +947,7 @@ pub trait UserDeviceRepository: Send + Sync {
         session_hash: &str,
         device: &DeviceRef,
         country: Option<&CountryCode>,
-        observed_at: DateTime<Utc>,
+        observed_at: OffsetDateTime,
     ) -> Result<bool>;
     /// The device bound to the SSO session (`None` if none).
     async fn session_device(&self, session_hash: &str) -> Result<Option<DeviceRef>>;
@@ -985,7 +988,7 @@ pub trait SignInHistoryRepository: Send + Sync {
         tenant_id: TenantId,
         sid: &str,
         client_id: &str,
-        issued_at: DateTime<Utc>,
+        issued_at: OffsetDateTime,
         refresh_issued: bool,
     ) -> Result<()>;
     /// Writes that a refresh token was used to refresh. Source and self-identification are those of
@@ -994,7 +997,7 @@ pub trait SignInHistoryRepository: Send + Sync {
         &self,
         sid: &str,
         client_id: &str,
-        used_at: DateTime<Utc>,
+        used_at: OffsetDateTime,
         ip_address: Option<&str>,
         user_agent: Option<&str>,
     ) -> Result<()>;
@@ -1003,7 +1006,7 @@ pub trait SignInHistoryRepository: Send + Sync {
         &self,
         sid: &str,
         client_id: &str,
-        detected_at: DateTime<Utc>,
+        detected_at: OffsetDateTime,
     ) -> Result<()>;
     /// Returns the user's history, newest first (passing `before` returns only entries older than
     /// that id).
@@ -1018,7 +1021,7 @@ pub trait SignInHistoryRepository: Send + Sync {
         &self,
         user_id: Uuid,
         sids: &[String],
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<Vec<SignInAppUse>>;
 }
 
@@ -1054,7 +1057,7 @@ pub trait SessionKeyBindingRepository: Send + Sync {
     /// Binds. Writes **only when not yet bound**, returning `true` if it wrote.
     async fn bind(&self, session_hash: &str, binding: &SessionKeyBinding) -> Result<bool>;
     /// Records a refresh signed with the key.
-    async fn record_refresh(&self, session_hash: &str, at: DateTime<Utc>) -> Result<()>;
+    async fn record_refresh(&self, session_hash: &str, at: OffsetDateTime) -> Result<()>;
 }
 
 /// Reads for the "status" the user sees (task #896; ADR-0078). Read-only; writes nothing.
@@ -1071,14 +1074,14 @@ pub trait SecurityStatusQuery: Send + Sync {
     async fn app_tokens(
         &self,
         user_id: Uuid,
-        now: DateTime<Utc>,
-        recent_since: DateTime<Utc>,
+        now: OffsetDateTime,
+        recent_since: OffsetDateTime,
     ) -> Result<Vec<crate::domain::security_status::AppTokenStatus>>;
     /// Warnings since `since`.
     async fn warnings(
         &self,
         user_id: Uuid,
-        since: DateTime<Utc>,
+        since: OffsetDateTime,
     ) -> Result<crate::domain::security_status::SecurityWarnings>;
 }
 
@@ -1092,7 +1095,7 @@ pub trait AuthorizationCodeRepository: Send + Sync {
         &self,
         tenant_id: TenantId,
         hash: &AuthorizationCodeHash,
-        used_at: DateTime<Utc>,
+        used_at: OffsetDateTime,
     ) -> Result<Option<AuthorizationCode>>;
     /// Looks up an **already consumed** code by hash (SEC8). Used when `consume` returns `None` to
     /// distinguish "real reuse" from "nonexistent / expired". Unconsumed, nonexistent, deleted
@@ -1103,7 +1106,7 @@ pub trait AuthorizationCodeRepository: Send + Sync {
         hash: &AuthorizationCodeHash,
     ) -> Result<Option<AuthorizationCode>>;
     /// On logout, immediately revokes all unconsumed, unexpired codes of the user (sets `used_at`).
-    async fn revoke_all_active_for_user(&self, user_id: Uuid, now: DateTime<Utc>) -> Result<()>;
+    async fn revoke_all_active_for_user(&self, user_id: Uuid, now: OffsetDateTime) -> Result<()>;
 }
 
 /// Persistence of password reset tokens (MT18). The DB stores only the SHA-256 hash.
@@ -1117,7 +1120,7 @@ pub trait PasswordResetTokenRepository: Send + Sync {
     async fn consume(
         &self,
         token_hash: &str,
-        used_at: DateTime<Utc>,
+        used_at: OffsetDateTime,
     ) -> Result<Option<PasswordResetToken>>;
     /// Looks up **without consuming** (only unused and unexpired ones; ADR-0062).
     ///
@@ -1131,12 +1134,12 @@ pub trait PasswordResetTokenRepository: Send + Sync {
     async fn find_active(
         &self,
         _token_hash: &str,
-        _now: DateTime<Utc>,
+        _now: OffsetDateTime,
     ) -> Result<Option<PasswordResetToken>> {
         Ok(None)
     }
     /// Revokes all unused tokens of the user (sets `used_at`; used for replacement on reissue).
-    async fn invalidate_all_for_user(&self, user_id: Uuid, now: DateTime<Utc>) -> Result<()>;
+    async fn invalidate_all_for_user(&self, user_id: Uuid, now: OffsetDateTime) -> Result<()>;
 }
 
 /// History of retired password hashes (AP7's reuse prohibition).
@@ -1156,7 +1159,7 @@ pub trait PasswordHistoryRepository: Send + Sync {
         &self,
         user_id: Uuid,
         password_hash: &str,
-        retired_at: DateTime<Utc>,
+        retired_at: OffsetDateTime,
         retain: u32,
     ) -> Result<()>;
     /// Returns up to `limit` retired hashes, newest first.
@@ -1174,10 +1177,10 @@ pub trait EmailVerificationTokenRepository: Send + Sync {
     async fn consume(
         &self,
         token_hash: &str,
-        used_at: DateTime<Utc>,
+        used_at: OffsetDateTime,
     ) -> Result<Option<EmailVerificationToken>>;
     /// Revokes all unused tokens of the user (used for replacement on resend).
-    async fn invalidate_all_for_user(&self, user_id: Uuid, now: DateTime<Utc>) -> Result<()>;
+    async fn invalidate_all_for_user(&self, user_id: Uuid, now: OffsetDateTime) -> Result<()>;
 }
 
 #[async_trait]
@@ -1213,7 +1216,7 @@ pub trait AuditLogSink: Send + Sync {
     ///
     /// The default implementation does nothing (test fakes have no retention period). The
     /// production sqlx implementation overrides it.
-    async fn purge_older_than(&self, _older_than: DateTime<Utc>) -> Result<u64> {
+    async fn purge_older_than(&self, _older_than: OffsetDateTime) -> Result<u64> {
         Ok(0)
     }
 }
@@ -1231,7 +1234,7 @@ pub trait AuditLogQuery: Send + Sync {
     async fn last_used_per_client(
         &self,
         tenant_id: TenantId,
-    ) -> Result<Vec<(String, DateTime<Utc>)>>;
+    ) -> Result<Vec<(String, OffsetDateTime)>>;
 }
 
 /// Writes of application logs (`log`) (CLAUDE.md "Logging"). Persists `tracing` WARN / ERROR
@@ -1243,7 +1246,7 @@ pub trait ApplicationLogSink: Send + Sync {
     async fn record_batch(&self, records: &[ApplicationLogRecord]) -> Result<()>;
 
     /// Deletes rows older than `older_than` and returns the count (applying the retention period).
-    async fn purge_older_than(&self, older_than: DateTime<Utc>) -> Result<u64>;
+    async fn purge_older_than(&self, older_than: OffsetDateTime) -> Result<u64>;
 }
 
 /// Reads of `log` (the admin console's error / warning log screen). Kept separate from writes.
@@ -1298,7 +1301,7 @@ pub trait UserPermissionRepository: Send + Sync {
         tenant_id: TenantId,
         user_id: Uuid,
         code: &str,
-        granted_at: DateTime<Utc>,
+        granted_at: OffsetDateTime,
     ) -> Result<()>;
     /// Revokes a permission scoped to `tenant_id` (no error if it does not exist).
     async fn revoke(&self, tenant_id: TenantId, user_id: Uuid, code: &str) -> Result<()>;
@@ -1324,8 +1327,12 @@ pub trait ClientPermissionRepository: Send + Sync {
     /// Grants a permission (idempotent: an existing grant keeps its `granted_at`).
     /// `code` must exist in the `permissions` master and be grantable to clients
     /// (`domain::permission::is_grantable_to_client`; works twice with the DB CHECK constraint).
-    async fn grant(&self, client_row_id: Uuid, code: &str, granted_at: DateTime<Utc>)
-        -> Result<()>;
+    async fn grant(
+        &self,
+        client_row_id: Uuid,
+        code: &str,
+        granted_at: OffsetDateTime,
+    ) -> Result<()>;
     /// Revokes a permission (no error if it does not exist).
     async fn revoke(&self, client_row_id: Uuid, code: &str) -> Result<()>;
 }
@@ -1379,7 +1386,7 @@ pub trait ApplicationRepository: Send + Sync {
         display_name: &str,
         status: ApplicationStatus,
         assignment_mode: AssignmentMode,
-        updated_at: DateTime<Utc>,
+        updated_at: OffsetDateTime,
     ) -> Result<bool>;
     /// Deletes an app (bindings and assignments go away by CASCADE). `false` if there is no target.
     async fn delete(&self, tenant_id: TenantId, id: Uuid) -> Result<bool>;
@@ -1402,7 +1409,7 @@ pub trait ApplicationRepository: Send + Sync {
         binding_id: Uuid,
         from_application_id: Uuid,
         to_application_id: Uuid,
-        moved_at: DateTime<Utc>,
+        moved_at: OffsetDateTime,
     ) -> Result<bool>;
     /// Lists the bindings of all apps in the tenant (to annotate identity candidates with "which
     /// app now"; avoids calling [`Self::list_bindings`] once per app).
@@ -1513,7 +1520,7 @@ pub trait ProtectedResourceRepository: Send + Sync {
         tenant_id: TenantId,
         id: Uuid,
         status: ResourceStatus,
-        updated_at: DateTime<Utc>,
+        updated_at: OffsetDateTime,
     ) -> Result<bool>;
     /// Deletes an addressee (permission rows go away by CASCADE too). `false` if there is no
     /// target.
@@ -1537,7 +1544,7 @@ pub trait RefreshTokenRepository: Send + Sync {
     ///
     /// It returns the row count so `/revoke` can tell "whether it was revoked as a refresh_token"
     /// (RFC 7009 §2.1; if it could not be revoked, it must be retried as an access_token).
-    async fn revoke(&self, token_hash: &str, revoked_at: DateTime<Utc>) -> Result<u64>;
+    async fn revoke(&self, token_hash: &str, revoked_at: OffsetDateTime) -> Result<u64>;
     /// Searches the chain by `parent_hash` and returns `true` if one exists (revoked or not).
     /// Used in reuse detection to check whether a double issuance from the same parent occurred.
     async fn exists_by_parent_hash(&self, parent_hash: &str) -> Result<bool>;
@@ -1554,7 +1561,7 @@ pub trait RefreshTokenRepository: Send + Sync {
         &self,
         tenant_id: TenantId,
         family_hash: &str,
-        revoked_at: DateTime<Utc>,
+        revoked_at: OffsetDateTime,
     ) -> Result<u64>;
     /// Revokes all **currently usable** refresh tokens of the given user (unrevoked and
     /// `expires_at > revoked_at`) (invalidating all sessions per user; F5). Returns the number of
@@ -1570,7 +1577,7 @@ pub trait RefreshTokenRepository: Send + Sync {
     /// **Not filtered by tenant.** A refresh token is the user's credential, and one person may
     /// authorize apps in several tenants (same reason as `revoke_all_for_session`). To drop per
     /// tenant, use [`revoke_all_for_user_in_tenant`](Self::revoke_all_for_user_in_tenant).
-    async fn revoke_all_for_user(&self, user_id: Uuid, revoked_at: DateTime<Utc>) -> Result<u64>;
+    async fn revoke_all_for_user(&self, user_id: Uuid, revoked_at: OffsetDateTime) -> Result<u64>;
 
     /// Returns the number of **currently usable** refresh tokens of the given user (unrevoked and
     /// `expires_at > now`). Used by the admin console to show "whether there is anything to act on"
@@ -1580,7 +1587,7 @@ pub trait RefreshTokenRepository: Send + Sync {
     /// [`revoke_all_for_user`](Self::revoke_all_for_user) drops (so the shown count and the result
     /// of pressing the button refer to the same range). Expired ones are not counted because they
     /// can no longer refresh and are not "live keys".
-    async fn count_active_for_user(&self, user_id: Uuid, now: DateTime<Utc>) -> Result<u64>;
+    async fn count_active_for_user(&self, user_id: Uuid, now: OffsetDateTime) -> Result<u64>;
 
     /// Revokes the refresh tokens born from **one SSO session** (ADR-0044).
     /// Returns the number of rows revoked (recorded in audit).
@@ -1597,7 +1604,7 @@ pub trait RefreshTokenRepository: Send + Sync {
         &self,
         user_id: Uuid,
         sid: &str,
-        revoked_at: DateTime<Utc>,
+        revoked_at: OffsetDateTime,
     ) -> Result<u64>;
 
     /// Revokes in bulk the refresh tokens issued in the given tenant (suspending a guest; MT24).
@@ -1609,7 +1616,7 @@ pub trait RefreshTokenRepository: Send + Sync {
         &self,
         tenant_id: TenantId,
         user_id: Uuid,
-        revoked_at: DateTime<Utc>,
+        revoked_at: OffsetDateTime,
     ) -> Result<()>;
 
     /// Revokes the refresh tokens issued to **one client** in the given tenant (unlinking; G10).
@@ -1623,7 +1630,7 @@ pub trait RefreshTokenRepository: Send + Sync {
         tenant_id: TenantId,
         user_id: Uuid,
         client_id: &str,
-        revoked_at: DateTime<Utc>,
+        revoked_at: OffsetDateTime,
     ) -> Result<()>;
 }
 
@@ -1668,26 +1675,26 @@ pub trait BackchannelLogoutDeliveryRepository: Send + Sync {
     /// rows reflect the updated state (`attempts` already incremented).
     async fn claim_due(
         &self,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
         max_attempts: i32,
         limit: u32,
     ) -> Result<Vec<BackchannelLogoutDelivery>>;
 
     /// Records a successful send (sets `delivered_at`).
-    async fn mark_delivered(&self, id: Uuid, delivered_at: DateTime<Utc>) -> Result<()>;
+    async fn mark_delivered(&self, id: Uuid, delivered_at: OffsetDateTime) -> Result<()>;
 
     /// Records a failed send (next attempt time and the latest failure reason). The attempt count
     /// was already incremented in [`claim_due`](Self::claim_due), so it is not advanced here.
     async fn mark_failed(
         &self,
         id: Uuid,
-        next_attempt_at: DateTime<Utc>,
+        next_attempt_at: OffsetDateTime,
         error: &str,
     ) -> Result<()>;
 
     /// Deletes old settled rows (sent successfully, or reached the attempt limit) and returns the
     /// count.
-    async fn purge_settled(&self, older_than: DateTime<Utc>, max_attempts: i32) -> Result<u64>;
+    async fn purge_settled(&self, older_than: OffsetDateTime, max_attempts: i32) -> Result<u64>;
 }
 
 /// jti revocation list of access tokens (F5: token management).
@@ -1711,7 +1718,7 @@ pub trait TotpSecretRepository: Send + Sync {
     /// Returns the user's TOTP secret (whether provisional or enabled).
     async fn find_by_user_id(&self, user_id: Uuid) -> Result<Option<TotpSecret>>;
     /// After verifying the confirmation code, sets `confirmed_at` to enable it.
-    async fn confirm(&self, user_id: Uuid, confirmed_at: DateTime<Utc>) -> Result<()>;
+    async fn confirm(&self, user_id: Uuid, confirmed_at: OffsetDateTime) -> Result<()>;
     /// Deletes the user's TOTP secret (idempotent: no error if it does not exist).
     async fn delete(&self, user_id: Uuid) -> Result<()>;
 
@@ -1726,7 +1733,7 @@ pub trait TotpSecretRepository: Send + Sync {
         &self,
         _user_id: Uuid,
         _step: i64,
-        _at: DateTime<Utc>,
+        _at: OffsetDateTime,
     ) -> Result<bool> {
         Ok(true)
     }
@@ -1789,7 +1796,7 @@ pub trait ExternalIdentityRepository: Send + Sync {
     /// Returns all links of the user (for self-service display and unlinking).
     async fn list_for_user(&self, user_id: Uuid) -> Result<Vec<ExternalIdentity>>;
     /// Records the time of use.
-    async fn touch_last_used(&self, id: Uuid, at: DateTime<Utc>) -> Result<()>;
+    async fn touch_last_used(&self, id: Uuid, at: OffsetDateTime) -> Result<()>;
     /// Removes a link (including the owner check). `true` if deleted.
     async fn delete(&self, id: Uuid, user_id: Uuid) -> Result<bool>;
 }
@@ -1812,7 +1819,7 @@ pub trait ExternalLoginRequestRepository: Send + Sync {
     /// Deletes the progress state. **`true` only if it deleted** (doubles as the single-use claim).
     async fn consume(&self, id: Uuid) -> Result<bool>;
     /// Deletes expired progress states in bulk and returns the count (GC).
-    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64>;
+    async fn delete_expired(&self, now: OffsetDateTime) -> Result<u64>;
 }
 
 /// Unified registry of authenticators (AP9; spec §5).
@@ -1845,7 +1852,7 @@ pub trait UserAuthenticatorRepository: Send + Sync {
         &self,
         _user_id: Uuid,
         _authenticator_type: Option<AuthenticatorType>,
-        _now: DateTime<Utc>,
+        _now: OffsetDateTime,
     ) -> Result<Vec<UserAuthenticator>> {
         Ok(Vec::new())
     }
@@ -1857,7 +1864,7 @@ pub trait UserAuthenticatorRepository: Send + Sync {
         _id: Uuid,
         _user_id: Uuid,
         _status: AuthenticatorStatus,
-        _at: DateTime<Utc>,
+        _at: OffsetDateTime,
     ) -> Result<bool> {
         Ok(false)
     }
@@ -1866,7 +1873,7 @@ pub trait UserAuthenticatorRepository: Send + Sync {
         Ok(false)
     }
     /// Records the time of use (on successful authentication).
-    async fn touch_last_used(&self, _id: Uuid, _at: DateTime<Utc>) -> Result<()> {
+    async fn touch_last_used(&self, _id: Uuid, _at: OffsetDateTime) -> Result<()> {
         Ok(())
     }
     /// **Atomically consumes** a single-use authenticator (recovery code, OTP).
@@ -1880,7 +1887,7 @@ pub trait UserAuthenticatorRepository: Send + Sync {
         _user_id: Uuid,
         _authenticator_type: AuthenticatorType,
         _secret_hash: &str,
-        _now: DateTime<Utc>,
+        _now: OffsetDateTime,
     ) -> Result<Option<UserAuthenticator>> {
         Ok(None)
     }
@@ -1890,7 +1897,7 @@ pub trait UserAuthenticatorRepository: Send + Sync {
         &self,
         _user_id: Uuid,
         _authenticator_type: AuthenticatorType,
-        _at: DateTime<Utc>,
+        _at: OffsetDateTime,
     ) -> Result<u64> {
         Ok(0)
     }
@@ -1904,7 +1911,7 @@ pub trait UserAuthenticatorRepository: Send + Sync {
         &self,
         _user_id: Uuid,
         _authenticator_type: AuthenticatorType,
-        _at: DateTime<Utc>,
+        _at: OffsetDateTime,
     ) -> Result<u64> {
         Ok(0)
     }
@@ -1920,12 +1927,12 @@ pub trait UserAuthenticatorRepository: Send + Sync {
         _user_id: Uuid,
         _authenticator_type: AuthenticatorType,
         _secret_hash: &str,
-        _now: DateTime<Utc>,
+        _now: OffsetDateTime,
     ) -> Result<Option<UserAuthenticator>> {
         Ok(None)
     }
     /// Deletes expired single-use rows and returns the count (GC).
-    async fn delete_expired(&self, _now: DateTime<Utc>) -> Result<u64> {
+    async fn delete_expired(&self, _now: OffsetDateTime) -> Result<u64> {
         Ok(0)
     }
 }
@@ -1954,7 +1961,7 @@ pub trait WebAuthnCredentialRepository: Send + Sync {
         &self,
         id: Uuid,
         passkey_json: &str,
-        last_used_at: DateTime<Utc>,
+        last_used_at: OffsetDateTime,
     ) -> Result<()>;
     /// Deletes a credential, also checking the owner (`user_id` match). Nonexistence is
     /// idempotently ignored.
@@ -2015,7 +2022,7 @@ pub trait PasskeyChallengeRepository: Send + Sync {
     /// the crux of single use).
     async fn delete(&self, id: Uuid) -> Result<bool>;
     /// Deletes expired challenges in bulk and returns the count (called from G2's bulk GC).
-    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64>;
+    async fn delete_expired(&self, now: OffsetDateTime) -> Result<u64>;
 }
 
 /// Port for tables that can clean up their own expired rows (G2).
@@ -2032,7 +2039,7 @@ pub trait ExpiringRecordStore: Send + Sync {
     /// Identifier of the cleanup target (the table name printed in logs).
     fn table_name(&self) -> &'static str;
     /// Deletes rows expired as of `now` and returns the count.
-    async fn purge_expired(&self, now: DateTime<Utc>) -> Result<u64>;
+    async fn purge_expired(&self, now: OffsetDateTime) -> Result<u64>;
 }
 
 /// Users' authenticator app keys (task #892; ADR-0077) and the sign-in states approved with those
@@ -2059,7 +2066,7 @@ pub trait ApproverKeyRepository: Send + Sync {
         id: Uuid,
     ) -> Result<Option<crate::domain::app_approver::ApproverKey>>;
     /// Records that it was used for approval.
-    async fn touch(&self, id: Uuid, used_at: DateTime<Utc>) -> Result<()>;
+    async fn touch(&self, id: Uuid, used_at: OffsetDateTime) -> Result<()>;
     /// Records that a sign-in state was approved with this key (creates the context row if absent).
     async fn link_session(&self, session_hash: &str, id: Uuid) -> Result<()>;
     /// Sign-in states approved with this key (their SHA-256).
@@ -2107,7 +2114,7 @@ pub trait ApprovalRequestRepository: Send + Sync {
         approver_key: Uuid,
         user_id: Uuid,
         code_hash: &str,
-        code_expires_at: DateTime<Utc>,
+        code_expires_at: OffsetDateTime,
     ) -> Result<bool>;
     /// Moves the state from `from` to `to` (only when `from`). `true` if written.
     async fn transition(

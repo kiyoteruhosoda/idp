@@ -7,9 +7,10 @@
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::PasswordHistoryRepository;
 use crate::infrastructure::db::Db;
+use assay_contracts::utc::UtcInstant;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use sqlx::Row;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 pub struct SqlxPasswordHistoryRepository {
@@ -32,7 +33,7 @@ impl PasswordHistoryRepository for SqlxPasswordHistoryRepository {
         &self,
         user_id: Uuid,
         password_hash: &str,
-        retired_at: DateTime<Utc>,
+        retired_at: OffsetDateTime,
         retain: u32,
     ) -> Result<()> {
         let user_id = user_id.to_string();
@@ -62,7 +63,7 @@ impl PasswordHistoryRepository for SqlxPasswordHistoryRepository {
         .map_err(repo_err)?;
 
         if let Some(row) = boundary {
-            let boundary_retired_at: chrono::NaiveDateTime =
+            let boundary_retired_at: time::PrimitiveDateTime =
                 row.try_get("retired_at").map_err(repo_err)?;
             let boundary_id: i64 = row.try_get("id").map_err(repo_err)?;
             sqlx::query(

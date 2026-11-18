@@ -18,10 +18,11 @@ use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::WebAuthnCredentialRepository;
 use crate::domain::webauthn_credential::WebAuthnCredential;
 use crate::infrastructure::db::Db;
+use assay_contracts::utc::{from_naive_utc, UtcInstant};
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::mysql::MySqlRow;
 use sqlx::Row;
+use time::{OffsetDateTime, PrimitiveDateTime};
 use uuid::Uuid;
 
 pub struct SqlxWebAuthnCredentialRepository {
@@ -38,14 +39,14 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
-    Utc.from_utc_datetime(&naive)
+fn to_utc(naive: PrimitiveDateTime) -> OffsetDateTime {
+    from_naive_utc(naive)
 }
 
 fn map_row(row: &MySqlRow) -> Result<WebAuthnCredential> {
     let id: String = row.try_get("id").map_err(repo_err)?;
     let user_id: String = row.try_get("user_id").map_err(repo_err)?;
-    let last_used_at: Option<NaiveDateTime> = row.try_get("last_used_at").map_err(repo_err)?;
+    let last_used_at: Option<PrimitiveDateTime> = row.try_get("last_used_at").map_err(repo_err)?;
     Ok(WebAuthnCredential {
         id: Uuid::parse_str(&id)
             .map_err(|e| DomainError::Repository(format!("invalid UUID: {e}")))?,
@@ -144,7 +145,7 @@ impl WebAuthnCredentialRepository for SqlxWebAuthnCredentialRepository {
         &self,
         id: Uuid,
         passkey_json: &str,
-        last_used_at: DateTime<Utc>,
+        last_used_at: OffsetDateTime,
     ) -> Result<()> {
         sqlx::query(
             "UPDATE user_authenticators \

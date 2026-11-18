@@ -10,6 +10,7 @@
 //! Only WARN / ERROR are recorded (INFO and below are left to stdout structured logs so the DB does not bloat).
 //! Messages are not localized; they use the operational language (English), and carry no PII (CLAUDE.md "Logging").
 
+use crate::utc::UtcInstant;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 use tracing::field::{Field, Visit};
@@ -237,7 +238,7 @@ where
 }
 
 fn now_rfc3339() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
+    time::OffsetDateTime::now_utc().to_rfc3339_micros_z()
 }
 
 /// Extracts `tracing` fields. `message` is the message, `error` is the traceback, and the rest are appended to the

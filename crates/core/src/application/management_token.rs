@@ -33,10 +33,10 @@ use crate::domain::repositories::{
     ClientRepository, RevokedAccessTokenRepository, SigningKeyRepository, UserRepository,
 };
 use crate::domain::tenant_context::TenantContext;
-use chrono::Duration;
 use jsonwebtoken::Validation;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
+use time::Duration;
 use uuid::Uuid;
 
 /// Result of the management API access check. Presentation only gets allowed/denied (internal reasons aren't leaked).
@@ -120,7 +120,7 @@ impl ManagementTokenService {
             clock,
             base_issuer,
             ttl,
-            clock_skew: Duration::from_std(clock_skew).expect("clock skew out of range"),
+            clock_skew: Duration::try_from(clock_skew).expect("clock skew out of range"),
         }
     }
 
@@ -216,7 +216,7 @@ impl ManagementTokenService {
         permission_codes: &[String],
     ) -> Result<String, ManagementTokenError> {
         let now = self.clock.now();
-        let iat = now.timestamp();
+        let iat = now.unix_timestamp();
         let issuer = tenant_issuer(&self.base_issuer, tenant.tenant_id());
         let claims = AccessTokenClaims {
             iss: issuer.clone(),
@@ -276,8 +276,8 @@ impl ManagementTokenService {
         if claims.aud != management_audience(&expected_issuer) {
             return Err("audience mismatch");
         }
-        let now = self.clock.now().timestamp();
-        if claims.exp + self.clock_skew.num_seconds() <= now {
+        let now = self.clock.now().unix_timestamp();
+        if claims.exp + self.clock_skew.whole_seconds() <= now {
             return Err("token expired");
         }
         if !claims.jti.is_empty() {

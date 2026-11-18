@@ -768,16 +768,16 @@ mod tests {
     use crate::domain::totp_secret::TotpSecret;
     use crate::domain::webauthn_credential::WebAuthnCredential;
     use async_trait::async_trait;
-    use chrono::{DateTime, TimeZone, Utc};
     use std::sync::Mutex;
+    use time::{macros::datetime, OffsetDateTime};
 
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 7, 11, 12, 0, 0).unwrap()
+    fn now() -> OffsetDateTime {
+        datetime!(2026-07-11 12:00:00 UTC)
     }
 
-    struct FixedClock(DateTime<Utc>);
+    struct FixedClock(OffsetDateTime);
     impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> OffsetDateTime {
             self.0
         }
     }
@@ -818,7 +818,7 @@ mod tests {
             &self,
             id: Uuid,
             lockout: crate::domain::authentication_policy::LockoutPolicy,
-            now: DateTime<Utc>,
+            now: OffsetDateTime,
         ) -> DomainResult<crate::domain::user::LoginFailureRecord> {
             let mut rows = self.rows.lock().unwrap();
             let Some(row) = rows.iter_mut().find(|u| u.id == id) else {
@@ -874,7 +874,7 @@ mod tests {
             &self,
             _id: Uuid,
             _c: i32,
-            _l: Option<DateTime<Utc>>,
+            _l: Option<OffsetDateTime>,
         ) -> DomainResult<()> {
             unreachable!()
         }
@@ -962,7 +962,7 @@ mod tests {
             &self,
             _u: Uuid,
             authenticator_type: AuthenticatorType,
-            _at: DateTime<Utc>,
+            _at: OffsetDateTime,
         ) -> DomainResult<u64> {
             self.revoked_types.lock().unwrap().push(authenticator_type);
             Ok(0)
@@ -983,7 +983,7 @@ mod tests {
         async fn find_by_hash(&self, _h: &str) -> DomainResult<Option<SsoSession>> {
             unreachable!()
         }
-        async fn extend_idle(&self, _h: &str, _i: DateTime<Utc>) -> DomainResult<()> {
+        async fn extend_idle(&self, _h: &str, _i: OffsetDateTime) -> DomainResult<()> {
             unreachable!()
         }
         async fn delete(&self, _h: &str) -> DomainResult<()> {
@@ -1010,7 +1010,7 @@ mod tests {
             &self,
             _u: Uuid,
             _sid: &str,
-            _at: DateTime<Utc>,
+            _at: OffsetDateTime,
         ) -> DomainResult<u64> {
             unreachable!()
         }
@@ -1018,7 +1018,7 @@ mod tests {
             &self,
             _t: TenantId,
             _family: &str,
-            _at: DateTime<Utc>,
+            _at: OffsetDateTime,
         ) -> DomainResult<u64> {
             unreachable!()
         }
@@ -1026,7 +1026,7 @@ mod tests {
             &self,
             _tenant: TenantId,
             _user_id: Uuid,
-            _now: DateTime<Utc>,
+            _now: OffsetDateTime,
         ) -> DomainResult<()> {
             // Lifecycle operations revoke everything per user (per-tenant revocation is only for suspending
             // guests (MT24)).
@@ -1042,7 +1042,7 @@ mod tests {
         ) -> DomainResult<Option<RefreshToken>> {
             unreachable!()
         }
-        async fn revoke(&self, _h: &str, _now: DateTime<Utc>) -> DomainResult<u64> {
+        async fn revoke(&self, _h: &str, _now: OffsetDateTime) -> DomainResult<u64> {
             unreachable!()
         }
         async fn exists_by_parent_hash(&self, _p: &str) -> DomainResult<bool> {
@@ -1051,7 +1051,7 @@ mod tests {
         async fn revoke_all_for_user(
             &self,
             user_id: Uuid,
-            _now: DateTime<Utc>,
+            _now: OffsetDateTime,
         ) -> DomainResult<u64> {
             self.revoked_users.lock().unwrap().push(user_id);
             Ok(1)
@@ -1059,7 +1059,7 @@ mod tests {
         async fn count_active_for_user(
             &self,
             user_id: Uuid,
-            _now: DateTime<Utc>,
+            _now: OffsetDateTime,
         ) -> DomainResult<u64> {
             self.counted_users.lock().unwrap().push(user_id);
             Ok(2)
@@ -1069,7 +1069,7 @@ mod tests {
             _t: TenantId,
             _u: Uuid,
             _c: &str,
-            _at: DateTime<Utc>,
+            _at: OffsetDateTime,
         ) -> DomainResult<()> {
             unreachable!()
         }
@@ -1095,14 +1095,14 @@ mod tests {
             &self,
             _tenant: TenantId,
             _code_hash: &crate::domain::authorization_code::AuthorizationCodeHash,
-            _now: DateTime<Utc>,
+            _now: OffsetDateTime,
         ) -> DomainResult<Option<AuthorizationCode>> {
             unreachable!()
         }
         async fn revoke_all_active_for_user(
             &self,
             user_id: Uuid,
-            _now: DateTime<Utc>,
+            _now: OffsetDateTime,
         ) -> DomainResult<()> {
             self.revoked_users.lock().unwrap().push(user_id);
             Ok(())
@@ -1129,7 +1129,7 @@ mod tests {
                 .find(|s| s.user_id == user_id)
                 .cloned())
         }
-        async fn confirm(&self, _id: Uuid, _at: DateTime<Utc>) -> DomainResult<()> {
+        async fn confirm(&self, _id: Uuid, _at: OffsetDateTime) -> DomainResult<()> {
             unreachable!()
         }
         async fn delete(&self, user_id: Uuid) -> DomainResult<()> {
@@ -1164,7 +1164,7 @@ mod tests {
             &self,
             _id: Uuid,
             _passkey_json: &str,
-            _last_used_at: DateTime<Utc>,
+            _last_used_at: OffsetDateTime,
         ) -> DomainResult<()> {
             unreachable!()
         }

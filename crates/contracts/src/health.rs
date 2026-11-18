@@ -7,8 +7,8 @@
 //! shape changed, the operational view (monitoring, triage procedures) would split per service.
 
 use crate::version::VersionInfo;
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
 
 /// Service identifier. Put on the `/healthz` response so it is obvious at a glance which service answered.
 ///
@@ -95,14 +95,16 @@ pub struct ServiceHealth {
     /// Build information of the running binary.
     pub version: VersionInfo,
     /// Process start time (UTC).
-    pub started_at: DateTime<Utc>,
+    #[serde(with = "crate::utc::serde_rfc3339")]
+    pub started_at: OffsetDateTime,
     /// Seconds since startup. Kept to tell at a glance whether a restart happened
     /// (so readers need not compute the difference from `started_at`).
     pub uptime_seconds: i64,
     /// Server time at response (UTC). Used to triage clock skew with clients:
     /// `private_key_jwt` assertions are judged with `exp` of 5 minutes and 60 seconds tolerance (ADR-0030),
     /// so clock skew shows up as "an `invalid_client` with no obvious reason".
-    pub server_time: DateTime<Utc>,
+    #[serde(with = "crate::utc::serde_rfc3339")]
+    pub server_time: OffsetDateTime,
     /// Dependency check results. Empty for services without dependencies.
     pub checks: Vec<HealthCheck>,
 }
@@ -112,8 +114,8 @@ impl ServiceHealth {
     pub fn new(
         service: &str,
         version: VersionInfo,
-        started_at: DateTime<Utc>,
-        server_time: DateTime<Utc>,
+        started_at: OffsetDateTime,
+        server_time: OffsetDateTime,
         checks: Vec<HealthCheck>,
     ) -> Self {
         let status = if checks.iter().all(HealthCheck::is_pass) {
@@ -126,7 +128,7 @@ impl ServiceHealth {
             status: status.to_string(),
             version,
             started_at,
-            uptime_seconds: (server_time - started_at).num_seconds().max(0),
+            uptime_seconds: (server_time - started_at).whole_seconds().max(0),
             server_time,
             checks,
         }
@@ -137,8 +139,8 @@ impl ServiceHealth {
 mod tests {
     use super::*;
 
-    fn at(secs: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp(secs, 0).unwrap()
+    fn at(secs: i64) -> OffsetDateTime {
+        crate::utc::from_unix_seconds(secs).unwrap()
     }
 
     fn version() -> VersionInfo {

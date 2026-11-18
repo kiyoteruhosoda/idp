@@ -8,8 +8,9 @@ use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::ClientAssertionReplayRepository;
 use crate::domain::tenant::TenantId;
 use crate::infrastructure::db::Db;
+use assay_contracts::utc::UtcInstant;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 
 pub struct SqlxClientAssertionReplayRepository {
     pool: Db,
@@ -36,7 +37,7 @@ impl ClientAssertionReplayRepository for SqlxClientAssertionReplayRepository {
         tenant_id: TenantId,
         client_id: &str,
         jti: &str,
-        retain_until: DateTime<Utc>,
+        retain_until: OffsetDateTime,
     ) -> Result<bool> {
         let result = sqlx::query(
             "INSERT INTO client_assertion_jtis (tenant_id, client_id, jti, expires_at) \

@@ -11,10 +11,11 @@ use crate::domain::repositories::ApplicationRepository;
 use crate::domain::tenant::TenantId;
 use crate::domain::values::{ApplicationStatus, AssignmentMode, ClientStatus, UserStatus};
 use crate::infrastructure::db::Db;
+use assay_contracts::utc::from_naive_utc;
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::mysql::MySqlRow;
 use sqlx::Row;
+use time::{OffsetDateTime, PrimitiveDateTime};
 use uuid::Uuid;
 
 pub struct SqlxApplicationRepository {
@@ -43,8 +44,8 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
-    Utc.from_utc_datetime(&naive)
+fn to_utc(naive: PrimitiveDateTime) -> OffsetDateTime {
+    from_naive_utc(naive)
 }
 
 fn parse_uuid(raw: &str) -> Result<Uuid> {
@@ -264,7 +265,7 @@ impl ApplicationRepository for SqlxApplicationRepository {
         display_name: &str,
         status: ApplicationStatus,
         assignment_mode: AssignmentMode,
-        updated_at: DateTime<Utc>,
+        updated_at: OffsetDateTime,
     ) -> Result<bool> {
         let result = sqlx::query(
             "UPDATE applications \
@@ -363,7 +364,7 @@ impl ApplicationRepository for SqlxApplicationRepository {
         binding_id: Uuid,
         from_application_id: Uuid,
         to_application_id: Uuid,
-        moved_at: DateTime<Utc>,
+        moved_at: OffsetDateTime,
     ) -> Result<bool> {
         let result = sqlx::query(
             "UPDATE application_bindings SET application_id = ?, created_at = ? \

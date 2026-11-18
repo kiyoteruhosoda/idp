@@ -17,11 +17,11 @@ use assay_api::domain::jwt::{generate_rsa_keypair, sign};
 use axum::body::Body;
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{Request, StatusCode};
-use chrono::Utc;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde::Serialize;
 use serde_json::Value;
 use support::{body_json, send};
+use time::OffsetDateTime;
 
 #[derive(Serialize)]
 struct AssertionClaims {
@@ -61,7 +61,7 @@ impl<'a> AssertionSpec<'a> {
     }
 
     fn build(&self) -> String {
-        let now = Utc::now().timestamp();
+        let now = OffsetDateTime::now_utc().unix_timestamp();
         sign(
             self.private_pem,
             self.kid,

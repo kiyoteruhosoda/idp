@@ -12,10 +12,11 @@ use crate::domain::tenant::TenantId;
 use crate::domain::values::{CodeChallengeMethod, PromptSet};
 use crate::infrastructure::db::Db;
 use crate::infrastructure::repositories::authentication_methods_json;
+use assay_contracts::utc::{from_naive_utc, UtcInstant};
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::mysql::MySqlRow;
 use sqlx::Row;
+use time::{OffsetDateTime, PrimitiveDateTime};
 use uuid::Uuid;
 
 pub struct SqlxAuthSessionRepository {
@@ -38,8 +39,8 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
-    Utc.from_utc_datetime(&naive)
+fn to_utc(naive: PrimitiveDateTime) -> OffsetDateTime {
+    from_naive_utc(naive)
 }
 
 fn map_row(row: &MySqlRow) -> Result<AuthSession> {
@@ -51,11 +52,11 @@ fn map_row(row: &MySqlRow) -> Result<AuthSession> {
     let response_mode: Option<String> = row.try_get("response_mode").map_err(repo_err)?;
     let max_age: Option<i64> = row.try_get("max_age").map_err(repo_err)?;
     let handle_hash: Option<String> = row.try_get("handle_hash").map_err(repo_err)?;
-    let handle_expires_at: Option<NaiveDateTime> =
+    let handle_expires_at: Option<PrimitiveDateTime> =
         row.try_get("handle_expires_at").map_err(repo_err)?;
     let user_id: Option<String> = row.try_get("authenticated_user_id").map_err(repo_err)?;
-    let auth_time: Option<NaiveDateTime> = row.try_get("auth_time").map_err(repo_err)?;
-    let password_verified_at: Option<NaiveDateTime> =
+    let auth_time: Option<PrimitiveDateTime> = row.try_get("auth_time").map_err(repo_err)?;
+    let password_verified_at: Option<PrimitiveDateTime> =
         row.try_get("password_verified_at").map_err(repo_err)?;
     let request = AuthorizationRequest::reconstitute(AuthorizationRequestParts {
         client_id: row.try_get("client_id").map_err(repo_err)?,
@@ -248,7 +249,7 @@ impl AuthSessionRepository for SqlxAuthSessionRepository {
         Ok(())
     }
 
-    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64> {
+    async fn delete_expired(&self, now: OffsetDateTime) -> Result<u64> {
         let result = sqlx::query("DELETE FROM auth_sessions WHERE expires_at <= ?")
             .bind(now.naive_utc())
             .execute(&self.pool)

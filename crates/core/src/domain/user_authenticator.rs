@@ -18,7 +18,7 @@
 #![allow(dead_code)]
 
 use crate::domain::values::{string_enum, AuthenticationMethod};
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 string_enum!(
@@ -124,13 +124,13 @@ pub struct UserAuthenticator {
     pub secret_encrypted: Option<String>,
     /// Destination for email OTP.
     pub target: Option<String>,
-    pub confirmed_at: Option<DateTime<Utc>>,
-    pub last_used_at: Option<DateTime<Utc>>,
+    pub confirmed_at: Option<OffsetDateTime>,
+    pub last_used_at: Option<OffsetDateTime>,
     /// Expiry of this authenticator (code). `None` if it never expires.
-    pub expires_at: Option<DateTime<Utc>>,
-    pub revoked_at: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub expires_at: Option<OffsetDateTime>,
+    pub revoked_at: Option<OffsetDateTime>,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
 }
 
 impl UserAuthenticator {
@@ -146,7 +146,7 @@ impl UserAuthenticator {
         )
     }
 
-    pub fn is_usable_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_usable_at(&self, now: OffsetDateTime) -> bool {
         self.status.is_usable() && self.expires_at.is_none_or(|exp| exp > now)
     }
 
@@ -161,16 +161,16 @@ impl UserAuthenticator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{Duration, TimeZone};
+    use time::{macros::datetime, Duration};
 
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 8, 1, 12, 0, 0).unwrap()
+    fn now() -> OffsetDateTime {
+        datetime!(2026-08-01 12:00:00 UTC)
     }
 
     fn authenticator(
         authenticator_type: AuthenticatorType,
         status: AuthenticatorStatus,
-        expires_at: Option<DateTime<Utc>>,
+        expires_at: Option<OffsetDateTime>,
     ) -> UserAuthenticator {
         UserAuthenticator {
             id: Uuid::from_u128(1),

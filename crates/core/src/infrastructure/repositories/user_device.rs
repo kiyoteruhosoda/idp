@@ -6,10 +6,11 @@ use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::UserDeviceRepository;
 use crate::domain::user_device::{CountryCode, DeviceRef, UserDevice};
 use crate::infrastructure::db::Db;
+use assay_contracts::utc::{from_naive_utc, UtcInstant};
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::mysql::MySqlRow;
 use sqlx::Row;
+use time::{OffsetDateTime, PrimitiveDateTime};
 use uuid::Uuid;
 
 pub struct SqlxUserDeviceRepository {
@@ -29,8 +30,8 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
-    Utc.from_utc_datetime(&naive)
+fn to_utc(naive: PrimitiveDateTime) -> OffsetDateTime {
+    from_naive_utc(naive)
 }
 
 fn parse_uuid(raw: &str) -> Result<Uuid> {
@@ -161,7 +162,7 @@ impl UserDeviceRepository for SqlxUserDeviceRepository {
     async fn touch(
         &self,
         device_id: Uuid,
-        used_at: DateTime<Utc>,
+        used_at: OffsetDateTime,
         country: Option<&CountryCode>,
         ip: Option<&str>,
     ) -> Result<()> {
@@ -178,7 +179,7 @@ impl UserDeviceRepository for SqlxUserDeviceRepository {
         Ok(())
     }
 
-    async fn delete_unused_before(&self, cutoff: DateTime<Utc>) -> Result<Vec<UserDevice>> {
+    async fn delete_unused_before(&self, cutoff: OffsetDateTime) -> Result<Vec<UserDevice>> {
         let mut tx = self.pool.begin().await.map_err(repo_err)?;
         let sql =
             format!("SELECT {SELECT_COLUMNS} FROM user_devices WHERE last_used_at < ? FOR UPDATE");
@@ -204,7 +205,7 @@ impl UserDeviceRepository for SqlxUserDeviceRepository {
         session_hash: &str,
         device: &DeviceRef,
         country: Option<&CountryCode>,
-        observed_at: DateTime<Utc>,
+        observed_at: OffsetDateTime,
     ) -> Result<bool> {
         // Create the row if absent; if present, write only when no device is set yet (the passkey-time row may already exist).
         // ⚠ Rows already bound to a device are not overwritten (someone who learned another's session id can't repaint it with their own mark).

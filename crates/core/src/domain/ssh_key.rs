@@ -21,8 +21,8 @@
 
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
 use base64::Engine;
-use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::domain::tenant::TenantId;
@@ -251,7 +251,7 @@ pub struct UserSshKey {
     pub user_id: Uuid,
     pub name: String,
     pub key: SshPublicKey,
-    pub created_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
 }
 
 /// One line handed to distributing machines (with the user name).
@@ -261,7 +261,7 @@ pub struct DistributedSshKey {
     pub username: String,
     pub name: String,
     pub key: SshPublicKey,
-    pub created_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
 }
 
 #[cfg(test)]

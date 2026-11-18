@@ -11,9 +11,9 @@
 
 use crate::domain::client_jwks::ClientJwks;
 use crate::domain::jwt::decoding_key_from_jwk;
-use chrono::{DateTime, Duration, Utc};
 use jsonwebtoken::{Algorithm, Validation};
 use serde::Deserialize;
+use time::{Duration, OffsetDateTime};
 
 /// The only allowed value of `client_assertion_type` (RFC 7523 §2.2).
 pub const JWT_BEARER_ASSERTION_TYPE: &str =
@@ -41,13 +41,13 @@ pub struct VerifiedClientAssertion {
     /// The `jti` claim. Recorded uniquely by `(tenant_id, client_id, jti)`.
     pub jti: String,
     /// The `exp` claim.
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: OffsetDateTime,
     /// The time until which `jti` is not re-accepted. **Not `exp` itself, but `exp` plus the allowed clock skew**.
     ///
     /// Acceptance lets through assertions up to [`CLOCK_SKEW_LEEWAY`] past `exp`, so if the record were kept only until `exp`,
     /// the same assertion could be used again in the gap after cleanup deletes the row and before acceptance stops.
     /// The record is kept until acceptance stops.
-    pub replay_guard_until: DateTime<Utc>,
+    pub replay_guard_until: OffsetDateTime,
 }
 
 /// Reasons an assertion cannot be accepted. The string goes into the audit log `reason` as is
@@ -158,7 +158,7 @@ pub fn verify_client_assertion(
     client_id: &str,
     jwks: &ClientJwks,
     accepted_audiences: &[String],
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<VerifiedClientAssertion, ClientAssertionFailure> {
     if assertion_type != Some(JWT_BEARER_ASSERTION_TYPE) {
         return Err(ClientAssertionFailure::UnsupportedAssertionType);
@@ -207,8 +207,8 @@ pub fn verify_client_assertion(
         return Err(ClientAssertionFailure::AudienceMismatch);
     }
 
-    let expires_at =
-        DateTime::from_timestamp(claims.exp, 0).ok_or(ClientAssertionFailure::Malformed)?;
+    let expires_at = assay_contracts::utc::from_unix_seconds(claims.exp)
+        .ok_or(ClientAssertionFailure::Malformed)?;
     if expires_at + CLOCK_SKEW_LEEWAY < now {
         return Err(ClientAssertionFailure::Expired);
     }
@@ -276,8 +276,8 @@ mod tests {
         sign(&f.private_pem, "k1", "JWT", f.algorithm, &claims).unwrap()
     }
 
-    fn now() -> DateTime<Utc> {
-        DateTime::from_timestamp(1_800_000_000, 0).unwrap()
+    fn now() -> OffsetDateTime {
+        assay_contracts::utc::from_unix_seconds(1_800_000_000).unwrap()
     }
 
     fn valid_claims() -> TestClaims {
@@ -285,7 +285,7 @@ mod tests {
             iss: CLIENT_ID.to_string(),
             sub: CLIENT_ID.to_string(),
             aud: AUDIENCE.to_string(),
-            exp: now().timestamp() + 120,
+            exp: now().unix_timestamp() + 120,
             jti: Some("jti-1".to_string()),
         }
     }
@@ -307,7 +307,10 @@ mod tests {
             let f = fixture(algorithm);
             let verified = verify(&f, &assertion(&f, valid_claims())).unwrap();
             assert_eq!(verified.jti, "jti-1");
-            assert_eq!(verified.expires_at.timestamp(), now().timestamp() + 120);
+            assert_eq!(
+                verified.expires_at.unix_timestamp(),
+                now().unix_timestamp() + 120
+            );
             // The replay-refusal period is longer than `exp` by the clock skew leeway (kept until acceptance stops).
             assert_eq!(
                 verified.replay_guard_until,
@@ -441,7 +444,7 @@ mod tests {
             &f,
             TestClaims {
                 // Placed safely in the past, beyond the clock skew leeway (60 seconds).
-                exp: now().timestamp() - 300,
+                exp: now().unix_timestamp() - 300,
                 ..valid_claims()
             },
         );
@@ -454,9 +457,9 @@ mod tests {
         let token = assertion(
             &f,
             TestClaims {
-                exp: now().timestamp()
-                    + MAX_ASSERTION_LIFETIME.num_seconds()
-                    + CLOCK_SKEW_LEEWAY.num_seconds()
+                exp: now().unix_timestamp()
+                    + MAX_ASSERTION_LIFETIME.whole_seconds()
+                    + CLOCK_SKEW_LEEWAY.whole_seconds()
                     + 60,
                 ..valid_claims()
             },
@@ -474,7 +477,7 @@ mod tests {
         let token = assertion(
             &f,
             TestClaims {
-                exp: now().timestamp() + MAX_ASSERTION_LIFETIME.num_seconds() + 5,
+                exp: now().unix_timestamp() + MAX_ASSERTION_LIFETIME.whole_seconds() + 5,
                 ..valid_claims()
             },
         );
@@ -569,7 +572,7 @@ mod tests {
                     "https://other.example.com".to_string(),
                     AUDIENCE.to_string(),
                 ],
-                exp: now().timestamp() + 120,
+                exp: now().unix_timestamp() + 120,
                 jti: "jti-1".to_string(),
             },
         )

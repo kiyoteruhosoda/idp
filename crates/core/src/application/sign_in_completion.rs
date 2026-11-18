@@ -33,8 +33,8 @@ use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::AuthenticationMethod;
-use chrono::{DateTime, Utc};
 use std::sync::Arc;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// A successful authentication (who, by which method, where).
@@ -151,7 +151,7 @@ impl SignInCompletion {
         sign_in: &SignIn<'_>,
         binding: SessionBinding,
         ctx: &RequestContext,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<Admission, DomainError> {
         let Some(gate) = &self.device_gate else {
             return Ok(Admission::Admitted);
@@ -179,7 +179,7 @@ impl SignInCompletion {
         &self,
         sign_in: SignIn<'_>,
         ctx: &RequestContext,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<Establishment, DomainError> {
         self.establish_sso_with_binding(sign_in, SessionBinding::Unbound, ctx, now)
             .await
@@ -194,7 +194,7 @@ impl SignInCompletion {
         sign_in: SignIn<'_>,
         binding: SessionBinding,
         ctx: &RequestContext,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<Establishment, DomainError> {
         if let Admission::EnrollmentRequired { ticket } =
             self.admit(&sign_in, binding, ctx, now).await?
@@ -261,7 +261,7 @@ impl SignInCompletion {
         tenant: TenantContext,
         session: &mut AuthSession,
         sso: &EstablishedSso,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
         ctx: &RequestContext,
     ) -> Result<AuthorizationContinuation, DomainError> {
         let authentication = Authentication::new(

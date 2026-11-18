@@ -28,8 +28,8 @@ use crate::domain::password_policy::{BreachedPasswordChecker, PasswordPolicy, Pa
 use crate::domain::repositories::PasswordHistoryRepository;
 use crate::domain::tenant::TenantId;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use std::sync::Arc;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// An implementation that keeps no history (used with `PASSWORD_HISTORY_COUNT=0` and by tests without history).
@@ -41,7 +41,7 @@ impl PasswordHistoryRepository for NoPasswordHistory {
         &self,
         _user_id: Uuid,
         _password_hash: &str,
-        _retired_at: DateTime<Utc>,
+        _retired_at: OffsetDateTime,
         _retain: u32,
     ) -> Result<()> {
         Ok(())
@@ -261,7 +261,7 @@ mod tests {
             &self,
             user_id: Uuid,
             password_hash: &str,
-            _retired_at: DateTime<Utc>,
+            _retired_at: OffsetDateTime,
             retain: u32,
         ) -> Result<()> {
             let mut rows = self.rows.lock().unwrap();
@@ -392,7 +392,7 @@ mod tests {
         let (service, history) = build(&[("PASSWORD_HISTORY_COUNT", "1")], false);
         let user_id = Uuid::now_v7();
         history
-            .push(user_id, "hashed:oldpassword", Utc::now(), 4)
+            .push(user_id, "hashed:oldpassword", OffsetDateTime::now_utc(), 4)
             .await
             .unwrap();
         assert!(service
@@ -408,11 +408,11 @@ mod tests {
         let user_id = Uuid::now_v7();
         // Newest first: retired2, retired1 (history depth is 3 - 1 current = 2 entries).
         history
-            .push(user_id, "hashed:retired1", Utc::now(), 2)
+            .push(user_id, "hashed:retired1", OffsetDateTime::now_utc(), 2)
             .await
             .unwrap();
         history
-            .push(user_id, "hashed:retired2", Utc::now(), 2)
+            .push(user_id, "hashed:retired2", OffsetDateTime::now_utc(), 2)
             .await
             .unwrap();
 
@@ -435,7 +435,7 @@ mod tests {
         let (service, history) = build(&[("PASSWORD_HISTORY_COUNT", "3")], false);
         let other = Uuid::now_v7();
         history
-            .push(other, "hashed:sharedpassword", Utc::now(), 2)
+            .push(other, "hashed:sharedpassword", OffsetDateTime::now_utc(), 2)
             .await
             .unwrap();
         assert!(service

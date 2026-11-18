@@ -52,7 +52,7 @@ impl DeviceKey {
             "jti": uuid::Uuid::now_v7().to_string(),
             "htm": method,
             "htu": uri,
-            "iat": chrono::Utc::now().timestamp(),
+            "iat": time::OffsetDateTime::now_utc().unix_timestamp(),
         });
         if let Some(at) = access_token {
             claims["ath"] = Value::String(access_token_hash(at));
@@ -153,7 +153,7 @@ async fn bound_key_of(env: &TestEnv, refresh_token: &str) -> Option<String> {
 }
 
 async fn is_revoked(env: &TestEnv, refresh_token: &str) -> bool {
-    let revoked: Option<chrono::NaiveDateTime> =
+    let revoked: Option<time::PrimitiveDateTime> =
         sqlx::query_scalar("SELECT revoked_at FROM refresh_tokens WHERE token_hash = ?")
             .bind(sha256_hex(refresh_token))
             .fetch_one(&env.pool)

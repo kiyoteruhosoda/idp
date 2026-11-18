@@ -77,8 +77,8 @@ impl TokenEndpointLoadGate {
             rate_limiter: config.token_endpoint_rate_limit().map(|(max, window)| {
                 Arc::new(InMemoryLoginRateLimiter::new(
                     max,
-                    chrono::Duration::from_std(window)
-                        .unwrap_or_else(|_| chrono::Duration::seconds(60)),
+                    time::Duration::try_from(window)
+                        .unwrap_or_else(|_| time::Duration::seconds(60)),
                 )) as Arc<dyn LoginRateLimiter>
             }),
             clock,
@@ -96,8 +96,8 @@ impl TokenEndpointLoadGate {
             rate_limiter: rate_limit.map(|(max, window)| {
                 Arc::new(InMemoryLoginRateLimiter::new(
                     max,
-                    chrono::Duration::from_std(window)
-                        .unwrap_or_else(|_| chrono::Duration::seconds(60)),
+                    time::Duration::try_from(window)
+                        .unwrap_or_else(|_| time::Duration::seconds(60)),
                 )) as Arc<dyn LoginRateLimiter>
             }),
             clock,
@@ -203,12 +203,12 @@ fn oauth_error(status: StatusCode, description: &'static str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{DateTime, TimeZone, Utc};
+    use time::{macros::datetime, OffsetDateTime};
 
     struct FixedClock;
     impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
-            Utc.with_ymd_and_hms(2026, 8, 10, 0, 0, 0).unwrap()
+        fn now(&self) -> OffsetDateTime {
+            datetime!(2026-08-10 00:00:00 UTC)
         }
     }
 

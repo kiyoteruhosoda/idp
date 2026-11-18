@@ -7,7 +7,7 @@
 
 use crate::domain::message::MessageKey;
 use crate::domain::tenant::TenantId;
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use url::Url;
 use uuid::Uuid;
 
@@ -26,8 +26,8 @@ pub struct SamlServiceProvider {
     /// signing.
     pub x509_certificate: Option<String>,
     pub enabled: bool,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
 }
 
 pub struct NewSamlServiceProvider {
@@ -54,7 +54,7 @@ impl SamlServiceProvider {
     pub fn register(
         id: Uuid,
         input: NewSamlServiceProvider,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> std::result::Result<Self, MessageKey> {
         let fields = ValidatedFields::new(
             input.display_name,
@@ -82,7 +82,7 @@ impl SamlServiceProvider {
     pub fn apply(
         &mut self,
         changes: SamlServiceProviderChanges,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> std::result::Result<(), MessageKey> {
         let fields = ValidatedFields::new(
             changes.display_name,
@@ -190,7 +190,7 @@ mod tests {
                 x509_certificate: Some("  ".to_string()),
                 enabled: true,
             },
-            Utc::now(),
+            OffsetDateTime::now_utc(),
         )
         .expect("register");
         assert_eq!(sp.name_id_format, DEFAULT_NAME_ID_FORMAT);
@@ -200,7 +200,7 @@ mod tests {
 
     #[test]
     fn apply_updates_fields_and_validates() {
-        let created = Utc::now();
+        let created = OffsetDateTime::now_utc();
         let mut sp = SamlServiceProvider::register(
             Uuid::nil(),
             NewSamlServiceProvider {
@@ -216,7 +216,7 @@ mod tests {
         )
         .expect("register");
 
-        let later = created + chrono::Duration::seconds(5);
+        let later = created + time::Duration::seconds(5);
         sp.apply(
             SamlServiceProviderChanges {
                 display_name: "Renamed".to_string(),

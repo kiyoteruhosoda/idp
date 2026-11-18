@@ -16,7 +16,7 @@
 //! The browser's self-description (User-Agent) and the country are kept only for display and notices. Both can be
 //! freely written by the sender, so "is it registered" is decided by the mark alone.
 
-use chrono::{DateTime, Duration, Utc};
+use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::domain::crypto;
@@ -110,8 +110,8 @@ pub struct UserDevice {
     pub device: DeviceRef,
     pub name: String,
     pub user_agent: Option<String>,
-    pub registered_at: DateTime<Utc>,
-    pub last_used_at: DateTime<Utc>,
+    pub registered_at: OffsetDateTime,
+    pub last_used_at: OffsetDateTime,
     pub last_country: Option<CountryCode>,
     pub last_ip: Option<String>,
 }
@@ -127,7 +127,7 @@ impl UserDevice {
         user_agent: Option<String>,
         country: Option<CountryCode>,
         ip: Option<String>,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Self {
         Self {
             id,
@@ -143,7 +143,7 @@ impl UserDevice {
     }
 
     /// When the registration expires ([`UNUSED_DEVICE_EXPIRY_DAYS`] days after last use).
-    pub fn expires_at(&self) -> DateTime<Utc> {
+    pub fn expires_at(&self) -> OffsetDateTime {
         self.last_used_at + Duration::days(UNUSED_DEVICE_EXPIRY_DAYS)
     }
 }
@@ -155,8 +155,8 @@ impl UserDevice {
 /// advances on password re-verification, so it cannot tell "was it verified with a passkey".
 pub fn passkey_verified_recently(
     session: &SsoSession,
-    passkey_verified_at: Option<DateTime<Utc>>,
-    now: DateTime<Utc>,
+    passkey_verified_at: Option<OffsetDateTime>,
+    now: OffsetDateTime,
 ) -> bool {
     let max_age = Duration::seconds(REGISTRATION_PASSKEY_MAX_AGE_SECS);
     (session.used_method(AuthenticationMethod::WebAuthn) && now - session.auth_time <= max_age)
@@ -164,7 +164,7 @@ pub fn passkey_verified_recently(
 }
 
 /// Devices not used since before this time have expired registrations.
-pub fn unused_device_cutoff(now: DateTime<Utc>) -> DateTime<Utc> {
+pub fn unused_device_cutoff(now: OffsetDateTime) -> OffsetDateTime {
     now - Duration::days(UNUSED_DEVICE_EXPIRY_DAYS)
 }
 
@@ -243,7 +243,7 @@ mod tests {
 
     #[test]
     fn devices_expire_after_being_unused_for_180_days() {
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         let device = UserDevice::register(
             Uuid::now_v7(),
             Uuid::now_v7(),

@@ -6,7 +6,7 @@
 //! `credential_id` is an index field (base64url string) to quickly find which `passkey_json`
 //! to use when an authentication response arrives.
 
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -19,7 +19,7 @@ pub struct WebAuthnCredential {
     pub passkey_json: String,
     /// Optional label set by the user (e.g. "MacBook Touch ID").
     pub name: String,
-    pub created_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
     /// Time of the latest successful authentication (updated together with sign_count).
-    pub last_used_at: Option<DateTime<Utc>>,
+    pub last_used_at: Option<OffsetDateTime>,
 }

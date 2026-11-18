@@ -4,10 +4,11 @@ use crate::domain::backchannel_logout::BackchannelLogoutDelivery;
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::BackchannelLogoutDeliveryRepository;
 use crate::infrastructure::db::Db;
+use assay_contracts::utc::{from_naive_utc, UtcInstant};
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::mysql::MySqlRow;
 use sqlx::Row;
+use time::{OffsetDateTime, PrimitiveDateTime};
 use uuid::Uuid;
 
 pub struct SqlxBackchannelLogoutDeliveryRepository {
@@ -27,8 +28,8 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
-    Utc.from_utc_datetime(&naive)
+fn to_utc(naive: PrimitiveDateTime) -> OffsetDateTime {
+    from_naive_utc(naive)
 }
 
 fn parse_uuid(value: &str, column: &str) -> Result<Uuid> {
@@ -52,7 +53,7 @@ fn map_row(row: &MySqlRow) -> Result<BackchannelLogoutDelivery> {
         next_attempt_at: to_utc(row.try_get("next_attempt_at").map_err(repo_err)?),
         last_error: row.try_get("last_error").map_err(repo_err)?,
         delivered_at: row
-            .try_get::<Option<NaiveDateTime>, _>("delivered_at")
+            .try_get::<Option<PrimitiveDateTime>, _>("delivered_at")
             .map_err(repo_err)?
             .map(to_utc),
         created_at: to_utc(row.try_get("created_at").map_err(repo_err)?),
@@ -101,7 +102,7 @@ impl BackchannelLogoutDeliveryRepository for SqlxBackchannelLogoutDeliveryReposi
 
     async fn claim_due(
         &self,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
         max_attempts: i32,
         limit: u32,
     ) -> Result<Vec<BackchannelLogoutDelivery>> {
@@ -147,7 +148,7 @@ impl BackchannelLogoutDeliveryRepository for SqlxBackchannelLogoutDeliveryReposi
         Ok(claimed)
     }
 
-    async fn mark_delivered(&self, id: Uuid, delivered_at: DateTime<Utc>) -> Result<()> {
+    async fn mark_delivered(&self, id: Uuid, delivered_at: OffsetDateTime) -> Result<()> {
         sqlx::query(
             "UPDATE backchannel_logout_deliveries SET delivered_at = ?, last_error = NULL \
              WHERE id = ?",
@@ -163,7 +164,7 @@ impl BackchannelLogoutDeliveryRepository for SqlxBackchannelLogoutDeliveryReposi
     async fn mark_failed(
         &self,
         id: Uuid,
-        next_attempt_at: DateTime<Utc>,
+        next_attempt_at: OffsetDateTime,
         error: &str,
     ) -> Result<()> {
         sqlx::query(
@@ -179,7 +180,7 @@ impl BackchannelLogoutDeliveryRepository for SqlxBackchannelLogoutDeliveryReposi
         Ok(())
     }
 
-    async fn purge_settled(&self, older_than: DateTime<Utc>, max_attempts: i32) -> Result<u64> {
+    async fn purge_settled(&self, older_than: OffsetDateTime, max_attempts: i32) -> Result<u64> {
         let result = sqlx::query(
             "DELETE FROM backchannel_logout_deliveries \
              WHERE updated_at < ? AND (delivered_at IS NOT NULL OR attempts >= ?)",

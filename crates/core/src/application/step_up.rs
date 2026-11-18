@@ -489,8 +489,8 @@ mod tests {
     };
     use crate::domain::values::UserStatus;
     use async_trait::async_trait;
-    use chrono::{DateTime, Duration, TimeZone, Utc};
     use std::sync::Mutex;
+    use time::{macros::datetime, Duration, OffsetDateTime};
     use uuid::Uuid;
 
     const COOKIE: &str = "sso-cookie";
@@ -498,8 +498,8 @@ mod tests {
     const USER: Uuid = Uuid::from_u128(1);
     const KEY: [u8; 32] = [3u8; 32];
 
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 8, 1, 12, 0, 0).unwrap()
+    fn now() -> OffsetDateTime {
+        datetime!(2026-08-01 12:00:00 UTC)
     }
 
     fn tenant() -> TenantContext {
@@ -508,7 +508,7 @@ mod tests {
 
     struct FixedClock;
     impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> OffsetDateTime {
             now()
         }
     }
@@ -525,7 +525,7 @@ mod tests {
 
     struct AllowAll;
     impl LoginRateLimiter for AllowAll {
-        fn check_and_record(&self, _key: &str, _now: DateTime<Utc>) -> bool {
+        fn check_and_record(&self, _key: &str, _now: OffsetDateTime) -> bool {
             true
         }
     }
@@ -552,14 +552,14 @@ mod tests {
             let row = self.row.lock().unwrap();
             Ok((row.session_hash == hash).then(|| row.clone()))
         }
-        async fn extend_idle(&self, _h: &str, _t: DateTime<Utc>) -> DomainResult<()> {
+        async fn extend_idle(&self, _h: &str, _t: OffsetDateTime) -> DomainResult<()> {
             unreachable!()
         }
         async fn record_step_up(
             &self,
             _h: &str,
             methods: &[AuthenticationMethod],
-            verified_at: DateTime<Utc>,
+            verified_at: OffsetDateTime,
         ) -> DomainResult<()> {
             // Performs the same update as the implementation (`SqlxSsoSessionRepository::record_step_up`). Multi-factor
             // step-up also rewrites method and strength: omitting this would run the tests in a state that does not exist
@@ -591,7 +591,7 @@ mod tests {
             &self,
             _id: Uuid,
             _lockout: crate::domain::authentication_policy::LockoutPolicy,
-            _now: chrono::DateTime<chrono::Utc>,
+            _now: time::OffsetDateTime,
         ) -> DomainResult<crate::domain::user::LoginFailureRecord> {
             unreachable!()
         }
@@ -633,7 +633,7 @@ mod tests {
             &self,
             _id: Uuid,
             _c: i32,
-            _l: Option<DateTime<Utc>>,
+            _l: Option<OffsetDateTime>,
         ) -> DomainResult<()> {
             unreachable!()
         }
@@ -684,7 +684,7 @@ mod tests {
                 updated_at: now(),
             }))
         }
-        async fn confirm(&self, _u: Uuid, _c: DateTime<Utc>) -> DomainResult<()> {
+        async fn confirm(&self, _u: Uuid, _c: OffsetDateTime) -> DomainResult<()> {
             unreachable!()
         }
         async fn delete(&self, _u: Uuid) -> DomainResult<()> {
@@ -835,7 +835,7 @@ mod tests {
     #[tokio::test]
     async fn a_fresh_session_satisfies_a_password_level_operation() {
         let (svc, _) = service(
-            session(vec![AuthenticationMethod::Password], Duration::zero()),
+            session(vec![AuthenticationMethod::Password], Duration::ZERO),
             false,
         );
         assert!(matches!(
@@ -848,7 +848,7 @@ mod tests {
     #[tokio::test]
     async fn managing_authenticators_needs_the_second_factor() {
         let (svc, _) = service(
-            session(vec![AuthenticationMethod::Password], Duration::zero()),
+            session(vec![AuthenticationMethod::Password], Duration::ZERO),
             true,
         );
         let StepUpCheckOutcome::ChallengeRequired {
@@ -867,7 +867,7 @@ mod tests {
     #[tokio::test]
     async fn managing_authenticators_without_an_enrolled_one_stays_single_factor() {
         let (svc, _) = service(
-            session(vec![AuthenticationMethod::Password], Duration::zero()),
+            session(vec![AuthenticationMethod::Password], Duration::ZERO),
             false,
         );
         assert!(matches!(
@@ -941,7 +941,7 @@ mod tests {
     #[tokio::test]
     async fn a_multi_factor_operation_rejects_a_password_only_step_up() {
         let (svc, sessions) = service(
-            session(vec![AuthenticationMethod::Password], Duration::zero()),
+            session(vec![AuthenticationMethod::Password], Duration::ZERO),
             true,
         );
         let outcome = svc

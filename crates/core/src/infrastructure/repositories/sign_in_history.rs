@@ -10,10 +10,11 @@ use crate::domain::tenant::TenantId;
 use crate::domain::user_device::CountryCode;
 use crate::infrastructure::db::Db;
 use crate::infrastructure::repositories::authentication_methods_json;
+use assay_contracts::utc::{from_naive_utc, UtcInstant};
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::{MySql, QueryBuilder, Row};
 use std::collections::HashMap;
+use time::{OffsetDateTime, PrimitiveDateTime};
 use uuid::Uuid;
 
 pub struct SqlxSignInHistoryRepository {
@@ -30,8 +31,8 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
-    Utc.from_utc_datetime(&naive)
+fn to_utc(naive: PrimitiveDateTime) -> OffsetDateTime {
+    from_naive_utc(naive)
 }
 
 /// Truncates to the column length so a long value doesn't fail the INSERT.
@@ -93,7 +94,7 @@ impl SignInHistoryRepository for SqlxSignInHistoryRepository {
         tenant_id: TenantId,
         sid: &str,
         client_id: &str,
-        issued_at: DateTime<Utc>,
+        issued_at: OffsetDateTime,
         refresh_issued: bool,
     ) -> Result<()> {
         sqlx::query(
@@ -120,7 +121,7 @@ impl SignInHistoryRepository for SqlxSignInHistoryRepository {
         &self,
         sid: &str,
         client_id: &str,
-        used_at: DateTime<Utc>,
+        used_at: OffsetDateTime,
         ip_address: Option<&str>,
         user_agent: Option<&str>,
     ) -> Result<()> {
@@ -146,7 +147,7 @@ impl SignInHistoryRepository for SqlxSignInHistoryRepository {
         &self,
         sid: &str,
         client_id: &str,
-        detected_at: DateTime<Utc>,
+        detected_at: OffsetDateTime,
     ) -> Result<()> {
         sqlx::query(
             "UPDATE sign_in_app_usage SET refresh_reuse_detected_at = ? \
@@ -215,7 +216,7 @@ impl SignInHistoryRepository for SqlxSignInHistoryRepository {
         &self,
         user_id: Uuid,
         sids: &[String],
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<Vec<SignInAppUse>> {
         if sids.is_empty() {
             return Ok(Vec::new());
@@ -258,7 +259,7 @@ impl SignInHistoryRepository for SqlxSignInHistoryRepository {
                 let v: Option<i64> = row.try_get(name).map_err(repo_err)?;
                 Ok(u32::try_from(v.unwrap_or(0)).unwrap_or(u32::MAX))
             };
-            let last_revoked: Option<NaiveDateTime> =
+            let last_revoked: Option<PrimitiveDateTime> =
                 row.try_get("last_revoked_at").map_err(repo_err)?;
             tallies.insert(
                 (sid, client_id),
@@ -277,8 +278,8 @@ impl SignInHistoryRepository for SqlxSignInHistoryRepository {
                 let sid: String = row.try_get("sid").map_err(repo_err)?;
                 let client_id: String = row.try_get("client_id").map_err(repo_err)?;
                 let refresh_issued: bool = row.try_get("refresh_issued").map_err(repo_err)?;
-                let opt_time = |name: &str| -> Result<Option<DateTime<Utc>>> {
-                    let v: Option<NaiveDateTime> = row.try_get(name).map_err(repo_err)?;
+                let opt_time = |name: &str| -> Result<Option<OffsetDateTime>> {
+                    let v: Option<PrimitiveDateTime> = row.try_get(name).map_err(repo_err)?;
                     Ok(v.map(to_utc))
                 };
                 let refresh = if refresh_issued {

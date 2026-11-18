@@ -15,7 +15,7 @@ use crate::infrastructure::repositories::tenant::insert_tenant;
 use crate::infrastructure::repositories::tenant_membership::insert_membership;
 use crate::infrastructure::repositories::user_permission::insert_grant;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 
 pub struct SqlxTenantProvisioningRepository {
     pool: Db,
@@ -38,7 +38,7 @@ impl TenantProvisioningRepository for SqlxTenantProvisioningRepository {
         tenant: &Tenant,
         admin_membership: &TenantMembership,
         admin_permission_code: &str,
-        granted_at: DateTime<Utc>,
+        granted_at: OffsetDateTime,
     ) -> Result<()> {
         let mut tx = self.pool.begin().await.map_err(repo_err)?;
         insert_tenant(&mut *tx, tenant).await?;

@@ -149,7 +149,7 @@ impl RevocationService {
         &self,
         tenant: TenantContext,
         token: &str,
-        now: chrono::DateTime<chrono::Utc>,
+        now: time::OffsetDateTime,
         client: &Client,
     ) -> Result<bool, RevocationError> {
         let hash = crypto::sha256_hex(token);
@@ -203,7 +203,7 @@ impl RevocationService {
         &self,
         tenant: TenantContext,
         token: &str,
-        now: chrono::DateTime<chrono::Utc>,
+        now: time::OffsetDateTime,
         client: &Client,
     ) -> Result<bool, RevocationError> {
         let claims = match self.access_tokens.verify_issued(tenant, token).await {
@@ -223,7 +223,7 @@ impl RevocationService {
         if claims.jti.is_empty() || self.access_tokens.is_expired(&claims) {
             return Ok(true);
         }
-        let Some(expires_at) = chrono::DateTime::from_timestamp(claims.exp, 0) else {
+        let Some(expires_at) = assay_contracts::utc::from_unix_seconds(claims.exp) else {
             return Ok(false);
         };
         let revoked = RevokedAccessToken {

@@ -32,7 +32,7 @@ use crate::domain::message::MessageKey;
 use crate::domain::tenant::TenantId;
 use crate::domain::user::User;
 use crate::domain::values::string_enum;
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 string_enum!(
@@ -332,8 +332,8 @@ pub struct UserLoginIdentifier {
     /// row per normalized value can exist, so users whose username and email are the same value
     /// have no primary email row; decision 6).
     pub is_primary_email: bool,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
 }
 
 #[cfg(test)]

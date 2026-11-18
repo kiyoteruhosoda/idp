@@ -15,10 +15,11 @@ use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::TotpSecretRepository;
 use crate::domain::totp_secret::TotpSecret;
 use crate::infrastructure::db::Db;
+use assay_contracts::utc::{from_naive_utc, UtcInstant};
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::mysql::MySqlRow;
 use sqlx::Row;
+use time::{OffsetDateTime, PrimitiveDateTime};
 use uuid::Uuid;
 
 pub struct SqlxTotpSecretRepository {
@@ -35,13 +36,13 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
-    Utc.from_utc_datetime(&naive)
+fn to_utc(naive: PrimitiveDateTime) -> OffsetDateTime {
+    from_naive_utc(naive)
 }
 
 fn map_row(row: &MySqlRow) -> Result<TotpSecret> {
     let user_id: String = row.try_get("user_id").map_err(repo_err)?;
-    let confirmed_at: Option<NaiveDateTime> = row.try_get("confirmed_at").map_err(repo_err)?;
+    let confirmed_at: Option<PrimitiveDateTime> = row.try_get("confirmed_at").map_err(repo_err)?;
     Ok(TotpSecret {
         user_id: Uuid::parse_str(&user_id)
             .map_err(|e| DomainError::Repository(format!("invalid UUID: {e}")))?,
@@ -96,7 +97,7 @@ impl TotpSecretRepository for SqlxTotpSecretRepository {
 
     /// Records the confirmation time. The `status` transition (`pending` -> `active`) is done by
     /// `AuthenticatorManagementService::activate_totp`.
-    async fn confirm(&self, user_id: Uuid, confirmed_at: DateTime<Utc>) -> Result<()> {
+    async fn confirm(&self, user_id: Uuid, confirmed_at: OffsetDateTime) -> Result<()> {
         sqlx::query(
             "UPDATE user_authenticators SET confirmed_at = ? \
              WHERE user_id = ? AND authenticator_type = 'totp' AND status <> 'revoked' \
@@ -134,7 +135,7 @@ impl TotpSecretRepository for SqlxTotpSecretRepository {
         &self,
         user_id: Uuid,
         step: i64,
-        at: DateTime<Utc>,
+        at: OffsetDateTime,
     ) -> Result<bool> {
         let result = sqlx::query(
             "UPDATE user_authenticators \

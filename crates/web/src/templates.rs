@@ -50,11 +50,12 @@ pub fn footer_version() -> String {
 ///
 /// Unparseable values are returned as is (a raw value is a better clue than showing nothing).
 pub fn utc_short(value: &str) -> String {
-    match chrono::DateTime::parse_from_rfc3339(value) {
+    match assay_contracts::utc::parse_rfc3339(value) {
         Ok(t) => t
-            .with_timezone(&chrono::Utc)
-            .format("%Y-%m-%d %H:%M UTC")
-            .to_string(),
+            .format(time::macros::format_description!(
+                "[year]-[month]-[day] [hour]:[minute] UTC"
+            ))
+            .unwrap_or_else(|_| value.to_string()),
         Err(_) => value.to_string(),
     }
 }

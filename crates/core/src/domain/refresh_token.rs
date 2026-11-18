@@ -5,7 +5,7 @@
 
 use crate::domain::tenant::TenantId;
 use crate::domain::values::AuthenticationMethod;
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -38,14 +38,14 @@ pub struct RefreshToken {
     /// Like `sid`, carried over on rotation — refresh does not redo authentication, so the "last
     /// login time" does not change either. `None` = not recorded (tokens issued before this column
     /// existed; [`Self::auth_time_or_issued`]).
-    pub auth_time: Option<DateTime<Utc>>,
+    pub auth_time: Option<OffsetDateTime>,
     /// Thumbprint of the key bound via DPoP (RFC 7638; ADR-0075). If `Some`, unusable without a
     /// proof by the same key. Carried over to children on rotation. `None` = unbound (usable by
     /// whoever holds it, as before).
     pub dpop_jkt: Option<String>,
-    pub expires_at: DateTime<Utc>,
-    pub revoked_at: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
+    pub expires_at: OffsetDateTime,
+    pub revoked_at: Option<OffsetDateTime>,
+    pub created_at: OffsetDateTime,
 }
 
 impl RefreshToken {
@@ -53,11 +53,11 @@ impl RefreshToken {
         self.revoked_at.is_some()
     }
 
-    pub fn is_expired_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_expired_at(&self, now: OffsetDateTime) -> bool {
         self.expires_at <= now
     }
 
-    pub fn is_valid_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_valid_at(&self, now: OffsetDateTime) -> bool {
         !self.is_revoked() && !self.is_expired_at(now)
     }
 
@@ -69,7 +69,7 @@ impl RefreshToken {
     /// family revocation from the next rotation on. Time used for the ID Token's `auth_time`.
     /// Pre-migration rows without a record use the time the token was issued (the actual
     /// authentication was earlier, so at least it never claims "just logged in").
-    pub fn auth_time_or_issued(&self) -> DateTime<Utc> {
+    pub fn auth_time_or_issued(&self) -> OffsetDateTime {
         self.auth_time.unwrap_or(self.created_at)
     }
 
@@ -85,7 +85,7 @@ mod tests {
     use super::*;
 
     fn token(token_hash: &str, grant_hash: Option<&str>) -> RefreshToken {
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         RefreshToken {
             token_hash: token_hash.to_string(),
             parent_hash: None,
@@ -121,7 +121,7 @@ mod tests {
         let mut t = token("t", None);
         let issued = t.created_at;
         assert_eq!(t.auth_time_or_issued(), issued);
-        let signed_in = issued - chrono::Duration::hours(3);
+        let signed_in = issued - time::Duration::hours(3);
         t.auth_time = Some(signed_in);
         assert_eq!(t.auth_time_or_issued(), signed_in);
     }

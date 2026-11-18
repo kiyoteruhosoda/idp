@@ -62,8 +62,8 @@ pub struct LoginIdentifierEntry {
     pub is_primary: bool,
     /// Whether this is the primary email row (ADR-0050). Like the primary identifier, it is not subject to individual operations.
     pub is_primary_email: bool,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub created_at: time::OffsetDateTime,
+    pub updated_at: time::OffsetDateTime,
 }
 
 impl From<UserLoginIdentifier> for LoginIdentifierEntry {
@@ -471,12 +471,12 @@ mod tests {
     use crate::domain::repositories::AuditLogSink;
     use crate::domain::values::UserStatus;
     use async_trait::async_trait;
-    use chrono::{DateTime, TimeZone, Utc};
     use std::sync::Mutex;
+    use time::{macros::datetime, OffsetDateTime};
 
-    struct FixedClock(DateTime<Utc>);
+    struct FixedClock(OffsetDateTime);
     impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> OffsetDateTime {
             self.0
         }
     }
@@ -546,7 +546,7 @@ mod tests {
             &self,
             _id: Uuid,
             _c: i32,
-            _l: Option<chrono::DateTime<Utc>>,
+            _l: Option<time::OffsetDateTime>,
         ) -> DomainResult<()> {
             Ok(())
         }
@@ -554,7 +554,7 @@ mod tests {
             &self,
             _id: Uuid,
             _lockout: crate::domain::authentication_policy::LockoutPolicy,
-            _now: chrono::DateTime<Utc>,
+            _now: time::OffsetDateTime,
         ) -> DomainResult<crate::domain::user::LoginFailureRecord> {
             unreachable!()
         }
@@ -662,7 +662,7 @@ mod tests {
     }
 
     fn user(id: u128, username: &str, email: &str) -> User {
-        let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let now = datetime!(2026-01-01 00:00:00 UTC);
         User {
             id: Uuid::from_u128(id),
             tenant_id: TenantId::from(Uuid::from_u128(1)),
@@ -692,9 +692,7 @@ mod tests {
         Arc<Identifiers>,
         Arc<Users>,
     ) {
-        let clock = Arc::new(FixedClock(
-            Utc.with_ymd_and_hms(2026, 1, 2, 0, 0, 0).unwrap(),
-        ));
+        let clock = Arc::new(FixedClock(datetime!(2026-01-02 00:00:00 UTC)));
         let identifiers = Arc::new(Identifiers::default());
         let users = Arc::new(Users {
             rows: users,
@@ -848,7 +846,7 @@ mod tests {
     async fn the_list_shows_registry_rows_with_the_primary_first() {
         let (service, identifiers, _) = service(vec![user(2, "alice", "alice@example.com")]);
         // The primary identifier exists as a registry row (`UserRepository` creates it; placed directly here).
-        let now = chrono::Utc::now();
+        let now = time::OffsetDateTime::now_utc();
         identifiers
             .create(&UserLoginIdentifier {
                 id: Uuid::from_u128(100),

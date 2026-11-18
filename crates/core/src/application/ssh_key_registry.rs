@@ -32,8 +32,8 @@ use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::user::User;
 use crate::domain::user_device::passkey_verified_recently;
-use chrono::{DateTime, Utc};
 use std::sync::Arc;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// What is shown in the "SSH keys" section.
@@ -348,7 +348,7 @@ impl SshKeyRegistryService {
     async fn passkey_is_fresh(
         &self,
         session: &SsoSession,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<bool, DomainError> {
         let verified_at = self
             .sso_sessions
@@ -360,7 +360,7 @@ impl SshKeyRegistryService {
     async fn active_session(
         &self,
         sso_session_id: &str,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<Option<ActiveSession>, String> {
         let hash = crypto::sha256_hex(sso_session_id);
         let session = match self.sso_sessions.find_by_hash(&hash).await {
@@ -381,7 +381,7 @@ impl SshKeyRegistryService {
         tenant: &TenantContext,
         kind: SecurityAlertKind,
         fingerprint: &str,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
         ctx: &RequestContext,
     ) {
         let username = user
@@ -415,16 +415,16 @@ mod tests {
     use crate::domain::tenant::TenantId;
     use crate::domain::values::{AuthenticationMethod, UserStatus};
     use async_trait::async_trait;
-    use chrono::{Duration, TimeZone};
     use std::sync::Mutex;
+    use time::{macros::datetime, Duration};
 
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 11, 4, 12, 0, 0).unwrap()
+    fn now() -> OffsetDateTime {
+        datetime!(2026-11-04 12:00:00 UTC)
     }
 
     struct FixedClock;
     impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> OffsetDateTime {
             now()
         }
     }
@@ -446,7 +446,7 @@ mod tests {
     #[derive(Default)]
     struct FakeSessions {
         rows: Mutex<Vec<SsoSession>>,
-        passkey_at: Mutex<Option<DateTime<Utc>>>,
+        passkey_at: Mutex<Option<OffsetDateTime>>,
     }
     #[async_trait]
     impl SsoSessionRepository for FakeSessions {
@@ -463,10 +463,10 @@ mod tests {
                 .find(|s| s.session_hash == hash)
                 .cloned())
         }
-        async fn extend_idle(&self, _h: &str, _t: DateTime<Utc>) -> DomainResult<()> {
+        async fn extend_idle(&self, _h: &str, _t: OffsetDateTime) -> DomainResult<()> {
             unreachable!()
         }
-        async fn passkey_verified_at(&self, _h: &str) -> DomainResult<Option<DateTime<Utc>>> {
+        async fn passkey_verified_at(&self, _h: &str) -> DomainResult<Option<OffsetDateTime>> {
             Ok(*self.passkey_at.lock().unwrap())
         }
         async fn delete(&self, hash: &str) -> DomainResult<()> {
@@ -535,7 +535,7 @@ mod tests {
             &self,
             _id: Uuid,
             _lockout: crate::domain::authentication_policy::LockoutPolicy,
-            _now: DateTime<Utc>,
+            _now: OffsetDateTime,
         ) -> DomainResult<crate::domain::user::LoginFailureRecord> {
             unreachable!()
         }
@@ -577,7 +577,7 @@ mod tests {
             &self,
             _id: Uuid,
             _c: i32,
-            _l: Option<DateTime<Utc>>,
+            _l: Option<OffsetDateTime>,
         ) -> DomainResult<()> {
             unreachable!()
         }

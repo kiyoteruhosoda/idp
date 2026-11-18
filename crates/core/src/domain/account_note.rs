@@ -11,7 +11,7 @@
 //! - A service account belongs to only one tenant, so it attaches directly to `clients.id`
 
 use crate::domain::message::MessageKey;
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// Note limit (characters). Enough for a few lines of history; not long enough to become a place to paste minutes.
@@ -24,7 +24,7 @@ pub use assay_contracts::admin::ACCOUNT_NOTE_MAX_LEN;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountNote {
     pub text: String,
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: OffsetDateTime,
     /// The admin who last wrote it. `None` when written via a machine or the writer has been deleted.
     pub updated_by: Option<Uuid>,
 }

@@ -5,14 +5,14 @@
 //! When scaling out, swap in a shared-store implementation such as Redis (`LoginRateLimiter` is the DIP boundary).
 
 use crate::domain::rate_limit::LoginRateLimiter;
-use chrono::{DateTime, Duration, Utc};
 use std::collections::HashMap;
 use std::sync::Mutex;
+use time::{Duration, OffsetDateTime};
 
 pub struct InMemoryLoginRateLimiter {
     max_attempts: usize,
     window: Duration,
-    attempts: Mutex<HashMap<String, Vec<DateTime<Utc>>>>,
+    attempts: Mutex<HashMap<String, Vec<OffsetDateTime>>>,
 }
 
 impl InMemoryLoginRateLimiter {
@@ -26,7 +26,7 @@ impl InMemoryLoginRateLimiter {
 }
 
 impl LoginRateLimiter for InMemoryLoginRateLimiter {
-    fn check_and_record(&self, key: &str, now: DateTime<Utc>) -> bool {
+    fn check_and_record(&self, key: &str, now: OffsetDateTime) -> bool {
         let mut map = self.attempts.lock().expect("rate limiter lock poisoned");
         let cutoff = now - self.window;
         // Purge entries outside the window (also keeps the key set from growing).
@@ -47,12 +47,12 @@ impl LoginRateLimiter for InMemoryLoginRateLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
+    use time::macros::datetime;
 
     #[test]
     fn allows_up_to_max_then_rejects_within_window() {
         let limiter = InMemoryLoginRateLimiter::new(3, Duration::minutes(5));
-        let now = Utc.with_ymd_and_hms(2026, 7, 5, 0, 0, 0).unwrap();
+        let now = datetime!(2026-07-05 00:00:00 UTC);
         assert!(limiter.check_and_record("203.0.113.1", now));
         assert!(limiter.check_and_record("203.0.113.1", now));
         assert!(limiter.check_and_record("203.0.113.1", now));

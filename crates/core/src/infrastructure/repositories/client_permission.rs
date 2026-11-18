@@ -3,9 +3,10 @@
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::ClientPermissionRepository;
 use crate::infrastructure::db::Db;
+use assay_contracts::utc::UtcInstant;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use sqlx::Row;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 pub struct SqlxClientPermissionRepository {
@@ -43,7 +44,7 @@ impl ClientPermissionRepository for SqlxClientPermissionRepository {
         &self,
         client_row_id: Uuid,
         code: &str,
-        granted_at: DateTime<Utc>,
+        granted_at: OffsetDateTime,
     ) -> Result<()> {
         sqlx::query(
             "INSERT INTO client_permissions (client_id, permission_code, granted_at) \

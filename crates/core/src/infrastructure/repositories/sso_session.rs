@@ -6,10 +6,11 @@ use crate::domain::sso_session::SsoSession;
 use crate::domain::values::{AuthenticationMethod, AuthenticationStrength};
 use crate::infrastructure::db::Db;
 use crate::infrastructure::repositories::authentication_methods_json;
+use assay_contracts::utc::{from_naive_utc, UtcInstant};
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::mysql::MySqlRow;
 use sqlx::Row;
+use time::{OffsetDateTime, PrimitiveDateTime};
 use uuid::Uuid;
 
 pub struct SqlxSsoSessionRepository {
@@ -30,8 +31,8 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
-    Utc.from_utc_datetime(&naive)
+fn to_utc(naive: PrimitiveDateTime) -> OffsetDateTime {
+    from_naive_utc(naive)
 }
 
 fn map_row(row: &MySqlRow) -> Result<SsoSession> {
@@ -49,11 +50,11 @@ fn map_row(row: &MySqlRow) -> Result<SsoSession> {
         ),
         authentication_strength: AuthenticationStrength::parse(&strength)?,
         mfa_completed_at: row
-            .try_get::<Option<NaiveDateTime>, _>("mfa_completed_at")
+            .try_get::<Option<PrimitiveDateTime>, _>("mfa_completed_at")
             .map_err(repo_err)?
             .map(to_utc),
         step_up_at: row
-            .try_get::<Option<NaiveDateTime>, _>("step_up_at")
+            .try_get::<Option<PrimitiveDateTime>, _>("step_up_at")
             .map_err(repo_err)?
             .map(to_utc),
         user_agent: row.try_get("user_agent").map_err(repo_err)?,
@@ -115,7 +116,7 @@ impl SsoSessionRepository for SqlxSsoSessionRepository {
         rows.iter().map(map_row).collect()
     }
 
-    async fn extend_idle(&self, session_hash: &str, idle_expires_at: DateTime<Utc>) -> Result<()> {
+    async fn extend_idle(&self, session_hash: &str, idle_expires_at: OffsetDateTime) -> Result<()> {
         // ⚠ Not shortened (login states bound to a device key have idle extended up to absolute; ADR-0074).
         sqlx::query(
             "UPDATE sso_sessions SET idle_expires_at = GREATEST(idle_expires_at, ?) \
@@ -132,8 +133,8 @@ impl SsoSessionRepository for SqlxSsoSessionRepository {
     async fn set_lifetime(
         &self,
         session_hash: &str,
-        idle_expires_at: DateTime<Utc>,
-        absolute_expires_at: DateTime<Utc>,
+        idle_expires_at: OffsetDateTime,
+        absolute_expires_at: OffsetDateTime,
     ) -> Result<()> {
         sqlx::query(
             "UPDATE sso_sessions SET idle_expires_at = ?, absolute_expires_at = ? \
@@ -152,7 +153,7 @@ impl SsoSessionRepository for SqlxSsoSessionRepository {
         &self,
         session_hash: &str,
         methods: &[AuthenticationMethod],
-        completed_at: DateTime<Utc>,
+        completed_at: OffsetDateTime,
     ) -> Result<()> {
         sqlx::query(
             "UPDATE sso_sessions \
@@ -173,7 +174,7 @@ impl SsoSessionRepository for SqlxSsoSessionRepository {
         &self,
         session_hash: &str,
         methods: &[AuthenticationMethod],
-        verified_at: DateTime<Utc>,
+        verified_at: OffsetDateTime,
     ) -> Result<()> {
         let strength = AuthenticationStrength::from_methods(methods);
         // Only a step-up through a second factor advances `mfa_completed_at`. Restoring MFA freshness through
@@ -222,8 +223,8 @@ impl SsoSessionRepository for SqlxSsoSessionRepository {
         Ok(())
     }
 
-    async fn passkey_verified_at(&self, session_hash: &str) -> Result<Option<DateTime<Utc>>> {
-        let row: Option<Option<NaiveDateTime>> = sqlx::query_scalar(
+    async fn passkey_verified_at(&self, session_hash: &str) -> Result<Option<OffsetDateTime>> {
+        let row: Option<Option<PrimitiveDateTime>> = sqlx::query_scalar(
             "SELECT passkey_verified_at FROM sso_session_contexts WHERE session_hash = ?",
         )
         .bind(session_hash)
@@ -266,7 +267,7 @@ impl SsoSessionRepository for SqlxSsoSessionRepository {
         Ok(result.rows_affected())
     }
 
-    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64> {
+    async fn delete_expired(&self, now: OffsetDateTime) -> Result<u64> {
         let result = sqlx::query(
             "DELETE FROM sso_sessions WHERE idle_expires_at <= ? OR absolute_expires_at <= ?",
         )

@@ -27,7 +27,7 @@ use crate::domain::error::Result;
 use crate::domain::message::MessageKey;
 use crate::domain::user::User;
 use async_trait::async_trait;
-use chrono::{DateTime, Duration, Utc};
+use time::{Duration, OffsetDateTime};
 
 /// Default lookup target for breach checks (Have I Been Pwned range API). Implemented in
 /// `infrastructure::breached_password`. The default is defined on the domain side because the
@@ -147,13 +147,13 @@ impl PasswordPolicy {
     }
 
     /// Whether a password set at `changed_at` has expired as of `now`.
-    pub fn is_expired(&self, changed_at: DateTime<Utc>, now: DateTime<Utc>) -> bool {
+    pub fn is_expired(&self, changed_at: OffsetDateTime, now: OffsetDateTime) -> bool {
         if self.max_age_days == 0 {
             return false;
         }
-        match Duration::try_days(i64::from(self.max_age_days)) {
-            Some(max_age) => now >= changed_at + max_age,
-            // Days beyond chrono's representable range = effectively no expiry.
+        match changed_at.checked_add(Duration::days(i64::from(self.max_age_days))) {
+            Some(expires_at) => now >= expires_at,
+            // An expiry beyond the representable date range = effectively no expiry.
             None => false,
         }
     }
@@ -164,7 +164,7 @@ impl PasswordPolicy {
 /// Both the login path and the change path look at this one function. If only login looked at
 /// expiry and the change path did not, users would end up "sent to the change screen but not
 /// allowed to change".
-pub fn password_change_required(user: &User, policy: &PasswordPolicy, now: DateTime<Utc>) -> bool {
+pub fn password_change_required(user: &User, policy: &PasswordPolicy, now: OffsetDateTime) -> bool {
     user.must_change_password || policy.is_expired(user.password_set_at(), now)
 }
 
@@ -206,8 +206,8 @@ mod tests {
         }
     }
 
-    fn user(must_change: bool, password_changed_at: Option<DateTime<Utc>>) -> User {
-        let now = Utc::now();
+    fn user(must_change: bool, password_changed_at: Option<OffsetDateTime>) -> User {
+        let now = OffsetDateTime::now_utc();
         User {
             id: Uuid::now_v7(),
             tenant_id: Uuid::now_v7().into(),
@@ -225,7 +225,7 @@ mod tests {
             pending_setup: false,
             failed_login_count: 0,
             locked_until: None,
-            created_at: now - Duration::try_days(400).unwrap(),
+            created_at: now - Duration::days(400),
             updated_at: now,
         }
     }
@@ -268,24 +268,24 @@ mod tests {
 
     #[test]
     fn zero_max_age_never_expires() {
-        let now = Utc::now();
-        let ancient = now - Duration::try_days(10_000).unwrap();
+        let now = OffsetDateTime::now_utc();
+        let ancient = now - Duration::days(10_000);
         assert!(!policy(0, 0).is_expired(ancient, now));
     }
 
     #[test]
     fn expires_exactly_at_the_configured_age() {
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         let p = policy(0, 90);
-        assert!(!p.is_expired(now - Duration::try_days(89).unwrap(), now));
-        assert!(p.is_expired(now - Duration::try_days(90).unwrap(), now));
-        assert!(p.is_expired(now - Duration::try_days(91).unwrap(), now));
+        assert!(!p.is_expired(now - Duration::days(89), now));
+        assert!(p.is_expired(now - Duration::days(90), now));
+        assert!(p.is_expired(now - Duration::days(91), now));
     }
 
     #[test]
     fn change_required_when_flagged_or_expired() {
-        let now = Utc::now();
-        let recent = Some(now - Duration::try_days(1).unwrap());
+        let now = OffsetDateTime::now_utc();
+        let recent = Some(now - Duration::days(1));
 
         // Without an expiry set, an old creation time alone does not require a change.
         assert!(!password_change_required(
@@ -301,7 +301,7 @@ mod tests {
         ));
         // Expiry requires a change even without the forced flag.
         assert!(password_change_required(
-            &user(false, Some(now - Duration::try_days(100).unwrap())),
+            &user(false, Some(now - Duration::days(100))),
             &policy(0, 90),
             now
         ));
@@ -312,7 +312,7 @@ mod tests {
         // Users created before the migration who have not changed their password since (the column
         // is NULL). The creation time (400 days ago) is taken as the set time, so a 90-day expiry
         // judges it expired.
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         assert!(password_change_required(
             &user(false, None),
             &policy(0, 90),

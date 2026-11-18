@@ -387,7 +387,9 @@ async fn revoking_the_key_ends_the_sessions_it_approved() {
     assert!(listed["keys"][0]["last_used_at"].is_string());
 
     // Revoke from the app (signature over the time).
-    let signed_at = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let signed_at = time::OffsetDateTime::now_utc()
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
     let (status, _) = public(
         &env,
         Method::POST,

@@ -9,9 +9,9 @@
 use crate::domain::error::DomainError;
 use crate::domain::tenant::TenantId;
 use crate::domain::values::{AuthenticationMethod, ACR_MULTI_FACTOR};
-use chrono::{DateTime, Datelike, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// Effect of a policy (spec §7.4).
@@ -138,21 +138,21 @@ impl TimeWindow {
     }
 
     /// Whether `now` falls within this window.
-    pub fn contains(&self, now: DateTime<Utc>) -> bool {
-        let local = now + chrono::Duration::minutes(self.utc_offset_minutes as i64);
-        let minute = (local.hour() * 60 + local.minute()) as u16;
+    pub fn contains(&self, now: OffsetDateTime) -> bool {
+        let local = now + time::Duration::minutes(self.utc_offset_minutes as i64);
+        let minute = u16::from(local.hour()) * 60 + u16::from(local.minute());
         // A window crossing midnight (e.g. 22:00-06:00) checks the weekday on the start-day side. Unless the early morning
         // after crossing is treated as "the previous day's window", a window starting at 22:00 would end at 00:00.
         let (in_range, day) = if self.start_minute <= self.end_minute {
             (
                 minute >= self.start_minute && minute < self.end_minute,
-                local.weekday().num_days_from_sunday() as u8,
+                local.weekday().number_days_from_sunday(),
             )
         } else if minute >= self.start_minute {
-            (true, local.weekday().num_days_from_sunday() as u8)
+            (true, local.weekday().number_days_from_sunday())
         } else if minute < self.end_minute {
             // Continuation of the previous day's window.
-            (true, (local.weekday().num_days_from_sunday() as u8 + 6) % 7)
+            (true, (local.weekday().number_days_from_sunday() + 6) % 7)
         } else {
             (false, 0)
         };
@@ -311,14 +311,14 @@ pub struct AuthenticationContext<'a> {
     /// Source IP (the value that passed the `TRUST_FORWARDED_HEADERS` check. `None` if unavailable).
     pub ip_address: Option<&'a str>,
     /// Evaluation time (used for time window conditions).
-    pub now: DateTime<Utc>,
+    pub now: OffsetDateTime,
     /// The authorization request's `acr_values` (empty on non-OIDC paths).
     pub requested_acr: &'a [String],
 }
 
 impl<'a> AuthenticationContext<'a> {
     /// The minimal context with no app, network, time or acr (portal / admin console, etc.).
-    pub fn for_user(user_id: Uuid, now: DateTime<Utc>) -> Self {
+    pub fn for_user(user_id: Uuid, now: OffsetDateTime) -> Self {
         Self {
             application_id: None,
             user_id,
@@ -345,8 +345,8 @@ pub struct AuthenticationPolicy {
     /// The requirement of `require_specific_method` (`None` for other effects).
     pub effect_params: Option<RequiredMethods>,
     pub conditions: PolicyConditions,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
 }
 
 impl AuthenticationPolicy {
@@ -543,10 +543,10 @@ impl LockoutPolicy {
     pub fn locked_until_after_failure(
         &self,
         failed_count: i32,
-        now: DateTime<Utc>,
-    ) -> Option<DateTime<Utc>> {
+        now: OffsetDateTime,
+    ) -> Option<OffsetDateTime> {
         (failed_count >= self.max_failed_attempts).then(|| {
-            now + chrono::Duration::seconds(self.lock_duration_secs_for(failed_count) as i64)
+            now + time::Duration::seconds(self.lock_duration_secs_for(failed_count) as i64)
         })
     }
 
@@ -693,16 +693,18 @@ pub fn evaluate_policies(
 #[cfg(test)]
 mod ap3_tests {
     use super::*;
-    use chrono::TimeZone;
+    use time::macros::datetime;
 
-    fn at(hour: u32, minute: u32) -> DateTime<Utc> {
+    fn at(hour: u32, minute: u32) -> OffsetDateTime {
         // 2026-08-05 is a Wednesday (weekday 3).
-        Utc.with_ymd_and_hms(2026, 8, 5, hour, minute, 0).unwrap()
+        datetime!(2026-08-05 00:00:00 UTC)
+            + time::Duration::hours(i64::from(hour))
+            + time::Duration::minutes(i64::from(minute))
     }
 
     fn ctx_with(
         ip: Option<&'static str>,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
         acr: &'static [String],
     ) -> AuthenticationContext<'static> {
         AuthenticationContext {
@@ -796,10 +798,10 @@ mod ap3_tests {
             "Wednesday 23:00 is inside the window"
         );
         // Thursday 02:00 is the continuation of "the window starting Wednesday".
-        let thursday_early = Utc.with_ymd_and_hms(2026, 8, 6, 2, 0, 0).unwrap();
+        let thursday_early = datetime!(2026-08-06 02:00:00 UTC);
         assert!(window.contains(thursday_early));
         // Thursday 23:00 belongs to the window starting Thursday, so it does not match a Wednesday specification.
-        let thursday_night = Utc.with_ymd_and_hms(2026, 8, 6, 23, 0, 0).unwrap();
+        let thursday_night = datetime!(2026-08-06 23:00:00 UTC);
         assert!(!window.contains(thursday_night));
     }
 
@@ -1089,10 +1091,10 @@ mod ap3_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
+    use time::macros::datetime;
 
-    fn fixed_now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 8, 1, 0, 0, 0).unwrap()
+    fn fixed_now() -> OffsetDateTime {
+        datetime!(2026-08-01 00:00:00 UTC)
     }
 
     fn tenant() -> TenantId {
@@ -1395,7 +1397,7 @@ mod tests {
         assert_eq!(policy.locked_until_after_failure(4, now), None);
         assert_eq!(
             policy.locked_until_after_failure(5, now),
-            Some(now + chrono::Duration::seconds(900))
+            Some(now + time::Duration::seconds(900))
         );
         assert!(policy.locked_until_after_failure(6, now).is_some());
     }

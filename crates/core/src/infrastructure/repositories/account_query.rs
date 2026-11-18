@@ -19,7 +19,6 @@ use crate::domain::tenant::TenantId;
 use crate::domain::values::ClientStatus;
 use crate::infrastructure::db::Db;
 use async_trait::async_trait;
-use chrono::TimeZone;
 use sqlx::mysql::MySqlRow;
 use sqlx::{MySql, QueryBuilder, Row};
 use uuid::Uuid;
@@ -143,7 +142,7 @@ fn push_union(builder: &mut QueryBuilder<MySql>, filter: &AccountFilter, rows: b
 fn map_service_account(row: &MySqlRow) -> Result<ServiceAccount> {
     let client_row_id: String = row.try_get("client_row_id").map_err(repo_err)?;
     let status: String = row.try_get("client_status").map_err(repo_err)?;
-    let created_at: chrono::NaiveDateTime = row.try_get("client_created_at").map_err(repo_err)?;
+    let created_at: time::PrimitiveDateTime = row.try_get("client_created_at").map_err(repo_err)?;
     let identity_id: Option<String> = row.try_get("identity_application_id").map_err(repo_err)?;
     let identity_name: Option<String> = row.try_get("identity_display_name").map_err(repo_err)?;
     Ok(ServiceAccount {
@@ -151,7 +150,7 @@ fn map_service_account(row: &MySqlRow) -> Result<ServiceAccount> {
         client_id: row.try_get("client_id").map_err(repo_err)?,
         app_name: row.try_get("app_name").map_err(repo_err)?,
         status: ClientStatus::parse(&status)?,
-        created_at: chrono::Utc.from_utc_datetime(&created_at),
+        created_at: chrono::from_naive_utc(created_at),
         identity_of: match (identity_id, identity_name) {
             (Some(id), Some(display_name)) => Some(IdentityApplication {
                 application_id: parse_uuid(&id)?,

@@ -13,7 +13,7 @@ use crate::domain::client::Client;
 use crate::domain::error::OAuthErrorCode;
 use crate::domain::response_mode::{AuthorizationResponse, ResponseMode};
 use crate::domain::values::{CodeChallengeMethod, Prompt, PromptSet, Scope};
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 
 /// Query parameters of `/authorize` (raw values before validation).
 ///
@@ -298,9 +298,13 @@ impl AuthorizationRequest {
     }
 
     /// Whether the authentication at `auth_time` is older than `max_age` (always `false` when `max_age` is omitted).
-    pub fn authentication_is_too_old(&self, auth_time: DateTime<Utc>, now: DateTime<Utc>) -> bool {
+    pub fn authentication_is_too_old(
+        &self,
+        auth_time: OffsetDateTime,
+        now: OffsetDateTime,
+    ) -> bool {
         self.max_age
-            .is_some_and(|max_age| (now - auth_time).num_seconds() > max_age as i64)
+            .is_some_and(|max_age| (now - auth_time).whole_seconds() > max_age as i64)
     }
 
     /// Scopes that need the user's consent (`openid` is excluded as implicitly consented). Consent is unnecessary if empty.
@@ -442,7 +446,7 @@ pub(crate) mod test_support {
 mod tests {
     use super::*;
     use crate::domain::values::{ClientStatus, ClientType, TokenEndpointAuthMethod};
-    use chrono::Duration;
+    use time::Duration;
 
     fn client() -> Client {
         Client {
@@ -462,8 +466,8 @@ mod tests {
             post_logout_redirect_uris: vec![],
             frontchannel_logout_uri: None,
             backchannel_logout_uri: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: OffsetDateTime::now_utc(),
+            updated_at: OffsetDateTime::now_utc(),
         }
     }
 
@@ -652,7 +656,7 @@ mod tests {
         let mut params = valid();
         params.max_age = Some(60);
         let request = AuthorizationRequest::accept(&params, &client()).expect("accepted");
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         assert!(!request.authentication_is_too_old(now - Duration::seconds(60), now));
         assert!(request.authentication_is_too_old(now - Duration::seconds(61), now));
 

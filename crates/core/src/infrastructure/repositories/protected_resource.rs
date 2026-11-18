@@ -7,10 +7,11 @@ use crate::domain::resource::ProtectedResource;
 use crate::domain::tenant::TenantId;
 use crate::domain::values::ResourceStatus;
 use crate::infrastructure::db::Db;
+use assay_contracts::utc::from_naive_utc;
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::mysql::MySqlRow;
 use sqlx::Row;
+use time::{OffsetDateTime, PrimitiveDateTime};
 use uuid::Uuid;
 
 pub struct SqlxProtectedResourceRepository {
@@ -30,8 +31,8 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
-    Utc.from_utc_datetime(&naive)
+fn to_utc(naive: PrimitiveDateTime) -> OffsetDateTime {
+    from_naive_utc(naive)
 }
 
 fn parse_uuid(raw: &str) -> Result<Uuid> {
@@ -128,7 +129,7 @@ impl ProtectedResourceRepository for SqlxProtectedResourceRepository {
         tenant_id: TenantId,
         id: Uuid,
         status: ResourceStatus,
-        updated_at: DateTime<Utc>,
+        updated_at: OffsetDateTime,
     ) -> Result<bool> {
         let result = sqlx::query(
             "UPDATE resources SET status = ?, updated_at = ? WHERE id = ? AND tenant_id = ?",

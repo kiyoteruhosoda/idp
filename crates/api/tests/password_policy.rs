@@ -62,7 +62,7 @@ async fn rejects_reused_passwords_and_prunes_history_to_the_policy_depth() {
     let sso = create_sso_session(&env.pool, &user_id).await;
 
     // The set time is recorded at self-registration (the start of expiry; if NULL it falls back to the creation time).
-    let changed_at: Option<chrono::NaiveDateTime> =
+    let changed_at: Option<time::PrimitiveDateTime> =
         sqlx::query_scalar("SELECT password_changed_at FROM users WHERE id = ?")
             .bind(&user_id)
             .fetch_one(&env.pool)

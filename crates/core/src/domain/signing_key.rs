@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 use crate::domain::values::SigningKeyStatus;
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 
 #[derive(Debug, Clone)]
 pub struct SigningKey {
@@ -14,15 +14,15 @@ pub struct SigningKey {
     /// Private key encrypted with a key held outside the DB.
     pub private_key_encrypted: String,
     pub status: SigningKeyStatus,
-    pub not_before: DateTime<Utc>,
-    pub not_after: DateTime<Utc>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub not_before: OffsetDateTime,
+    pub not_after: OffsetDateTime,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
 }
 
 impl SigningKey {
     /// Whether the key can be used for new signatures (ACTIVE and within its validity period).
-    pub fn is_usable_for_signing_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_usable_for_signing_at(&self, now: OffsetDateTime) -> bool {
         self.status == SigningKeyStatus::Active && self.not_before <= now && now < self.not_after
     }
 
@@ -34,7 +34,7 @@ impl SigningKey {
     /// keeps signing until `not_before` arrives. **This gives RPs caching JWKS time to pick up the
     /// new `kid`.** If publishing and signing start at once, RPs with a cache fail verification
     /// until their TTL expires.
-    pub fn is_pending_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_pending_at(&self, now: OffsetDateTime) -> bool {
         self.status == SigningKeyStatus::Active && now < self.not_before
     }
 }
@@ -46,7 +46,7 @@ impl SigningKey {
 /// "signing" label and the key that actually signs must be chosen by the same rule — if they
 /// diverge, retiring the key shown as "signing" would not stop signing (or the reverse), behavior
 /// the screen cannot explain.
-pub fn current_signer_at(keys: &[SigningKey], now: DateTime<Utc>) -> Option<&SigningKey> {
+pub fn current_signer_at(keys: &[SigningKey], now: OffsetDateTime) -> Option<&SigningKey> {
     keys.iter()
         .filter(|key| key.is_usable_for_signing_at(now))
         .max_by_key(|key| key.not_before)
@@ -55,9 +55,9 @@ pub fn current_signer_at(keys: &[SigningKey], now: DateTime<Utc>) -> Option<&Sig
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Duration;
+    use time::Duration;
 
-    fn key(kid: &str, status: SigningKeyStatus, not_before: DateTime<Utc>) -> SigningKey {
+    fn key(kid: &str, status: SigningKeyStatus, not_before: OffsetDateTime) -> SigningKey {
         SigningKey {
             kid: kid.to_string(),
             algorithm: "RS256".to_string(),
@@ -71,10 +71,8 @@ mod tests {
         }
     }
 
-    fn now() -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339("2026-08-27T00:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc)
+    fn now() -> OffsetDateTime {
+        assay_contracts::utc::parse_rfc3339("2026-08-27T00:00:00Z").unwrap()
     }
 
     /// Even after the successor key is published, the old key keeps signing until `not_before`. If

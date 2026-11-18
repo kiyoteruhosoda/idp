@@ -24,10 +24,11 @@ use crate::presentation::handlers::{map_admin_account_guard_error, request_conte
 use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
+use assay_contracts::utc::UtcInstant;
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// Looks up one member by name (`GET /{tenant_id}/admin/members/{user_id}`).
@@ -303,7 +304,7 @@ pub async fn update_member_note(
 }
 
 /// Response for one member (shared by the list, lookup by name and the people rows of the account list).
-pub(crate) fn member_response(m: TenantMember, now: DateTime<Utc>) -> MemberResponse {
+pub(crate) fn member_response(m: TenantMember, now: OffsetDateTime) -> MemberResponse {
     MemberResponse {
         user_id: m.user_id.to_string(),
         email: m.email,

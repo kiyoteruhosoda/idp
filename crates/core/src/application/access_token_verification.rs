@@ -70,7 +70,7 @@ pub struct AccessTokenVerifier {
     /// Base issuer. Per tenant, `<base>/<tenant_id>` is composed and `iss`/`aud` are matched strictly
     /// (ADR-0009 §6; prevents reuse of tokens issued by another tenant).
     base_issuer: String,
-    clock_skew: chrono::Duration,
+    clock_skew: time::Duration,
 }
 
 impl AccessTokenVerifier {
@@ -86,7 +86,7 @@ impl AccessTokenVerifier {
             revoked_access_tokens,
             clock,
             base_issuer,
-            clock_skew: chrono::Duration::from_std(clock_skew).expect("clock skew out of range"),
+            clock_skew: time::Duration::try_from(clock_skew).expect("clock skew out of range"),
         }
     }
 
@@ -156,7 +156,7 @@ impl AccessTokenVerifier {
 
     /// Whether it has expired (allowing clock skew).
     pub fn is_expired(&self, claims: &AccessTokenClaims) -> bool {
-        claims.exp + self.clock_skew.num_seconds() <= self.clock.now().timestamp()
+        claims.exp + self.clock_skew.whole_seconds() <= self.clock.now().unix_timestamp()
     }
 
     fn issuer_of(&self, tenant: TenantContext) -> String {

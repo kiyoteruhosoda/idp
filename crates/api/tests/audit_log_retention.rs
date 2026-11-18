@@ -14,9 +14,10 @@ use assay_api::application::audit::AuditService;
 use assay_api::domain::audit::AuditEvent;
 use assay_api::domain::repositories::AuditLogSink;
 use assay_api::infrastructure::repositories::audit_log::SqlxAuditLogSink;
-use chrono::{Duration, Utc};
+use assay_contracts::utc::UtcInstant;
 use sqlx::Row;
 use std::sync::Arc;
+use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 /// Retention deletion sweeps **the whole table** by time (`purge_older_than(cutoff)`). Tests in the same
@@ -30,7 +31,7 @@ static PURGE_SERIALIZATION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_n
 async fn record_at(
     sink: &SqlxAuditLogSink,
     correlation_id: &str,
-    occurred_at: chrono::DateTime<Utc>,
+    occurred_at: time::OffsetDateTime,
 ) {
     use assay_api::domain::audit::{AuditEventType, AuditResult};
     sink.record(&AuditEvent {
@@ -69,7 +70,12 @@ async fn the_default_retention_never_deletes_anything() {
     let correlation = format!("retention-default-{}", Uuid::new_v4());
     let sink = SqlxAuditLogSink::new(env.pool.clone());
     // Even a row from 10 years ago remains.
-    record_at(&sink, &correlation, Utc::now() - Duration::days(3_650)).await;
+    record_at(
+        &sink,
+        &correlation,
+        OffsetDateTime::now_utc() - Duration::days(3_650),
+    )
+    .await;
 
     let audit = AuditService::new(
         Arc::new(SqlxAuditLogSink::new(env.pool.clone())),
@@ -89,8 +95,8 @@ async fn only_rows_older_than_the_retention_window_are_deleted() {
     let old = format!("retention-old-{}", Uuid::new_v4());
     let fresh = format!("retention-fresh-{}", Uuid::new_v4());
     let sink = SqlxAuditLogSink::new(env.pool.clone());
-    record_at(&sink, &old, Utc::now() - Duration::days(40)).await;
-    record_at(&sink, &fresh, Utc::now() - Duration::days(3)).await;
+    record_at(&sink, &old, OffsetDateTime::now_utc() - Duration::days(40)).await;
+    record_at(&sink, &fresh, OffsetDateTime::now_utc() - Duration::days(3)).await;
 
     let audit = AuditService::new(
         Arc::new(SqlxAuditLogSink::new(env.pool.clone())),
@@ -119,7 +125,7 @@ async fn the_console_filter_uses_a_composite_index() {
     )
     .bind(env.root_tenant_id.to_string())
     .bind("failure")
-    .bind((Utc::now() - Duration::days(7)).naive_utc())
+    .bind((OffsetDateTime::now_utc() - Duration::days(7)).naive_utc())
     .fetch_one(&env.pool)
     .await
     .expect("explain the console filter");

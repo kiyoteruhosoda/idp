@@ -341,11 +341,11 @@ mod tests {
     use crate::domain::user::User;
     use crate::domain::values::{TenantStatus, UserStatus};
     use async_trait::async_trait;
-    use chrono::{DateTime, TimeZone, Utc};
     use std::sync::Mutex;
+    use time::{macros::datetime, OffsetDateTime};
 
-    fn fixed_now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 7, 6, 12, 0, 0).unwrap()
+    fn fixed_now() -> OffsetDateTime {
+        datetime!(2026-07-06 12:00:00 UTC)
     }
 
     fn test_tenant() -> TenantId {
@@ -357,9 +357,9 @@ mod tests {
         TenantContext::new(test_tenant())
     }
 
-    struct FixedClock(DateTime<Utc>);
+    struct FixedClock(OffsetDateTime);
     impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> OffsetDateTime {
             self.0
         }
     }
@@ -430,7 +430,7 @@ mod tests {
             &self,
             _id: Uuid,
             _lockout: crate::domain::authentication_policy::LockoutPolicy,
-            _now: chrono::DateTime<chrono::Utc>,
+            _now: time::OffsetDateTime,
         ) -> DomainResult<crate::domain::user::LoginFailureRecord> {
             unreachable!()
         }
@@ -468,7 +468,7 @@ mod tests {
             &self,
             _id: Uuid,
             _c: i32,
-            _l: Option<DateTime<Utc>>,
+            _l: Option<OffsetDateTime>,
         ) -> DomainResult<()> {
             unreachable!()
         }
@@ -608,7 +608,7 @@ mod tests {
             tenant_id: TenantId,
             user_id: Uuid,
             code: &str,
-            _g: DateTime<Utc>,
+            _g: OffsetDateTime,
         ) -> DomainResult<()> {
             if self.reject_unknown {
                 return Err(DomainError::InvalidValue(format!(

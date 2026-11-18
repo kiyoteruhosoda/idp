@@ -4,7 +4,7 @@
 //! Managed by the composite primary key `(user_id, tenant_id, client_id)`; scopes are overwritten via UPSERT.
 
 use crate::domain::tenant::TenantId;
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// A consent record a user granted to a client.
@@ -16,8 +16,8 @@ pub struct ClientConsent {
     pub client_id: String,
     /// List of consented scopes (stored as a JSON array).
     pub scopes: Vec<String>,
-    pub granted_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub granted_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
 }
 
 impl ClientConsent {

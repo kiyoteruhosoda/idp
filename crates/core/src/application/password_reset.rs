@@ -47,6 +47,7 @@ use crate::domain::system_setting::DeploymentState;
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::user::User;
+use assay_contracts::utc::UtcInstant;
 use std::sync::Arc;
 
 /// Byte length of the reset token (about 43 chars in base64url).
@@ -507,20 +508,20 @@ mod tests {
     use crate::domain::user::User;
     use crate::domain::values::UserStatus;
     use async_trait::async_trait;
-    use chrono::{DateTime, TimeZone, Utc};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use time::{macros::datetime, OffsetDateTime};
     use uuid::Uuid;
 
     const TEST_KEY: [u8; 32] = *b"unit-test-key-0123456789abcdef!!";
 
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 7, 12, 12, 0, 0).unwrap()
+    fn now() -> OffsetDateTime {
+        datetime!(2026-07-12 12:00:00 UTC)
     }
 
     struct FixedClock;
     impl crate::domain::clock::Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> OffsetDateTime {
             now()
         }
     }
@@ -559,7 +560,7 @@ mod tests {
             &self,
             id: Uuid,
             lockout: crate::domain::authentication_policy::LockoutPolicy,
-            now: DateTime<Utc>,
+            now: OffsetDateTime,
         ) -> DomainResult<crate::domain::user::LoginFailureRecord> {
             let mut rows = self.rows.lock().unwrap();
             let Some(row) = rows.iter_mut().find(|u| u.id == id) else {
@@ -608,7 +609,7 @@ mod tests {
             &self,
             _id: Uuid,
             _c: i32,
-            _l: Option<DateTime<Utc>>,
+            _l: Option<OffsetDateTime>,
         ) -> DomainResult<()> {
             unreachable!()
         }
@@ -673,7 +674,7 @@ mod tests {
         async fn consume(
             &self,
             token_hash: &str,
-            used_at: DateTime<Utc>,
+            used_at: OffsetDateTime,
         ) -> DomainResult<Option<PasswordResetToken>> {
             let mut rows = self.rows.lock().unwrap();
             match rows.iter_mut().find(|t| {
@@ -689,7 +690,7 @@ mod tests {
         async fn invalidate_all_for_user(
             &self,
             user_id: Uuid,
-            now: DateTime<Utc>,
+            now: OffsetDateTime,
         ) -> DomainResult<()> {
             for row in self.rows.lock().unwrap().iter_mut() {
                 if row.user_id == user_id && row.used_at.is_none() {
@@ -712,7 +713,7 @@ mod tests {
         async fn find_by_hash(&self, _h: &str) -> DomainResult<Option<SsoSession>> {
             unreachable!()
         }
-        async fn extend_idle(&self, _h: &str, _t: DateTime<Utc>) -> DomainResult<()> {
+        async fn extend_idle(&self, _h: &str, _t: OffsetDateTime) -> DomainResult<()> {
             unreachable!()
         }
         async fn delete(&self, _h: &str) -> DomainResult<()> {
@@ -734,7 +735,7 @@ mod tests {
             &self,
             _u: Uuid,
             _sid: &str,
-            _at: DateTime<Utc>,
+            _at: OffsetDateTime,
         ) -> DomainResult<u64> {
             unreachable!()
         }
@@ -742,7 +743,7 @@ mod tests {
             &self,
             _t: TenantId,
             _family: &str,
-            _at: DateTime<Utc>,
+            _at: OffsetDateTime,
         ) -> DomainResult<u64> {
             unreachable!()
         }
@@ -750,7 +751,7 @@ mod tests {
             &self,
             _tenant: TenantId,
             _user_id: Uuid,
-            _now: DateTime<Utc>,
+            _now: OffsetDateTime,
         ) -> DomainResult<()> {
             unreachable!()
         }
@@ -760,17 +761,21 @@ mod tests {
         async fn find_by_hash(&self, _t: TenantId, _h: &str) -> DomainResult<Option<RefreshToken>> {
             unreachable!()
         }
-        async fn revoke(&self, _h: &str, _t: DateTime<Utc>) -> DomainResult<u64> {
+        async fn revoke(&self, _h: &str, _t: OffsetDateTime) -> DomainResult<u64> {
             unreachable!()
         }
         async fn exists_by_parent_hash(&self, _h: &str) -> DomainResult<bool> {
             unreachable!()
         }
-        async fn revoke_all_for_user(&self, user_id: Uuid, _t: DateTime<Utc>) -> DomainResult<u64> {
+        async fn revoke_all_for_user(
+            &self,
+            user_id: Uuid,
+            _t: OffsetDateTime,
+        ) -> DomainResult<u64> {
             self.revoked_users.lock().unwrap().push(user_id);
             Ok(1)
         }
-        async fn count_active_for_user(&self, _u: Uuid, _now: DateTime<Utc>) -> DomainResult<u64> {
+        async fn count_active_for_user(&self, _u: Uuid, _now: OffsetDateTime) -> DomainResult<u64> {
             unreachable!()
         }
         async fn revoke_all_for_user_and_client(
@@ -778,7 +783,7 @@ mod tests {
             _t: TenantId,
             _u: Uuid,
             _c: &str,
-            _at: DateTime<Utc>,
+            _at: OffsetDateTime,
         ) -> DomainResult<()> {
             unreachable!()
         }
@@ -804,14 +809,14 @@ mod tests {
             &self,
             _t: TenantId,
             _h: &crate::domain::authorization_code::AuthorizationCodeHash,
-            _u: DateTime<Utc>,
+            _u: OffsetDateTime,
         ) -> DomainResult<Option<AuthorizationCode>> {
             unreachable!()
         }
         async fn revoke_all_active_for_user(
             &self,
             user_id: Uuid,
-            _now: DateTime<Utc>,
+            _now: OffsetDateTime,
         ) -> DomainResult<()> {
             self.revoked_users.lock().unwrap().push(user_id);
             Ok(())
@@ -853,7 +858,7 @@ mod tests {
         calls: AtomicUsize,
     }
     impl LoginRateLimiter for CountingLimiter {
-        fn check_and_record(&self, _key: &str, _now: DateTime<Utc>) -> bool {
+        fn check_and_record(&self, _key: &str, _now: OffsetDateTime) -> bool {
             self.calls.fetch_add(1, Ordering::SeqCst) < self.limit
         }
     }
@@ -1345,11 +1350,11 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(
             rows[0].expires_at,
-            FixedClock.now() + chrono::Duration::seconds(600)
+            FixedClock.now() + time::Duration::seconds(600)
         );
         assert_eq!(
             rows[1].expires_at,
-            FixedClock.now() + chrono::Duration::seconds(3600)
+            FixedClock.now() + time::Duration::seconds(3600)
         );
     }
 
@@ -1409,7 +1414,7 @@ mod tests {
             token_hash: crypto::sha256_hex(&token),
             user_id: user,
             purpose,
-            expires_at: now() + chrono::Duration::hours(1),
+            expires_at: now() + time::Duration::hours(1),
             used_at: None,
             created_at: now(),
         });

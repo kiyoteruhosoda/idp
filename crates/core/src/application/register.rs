@@ -259,17 +259,17 @@ mod tests {
     use crate::domain::tenant_membership::TenantMembership;
     use crate::domain::values::TenantStatus;
     use async_trait::async_trait;
-    use chrono::{DateTime, TimeZone, Utc};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use time::{macros::datetime, OffsetDateTime};
 
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 7, 12, 12, 0, 0).unwrap()
+    fn now() -> OffsetDateTime {
+        datetime!(2026-07-12 12:00:00 UTC)
     }
 
     struct FixedClock;
     impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> OffsetDateTime {
             now()
         }
     }
@@ -305,7 +305,7 @@ mod tests {
             &self,
             id: Uuid,
             lockout: crate::domain::authentication_policy::LockoutPolicy,
-            now: DateTime<Utc>,
+            now: OffsetDateTime,
         ) -> DomainResult<crate::domain::user::LoginFailureRecord> {
             let mut rows = self.rows.lock().unwrap();
             let Some(row) = rows.iter_mut().find(|u| u.id == id) else {
@@ -349,7 +349,7 @@ mod tests {
             &self,
             _id: Uuid,
             _c: i32,
-            _l: Option<DateTime<Utc>>,
+            _l: Option<OffsetDateTime>,
         ) -> DomainResult<()> {
             unreachable!()
         }
@@ -453,7 +453,7 @@ mod tests {
         calls: AtomicUsize,
     }
     impl LoginRateLimiter for CountingLimiter {
-        fn check_and_record(&self, _key: &str, _now: DateTime<Utc>) -> bool {
+        fn check_and_record(&self, _key: &str, _now: OffsetDateTime) -> bool {
             self.calls.fetch_add(1, Ordering::SeqCst) < self.limit
         }
     }

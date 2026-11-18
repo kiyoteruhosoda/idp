@@ -154,7 +154,7 @@ pub async fn run() -> anyhow::Result<()> {
                     }
                 }
                 if retention_days > 0 && tick.is_multiple_of(purge_every) {
-                    let retention = chrono::Duration::days(retention_days as i64);
+                    let retention = time::Duration::days(retention_days as i64);
                     if let Err(e) = deliveries.purge_settled(retention).await {
                         tracing::error!(error = %e, "back-channel logout queue purge failed");
                     }

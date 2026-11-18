@@ -14,6 +14,7 @@
 
 mod support;
 
+use assay_contracts::utc::UtcInstant;
 use axum::http::{Method, StatusCode};
 use serde_json::json;
 use sqlx::{MySqlPool, Row};
@@ -410,7 +411,7 @@ async fn a_pending_member_carries_the_setup_link_deadline() {
 
     // Moving the expiry into the past makes it judged expired at read time.
     sqlx::query("UPDATE password_reset_tokens SET expires_at = ? WHERE user_id = ?")
-        .bind(chrono::Utc::now().naive_utc() - chrono::Duration::hours(1))
+        .bind(time::OffsetDateTime::now_utc().naive_utc() - time::Duration::hours(1))
         .bind(&user_id)
         .execute(&env.pool)
         .await

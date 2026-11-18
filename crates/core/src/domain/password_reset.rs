@@ -4,7 +4,7 @@
 //! stored. Setting `used_at` makes it single-use (the same one-time pattern as authorization
 //! codes).
 
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// Purpose of the link. **With the same single token, only what the link target allows changes**
@@ -56,10 +56,10 @@ pub struct PasswordResetToken {
     pub token_hash: String,
     pub user_id: Uuid,
     pub purpose: ResetPurpose,
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: OffsetDateTime,
     /// Consumption time. `None` = unused.
-    pub used_at: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
+    pub used_at: Option<OffsetDateTime>,
+    pub created_at: OffsetDateTime,
 }
 
 #[cfg(test)]

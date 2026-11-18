@@ -9,7 +9,7 @@
 //! method, device name); device marks, session ids, and email addresses are not included.
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::domain::tenant::TenantId;
@@ -106,7 +106,7 @@ pub struct SecurityAlert {
     pub user_id: Uuid,
     /// The user's display name (login id). Lets the reader know "who this is about".
     pub username: String,
-    pub occurred_at: DateTime<Utc>,
+    pub occurred_at: OffsetDateTime,
     pub country: Option<CountryCode>,
     pub ip_address: Option<String>,
     pub user_agent: Option<String>,

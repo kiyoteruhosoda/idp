@@ -211,7 +211,6 @@ dependencies = [
  "aws-lc-rs",
  "axum",
  "base64 0.23.1",
- "chrono",
  "dotenvy",
  "flate2",
  "fluent",
@@ -228,6 +227,7 @@ dependencies = [
  "sha2 0.11.1",
  "sqlx",
  "thiserror 2.0.21",
+ "time",
  "tokio",
  "tower",
  "tower-http 0.7.1",
@@ -243,7 +243,6 @@ dependencies = [
 name = "assay-contracts"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "hex",
  "hmac",
  "http",
@@ -252,6 +251,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "time",
  "tracing",
  "tracing-subscriber",
  "url",
@@ -268,7 +268,6 @@ dependencies = [
  "async-trait",
  "aws-lc-rs",
  "base64 0.23.1",
- "chrono",
  "flate2",
  "hex",
  "hmac",
@@ -287,6 +286,7 @@ dependencies = [
  "sha2 0.11.1",
  "sqlx",
  "thiserror 2.0.21",
+ "time",
  "tokio",
  "totp-rs",
  "tracing",
@@ -308,7 +308,6 @@ dependencies = [
  "assay-contracts",
  "axum",
  "base64 0.23.1",
- "chrono",
  "dotenvy",
  "fluent",
  "hex",
@@ -319,6 +318,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "time",
  "tokio",
  "tower",
  "tower-http 0.7.1",
@@ -650,10 +650,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
- "js-sys",
  "num-traits",
  "serde",
- "wasm-bindgen",
  "windows-link",
 ]
 
@@ -3733,7 +3731,6 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "cfg-if",
- "chrono",
  "crc",
  "crossbeam-queue",
  "either",
@@ -3754,6 +3751,7 @@ dependencies = [
  "sha2 0.10.9",
  "smallvec",
  "thiserror 2.0.21",
+ "time",
  "tokio",
  "tokio-stream",
  "tracing",
@@ -3810,7 +3808,6 @@ dependencies = [
  "bitflags",
  "byteorder",
  "bytes",
- "chrono",
  "crc",
  "digest 0.11.3",
  "dotenvy",
@@ -3825,6 +3822,7 @@ dependencies = [
  "sha2 0.11.1",
  "sqlx-core",
  "thiserror 2.0.21",
+ "time",
  "tracing",
  "uuid",
 ]
@@ -3839,7 +3837,6 @@ dependencies = [
  "base64 0.22.1",
  "bitflags",
  "byteorder",
- "chrono",
  "crc",
  "dotenvy",
  "etcetera",
@@ -3861,6 +3858,7 @@ dependencies = [
  "sqlx-core",
  "stringprep",
  "thiserror 2.0.21",
+ "time",
  "tracing",
  "uuid",
  "whoami",
@@ -3873,7 +3871,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488e99c397a62007e4229aec669a179816339afc6d2620ca6fa420dbee2e982c"
 dependencies = [
  "atoi",
- "chrono",
  "flume",
  "form_urlencoded",
  "futures-channel",
@@ -3887,6 +3884,7 @@ dependencies = [
  "serde",
  "sqlx-core",
  "thiserror 2.0.21",
+ "time",
  "tracing",
  "url",
  "uuid",

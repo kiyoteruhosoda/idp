@@ -17,7 +17,7 @@
 
 use crate::domain::message::MessageKey;
 use crate::domain::tenant::TenantId;
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// Column limit for `tenant_domains.domain` (253, same as the DNS name limit).
@@ -32,8 +32,8 @@ pub struct TenantDomain {
     pub tenant_id: TenantId,
     /// Normalized domain ([`normalize_domain`]).
     pub domain: String,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
 }
 
 /// Normalizes a domain into a match key (lowercase, trim whitespace and trailing dot).

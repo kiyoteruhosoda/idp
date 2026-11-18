@@ -57,7 +57,7 @@ async fn mount_bound(env: &WebEnv) {
 }
 
 fn now() -> i64 {
-    chrono::Utc::now().timestamp()
+    time::OffsetDateTime::now_utc().unix_timestamp()
 }
 
 fn valid_short_cookie() -> String {

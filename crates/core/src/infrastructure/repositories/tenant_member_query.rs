@@ -10,7 +10,6 @@ use crate::domain::tenant_membership::{TenantMember, TenantMemberFilter, TenantM
 use crate::domain::values::{MembershipStatus, MembershipType, UserStatus};
 use crate::infrastructure::db::Db;
 use async_trait::async_trait;
-use chrono::TimeZone;
 use sqlx::mysql::MySqlRow;
 use sqlx::{MySql, QueryBuilder, Row};
 use uuid::Uuid;
@@ -102,7 +101,7 @@ pub(crate) fn map_row(row: &MySqlRow) -> Result<TenantMember> {
     let membership_type: String = row.try_get("membership_type").map_err(repo_err)?;
     let status: String = row.try_get("status").map_err(repo_err)?;
     let user_status: String = row.try_get("user_status").map_err(repo_err)?;
-    let locked_until: Option<chrono::NaiveDateTime> =
+    let locked_until: Option<time::PrimitiveDateTime> =
         row.try_get("locked_until").map_err(repo_err)?;
     Ok(TenantMember {
         user_id: Uuid::parse_str(&user_id)
@@ -114,12 +113,12 @@ pub(crate) fn map_row(row: &MySqlRow) -> Result<TenantMember> {
         status: MembershipStatus::parse(&status)?,
         // The join goes through a foreign key (`tenant_memberships.user_id` -> `users.id`), so the user always exists.
         user_status: Some(UserStatus::parse(&user_status)?),
-        locked_until: locked_until.map(|naive| chrono::Utc.from_utc_datetime(&naive)),
+        locked_until: locked_until.map(|naive| chrono::from_naive_utc(naive)),
         pending_setup: row.try_get("pending_setup").map_err(repo_err)?,
         setup_link_expires_at: row
-            .try_get::<Option<chrono::NaiveDateTime>, _>("setup_link_expires_at")
+            .try_get::<Option<time::PrimitiveDateTime>, _>("setup_link_expires_at")
             .map_err(repo_err)?
-            .map(|naive| chrono::Utc.from_utc_datetime(&naive)),
+            .map(|naive| chrono::from_naive_utc(naive)),
         note: map_note(row)?,
     })
 }
@@ -130,11 +129,11 @@ pub(crate) fn map_note(row: &MySqlRow) -> Result<Option<AccountNote>> {
     let Some(text) = text else {
         return Ok(None);
     };
-    let updated_at: chrono::NaiveDateTime = row.try_get("note_updated_at").map_err(repo_err)?;
+    let updated_at: time::PrimitiveDateTime = row.try_get("note_updated_at").map_err(repo_err)?;
     let updated_by: Option<String> = row.try_get("note_updated_by").map_err(repo_err)?;
     Ok(Some(AccountNote {
         text,
-        updated_at: chrono::Utc.from_utc_datetime(&updated_at),
+        updated_at: chrono::from_naive_utc(updated_at),
         updated_by: updated_by
             .map(|id| {
                 Uuid::parse_str(&id)

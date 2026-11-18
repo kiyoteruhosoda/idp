@@ -48,8 +48,8 @@ use crate::domain::user_device::{passkey_verified_recently, CountryCode};
 use crate::domain::values::AuthenticationMethod;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
-use chrono::{DateTime, Duration, Utc};
 use std::sync::Arc;
+use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 /// Upper limit for one certificate in the chain (DER byte count before receiving as base64).
@@ -93,7 +93,7 @@ impl From<DomainError> for AppApproverError {
 pub struct EnrollmentStarted {
     pub enrollment_id: String,
     pub challenge: String,
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: OffsetDateTime,
 }
 
 /// An activated key.
@@ -108,8 +108,8 @@ pub struct ApprovalRequestView {
     pub request_id: String,
     pub challenge: String,
     pub state: ApprovalState,
-    pub created_at: DateTime<Utc>,
-    pub expires_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
+    pub expires_at: OffsetDateTime,
     pub ip_address: Option<String>,
     pub country: Option<String>,
     /// If it came mid-authorization, that RP's name (client_id if none).
@@ -165,7 +165,7 @@ pub enum CompleteApprovalOutcome {
 pub struct EnrollmentView {
     pub device_name: String,
     pub security_level: KeySecurityLevel,
-    pub created_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
 }
 
 pub enum EnrollmentViewOutcome {
@@ -191,8 +191,8 @@ pub struct ApproverKeySummary {
     pub id: Uuid,
     pub device_name: String,
     pub security_level: KeySecurityLevel,
-    pub registered_at: DateTime<Utc>,
-    pub last_used_at: Option<DateTime<Utc>>,
+    pub registered_at: OffsetDateTime,
+    pub last_used_at: Option<OffsetDateTime>,
 }
 
 pub enum ApproverKeysOutcome {
@@ -790,7 +790,7 @@ impl AppApprovalService {
         request: &ApprovalRequest,
         user_id: Uuid,
         key_ref: Uuid,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
         ctx: &RequestContext,
     ) -> CompleteApprovalOutcome {
         match self
@@ -849,7 +849,7 @@ impl AppApprovalService {
         request: &ApprovalRequest,
         user: &User,
         key_ref: Uuid,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
         ctx: &RequestContext,
     ) -> CompleteApprovalOutcome {
         let tenant_id = tenant.tenant_id();
@@ -967,7 +967,7 @@ impl AppApprovalService {
         tenant: TenantContext,
         originating: Option<crate::domain::auth_session::AuthSession>,
         sso: &EstablishedSso,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
         ctx: &RequestContext,
     ) -> CompleteApprovalOutcome {
         let sso_session_id = sso.session_id().to_string();
@@ -1180,7 +1180,7 @@ impl AppApprovalService {
         user: &User,
         key: Uuid,
         keep_session: Option<&str>,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
         ctx: &RequestContext,
     ) -> Result<Option<usize>, AppApproverError> {
         // Before deleting, fetch login states approved with the key (deleting makes the binding NULL).
@@ -1232,7 +1232,7 @@ impl AppApprovalService {
         &self,
         tenant: TenantContext,
         id: &str,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<ApproverEnrollment, AppApproverError> {
         let enrollment = self
             .deps
@@ -1270,7 +1270,7 @@ impl AppApprovalService {
     async fn active_session(
         &self,
         sso_session_id: &str,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<Option<(SsoSession, User)>, String> {
         let hash = crypto::sha256_hex(sso_session_id);
         let session = match self.deps.sso_sessions.find_by_hash(&hash).await {
@@ -1286,7 +1286,11 @@ impl AppApprovalService {
     }
 
     /// Unauthenticated routes (intake, starting a request) are throttled by a per-IP bucket (same bucket as login).
-    fn rate_limit(&self, ctx: &RequestContext, now: DateTime<Utc>) -> Result<(), AppApproverError> {
+    fn rate_limit(
+        &self,
+        ctx: &RequestContext,
+        now: OffsetDateTime,
+    ) -> Result<(), AppApproverError> {
         match &ctx.ip_address {
             Some(ip) if !self.deps.rate_limiter.check_and_record(ip, now) => {
                 Err(AppApproverError::RateLimited)
@@ -1300,7 +1304,7 @@ impl AppApprovalService {
         &self,
         user: &User,
         kind: SecurityAlertKind,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
         country: Option<CountryCode>,
         ctx: &RequestContext,
         group: &str,

@@ -28,7 +28,7 @@ sqlx = { version = "0.9", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",
     "mysql",
-    "chrono",
+    "time",
     "uuid",
     "macros",
     "migrate",
@@ -37,7 +37,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
-chrono = { version = "0.4", features = ["serde"] }
+# UTC instants. No `serde` feature on purpose: every serialized field names its text form
+# (`assay_contracts::utc::serde_rfc3339`), so a forgotten one fails to compile instead of changing the JSON (task #1016).
+time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 thiserror = "2"
 anyhow = "1"
@@ -78,7 +80,7 @@ flate2 = "1"
 # Only SubjectPublicKeyInfo is used for verification; the certificate chain is not validated (the root of trust is
 # "the admin registered this certificate", not a CA, ADR-0027).
 x509-cert = { version = "0.3", default-features = false, features = ["std"] }
-utoipa = { version = "6", features = ["axum_extras", "chrono", "uuid"] }
+utoipa = { version = "6", features = ["axum_extras", "time", "uuid"] }
 utoipa-swagger-ui = { version = "10", features = ["axum", "vendored"] }
 fluent = "0.17"
 unic-langid = { version = "0.9", features = ["macros"] }

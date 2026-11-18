@@ -18,10 +18,11 @@ use assay_contracts::auth::{
     AccountSecurityPolicy, AccountSecurityWarnings, AccountSessionStatus,
     InternalAccountSecurityStatusRequest, InternalAccountSecurityStatusResponse,
 };
+use assay_contracts::utc::UtcInstant;
 use axum::extract::State;
 use axum::response::Response;
 use axum::Json;
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 
 pub async fn account_security_status(
     State(state): State<AppState>,
@@ -52,11 +53,11 @@ pub async fn account_security_status(
     }))
 }
 
-fn time(t: DateTime<Utc>) -> String {
+fn time(t: OffsetDateTime) -> String {
     t.to_rfc3339()
 }
 
-fn opt_time(t: Option<DateTime<Utc>>) -> Option<String> {
+fn opt_time(t: Option<OffsetDateTime>) -> Option<String> {
     t.map(time)
 }
 
@@ -155,7 +156,7 @@ fn warnings(w: &SecurityWarnings) -> AccountSecurityWarnings {
             .failure_days
             .iter()
             .map(|(day, count)| AccountFailureDay {
-                day: day.format("%Y-%m-%d").to_string(),
+                day: day.to_string(),
                 count: *count,
             })
             .collect(),
