@@ -20,6 +20,7 @@ use assay_contracts::auth::{
     InternalAccountSetupPasskeyBeginRequest, InternalAccountSetupPasskeyBeginResponse,
     InternalAccountSetupPasskeyCompleteRequest, InternalAccountSetupPasskeyCompleteResponse,
 };
+use assay_contracts::utc::UtcInstant;
 use axum::extract::{Extension, State};
 use axum::response::Response;
 use axum::Json;

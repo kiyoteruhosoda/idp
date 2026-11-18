@@ -25,6 +25,7 @@ use assay_contracts::auth::{
     InternalPasskeyRegisterCompleteResponse, InternalPortalPasskeyLoginCompleteRequest,
     InternalPortalPasskeyLoginCompleteResponse, PasskeyCredentialInfo,
 };
+use assay_contracts::utc::UtcInstant;
 use axum::extract::{Extension, State};
 use axum::response::Response;
 use axum::Json;
