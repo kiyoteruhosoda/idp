@@ -31,9 +31,9 @@ use crate::domain::repositories::{
 use crate::domain::tenant::TenantId;
 use crate::domain::user_authenticator::AuthenticatorType;
 use crate::domain::webauthn_port::WebAuthnPort;
-use chrono::Duration;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
+use time::Duration;
 use uuid::Uuid;
 use webauthn_rs::prelude::{DiscoverableAuthentication, Passkey, PublicKeyCredential};
 
@@ -166,7 +166,7 @@ impl PasskeyAssertionService {
             state_json,
             auth_session_id_hash: auth_session_id
                 .map(|id| AuthSessionIdHash::of_plain(id).into_string()),
-            expires_at: now + Duration::from_std(CHALLENGE_TTL).unwrap(),
+            expires_at: now + Duration::try_from(CHALLENGE_TTL).unwrap(),
             created_at: now,
         };
         self.passkey_challenges
@@ -412,10 +412,10 @@ mod tests {
     use crate::domain::user::User;
     use crate::domain::values::UserStatus;
     use async_trait::async_trait;
-    use chrono::{TimeZone, Utc};
+    use time::macros::datetime;
 
     fn active_user(id: Uuid, tenant_id: TenantId) -> User {
-        let t = Utc.with_ymd_and_hms(2026, 7, 17, 0, 0, 0).unwrap();
+        let t = datetime!(2026-07-17 00:00:00 UTC);
         User {
             id,
             tenant_id,
@@ -447,7 +447,7 @@ mod tests {
             &self,
             _id: Uuid,
             _lockout: crate::domain::authentication_policy::LockoutPolicy,
-            _now: chrono::DateTime<chrono::Utc>,
+            _now: time::OffsetDateTime,
         ) -> DomainResult<crate::domain::user::LoginFailureRecord> {
             unreachable!()
         }
@@ -470,7 +470,7 @@ mod tests {
             &self,
             _id: Uuid,
             _c: i32,
-            _l: Option<chrono::DateTime<Utc>>,
+            _l: Option<time::OffsetDateTime>,
         ) -> DomainResult<()> {
             unreachable!()
         }
@@ -562,9 +562,9 @@ mod tests {
         }
     }
 
-    struct FixedClock(chrono::DateTime<Utc>);
+    struct FixedClock(time::OffsetDateTime);
     impl crate::domain::clock::Clock for FixedClock {
-        fn now(&self) -> chrono::DateTime<Utc> {
+        fn now(&self) -> time::OffsetDateTime {
             self.0
         }
     }
@@ -594,7 +594,7 @@ mod tests {
             deleted.push(id);
             Ok(first)
         }
-        async fn delete_expired(&self, _now: chrono::DateTime<Utc>) -> DomainResult<u64> {
+        async fn delete_expired(&self, _now: time::OffsetDateTime) -> DomainResult<u64> {
             unreachable!()
         }
     }
@@ -631,7 +631,7 @@ mod tests {
             &self,
             _id: Uuid,
             _passkey_json: &str,
-            _last_used_at: chrono::DateTime<Utc>,
+            _last_used_at: time::OffsetDateTime,
         ) -> DomainResult<()> {
             unreachable!()
         }
@@ -700,14 +700,14 @@ mod tests {
         }
     }
 
-    fn fixed_now() -> chrono::DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 8, 29, 12, 0, 0).unwrap()
+    fn fixed_now() -> time::OffsetDateTime {
+        datetime!(2026-08-29 12:00:00 UTC)
     }
 
     /// Build a service that knows only one authentication challenge with the given `auth_session_id_hash`.
     fn service_with_challenge(
         auth_session_id_hash: Option<&str>,
-        expires_at: chrono::DateTime<Utc>,
+        expires_at: time::OffsetDateTime,
     ) -> (PasskeyAssertionService, Uuid, Arc<FakeChallenges>) {
         let challenge_id = Uuid::new_v4();
         let challenges = Arc::new(FakeChallenges {

@@ -41,7 +41,7 @@ pub async fn internal_health(State(state): State<WebState>) -> Json<ServiceHealt
         service::WEB,
         provider.version_info(),
         state.started_at,
-        chrono::Utc::now(),
+        time::OffsetDateTime::now_utc(),
         checks,
     ))
 }

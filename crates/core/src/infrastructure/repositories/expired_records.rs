@@ -36,12 +36,13 @@ use crate::infrastructure::repositories::{
     sso_session::SqlxSsoSessionRepository,
     user_authenticator::SqlxUserAuthenticatorRepository,
 };
+use assay_contracts::utc::UtcInstant;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use std::sync::Arc;
+use time::OffsetDateTime;
 
 /// Common implementation deleting rows with `expires_at <= now` (every GC target table has this shape).
-async fn delete_by_expires_at(pool: &Db, table: &str, now: DateTime<Utc>) -> Result<u64> {
+async fn delete_by_expires_at(pool: &Db, table: &str, now: OffsetDateTime) -> Result<u64> {
     // Only constants in this module are passed as table names (no external input is assembled).
     let sql = format!("DELETE FROM {table} WHERE expires_at <= ?");
     let result = sqlx::query(sqlx::AssertSqlSafe(sql))
@@ -61,7 +62,7 @@ macro_rules! purge_via_repository {
             fn table_name(&self) -> &'static str {
                 $table
             }
-            async fn purge_expired(&self, now: DateTime<Utc>) -> Result<u64> {
+            async fn purge_expired(&self, now: OffsetDateTime) -> Result<u64> {
                 <Self as $trait>::delete_expired(self, now).await
             }
         }
@@ -108,7 +109,7 @@ macro_rules! purge_directly {
             fn table_name(&self) -> &'static str {
                 $table
             }
-            async fn purge_expired(&self, now: DateTime<Utc>) -> Result<u64> {
+            async fn purge_expired(&self, now: OffsetDateTime) -> Result<u64> {
                 delete_by_expires_at(self.pool(), $table, now).await
             }
         }

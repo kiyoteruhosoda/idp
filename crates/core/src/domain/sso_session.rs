@@ -9,7 +9,7 @@
 
 use crate::domain::crypto;
 use crate::domain::values::{AuthenticationMethod, AuthenticationStrength};
-use chrono::{DateTime, Duration, Utc};
+use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -18,9 +18,9 @@ pub struct SsoSession {
     pub user_id: Uuid,
     /// Initial login time. Also copied into the ID Token's `auth_time` on SSO restore (design spec
     /// §5.1).
-    pub auth_time: DateTime<Utc>,
-    pub idle_expires_at: DateTime<Utc>,
-    pub absolute_expires_at: DateTime<Utc>,
+    pub auth_time: OffsetDateTime,
+    pub idle_expires_at: OffsetDateTime,
+    pub absolute_expires_at: OffsetDateTime,
     /// Authentication methods actually verified to establish this session (spec §14.3). Ordered as
     /// verified.
     pub authentication_methods: Vec<AuthenticationMethod>,
@@ -30,15 +30,15 @@ pub struct SsoSession {
     /// Time the second factor was verified (`None` if not done). Re-authentication by elapsed time
     /// since MFA (§18.2) and step-up (§15) are based on this time (not `auth_time`; re-entering
     /// only the password does not restore MFA freshness).
-    pub mfa_completed_at: Option<DateTime<Utc>>,
+    pub mfa_completed_at: Option<OffsetDateTime>,
     /// Time the user passed re-verification (step-up) right before a sensitive operation (AP5; spec
     /// §15). `auth_time` is the SSO origin and does not move on restore, so the freshness of "may
     /// this operation be done now" is measured separately.
-    pub step_up_at: Option<DateTime<Utc>>,
+    pub step_up_at: Option<OffsetDateTime>,
     pub user_agent: Option<String>,
     pub ip_address: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
 }
 
 impl SsoSession {
@@ -52,7 +52,7 @@ impl SsoSession {
     pub fn establish(
         session_hash: String,
         user_id: Uuid,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
         idle_ttl: Duration,
         absolute_ttl: Duration,
         methods: Vec<AuthenticationMethod>,
@@ -88,11 +88,11 @@ impl SsoSession {
     /// but takes it from **the established session itself** (re-reading would make cookie and
     /// session diverge the moment the value changes).
     pub fn absolute_ttl_secs(&self) -> u64 {
-        u64::try_from((self.absolute_expires_at - self.created_at).num_seconds()).unwrap_or(0)
+        u64::try_from((self.absolute_expires_at - self.created_at).whole_seconds()).unwrap_or(0)
     }
 
     /// Whether valid at the given time (neither idle nor absolute exceeded).
-    pub fn is_valid_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_valid_at(&self, now: OffsetDateTime) -> bool {
         self.idle_expires_at > now && self.absolute_expires_at > now
     }
 
@@ -108,13 +108,13 @@ impl SsoSession {
 
     /// Whether `max_age` (seconds) is satisfied (OIDC Core §3.1.2.1 `max_age` / spec §18.2).
     /// If not, re-authentication (equivalent to `prompt=login`) is required.
-    pub fn satisfies_max_age(&self, max_age_secs: u64, now: DateTime<Utc>) -> bool {
+    pub fn satisfies_max_age(&self, max_age_secs: u64, now: OffsetDateTime) -> bool {
         now - self.auth_time <= Duration::seconds(max_age_secs as i64)
     }
 
     /// Whether the elapsed time since MFA completion is within `max_age_secs` (spec §18.2).
     /// Sessions without completed MFA never satisfy it (`false`).
-    pub fn satisfies_mfa_age(&self, max_age_secs: u64, now: DateTime<Utc>) -> bool {
+    pub fn satisfies_mfa_age(&self, max_age_secs: u64, now: OffsetDateTime) -> bool {
         self.mfa_completed_at
             .is_some_and(|at| now - at <= Duration::seconds(max_age_secs as i64))
     }
@@ -158,15 +158,15 @@ pub fn sid_of(session_hash: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
+    use time::macros::datetime;
 
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 8, 1, 12, 0, 0).unwrap()
+    fn now() -> OffsetDateTime {
+        datetime!(2026-08-01 12:00:00 UTC)
     }
 
     fn session(
         methods: Vec<AuthenticationMethod>,
-        mfa_completed_at: Option<DateTime<Utc>>,
+        mfa_completed_at: Option<OffsetDateTime>,
     ) -> SsoSession {
         SsoSession {
             session_hash: "a".repeat(64),

@@ -27,7 +27,7 @@ use crate::domain::authorization_request::AuthorizationRequest;
 use crate::domain::crypto;
 use crate::domain::tenant::TenantId;
 use crate::domain::values::AuthenticationMethod;
-use chrono::{DateTime, Duration, Utc};
+use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 /// Plaintext of `auth_session_id` (a random value of 128 bits or more that the web holds in a host-only Cookie).
@@ -149,7 +149,7 @@ impl HandoffHandleHash {
 pub struct PendingHandoff {
     handle_hash: HandoffHandleHash,
     /// Shorter-lived than the auth_session's own `expires_at`.
-    expires_at: DateTime<Utc>,
+    expires_at: OffsetDateTime,
 }
 
 impl PendingHandoff {
@@ -157,7 +157,7 @@ impl PendingHandoff {
         &self.handle_hash
     }
 
-    pub fn expires_at(&self) -> DateTime<Utc> {
+    pub fn expires_at(&self) -> OffsetDateTime {
         self.expires_at
     }
 }
@@ -169,7 +169,7 @@ impl PendingHandoff {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Authentication {
     user_id: Uuid,
-    auth_time: DateTime<Utc>,
+    auth_time: OffsetDateTime,
     /// `sid` of the SSO session established (or restored) by the authentication (G5).
     sso_sid: Option<String>,
     /// The authentication methods actually verified (ADR-0043). `None` = not recorded (then `acr` / `amr` are not included).
@@ -179,7 +179,7 @@ pub struct Authentication {
 impl Authentication {
     pub fn new(
         user_id: Uuid,
-        auth_time: DateTime<Utc>,
+        auth_time: OffsetDateTime,
         sso_sid: Option<String>,
         methods: Option<Vec<AuthenticationMethod>>,
     ) -> Self {
@@ -195,7 +195,7 @@ impl Authentication {
         self.user_id
     }
 
-    pub fn auth_time(&self) -> DateTime<Utc> {
+    pub fn auth_time(&self) -> OffsetDateTime {
         self.auth_time
     }
 
@@ -216,13 +216,13 @@ pub enum AuthenticationProgress {
     /// Passed up to the password (waiting for the second factor or a password change).
     PasswordVerified {
         user_id: Uuid,
-        verified_at: DateTime<Utc>,
+        verified_at: OffsetDateTime,
     },
     /// Authentication completed (waiting for consent).
     Authenticated {
         authentication: Authentication,
         /// The time the password was verified before this authentication (`None` for methods not going through a password).
-        password_verified_at: Option<DateTime<Utc>>,
+        password_verified_at: Option<OffsetDateTime>,
     },
 }
 
@@ -284,7 +284,7 @@ pub struct HandoffUnavailable;
 #[derive(Debug, Clone)]
 pub struct PasswordVerification {
     user_id: Uuid,
-    verified_at: DateTime<Utc>,
+    verified_at: OffsetDateTime,
     rotation: IdRotation,
 }
 
@@ -293,7 +293,7 @@ impl PasswordVerification {
         self.user_id
     }
 
-    pub fn verified_at(&self) -> DateTime<Utc> {
+    pub fn verified_at(&self) -> OffsetDateTime {
         self.verified_at
     }
 
@@ -337,9 +337,9 @@ pub struct AuthSession {
     request: AuthorizationRequest,
     handoff: Option<PendingHandoff>,
     progress: AuthenticationProgress,
-    expires_at: DateTime<Utc>,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
+    expires_at: OffsetDateTime,
+    created_at: OffsetDateTime,
+    updated_at: OffsetDateTime,
 }
 
 /// Parts for rebuilding an [`AuthSession`] from persistence (in column order).
@@ -351,15 +351,15 @@ pub struct AuthSessionParts {
     pub tenant_id: TenantId,
     pub request: AuthorizationRequest,
     pub handle_hash: Option<HandoffHandleHash>,
-    pub handle_expires_at: Option<DateTime<Utc>>,
+    pub handle_expires_at: Option<OffsetDateTime>,
     pub authenticated_user_id: Option<Uuid>,
-    pub auth_time: Option<DateTime<Utc>>,
-    pub password_verified_at: Option<DateTime<Utc>>,
+    pub auth_time: Option<OffsetDateTime>,
+    pub password_verified_at: Option<OffsetDateTime>,
     pub sso_sid: Option<String>,
     pub authentication_methods: Option<Vec<AuthenticationMethod>>,
-    pub expires_at: DateTime<Utc>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub expires_at: OffsetDateTime,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
 }
 
 impl AuthSession {
@@ -371,7 +371,7 @@ impl AuthSession {
     pub fn start(
         tenant_id: TenantId,
         request: AuthorizationRequest,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
         lifetime: Duration,
         handoff_lifetime: Duration,
     ) -> (Self, HandoffHandle) {
@@ -501,24 +501,24 @@ impl AuthSession {
         &self.progress
     }
 
-    pub fn expires_at(&self) -> DateTime<Utc> {
+    pub fn expires_at(&self) -> OffsetDateTime {
         self.expires_at
     }
 
-    pub fn created_at(&self) -> DateTime<Utc> {
+    pub fn created_at(&self) -> OffsetDateTime {
         self.created_at
     }
 
-    pub fn updated_at(&self) -> DateTime<Utc> {
+    pub fn updated_at(&self) -> OffsetDateTime {
         self.updated_at
     }
 
-    pub fn is_expired_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_expired_at(&self, now: OffsetDateTime) -> bool {
         self.expires_at <= now
     }
 
     /// Whether the web handoff handle is exchangeable at `now` (not yet exchanged and within expiry).
-    pub fn handoff_is_valid_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn handoff_is_valid_at(&self, now: OffsetDateTime) -> bool {
         self.handoff.as_ref().is_some_and(|h| h.expires_at > now)
     }
 
@@ -561,7 +561,7 @@ impl AuthSession {
     /// conditional on "the handle still remains" (only one of concurrent exchanges wins).
     pub fn exchange_handoff(
         &mut self,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<HandoffExchange, HandoffUnavailable> {
         if !self.handoff_is_valid_at(now) || self.is_expired_at(now) {
             return Err(HandoffUnavailable);
@@ -581,7 +581,7 @@ impl AuthSession {
     pub fn record_password_verification(
         &mut self,
         user_id: Uuid,
-        verified_at: DateTime<Utc>,
+        verified_at: OffsetDateTime,
     ) -> PasswordVerification {
         self.progress = AuthenticationProgress::PasswordVerified {
             user_id,
@@ -634,7 +634,7 @@ pub(crate) mod test_support {
         tenant_id: TenantId,
         auth_session_id: &str,
         request: AuthorizationRequest,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> AuthSession {
         AuthSession::reconstitute(parts(tenant_id, auth_session_id, request, now))
     }
@@ -645,7 +645,7 @@ pub(crate) mod test_support {
         auth_session_id: &str,
         request: AuthorizationRequest,
         user_id: Uuid,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> AuthSession {
         AuthSession::reconstitute(AuthSessionParts {
             authenticated_user_id: Some(user_id),
@@ -658,7 +658,7 @@ pub(crate) mod test_support {
         tenant_id: TenantId,
         auth_session_id: &str,
         request: AuthorizationRequest,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> AuthSessionParts {
         AuthSessionParts {
             id_hash: AuthSessionIdHash::of_plain(auth_session_id),
@@ -685,7 +685,7 @@ mod tests {
 
     const HANDOFF_SECS: i64 = 60;
 
-    fn started(now: DateTime<Utc>) -> (AuthSession, HandoffHandle) {
+    fn started(now: OffsetDateTime) -> (AuthSession, HandoffHandle) {
         AuthSession::start(
             Uuid::now_v7().into(),
             request("app", "https://client.example.com/cb"),
@@ -695,7 +695,7 @@ mod tests {
         )
     }
 
-    fn authentication(user_id: Uuid, at: DateTime<Utc>) -> Authentication {
+    fn authentication(user_id: Uuid, at: OffsetDateTime) -> Authentication {
         Authentication::new(
             user_id,
             at,
@@ -706,7 +706,7 @@ mod tests {
 
     #[test]
     fn a_started_session_is_anonymous_and_bound_to_its_handle() {
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         let (session, handle) = started(now);
         assert_eq!(session.progress(), &AuthenticationProgress::Anonymous);
         assert_eq!(session.identified_user(), None);
@@ -721,7 +721,7 @@ mod tests {
 
     #[test]
     fn the_handle_is_single_use_and_short_lived() {
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
 
         // An expired one cannot be exchanged.
         let (mut session, _) = started(now);
@@ -753,7 +753,7 @@ mod tests {
 
     #[test]
     fn password_verification_waits_for_the_second_step() {
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         let (mut session, _) = started(now);
         let user = Uuid::now_v7();
         let before = session.id_hash().clone();
@@ -768,7 +768,7 @@ mod tests {
 
     #[test]
     fn completing_after_a_password_keeps_the_password_timestamp() {
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         let (mut session, _) = started(now);
         let user = Uuid::now_v7();
         session.record_password_verification(user, now);
@@ -785,7 +785,7 @@ mod tests {
 
     #[test]
     fn a_passwordless_completion_is_not_password_verified() {
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         let (mut session, _) = started(now);
         let user = Uuid::now_v7();
         session.complete_authentication(authentication(user, now));
@@ -796,7 +796,7 @@ mod tests {
     /// ⚠ Once authentication is redone, the previous authentication is not a basis for consent.
     #[test]
     fn re_verifying_a_password_discards_the_previous_authentication() {
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         let (mut session, _) = started(now);
         let first = Uuid::now_v7();
         let second = Uuid::now_v7();
@@ -809,7 +809,7 @@ mod tests {
 
     #[test]
     fn reconstitution_derives_the_progress_from_the_columns() {
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         let user = Uuid::now_v7();
         let base = || AuthSessionParts {
             id_hash: AuthSessionIdHash::of_plain("s"),
@@ -865,7 +865,7 @@ mod tests {
 
     #[test]
     fn parts_round_trip_through_reconstitution() {
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         let (mut session, _) = started(now);
         let user = Uuid::now_v7();
         session.record_password_verification(user, now);

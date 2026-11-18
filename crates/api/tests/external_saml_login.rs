@@ -20,13 +20,13 @@ use assay_api::domain::saml_response::{
 use axum::http::StatusCode;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use chrono::{Duration, Utc};
 use serde_json::{json, Value};
 use sqlx::MySqlPool;
 use std::io::Read as _;
 use support::{
     admin_token, body_json, create_plain_user, post, post_internal, send, unique, SERVICE_TOKEN,
 };
+use time::{Duration, OffsetDateTime};
 
 /// Test-only self-signed certificate and key (the same ones as the `domain::saml_external_idp` unit tests).
 /// **Not referenced anywhere in production.** The IdP-side generator signs and the SP-side verifier checks.
@@ -207,7 +207,7 @@ fn signed_response(
     in_response_to: &str,
     name_id: &str,
 ) -> String {
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     let signer = SamlSigner::from_pem("RS256", TEST_KEY_PEM).expect("signer");
     let xml = build_signed_response_xml(
         &SamlResponseInput {

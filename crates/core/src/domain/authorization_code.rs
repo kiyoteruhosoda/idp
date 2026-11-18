@@ -19,7 +19,7 @@ use crate::domain::crypto;
 use crate::domain::pkce;
 use crate::domain::tenant::TenantId;
 use crate::domain::values::Scope;
-use chrono::{DateTime, Duration, Utc};
+use time::{Duration, OffsetDateTime};
 
 /// Plaintext of a code (the value the RP brings to `/token`). It is a bearer credential, so it is not shown in `Debug`.
 #[derive(Clone, PartialEq, Eq)]
@@ -137,10 +137,10 @@ pub struct AuthorizationCode {
     tenant_id: TenantId,
     grant: CodeGrant,
     authentication: Authentication,
-    expires_at: DateTime<Utc>,
-    used_at: Option<DateTime<Utc>>,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
+    expires_at: OffsetDateTime,
+    used_at: Option<OffsetDateTime>,
+    created_at: OffsetDateTime,
+    updated_at: OffsetDateTime,
 }
 
 /// Parts for rebuilding an [`AuthorizationCode`] from persistence (in column order).
@@ -156,10 +156,10 @@ pub struct AuthorizationCodeParts {
     pub nonce: String,
     pub pkce: PkceChallenge,
     pub authentication: Authentication,
-    pub expires_at: DateTime<Utc>,
-    pub used_at: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub expires_at: OffsetDateTime,
+    pub used_at: Option<OffsetDateTime>,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
 }
 
 impl AuthorizationCode {
@@ -168,7 +168,7 @@ impl AuthorizationCode {
         tenant_id: TenantId,
         request: &AuthorizationRequest,
         authentication: Authentication,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
         lifetime: Duration,
     ) -> (Self, AuthorizationCodeValue) {
         let value = AuthorizationCodeValue::generate();
@@ -221,19 +221,19 @@ impl AuthorizationCode {
         &self.authentication
     }
 
-    pub fn expires_at(&self) -> DateTime<Utc> {
+    pub fn expires_at(&self) -> OffsetDateTime {
         self.expires_at
     }
 
-    pub fn used_at(&self) -> Option<DateTime<Utc>> {
+    pub fn used_at(&self) -> Option<OffsetDateTime> {
         self.used_at
     }
 
-    pub fn created_at(&self) -> DateTime<Utc> {
+    pub fn created_at(&self) -> OffsetDateTime {
         self.created_at
     }
 
-    pub fn updated_at(&self) -> DateTime<Utc> {
+    pub fn updated_at(&self) -> OffsetDateTime {
         self.updated_at
     }
 
@@ -241,7 +241,7 @@ impl AuthorizationCode {
         self.used_at.is_some()
     }
 
-    pub fn is_expired_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_expired_at(&self, now: OffsetDateTime) -> bool {
         self.expires_at <= now
     }
 
@@ -277,7 +277,7 @@ mod tests {
     const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
     const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 
-    fn issued(now: DateTime<Utc>) -> (AuthorizationCode, AuthorizationCodeValue) {
+    fn issued(now: OffsetDateTime) -> (AuthorizationCode, AuthorizationCodeValue) {
         let code = AuthorizationCode::issue(
             Uuid::now_v7().into(),
             &request("app", "https://client.example.com/cb"),
@@ -319,7 +319,7 @@ mod tests {
 
     #[test]
     fn an_issued_code_is_stored_only_as_its_hash_and_carries_the_request() {
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         let (code, value) = issued(now);
         assert_eq!(code.hash(), &value.hash());
         assert!(!format!("{value:?}").contains(&value.clone().into_string()));
@@ -336,7 +336,7 @@ mod tests {
 
     #[test]
     fn redeem_checks_client_then_redirect_uri_then_pkce() {
-        let (code, _) = issued(Utc::now());
+        let (code, _) = issued(OffsetDateTime::now_utc());
         let cb = Some("https://client.example.com/cb");
         assert_eq!(code.redeem("app", cb, VERIFIER), Ok(()));
         // Order: if the party differs, answer "different party" even if other items also mismatch.

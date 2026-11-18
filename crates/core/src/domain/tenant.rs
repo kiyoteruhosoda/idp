@@ -6,7 +6,7 @@
 #![allow(dead_code)]
 
 use crate::domain::values::TenantStatus;
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// Unique identifier of a tenant (value object). Distinguished from a raw `Uuid` to prevent
@@ -57,8 +57,8 @@ pub struct Tenant {
     /// do not match in the login field until this switch is on**. Row existence and entry breadth
     /// are separate knobs.
     pub email_login_enabled: bool,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
 }
 
 impl Tenant {
@@ -75,7 +75,6 @@ impl Tenant {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
 
     fn tenant(parent: Option<TenantId>) -> Tenant {
         Tenant {
@@ -85,8 +84,8 @@ mod tests {
             status: TenantStatus::Active,
             self_registration_enabled: false,
             email_login_enabled: false,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: OffsetDateTime::now_utc(),
+            updated_at: OffsetDateTime::now_utc(),
         }
     }
 

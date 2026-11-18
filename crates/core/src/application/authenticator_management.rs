@@ -27,9 +27,9 @@ use crate::domain::sms::{OutgoingSms, SmsSender};
 use crate::domain::user_authenticator::{
     AuthenticatorStatus, AuthenticatorType, UserAuthenticator, OTP_SEND_WINDOW_SECS,
 };
-use chrono::{DateTime, Duration, Utc};
 use std::collections::HashSet;
 use std::sync::Arc;
+use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 /// Number of recovery codes issued at once.
@@ -61,8 +61,8 @@ pub struct AuthenticatorSummary {
     pub authenticator_type: AuthenticatorType,
     pub status: AuthenticatorStatus,
     pub label: String,
-    pub created_at: DateTime<Utc>,
-    pub last_used_at: Option<DateTime<Utc>>,
+    pub created_at: OffsetDateTime,
+    pub last_used_at: Option<OffsetDateTime>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -96,9 +96,9 @@ pub enum AuthenticatorManagementError {
 fn may_send_otp(
     rows: &[UserAuthenticator],
     authenticator_type: AuthenticatorType,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> bool {
-    let sent: Vec<DateTime<Utc>> = rows
+    let sent: Vec<OffsetDateTime> = rows
         .iter()
         .filter(|r| r.authenticator_type == authenticator_type && r.expires_at.is_some())
         .map(|r| r.created_at)
@@ -624,7 +624,7 @@ impl AuthenticatorManagementService {
         &self,
         user_id: Uuid,
         authenticator_type: AuthenticatorType,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<(), AuthenticatorManagementError> {
         let rows = self
             .authenticators
@@ -855,7 +855,7 @@ impl AuthenticatorManagementService {
     async fn create_active_totp(
         &self,
         user_id: Uuid,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<(), AuthenticatorManagementError> {
         let row = UserAuthenticator {
             id: self.ids.new_id(),
@@ -965,7 +965,7 @@ pub async fn consume_single_use_code(
     user_id: Uuid,
     authenticator_type: AuthenticatorType,
     code: &str,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<bool, crate::domain::error::DomainError> {
     let stripped = code.trim().replace([' ', '-'], "");
     let normalized = if authenticator_type == AuthenticatorType::RecoveryCode {
@@ -1053,7 +1053,7 @@ mod tests {
         status: AuthenticatorStatus,
         id: Option<Uuid>,
     ) -> UserAuthenticator {
-        let at = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+        let at = assay_contracts::utc::from_unix_seconds(1_700_000_000).unwrap();
         UserAuthenticator {
             id: id.unwrap_or_else(|| Uuid::from_u128(900)),
             user_id: user(),
@@ -1074,7 +1074,7 @@ mod tests {
     fn issued(
         authenticator_type: AuthenticatorType,
         seconds_ago: i64,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> UserAuthenticator {
         let mut r = row(authenticator_type, AuthenticatorStatus::Revoked, None);
         r.created_at = now - Duration::seconds(seconds_ago);
@@ -1085,7 +1085,7 @@ mod tests {
     /// Resends must be 30 seconds apart. Different kinds are not counted.
     #[test]
     fn otp_cannot_be_sent_again_too_soon() {
-        let now = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+        let now = assay_contracts::utc::from_unix_seconds(1_700_000_000).unwrap();
         let email = AuthenticatorType::EmailOtp;
         assert!(may_send_otp(&[], email, now));
         assert!(!may_send_otp(&[issued(email, 29, now)], email, now));
@@ -1100,7 +1100,7 @@ mod tests {
     /// Up to 10 per hour. Sends older than one hour are not counted.
     #[test]
     fn otp_sends_per_hour_are_limited() {
-        let now = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+        let now = assay_contracts::utc::from_unix_seconds(1_700_000_000).unwrap();
         let sms = AuthenticatorType::SmsOtp;
         let nine: Vec<_> = (1..=9).map(|n| issued(sms, n * 60, now)).collect();
         assert!(may_send_otp(&nine, sms, now));
@@ -1115,7 +1115,7 @@ mod tests {
     /// Rows of registered phone numbers (no expiry) are not counted as sends.
     #[test]
     fn a_registered_phone_is_not_counted_as_a_send() {
-        let now = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+        let now = assay_contracts::utc::from_unix_seconds(1_700_000_000).unwrap();
         let mut phone = row(AuthenticatorType::SmsOtp, AuthenticatorStatus::Active, None);
         phone.created_at = now;
         assert!(may_send_otp(&[phone], AuthenticatorType::SmsOtp, now));

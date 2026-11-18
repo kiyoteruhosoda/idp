@@ -17,6 +17,7 @@ use crate::presentation::error::ApiError;
 use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::{require_root_tenant, ResolvedTenant};
+use assay_contracts::utc::UtcInstant;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
@@ -84,9 +85,9 @@ pub async fn generate_key(
     // The default is "publish first, sign only after a grace period". `activate_immediately` discards
     // that grace period; use it only when you can't wait, e.g. key compromise.
     let publish_lead = if body.activate_immediately {
-        chrono::Duration::zero()
+        time::Duration::ZERO
     } else {
-        chrono::Duration::hours(state.config.key_rotation_publish_lead_hours() as i64)
+        time::Duration::hours(state.config.key_rotation_publish_lead_hours() as i64)
     };
     let key = state
         .keys
@@ -169,7 +170,7 @@ pub async fn delete_key(
 fn key_response(
     k: &SigningKey,
     signer_kid: Option<&str>,
-    now: chrono::DateTime<chrono::Utc>,
+    now: time::OffsetDateTime,
 ) -> SigningKeyResponse {
     SigningKeyResponse {
         kid: k.kid.clone(),

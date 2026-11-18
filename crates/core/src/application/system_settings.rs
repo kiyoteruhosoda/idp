@@ -571,8 +571,8 @@ mod tests {
 
     struct FixedClock;
     impl Clock for FixedClock {
-        fn now(&self) -> chrono::DateTime<chrono::Utc> {
-            chrono::DateTime::from_timestamp(1_758_000_000, 0).unwrap()
+        fn now(&self) -> time::OffsetDateTime {
+            assay_contracts::utc::from_unix_seconds(1_758_000_000).unwrap()
         }
     }
 

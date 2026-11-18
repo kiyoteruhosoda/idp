@@ -8,10 +8,11 @@ use crate::domain::tenant::TenantId;
 use crate::domain::user::{LoginFailureRecord, User};
 use crate::domain::values::{MembershipStatus, MembershipType, UserStatus};
 use crate::infrastructure::db::Db;
+use assay_contracts::utc::{from_naive_utc, UtcInstant};
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::mysql::MySqlRow;
 use sqlx::{MySql, QueryBuilder, Row};
+use time::{OffsetDateTime, PrimitiveDateTime};
 use uuid::Uuid;
 
 pub struct SqlxUserRepository {
@@ -212,8 +213,8 @@ fn identifier_conflict(e: sqlx::Error) -> DomainError {
     }
 }
 
-fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
-    Utc.from_utc_datetime(&naive)
+fn to_utc(naive: PrimitiveDateTime) -> OffsetDateTime {
+    from_naive_utc(naive)
 }
 
 fn parse_uuid(s: &str) -> Result<Uuid> {
@@ -225,8 +226,8 @@ fn map_row(row: &MySqlRow) -> Result<User> {
     let tenant_id: String = row.try_get("tenant_id").map_err(repo_err)?;
     let sub: String = row.try_get("sub").map_err(repo_err)?;
     let status: String = row.try_get("status").map_err(repo_err)?;
-    let locked_until: Option<NaiveDateTime> = row.try_get("locked_until").map_err(repo_err)?;
-    let password_changed_at: Option<NaiveDateTime> =
+    let locked_until: Option<PrimitiveDateTime> = row.try_get("locked_until").map_err(repo_err)?;
+    let password_changed_at: Option<PrimitiveDateTime> =
         row.try_get("password_changed_at").map_err(repo_err)?;
     Ok(User {
         id: parse_uuid(&id)?,
@@ -741,7 +742,7 @@ impl UserRepository for SqlxUserRepository {
         &self,
         id: Uuid,
         failed_login_count: i32,
-        locked_until: Option<DateTime<Utc>>,
+        locked_until: Option<OffsetDateTime>,
     ) -> Result<()> {
         sqlx::query("UPDATE users SET failed_login_count = ?, locked_until = ? WHERE id = ?")
             .bind(failed_login_count)
@@ -757,7 +758,7 @@ impl UserRepository for SqlxUserRepository {
         &self,
         id: Uuid,
         lockout: LockoutPolicy,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<LoginFailureRecord> {
         // Increment and lock decision in one statement (SEC13). With read-then-write-back, concurrent attempts read the same value
         // and write the same value, so N failures might advance it by only 1.
@@ -775,7 +776,7 @@ impl UserRepository for SqlxUserRepository {
             qb.push(" WHEN failed_login_count + 1 >= ");
             qb.push_bind(threshold);
             qb.push(" THEN ");
-            qb.push_bind((now + chrono::Duration::seconds(duration_secs as i64)).naive_utc());
+            qb.push_bind((now + time::Duration::seconds(duration_secs as i64)).naive_utc());
         }
         qb.push(" ELSE locked_until END, failed_login_count = failed_login_count + 1 WHERE id = ");
         qb.push_bind(id.to_string());
@@ -797,7 +798,8 @@ impl UserRepository for SqlxUserRepository {
                 locked_until: None,
             });
         };
-        let locked_until: Option<NaiveDateTime> = row.try_get("locked_until").map_err(repo_err)?;
+        let locked_until: Option<PrimitiveDateTime> =
+            row.try_get("locked_until").map_err(repo_err)?;
         Ok(LoginFailureRecord {
             failed_login_count: row.try_get("failed_login_count").map_err(repo_err)?,
             // An expired lock is treated as "not in place" (judged at re-read time).

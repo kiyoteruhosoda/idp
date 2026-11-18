@@ -33,8 +33,8 @@ use crate::domain::sso_session::SsoSession;
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::AuthenticationMethod;
-use chrono::{DateTime, Utc};
 use std::sync::Arc;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// A successful authentication (who, by which method, where).
@@ -79,7 +79,8 @@ impl EstablishedSso {
 /// Outcome of trying to create an SSO session.
 pub enum Establishment {
     /// Created.
-    Established(EstablishedSso),
+    /// Boxed: the session is much larger than the other variant (clippy::large_enum_variant).
+    Established(Box<EstablishedSso>),
     /// In an organization restricted to registered devices, the device was not registered (task #916. ADR-0079). No SSO session
     /// was created. The web puts the `ticket` in a Cookie and redirects to the device registration screen.
     ///
@@ -92,7 +93,7 @@ impl Establishment {
     #[cfg(test)]
     pub fn expect_established(self) -> EstablishedSso {
         match self {
-            Self::Established(sso) => sso,
+            Self::Established(sso) => *sso,
             Self::DeviceEnrollmentRequired { .. } => panic!("device enrollment was required"),
         }
     }
@@ -151,7 +152,7 @@ impl SignInCompletion {
         sign_in: &SignIn<'_>,
         binding: SessionBinding,
         ctx: &RequestContext,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<Admission, DomainError> {
         let Some(gate) = &self.device_gate else {
             return Ok(Admission::Admitted);
@@ -179,7 +180,7 @@ impl SignInCompletion {
         &self,
         sign_in: SignIn<'_>,
         ctx: &RequestContext,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<Establishment, DomainError> {
         self.establish_sso_with_binding(sign_in, SessionBinding::Unbound, ctx, now)
             .await
@@ -194,7 +195,7 @@ impl SignInCompletion {
         sign_in: SignIn<'_>,
         binding: SessionBinding,
         ctx: &RequestContext,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<Establishment, DomainError> {
         if let Admission::EnrollmentRequired { ticket } =
             self.admit(&sign_in, binding, ctx, now).await?
@@ -247,10 +248,10 @@ impl SignInCompletion {
                 ctx,
             )
             .await;
-        Ok(Establishment::Established(EstablishedSso {
+        Ok(Establishment::Established(Box::new(EstablishedSso {
             session,
             session_id,
-        }))
+        })))
     }
 
     /// Continues the authorization flow: records the authentication (re-keying the id), checks consent, issues a code.
@@ -261,7 +262,7 @@ impl SignInCompletion {
         tenant: TenantContext,
         session: &mut AuthSession,
         sso: &EstablishedSso,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
         ctx: &RequestContext,
     ) -> Result<AuthorizationContinuation, DomainError> {
         let authentication = Authentication::new(

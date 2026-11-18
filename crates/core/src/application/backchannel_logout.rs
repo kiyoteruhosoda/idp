@@ -176,7 +176,7 @@ impl BackchannelLogoutDeliveryService {
     }
 
     /// Deletes old settled rows (sent successfully or attempts given up).
-    pub async fn purge_settled(&self, retention: chrono::Duration) -> Result<u64> {
+    pub async fn purge_settled(&self, retention: time::Duration) -> Result<u64> {
         let cutoff = self.clock.now() - retention;
         self.deliveries
             .purge_settled(cutoff, self.max_attempts)
@@ -198,7 +198,7 @@ impl BackchannelLogoutDeliveryService {
         }
 
         let issuer = tenant_issuer(&self.base_issuer, delivery.tenant_id);
-        let claims = LogoutTokenClaims::build(delivery, issuer, self.clock.now().timestamp());
+        let claims = LogoutTokenClaims::build(delivery, issuer, self.clock.now().unix_timestamp());
         let token = match self.signer.sign(&claims).await {
             Ok(t) => t,
             Err(e) => {
@@ -245,7 +245,7 @@ impl BackchannelLogoutDeliveryService {
     async fn abandon(&self, delivery: &BackchannelLogoutDelivery, reason: &str) {
         // `claim_due` only picks rows with `attempts < max_attempts`, so advancing to the limit means
         // it is never picked again. The reason stays on the row so operations can trace it.
-        let far_future = self.clock.now() + chrono::Duration::days(3_650);
+        let far_future = self.clock.now() + time::Duration::days(3_650);
         if let Err(e) = self
             .deliveries
             .mark_failed(delivery.id, far_future, reason)
@@ -291,16 +291,16 @@ pub fn new_jti() -> Uuid {
 mod tests {
     use super::*;
     use crate::domain::tenant::TenantId;
-    use chrono::{DateTime, TimeZone, Utc};
     use std::sync::Mutex;
+    use time::{macros::datetime, OffsetDateTime};
 
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 8, 1, 12, 0, 0).unwrap()
+    fn now() -> OffsetDateTime {
+        datetime!(2026-08-01 12:00:00 UTC)
     }
 
     struct FixedClock;
     impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> OffsetDateTime {
             now()
         }
     }
@@ -321,7 +321,7 @@ mod tests {
         enqueued: Mutex<Vec<BackchannelLogoutDelivery>>,
         due: Mutex<Vec<BackchannelLogoutDelivery>>,
         delivered: Mutex<Vec<Uuid>>,
-        failed: Mutex<Vec<(Uuid, DateTime<Utc>, String)>>,
+        failed: Mutex<Vec<(Uuid, OffsetDateTime, String)>>,
     }
 
     #[async_trait::async_trait]
@@ -332,20 +332,20 @@ mod tests {
         }
         async fn claim_due(
             &self,
-            _now: DateTime<Utc>,
+            _now: OffsetDateTime,
             _max_attempts: i32,
             _limit: u32,
         ) -> Result<Vec<BackchannelLogoutDelivery>> {
             Ok(std::mem::take(&mut *self.due.lock().unwrap()))
         }
-        async fn mark_delivered(&self, id: Uuid, _at: DateTime<Utc>) -> Result<()> {
+        async fn mark_delivered(&self, id: Uuid, _at: OffsetDateTime) -> Result<()> {
             self.delivered.lock().unwrap().push(id);
             Ok(())
         }
         async fn mark_failed(
             &self,
             id: Uuid,
-            next_attempt_at: DateTime<Utc>,
+            next_attempt_at: OffsetDateTime,
             error: &str,
         ) -> Result<()> {
             self.failed
@@ -354,7 +354,7 @@ mod tests {
                 .push((id, next_attempt_at, error.to_string()));
             Ok(())
         }
-        async fn purge_settled(&self, _older: DateTime<Utc>, _max: i32) -> Result<u64> {
+        async fn purge_settled(&self, _older: OffsetDateTime, _max: i32) -> Result<u64> {
             Ok(0)
         }
     }
@@ -486,7 +486,10 @@ mod tests {
         let (_, token) = sender.sent.lock().unwrap()[0].clone();
         let claims: serde_json::Value = serde_json::from_str(&token).unwrap();
         assert_eq!(claims["sid"], "sid-1");
-        assert_eq!(claims["exp"], now().timestamp() + LOGOUT_TOKEN_TTL_SECS);
+        assert_eq!(
+            claims["exp"],
+            now().unix_timestamp() + LOGOUT_TOKEN_TTL_SECS
+        );
         assert_eq!(
             claims["iss"],
             format!("https://idp.example.com/{}", tenant())
@@ -535,6 +538,6 @@ mod tests {
         let failed = repo.failed.lock().unwrap();
         assert_eq!(failed.len(), 1);
         // The next time is pushed far ahead so it drops out of retries.
-        assert!(failed[0].1 > now() + chrono::Duration::days(3_000));
+        assert!(failed[0].1 > now() + time::Duration::days(3_000));
     }
 }

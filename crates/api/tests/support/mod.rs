@@ -52,8 +52,8 @@ pub const REDIRECT_URI_ENC: &str = "http%3A%2F%2Flocalhost%3A3000%2Fcallback";
 
 pub struct SystemClock;
 impl Clock for SystemClock {
-    fn now(&self) -> chrono::DateTime<chrono::Utc> {
-        chrono::Utc::now()
+    fn now(&self) -> time::OffsetDateTime {
+        time::OffsetDateTime::now_utc()
     }
 }
 

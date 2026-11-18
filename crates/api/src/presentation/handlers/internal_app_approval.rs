@@ -19,10 +19,10 @@ use assay_contracts::auth::{
     InternalAppApprovalCompleteRequest, InternalAppApprovalCompleteResponse,
     InternalAppApprovalStartRequest, InternalAppApprovalStartResponse,
 };
+use assay_contracts::utc::UtcInstant;
 use axum::extract::{Extension, State};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use chrono::SecondsFormat;
 use uuid::Uuid;
 
 /// Starts a "continue with the app" request (`POST /internal/app-approval/start`).
@@ -162,7 +162,7 @@ pub async fn account_enrollment(
                 InternalAccountApproverEnrollmentResponse::Ready {
                     device_name: view.device_name,
                     security_level: view.security_level.as_str().to_string(),
-                    created_at: view.created_at.to_rfc3339_opts(SecondsFormat::Secs, true),
+                    created_at: view.created_at.to_rfc3339_seconds_z(),
                 }
             }
             EnrollmentViewOutcome::NotFound => InternalAccountApproverEnrollmentResponse::NotFound,
@@ -238,10 +238,8 @@ pub async fn account_keys(
                         id: k.id.to_string(),
                         device_name: k.device_name,
                         security_level: k.security_level.as_str().to_string(),
-                        registered_at: k.registered_at.to_rfc3339_opts(SecondsFormat::Secs, true),
-                        last_used_at: k
-                            .last_used_at
-                            .map(|t| t.to_rfc3339_opts(SecondsFormat::Secs, true)),
+                        registered_at: k.registered_at.to_rfc3339_seconds_z(),
+                        last_used_at: k.last_used_at.map(|t| t.to_rfc3339_seconds_z()),
                     })
                     .collect(),
             },

@@ -6,7 +6,7 @@
 //! `sign_in_history`, `sign_in_app_usage`, `audit_log`); nothing new is written.
 
 use crate::domain::user_device::CountryCode;
-use chrono::{DateTime, NaiveDate, Utc};
+use time::OffsetDateTime;
 
 /// Period (days) over which warnings are counted.
 pub const WARNING_WINDOW_DAYS: i64 = 30;
@@ -33,14 +33,14 @@ pub struct SessionContextStatus {
     /// The approving authenticator app key (when signed in by approval).
     pub approver: Option<ApproverStatus>,
     /// Time a passkey re-verification last passed in this sign-in state.
-    pub passkey_verified_at: Option<DateTime<Utc>>,
+    pub passkey_verified_at: Option<OffsetDateTime>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegisteredDeviceStatus {
     pub name: String,
-    pub registered_at: DateTime<Utc>,
-    pub last_used_at: DateTime<Utc>,
+    pub registered_at: OffsetDateTime,
+    pub last_used_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,9 +49,9 @@ pub struct SessionKeyStatus {
     pub algorithm: String,
     /// Public key thumbprint (RFC 7638, base64url).
     pub thumbprint: String,
-    pub bound_at: DateTime<Utc>,
+    pub bound_at: OffsetDateTime,
     /// Last time it was refreshed with a signature by the key.
-    pub refreshed_at: Option<DateTime<Utc>>,
+    pub refreshed_at: Option<OffsetDateTime>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,15 +73,15 @@ pub struct AppTokenStatus {
     /// How many of them are bound to a device key via DPoP.
     pub dpop_bound_refresh_tokens: u32,
     /// Last time a token was issued to this app (if recorded).
-    pub last_issued_at: Option<DateTime<Utc>>,
+    pub last_issued_at: Option<OffsetDateTime>,
     /// Number of refreshes with refresh tokens (total over sign-ins whose records remain).
     pub refresh_use_count: u32,
     /// Last refresh time and who sent it then.
-    pub refresh_last_used_at: Option<DateTime<Utc>>,
+    pub refresh_last_used_at: Option<OffsetDateTime>,
     pub refresh_last_ip: Option<String>,
     pub refresh_last_user_agent: Option<String>,
     /// Last time a used-up refresh token came again.
-    pub refresh_reuse_detected_at: Option<DateTime<Utc>>,
+    pub refresh_reuse_detected_at: Option<OffsetDateTime>,
 }
 
 /// Recent warnings ([`WARNING_WINDOW_DAYS`] days).
@@ -98,13 +98,13 @@ pub struct SecurityWarnings {
     pub unregistered_sign_ins: Occurrences,
     /// Days (UTC dates) with at least [`FAILURE_DAY_THRESHOLD`] refused sign-ins, and their counts.
     /// Newest first.
-    pub failure_days: Vec<(NaiveDate, u32)>,
+    pub failure_days: Vec<(time::Date, u32)>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Occurrences {
     pub count: u32,
-    pub last_at: Option<DateTime<Utc>>,
+    pub last_at: Option<OffsetDateTime>,
 }
 
 impl SecurityWarnings {

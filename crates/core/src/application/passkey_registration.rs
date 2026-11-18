@@ -51,8 +51,8 @@ impl From<DomainError> for PasskeyRegistrationError {
 pub struct CredentialInfo {
     pub id: Uuid,
     pub name: String,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: time::OffsetDateTime,
+    pub last_used_at: Option<time::OffsetDateTime>,
     /// Suspended in the registry (AP9). The key-fetching path only looks at "not revoked rows", so
     /// suspended passkeys also appear in this list. **They appear but can't be used**, so the state is attached.
     pub suspended: bool,
@@ -140,7 +140,7 @@ impl PasskeyRegistrationService {
             challenge_type: PasskeyChallengeType::Register,
             state_json,
             auth_session_id_hash: None,
-            expires_at: now + chrono::Duration::from_std(CHALLENGE_TTL).unwrap(),
+            expires_at: now + time::Duration::try_from(CHALLENGE_TTL).unwrap(),
             created_at: now,
         };
         self.passkey_challenges.create(&challenge).await?;

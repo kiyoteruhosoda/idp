@@ -4,9 +4,10 @@ use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::SessionKeyBindingRepository;
 use crate::domain::session_key::{SessionKeyAlgorithm, SessionKeyBinding, SessionPublicKey};
 use crate::infrastructure::db::Db;
+use assay_contracts::utc::{from_naive_utc, UtcInstant};
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::Row;
+use time::{OffsetDateTime, PrimitiveDateTime};
 
 pub struct SqlxSessionKeyBindingRepository {
     pool: Db,
@@ -41,7 +42,7 @@ impl SessionKeyBindingRepository for SqlxSessionKeyBindingRepository {
         let algorithm = SessionKeyAlgorithm::parse(&algorithm).ok_or_else(|| {
             DomainError::Repository(format!("unknown key algorithm `{algorithm}`"))
         })?;
-        let bound_at: NaiveDateTime = row.try_get("key_bound_at").map_err(repo_err)?;
+        let bound_at: PrimitiveDateTime = row.try_get("key_bound_at").map_err(repo_err)?;
         Ok(Some(SessionKeyBinding {
             session_identifier: row.try_get("key_session_identifier").map_err(repo_err)?,
             key: SessionPublicKey {
@@ -49,7 +50,7 @@ impl SessionKeyBindingRepository for SqlxSessionKeyBindingRepository {
                 jwk_json: row.try_get("key_public_jwk").map_err(repo_err)?,
                 thumbprint: row.try_get("key_thumbprint").map_err(repo_err)?,
             },
-            bound_at: Utc.from_utc_datetime(&bound_at),
+            bound_at: from_naive_utc(bound_at),
         }))
     }
 
@@ -79,7 +80,7 @@ impl SessionKeyBindingRepository for SqlxSessionKeyBindingRepository {
         Ok(updated.rows_affected() > 0)
     }
 
-    async fn record_refresh(&self, session_hash: &str, at: DateTime<Utc>) -> Result<()> {
+    async fn record_refresh(&self, session_hash: &str, at: OffsetDateTime) -> Result<()> {
         sqlx::query("UPDATE sso_session_contexts SET key_refreshed_at = ? WHERE session_hash = ?")
             .bind(at.naive_utc())
             .bind(session_hash)

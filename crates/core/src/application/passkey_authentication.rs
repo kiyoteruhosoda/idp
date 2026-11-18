@@ -276,7 +276,7 @@ impl PasskeyAuthenticationService {
             )
             .await
         {
-            Ok(Establishment::Established(sso)) => sso,
+            Ok(Establishment::Established(sso)) => *sso,
             Ok(Establishment::DeviceEnrollmentRequired { ticket }) => {
                 return PasskeyAuthOutcome::DeviceEnrollmentRequired { ticket }
             }

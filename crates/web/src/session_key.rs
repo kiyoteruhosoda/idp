@@ -77,7 +77,7 @@ fn cache_key(sso_session_id: &str) -> String {
 }
 
 fn now_secs() -> i64 {
-    chrono::Utc::now().timestamp()
+    time::OffsetDateTime::now_utc().unix_timestamp()
 }
 
 /// `Secure-Session-Registration` added to the login response (built from the value of the newly set SSO session cookie).

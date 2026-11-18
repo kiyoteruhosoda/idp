@@ -71,13 +71,13 @@ async fn refreshing_does_not_move_the_time_of_the_last_sign_in() {
     .await
     .expect("insert refresh token");
     // The column is a UTC DATETIME. Convert to seconds on the Rust side (the DB's UNIX_TIMESTAMP depends on the session time zone).
-    let signed_in: chrono::NaiveDateTime =
+    let signed_in: time::PrimitiveDateTime =
         sqlx::query_scalar("SELECT auth_time FROM refresh_tokens WHERE token_hash = ?")
             .bind(assay_api::infrastructure::crypto::sha256_hex(&plain))
             .fetch_one(&env.pool)
             .await
             .expect("auth_time");
-    let signed_in = signed_in.and_utc().timestamp();
+    let signed_in = signed_in.assume_utc().unix_timestamp();
 
     let first = refresh(&env, &client_id, &secret, &plain).await;
     let claims = id_token_claims(&first);

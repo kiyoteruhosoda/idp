@@ -8,14 +8,14 @@
 
 use crate::domain::cache::Cache;
 use crate::domain::clock::Clock;
-use chrono::{DateTime, Duration, Utc};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::{Arc, Mutex};
+use time::{Duration, OffsetDateTime};
 
 struct Entry<V> {
     value: V,
-    expires_at: DateTime<Utc>,
+    expires_at: OffsetDateTime,
 }
 
 /// Generic TTL cache, injected as one instance per key space.
@@ -78,11 +78,12 @@ where
 mod tests {
     use super::*;
     use std::sync::Mutex as StdMutex;
+    use time::macros::datetime;
 
     /// Clock that tests can advance at will.
-    struct MutClock(StdMutex<DateTime<Utc>>);
+    struct MutClock(StdMutex<OffsetDateTime>);
     impl MutClock {
-        fn new(t: DateTime<Utc>) -> Self {
+        fn new(t: OffsetDateTime) -> Self {
             Self(StdMutex::new(t))
         }
         fn advance(&self, d: Duration) {
@@ -91,14 +92,13 @@ mod tests {
         }
     }
     impl Clock for MutClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> OffsetDateTime {
             *self.0.lock().unwrap()
         }
     }
 
-    fn base() -> DateTime<Utc> {
-        use chrono::TimeZone;
-        Utc.with_ymd_and_hms(2026, 7, 10, 0, 0, 0).unwrap()
+    fn base() -> OffsetDateTime {
+        datetime!(2026-07-10 00:00:00 UTC)
     }
 
     #[test]

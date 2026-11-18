@@ -20,7 +20,7 @@ use crate::domain::account::AccountRef;
 use crate::domain::message::MessageKey;
 use crate::domain::tenant::TenantId;
 use crate::domain::values::{ApplicationStatus, AssignmentMode, ClientStatus, UserStatus};
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// Column limit of `applications.display_name`.
@@ -36,8 +36,8 @@ pub struct Application {
     pub display_name: String,
     pub status: ApplicationStatus,
     pub assignment_mode: AssignmentMode,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
 }
 
 /// The answer to "may this user use this app" (ADR-0054).
@@ -188,7 +188,7 @@ pub struct ApplicationBinding {
     pub id: Uuid,
     pub application_id: Uuid,
     pub target: BindingTarget,
-    pub created_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
 }
 
 /// App x principal (`application_assignments` table).
@@ -199,7 +199,7 @@ pub struct ApplicationAssignment {
     pub id: Uuid,
     pub application_id: Uuid,
     pub principal: AccountRef,
-    pub assigned_at: DateTime<Utc>,
+    pub assigned_at: OffsetDateTime,
     /// The admin who assigned it (the source, for audit). `None` for migrations or via a machine.
     pub assigned_by: Option<Uuid>,
 }
@@ -213,7 +213,7 @@ pub struct AssignedServiceAccount {
     /// The client's registered name.
     pub app_name: String,
     pub client_status: ClientStatus,
-    pub assigned_at: DateTime<Utc>,
+    pub assigned_at: OffsetDateTime,
 }
 
 /// One assigned user row (the read model read by the admin API and screens).
@@ -232,7 +232,7 @@ pub struct AssignedUser {
     /// State of the user account itself. ⚠ **Assignments of stopped users remain**, so that
     /// the directory need not be rebuilt when they come back; whether they can get in is decided separately by the user's state.
     pub status: UserStatus,
-    pub assigned_at: DateTime<Utc>,
+    pub assigned_at: OffsetDateTime,
 }
 
 /// One assignment attached to an account (so the account screen can show "usable apps".
@@ -240,7 +240,7 @@ pub struct AssignedUser {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AccountAssignment {
     pub application_id: Uuid,
-    pub assigned_at: DateTime<Utc>,
+    pub assigned_at: OffsetDateTime,
 }
 
 /// One directory row (ADR-0057). The read model read by RPs' periodic reconciliation.
@@ -324,7 +324,7 @@ mod tests {
     use super::*;
 
     fn app(status: ApplicationStatus, mode: AssignmentMode) -> Application {
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         Application {
             id: Uuid::nil(),
             tenant_id: TenantId::from(Uuid::nil()),

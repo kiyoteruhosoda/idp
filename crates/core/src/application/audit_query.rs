@@ -8,8 +8,8 @@ use crate::domain::audit::{AuditLogEntry, AuditLogFilter};
 use crate::domain::error::DomainError;
 use crate::domain::repositories::AuditLogQuery;
 use crate::domain::tenant_context::TenantContext;
-use chrono::{DateTime, Utc};
 use std::sync::Arc;
+use time::OffsetDateTime;
 
 /// Default number of items per page.
 pub const DEFAULT_LIMIT: i64 = 50;
@@ -23,8 +23,8 @@ pub struct AuditQueryParams {
     pub result: Option<String>,
     pub client_id: Option<String>,
     pub correlation_id: Option<String>,
-    pub from: Option<DateTime<Utc>>,
-    pub to: Option<DateTime<Utc>>,
+    pub from: Option<OffsetDateTime>,
+    pub to: Option<OffsetDateTime>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }

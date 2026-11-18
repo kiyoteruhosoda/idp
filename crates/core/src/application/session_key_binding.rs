@@ -37,9 +37,9 @@ use crate::domain::session_key::{
 use crate::domain::sso_session::{self, SsoSession};
 use crate::domain::user::User;
 use assay_contracts::session_key as contract;
-use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use std::sync::Arc;
+use time::OffsetDateTime;
 
 /// Result of registration or refresh.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -218,7 +218,7 @@ impl SessionKeyBindingService {
     async fn live_session(
         &self,
         sso_session_id: &str,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<Option<(SsoSession, User)>, DomainError> {
         let session_hash = crypto::sha256_hex(sso_session_id);
         let Some(session) = self.sso_sessions.find_by_hash(&session_hash).await? else {
@@ -240,11 +240,11 @@ impl SessionKeyBindingService {
         &self,
         sso_session_id: &str,
         proof: &str,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Option<String> {
         let claims = jsonwebtoken::dangerous::insecure_decode::<UnverifiedClaims>(proof).ok()?;
         let jti = claims.claims.jti?;
-        contract::challenge_is_fresh(&self.secret, sso_session_id, &jti, now.timestamp())
+        contract::challenge_is_fresh(&self.secret, sso_session_id, &jti, now.unix_timestamp())
             .then_some(jti)
     }
 
@@ -254,7 +254,7 @@ impl SessionKeyBindingService {
         session: &SsoSession,
         user: &User,
         binding: &SessionKeyBinding,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<SessionKeyOutcome, DomainError> {
         let lifetime = self.settings.sso_session_lifetime(user.tenant_id).await?;
         let device_registered = match self.devices.session_device(&session.session_hash).await? {
@@ -278,7 +278,7 @@ impl SessionKeyBindingService {
             // After shortening back from 30 days it had already expired (an old signed-in state after the device registration was revoked).
             return Ok(SessionKeyOutcome::SessionGone);
         }
-        let remaining = (idle.min(absolute) - now).num_seconds().max(0);
+        let remaining = (idle.min(absolute) - now).whole_seconds().max(0);
         Ok(SessionKeyOutcome::Bound {
             session_identifier: binding.session_identifier.clone(),
             remaining_secs: u64::try_from(remaining).unwrap_or(0),
@@ -290,7 +290,7 @@ impl SessionKeyBindingService {
         &self,
         session: &SsoSession,
         user: &User,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
         ctx: &RequestContext,
     ) -> Result<SessionKeyOutcome, DomainError> {
         self.sso_sessions.delete(&session.session_hash).await?;
@@ -327,7 +327,7 @@ impl SessionKeyBindingService {
     }
 
     /// Notifies. Unlike ADR-0071's device notifications, sent regardless of the organization's settings (a strong sign of theft).
-    async fn alert(&self, user: &User, now: DateTime<Utc>, ctx: &RequestContext) {
+    async fn alert(&self, user: &User, now: OffsetDateTime, ctx: &RequestContext) {
         let username = user
             .preferred_username
             .clone()

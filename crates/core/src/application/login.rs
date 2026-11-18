@@ -528,7 +528,7 @@ impl LoginService {
             )
             .await
         {
-            Ok(Establishment::Established(sso)) => sso,
+            Ok(Establishment::Established(sso)) => *sso,
             Ok(Establishment::DeviceEnrollmentRequired { ticket }) => {
                 return LoginOutcome::DeviceEnrollmentRequired { ticket }
             }
@@ -619,6 +619,7 @@ impl LoginService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use time::{macros::datetime, OffsetDateTime};
 
     #[test]
     fn csrf_token_is_deterministic_and_session_bound() {
@@ -648,20 +649,19 @@ mod tests {
     use crate::domain::{auth_session, authorization_request};
     use crate::infrastructure::repositories::in_memory_auth_session::InMemoryAuthSessions;
     use async_trait::async_trait;
-    use chrono::{DateTime, TimeZone, Utc};
     use std::sync::Mutex;
     use uuid::Uuid;
 
     const CSRF_KEY: [u8; 32] = *b"unit-test-csrf-0123456789abcdef!";
     const SESSION_ID: &str = "auth-session-id";
 
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 7, 12, 12, 0, 0).unwrap()
+    fn now() -> OffsetDateTime {
+        datetime!(2026-07-12 12:00:00 UTC)
     }
 
     struct FixedClock;
     impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> OffsetDateTime {
             now()
         }
     }
@@ -685,7 +685,7 @@ mod tests {
 
     struct AllowAll;
     impl LoginRateLimiter for AllowAll {
-        fn check_and_record(&self, _key: &str, _now: DateTime<Utc>) -> bool {
+        fn check_and_record(&self, _key: &str, _now: OffsetDateTime) -> bool {
             true
         }
     }
@@ -711,7 +711,7 @@ mod tests {
             &self,
             id: Uuid,
             lockout: crate::domain::authentication_policy::LockoutPolicy,
-            now: DateTime<Utc>,
+            now: OffsetDateTime,
         ) -> DomainResult<crate::domain::user::LoginFailureRecord> {
             let mut rows = self.rows.lock().unwrap();
             let Some(row) = rows.iter_mut().find(|u| u.id == id) else {
@@ -754,7 +754,7 @@ mod tests {
             &self,
             id: Uuid,
             count: i32,
-            locked_until: Option<DateTime<Utc>>,
+            locked_until: Option<OffsetDateTime>,
         ) -> DomainResult<()> {
             let mut rows = self.rows.lock().unwrap();
             if let Some(row) = rows.iter_mut().find(|u| u.id == id) {
@@ -811,7 +811,7 @@ mod tests {
                 updated_at: now(),
             }))
         }
-        async fn confirm(&self, _u: Uuid, _c: DateTime<Utc>) -> DomainResult<()> {
+        async fn confirm(&self, _u: Uuid, _c: OffsetDateTime) -> DomainResult<()> {
             unreachable!()
         }
         async fn delete(&self, _u: Uuid) -> DomainResult<()> {
@@ -836,7 +836,7 @@ mod tests {
         async fn find_by_hash(&self, _h: &str) -> DomainResult<Option<SsoSession>> {
             unreachable!()
         }
-        async fn extend_idle(&self, _h: &str, _t: DateTime<Utc>) -> DomainResult<()> {
+        async fn extend_idle(&self, _h: &str, _t: OffsetDateTime) -> DomainResult<()> {
             unreachable!()
         }
         async fn delete(&self, _h: &str) -> DomainResult<()> {
@@ -919,14 +919,14 @@ mod tests {
             &self,
             _t: TenantId,
             _h: &crate::domain::authorization_code::AuthorizationCodeHash,
-            _u: DateTime<Utc>,
+            _u: OffsetDateTime,
         ) -> DomainResult<Option<AuthorizationCode>> {
             unreachable!()
         }
         async fn revoke_all_active_for_user(
             &self,
             _u: Uuid,
-            _n: DateTime<Utc>,
+            _n: OffsetDateTime,
         ) -> DomainResult<()> {
             unreachable!()
         }
@@ -1117,7 +1117,7 @@ mod tests {
         assert_eq!(VERIFIES.with(|n| n.get()), 1, "disabled account");
 
         let h = harness(false, 0);
-        h.users.rows.lock().unwrap()[0].locked_until = Some(now() + chrono::Duration::hours(1));
+        h.users.rows.lock().unwrap()[0].locked_until = Some(now() + time::Duration::hours(1));
         VERIFIES.with(|n| n.set(0));
         assert!(matches!(h.login().await, LoginOutcome::Locked));
         assert_eq!(VERIFIES.with(|n| n.get()), 1, "locked account");

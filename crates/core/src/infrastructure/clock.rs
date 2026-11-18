@@ -1,12 +1,12 @@
 //! Real-time `Clock` implementation.
 
 use crate::domain::clock::Clock;
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 
 pub struct SystemClock;
 
 impl Clock for SystemClock {
-    fn now(&self) -> DateTime<Utc> {
-        Utc::now()
+    fn now(&self) -> OffsetDateTime {
+        OffsetDateTime::now_utc()
     }
 }

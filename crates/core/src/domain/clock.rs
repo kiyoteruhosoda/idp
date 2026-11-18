@@ -2,9 +2,9 @@
 //!
 //! Real time must always be read through this trait (`CLAUDE.md` "Tests"). Implemented in the infrastructure layer.
 
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 
 pub trait Clock: Send + Sync {
     /// Current time (always UTC).
-    fn now(&self) -> DateTime<Utc>;
+    fn now(&self) -> OffsetDateTime;
 }

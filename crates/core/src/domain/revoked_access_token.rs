@@ -2,12 +2,12 @@
 //! tokens so /userinfo and /introspect revoke them immediately.
 #![allow(dead_code)]
 
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 
 #[derive(Debug, Clone)]
 pub struct RevokedAccessToken {
     pub jti: String,
-    pub revoked_at: DateTime<Utc>,
+    pub revoked_at: OffsetDateTime,
     /// The exp of the original access token. Entries past expires_at can be cleaned up.
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: OffsetDateTime,
 }

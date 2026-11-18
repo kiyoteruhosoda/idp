@@ -5,10 +5,11 @@ use crate::domain::repositories::SigningKeyRepository;
 use crate::domain::signing_key::SigningKey;
 use crate::domain::values::SigningKeyStatus;
 use crate::infrastructure::db::Db;
+use assay_contracts::utc::{from_naive_utc, UtcInstant};
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::mysql::MySqlRow;
 use sqlx::Row;
+use time::{OffsetDateTime, PrimitiveDateTime};
 
 pub struct SqlxSigningKeyRepository {
     pool: Db,
@@ -27,8 +28,8 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
-    Utc.from_utc_datetime(&naive)
+fn to_utc(naive: PrimitiveDateTime) -> OffsetDateTime {
+    from_naive_utc(naive)
 }
 
 fn map_row(row: &MySqlRow) -> Result<SigningKey> {

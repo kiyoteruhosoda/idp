@@ -55,13 +55,13 @@ mod tests {
     use super::*;
     use crate::domain::error::{DomainError, Result};
     use async_trait::async_trait;
-    use chrono::{DateTime, TimeZone, Utc};
     use std::sync::atomic::{AtomicU64, Ordering};
+    use time::{macros::datetime, OffsetDateTime};
 
     struct FixedClock;
     impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
-            Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap()
+        fn now(&self) -> OffsetDateTime {
+            datetime!(2026-01-01 00:00:00 UTC)
         }
     }
 
@@ -76,7 +76,7 @@ mod tests {
         fn table_name(&self) -> &'static str {
             self.table
         }
-        async fn purge_expired(&self, _now: DateTime<Utc>) -> Result<u64> {
+        async fn purge_expired(&self, _now: OffsetDateTime) -> Result<u64> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.fail {
                 return Err(DomainError::Repository("boom".to_string()));

@@ -310,16 +310,16 @@ mod tests {
     use crate::domain::repositories::AuditLogSink;
     use crate::domain::tenant::TenantId;
     use async_trait::async_trait;
-    use chrono::{DateTime, TimeZone, Utc};
     use std::sync::Mutex;
+    use time::{macros::datetime, OffsetDateTime};
 
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 7, 11, 12, 0, 0).unwrap()
+    fn now() -> OffsetDateTime {
+        datetime!(2026-07-11 12:00:00 UTC)
     }
 
-    struct FixedClock(DateTime<Utc>);
+    struct FixedClock(OffsetDateTime);
     impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> OffsetDateTime {
             self.0
         }
     }
@@ -367,7 +367,7 @@ mod tests {
             &self,
             id: Uuid,
             lockout: crate::domain::authentication_policy::LockoutPolicy,
-            now: DateTime<Utc>,
+            now: OffsetDateTime,
         ) -> DomainResult<crate::domain::user::LoginFailureRecord> {
             let mut rows = self.rows.lock().unwrap();
             let Some(row) = rows.iter_mut().find(|u| u.id == id) else {
@@ -423,7 +423,7 @@ mod tests {
             &self,
             _id: Uuid,
             _c: i32,
-            _l: Option<DateTime<Utc>>,
+            _l: Option<OffsetDateTime>,
         ) -> DomainResult<()> {
             unreachable!()
         }
@@ -516,7 +516,7 @@ mod tests {
             account: AccountRef,
             text: &str,
             _updated_by: Option<Uuid>,
-            _now: DateTime<Utc>,
+            _now: OffsetDateTime,
         ) -> DomainResult<()> {
             let user_id = account
                 .user_id()

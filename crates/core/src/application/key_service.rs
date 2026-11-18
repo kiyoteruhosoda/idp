@@ -8,8 +8,8 @@ use crate::domain::repositories::SigningKeyRepository;
 use crate::domain::signing_key::{current_signer_at, SigningKey};
 use crate::domain::values::{SigningAlgorithm, SigningKeyStatus};
 use crate::domain::{crypto, jwt};
-use chrono::Duration;
 use std::sync::Arc;
+use time::Duration;
 
 /// Key lifetime (days until not_after for a newly generated key).
 const KEY_VALIDITY_DAYS: i64 = 365;
@@ -77,7 +77,7 @@ impl KeyService {
             .unwrap_or(SigningAlgorithm::Rs256);
         // Bootstrap **has no grace period**. There is no key that can sign, so waiting would mean
         // no tokens can be issued in the meantime.
-        let key = self.new_key_material(algorithm, Duration::zero()).await?;
+        let key = self.new_key_material(algorithm, Duration::ZERO).await?;
         let inserted = self
             .repo
             .insert_if_no_active(&key)
@@ -168,7 +168,7 @@ impl KeyService {
                 algorithm = %algorithm.as_str(),
                 "no usable signing key found during rotation check; bootstrapping"
             );
-            self.generate_key_internal(algorithm, Duration::zero())
+            self.generate_key_internal(algorithm, Duration::ZERO)
                 .await?;
             return Ok(());
         };
@@ -217,7 +217,7 @@ impl KeyService {
         tracing::info!(
             kid = %active.kid,
             not_after = %active.not_after,
-            remaining_hours = remaining.num_hours(),
+            remaining_hours = remaining.whole_hours(),
             signs_from = %signs_from,
             "signing key approaching expiry; publishing a successor"
         );
@@ -244,7 +244,7 @@ impl KeyService {
     ///
     /// With `publish_lead`, the key appears in the JWKS immediately but is not used for signing (`not_before`
     /// is that much in the future). **This is the normal way to rotate** —— it gives RPs time to pick up the new `kid`.
-    /// `Duration::zero()` means "sign with it right now", used only when there is no room for a grace period,
+    /// `Duration::ZERO` means "sign with it right now", used only when there is no room for a grace period,
     /// such as a key compromise.
     pub async fn generate_key(
         &self,
@@ -340,8 +340,8 @@ impl KeyService {
     /// - If no key can sign now, no grace period. There is no one to wait for (an old key still signing),
     ///   and tokens just couldn't be issued during the grace period.
     async fn capped_publish_lead(&self, publish_lead: Duration) -> anyhow::Result<Duration> {
-        if publish_lead <= Duration::zero() {
-            return Ok(Duration::zero());
+        if publish_lead <= Duration::ZERO {
+            return Ok(Duration::ZERO);
         }
         let keys = self
             .repo
@@ -350,7 +350,7 @@ impl KeyService {
             .map_err(|e| anyhow::anyhow!("list signing keys: {e}"))?;
         let now = self.clock.now();
         let Some(active) = current_signer_at(&keys, now) else {
-            return Ok(Duration::zero());
+            return Ok(Duration::ZERO);
         };
         Ok(std::cmp::min(publish_lead, active.not_after - now))
     }
@@ -387,11 +387,12 @@ impl KeyService {
         let now = self.clock.now();
         // When signing starts. **The lifetime is counted from here** —— counting from `now` would shorten the
         // usable period by the grace period.
-        let not_before = now + publish_lead.max(Duration::zero());
+        let not_before = now + publish_lead.max(Duration::ZERO);
         let alg_tag = algorithm.as_str().to_lowercase().replace("256", "");
         let kid = format!(
             "{}-{}-{}",
-            now.format("%Y%m%d"),
+            now.format(time::macros::format_description!("[year][month][day]"))
+                .expect("a fixed format of a UTC instant"),
             alg_tag,
             crypto::random_token(6)
         );
@@ -434,13 +435,13 @@ mod tests {
     use super::*;
     use crate::domain::clock::Clock;
     use crate::domain::error::Result as RepoResult;
-    use chrono::{DateTime, Utc};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use time::OffsetDateTime;
     use tokio::sync::Notify;
 
     /// A clock that can be advanced (`rotate_if_needed` behaves differently depending on "when it was called").
-    struct TestClock(Mutex<DateTime<Utc>>);
+    struct TestClock(Mutex<OffsetDateTime>);
 
     impl TestClock {
         fn at(rfc3339: &str) -> Arc<Self> {
@@ -453,15 +454,13 @@ mod tests {
     }
 
     impl Clock for TestClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> OffsetDateTime {
             *self.0.lock().unwrap()
         }
     }
 
-    fn parse(rfc3339: &str) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(rfc3339)
-            .expect("valid timestamp")
-            .with_timezone(&Utc)
+    fn parse(rfc3339: &str) -> OffsetDateTime {
+        assay_contracts::utc::parse_rfc3339(rfc3339).expect("valid timestamp")
     }
 
     /// In-memory signing key repository. `find_active` selects by **the same rule** as the production SQL

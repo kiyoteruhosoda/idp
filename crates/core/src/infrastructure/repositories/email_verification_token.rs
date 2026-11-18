@@ -7,10 +7,11 @@ use crate::domain::email_verification::EmailVerificationToken;
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::EmailVerificationTokenRepository;
 use crate::infrastructure::db::Db;
+use assay_contracts::utc::{from_naive_utc, UtcInstant};
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::mysql::MySqlRow;
 use sqlx::Row;
+use time::{OffsetDateTime, PrimitiveDateTime};
 use uuid::Uuid;
 
 pub struct SqlxEmailVerificationTokenRepository {
@@ -34,13 +35,13 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
-    Utc.from_utc_datetime(&naive)
+fn to_utc(naive: PrimitiveDateTime) -> OffsetDateTime {
+    from_naive_utc(naive)
 }
 
 fn map_row(row: &MySqlRow) -> Result<EmailVerificationToken> {
     let user_id: String = row.try_get("user_id").map_err(repo_err)?;
-    let used_at: Option<NaiveDateTime> = row.try_get("used_at").map_err(repo_err)?;
+    let used_at: Option<PrimitiveDateTime> = row.try_get("used_at").map_err(repo_err)?;
     Ok(EmailVerificationToken {
         token_hash: row.try_get("token_hash").map_err(repo_err)?,
         user_id: Uuid::parse_str(&user_id)
@@ -71,7 +72,7 @@ impl EmailVerificationTokenRepository for SqlxEmailVerificationTokenRepository {
     async fn consume(
         &self,
         token_hash: &str,
-        used_at: DateTime<Utc>,
+        used_at: OffsetDateTime,
     ) -> Result<Option<EmailVerificationToken>> {
         let result = sqlx::query(
             "UPDATE email_verification_tokens SET used_at = ? \
@@ -98,7 +99,7 @@ impl EmailVerificationTokenRepository for SqlxEmailVerificationTokenRepository {
         row.as_ref().map(map_row).transpose()
     }
 
-    async fn invalidate_all_for_user(&self, user_id: Uuid, now: DateTime<Utc>) -> Result<()> {
+    async fn invalidate_all_for_user(&self, user_id: Uuid, now: OffsetDateTime) -> Result<()> {
         sqlx::query(
             "UPDATE email_verification_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL",
         )

@@ -163,7 +163,7 @@ async fn provisioning_rolls_back_all_rows_when_a_step_fails() {
     let Some(env) = support::setup("admin tenants rollback").await else {
         return;
     };
-    let now = chrono::Utc::now();
+    let now = time::OffsetDateTime::now_utc();
     let parent = TenantId::from(uuid::Uuid::parse_str(&env.root_tenant_id).unwrap());
     let tenant = Tenant {
         id: TenantId::from(uuid::Uuid::now_v7()),

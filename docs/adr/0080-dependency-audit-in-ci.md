@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-11-18
-- 関連: task #1016（親 #1012「依存の弱点が公表されたら main の CI が赤くなる」）、deploy-repo ADR-0002（型）・ADR-0003（npm の 2 段）
+- 関連: task #1016（親 #1012「依存の弱点が公表されたら main の CI が赤くなる」）、deploy-repo ADR-0002（型）・ADR-0003（npm の 2 段）、ADR-0081、ADR-0082
 
 ## 背景
 
@@ -25,6 +25,8 @@ kyon/* のリポジトリすべてに、lock した依存の弱点の検査（`.
    - sqlx を 0.9.1 へ（同じ `0.9` の範囲。sqlx-sqlite 0.9.1 が `<0.41` を許す）、libsqlite3-sys は 0.40.0
    - askama の既定の feature から `config` だけを外す（`derive`・`std`・`urlencode` は残す）。idp に `askama.toml` は無く、
      テンプレートは既定の `templates/` に置いているので、描画は変わらない。basic-toml と glob が lock から消える
+   - PR の検査で新しく出た rsa 0.10.0-rc.19（RUSTSEC-2023-0071）と chrono（RUSTSEC-2026-0543）は、それぞれ ADR-0081
+     （crypto-glue の写しで rsa 0.10.0 へ）と ADR-0082（time へ置き換え・serde_with の写しで lock からも消す）で直した
 3. 画面の npm は、ビルドの道具（vite・@vitejs/plugin-react・typescript）を `devDependencies` へ移す。利用者に届くのは
    `crates/web/assets/react` に束ねられる react・react-dom だけ。ビルドは手で `npm run build` するもので、CI と像の
    組み立ては npm を使わない

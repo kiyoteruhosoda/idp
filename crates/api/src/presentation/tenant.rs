@@ -222,8 +222,8 @@ mod tests {
     use crate::domain::values::TenantStatus;
     use async_trait::async_trait;
     use axum::body::to_bytes;
-    use chrono::{TimeZone, Utc};
     use std::sync::{Arc, Mutex};
+    use time::macros::datetime;
 
     /// An always-empty cache for tests (reading the DB directly is enough for resolution path tests).
     struct NoopCache;
@@ -259,7 +259,7 @@ mod tests {
     }
 
     fn tenant(id: TenantId, status: TenantStatus) -> Tenant {
-        let t = Utc.with_ymd_and_hms(2026, 7, 10, 0, 0, 0).unwrap();
+        let t = datetime!(2026-07-10 00:00:00 UTC);
         Tenant {
             id,
             parent_tenant_id: None,

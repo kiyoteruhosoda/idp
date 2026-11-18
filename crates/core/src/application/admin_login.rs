@@ -681,7 +681,7 @@ impl AdminLoginService {
         home_tenant_id: TenantId,
         methods: Vec<AuthenticationMethod>,
         ctx: &RequestContext,
-        now: chrono::DateTime<chrono::Utc>,
+        now: time::OffsetDateTime,
     ) -> Result<AdminSso, String> {
         if let Some(gate) = &self.device_gate {
             let admission = gate

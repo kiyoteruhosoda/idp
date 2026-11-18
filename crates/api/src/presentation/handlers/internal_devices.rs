@@ -18,6 +18,7 @@ use assay_contracts::auth::{
     InternalAccountRevokeDeviceRequest, InternalAccountRevokeDeviceResponse,
     InternalDeviceObserveRequest, InternalDeviceObserveResponse,
 };
+use assay_contracts::utc::UtcInstant;
 use axum::extract::{Extension, State};
 use axum::response::Response;
 use axum::Json;

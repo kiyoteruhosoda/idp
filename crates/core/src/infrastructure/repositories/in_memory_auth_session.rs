@@ -12,8 +12,8 @@ use crate::domain::error::Result;
 use crate::domain::repositories::AuthSessionRepository;
 use crate::domain::tenant::TenantId;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use std::sync::Mutex;
+use time::OffsetDateTime;
 
 #[derive(Default)]
 pub struct InMemoryAuthSessions {
@@ -133,7 +133,7 @@ impl AuthSessionRepository for InMemoryAuthSessions {
         Ok(())
     }
 
-    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64> {
+    async fn delete_expired(&self, now: OffsetDateTime) -> Result<u64> {
         let mut rows = self.rows.lock().unwrap();
         let before = rows.len();
         rows.retain(|s| !s.is_expired_at(now));

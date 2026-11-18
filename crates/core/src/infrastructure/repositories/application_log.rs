@@ -6,10 +6,11 @@ use crate::domain::application_log::{
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::{ApplicationLogQuery, ApplicationLogSink};
 use crate::infrastructure::db::Db;
+use assay_contracts::utc::{from_naive_utc, UtcInstant};
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::mysql::MySqlRow;
 use sqlx::{MySql, QueryBuilder, Row};
+use time::{OffsetDateTime, PrimitiveDateTime};
 use uuid::Uuid;
 
 pub struct SqlxApplicationLogSink {
@@ -49,7 +50,7 @@ impl ApplicationLogSink for SqlxApplicationLogSink {
         Ok(())
     }
 
-    async fn purge_older_than(&self, older_than: DateTime<Utc>) -> Result<u64> {
+    async fn purge_older_than(&self, older_than: OffsetDateTime) -> Result<u64> {
         let result = sqlx::query("DELETE FROM log WHERE occurred_at < ?")
             .bind(older_than.naive_utc())
             .execute(&self.pool)
@@ -73,8 +74,8 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
-    Utc.from_utc_datetime(&naive)
+fn to_utc(naive: PrimitiveDateTime) -> OffsetDateTime {
+    from_naive_utc(naive)
 }
 
 fn map_row(row: &MySqlRow) -> Result<ApplicationLogEntry> {

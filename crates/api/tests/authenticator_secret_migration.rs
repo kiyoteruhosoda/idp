@@ -62,7 +62,7 @@ async fn a_totp_secret_lives_on_the_registry_row_and_is_cleared_from_it() {
     insert_pending_totp_row(&env.pool, &user_id).await;
 
     let repo = SqlxTotpSecretRepository::new(env.pool.clone());
-    let now = chrono::Utc::now();
+    let now = time::OffsetDateTime::now_utc();
     repo.upsert(&TotpSecret {
         user_id: user_uuid,
         secret_encrypted: "fresh-secret".to_string(),
@@ -109,7 +109,7 @@ async fn storing_a_secret_without_a_registry_row_fails_instead_of_vanishing() {
     let user_uuid = Uuid::parse_str(&user_id).expect("uuid");
 
     let repo = SqlxTotpSecretRepository::new(env.pool.clone());
-    let now = chrono::Utc::now();
+    let now = time::OffsetDateTime::now_utc();
     let result = repo
         .upsert(&TotpSecret {
             user_id: user_uuid,
@@ -138,7 +138,7 @@ async fn a_revoked_rows_secret_is_not_readable() {
     let row_id = insert_pending_totp_row(&env.pool, &user_id).await;
 
     let repo = SqlxTotpSecretRepository::new(env.pool.clone());
-    let now = chrono::Utc::now();
+    let now = time::OffsetDateTime::now_utc();
     repo.upsert(&TotpSecret {
         user_id: user_uuid,
         secret_encrypted: "old-secret".to_string(),
@@ -177,7 +177,7 @@ async fn a_passkey_is_one_registry_row_reachable_by_its_credential_id() {
     let credential_id = format!("cred-{}", Uuid::new_v4());
 
     let repo = SqlxWebAuthnCredentialRepository::new(env.pool.clone());
-    let now = chrono::Utc::now();
+    let now = time::OffsetDateTime::now_utc();
     repo.create(&WebAuthnCredential {
         id: row_id,
         user_id: user_uuid,
@@ -251,7 +251,7 @@ async fn registering_the_same_credential_twice_is_rejected() {
     let user_uuid = Uuid::parse_str(&user_id).expect("uuid");
     let credential_id = format!("cred-{}", Uuid::new_v4());
     let repo = SqlxWebAuthnCredentialRepository::new(env.pool.clone());
-    let now = chrono::Utc::now();
+    let now = time::OffsetDateTime::now_utc();
     let credential = |id: Uuid| WebAuthnCredential {
         id,
         user_id: user_uuid,

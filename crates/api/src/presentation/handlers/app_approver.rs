@@ -11,11 +11,11 @@ use crate::application::audit::RequestContext;
 use crate::presentation::correlation::CorrelationId;
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
+use assay_contracts::utc::UtcInstant;
 use axum::extract::{Extension, Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
-use chrono::SecondsFormat;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -57,8 +57,8 @@ fn context(state: &AppState, correlation: &CorrelationId, headers: &HeaderMap) -
     super::request_context(headers, correlation, state.config.trust_forwarded_headers())
 }
 
-fn rfc3339(t: chrono::DateTime<chrono::Utc>) -> String {
-    t.to_rfc3339_opts(SecondsFormat::Secs, true)
+fn rfc3339(t: time::OffsetDateTime) -> String {
+    t.to_rfc3339_seconds_z()
 }
 
 // ─── Enrollment ─────────────────────────────────────────────────────────

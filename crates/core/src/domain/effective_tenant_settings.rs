@@ -44,7 +44,7 @@ use crate::domain::password_policy::PasswordPolicy;
 use crate::domain::tenant::TenantId;
 use crate::domain::values::AssignmentEnforcement;
 use async_trait::async_trait;
-use chrono::Duration;
+use time::Duration;
 
 pub const AUTH_POLICY_DEFAULT_EFFECT: &str = "AUTH_POLICY_DEFAULT_EFFECT";
 pub const APPLICATION_ASSIGNMENT_ENFORCEMENT: &str = "APPLICATION_ASSIGNMENT_ENFORCEMENT";

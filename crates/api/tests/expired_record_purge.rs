@@ -12,6 +12,7 @@ use assay_api::application::expired_record_purge::ExpiredRecordPurgeService;
 use assay_api::infrastructure::repositories::expired_records::{
     all_expiring_record_stores, PURGED_TABLES,
 };
+use assay_contracts::utc::UtcInstant;
 use sqlx::Row;
 use std::sync::Arc;
 
@@ -110,7 +111,7 @@ async fn insert_auth_session(env: &support::TestEnv, client_id: &str, offset_sec
     .bind(&env.root_tenant_id)
     .bind(client_id)
     .bind(support::REDIRECT_URI)
-    .bind((chrono::Utc::now() + chrono::Duration::seconds(offset_secs)).naive_utc())
+    .bind((time::OffsetDateTime::now_utc() + time::Duration::seconds(offset_secs)).naive_utc())
     .execute(&env.pool)
     .await
     .expect("insert auth session");

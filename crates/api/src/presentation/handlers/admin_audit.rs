@@ -12,9 +12,10 @@ use crate::presentation::error::ApiError;
 use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
+use assay_contracts::utc::UtcInstant;
 use axum::extract::{Extension, Query, State};
 use axum::Json;
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 
 /// Filters audit logs by conditions and returns them newest first.
 #[utoipa::path(
@@ -62,12 +63,12 @@ fn parse_datetime(
     value: Option<&str>,
     field: &str,
     locale: ApiLocale,
-) -> Result<Option<DateTime<Utc>>, ApiError> {
+) -> Result<Option<OffsetDateTime>, ApiError> {
     let Some(value) = value.map(str::trim).filter(|v| !v.is_empty()) else {
         return Ok(None);
     };
-    DateTime::parse_from_rfc3339(value)
-        .map(|dt| Some(dt.with_timezone(&Utc)))
+    assay_contracts::utc::parse_rfc3339(value)
+        .map(Some)
         .map_err(|_| {
             ApiError::BadRequest(
                 ApiMessages::new(locale)

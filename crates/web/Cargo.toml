@@ -28,7 +28,7 @@ reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # Startup time and server time (`/internal/health`, ADR-0031).
-chrono = { workspace = true }
+time = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }

@@ -15,8 +15,8 @@ use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
 use crate::domain::repositories::{ApplicationLogQuery, ApplicationLogSink};
 use assay_contracts::application_log::ApplicationLogPayload;
-use chrono::{DateTime, Utc};
 use std::sync::Arc;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// Default number of rows per page.
@@ -31,8 +31,8 @@ pub struct ApplicationLogQueryParams {
     pub service: Option<String>,
     pub target: Option<String>,
     pub correlation_id: Option<String>,
-    pub from: Option<DateTime<Utc>>,
-    pub to: Option<DateTime<Utc>>,
+    pub from: Option<OffsetDateTime>,
+    pub to: Option<OffsetDateTime>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
@@ -93,7 +93,7 @@ impl ApplicationLogService {
         if retention_days == 0 {
             return Ok(0);
         }
-        let cutoff = self.clock.now() - chrono::Duration::days(i64::from(retention_days));
+        let cutoff = self.clock.now() - time::Duration::days(i64::from(retention_days));
         self.sink.purge_older_than(cutoff).await
     }
 }
@@ -101,9 +101,7 @@ impl ApplicationLogService {
 /// Converts one received record into the stored form. `None` if a required field cannot be parsed (only that row is dropped).
 fn to_record(payload: &ApplicationLogPayload) -> Option<ApplicationLogRecord> {
     Some(ApplicationLogRecord {
-        occurred_at: DateTime::parse_from_rfc3339(&payload.occurred_at)
-            .ok()?
-            .with_timezone(&Utc),
+        occurred_at: assay_contracts::utc::parse_rfc3339(&payload.occurred_at).ok()?,
         level: LogLevel::parse(&payload.level)?,
         service: LogService::parse(&payload.service)?,
         target: payload.target.clone(),
@@ -135,6 +133,7 @@ fn normalize(value: Option<String>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use assay_contracts::utc::UtcInstant;
 
     fn payload(level: &str, service: &str, occurred_at: &str) -> ApplicationLogPayload {
         ApplicationLogPayload {

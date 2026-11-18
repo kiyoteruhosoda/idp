@@ -6,10 +6,11 @@ use crate::domain::repositories::RefreshTokenRepository;
 use crate::domain::tenant::TenantId;
 use crate::infrastructure::db::Db;
 use crate::infrastructure::repositories::authentication_methods_json;
+use assay_contracts::utc::{from_naive_utc, UtcInstant};
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::mysql::MySqlRow;
 use sqlx::Row;
+use time::{OffsetDateTime, PrimitiveDateTime};
 use uuid::Uuid;
 
 pub struct SqlxRefreshTokenRepository {
@@ -40,15 +41,15 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
-    Utc.from_utc_datetime(&naive)
+fn to_utc(naive: PrimitiveDateTime) -> OffsetDateTime {
+    from_naive_utc(naive)
 }
 
 fn map_row(row: &MySqlRow) -> Result<RefreshToken> {
     let tenant_id: String = row.try_get("tenant_id").map_err(repo_err)?;
     let user_id: String = row.try_get("user_id").map_err(repo_err)?;
     let scope: Vec<u8> = row.try_get("scope").map_err(repo_err)?;
-    let revoked_at: Option<NaiveDateTime> = row.try_get("revoked_at").map_err(repo_err)?;
+    let revoked_at: Option<PrimitiveDateTime> = row.try_get("revoked_at").map_err(repo_err)?;
     Ok(RefreshToken {
         token_hash: row.try_get("token_hash").map_err(repo_err)?,
         parent_hash: row.try_get("parent_hash").map_err(repo_err)?,
@@ -66,7 +67,7 @@ fn map_row(row: &MySqlRow) -> Result<RefreshToken> {
             row.try_get("authentication_methods").map_err(repo_err)?,
         ),
         auth_time: row
-            .try_get::<Option<NaiveDateTime>, _>("auth_time")
+            .try_get::<Option<PrimitiveDateTime>, _>("auth_time")
             .map_err(repo_err)?
             .map(to_utc),
         dpop_jkt: row.try_get("dpop_jkt").map_err(repo_err)?,
@@ -127,7 +128,7 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
         row.as_ref().map(map_row).transpose()
     }
 
-    async fn revoke(&self, token_hash: &str, revoked_at: DateTime<Utc>) -> Result<u64> {
+    async fn revoke(&self, token_hash: &str, revoked_at: OffsetDateTime) -> Result<u64> {
         let result = sqlx::query(
             "UPDATE refresh_tokens SET revoked_at = ? \
              WHERE token_hash = ? AND revoked_at IS NULL",
@@ -144,7 +145,7 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
         &self,
         tenant_id: TenantId,
         family_hash: &str,
-        revoked_at: DateTime<Utc>,
+        revoked_at: OffsetDateTime,
     ) -> Result<u64> {
         // Revoke tokens from the same grant in one statement (SEC8). `grant_hash` is indexed, so
         // one UPDATE suffices regardless of chain depth. Just in case, so the presented token itself
@@ -178,7 +179,7 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
         &self,
         user_id: Uuid,
         sid: &str,
-        revoked_at: DateTime<Utc>,
+        revoked_at: OffsetDateTime,
     ) -> Result<u64> {
         // `sid` is indexed (0050), so even if rotation has lengthened the chain, one
         // UPDATE suffices. The tenant is not part of the condition (see the trait comment).
@@ -199,7 +200,7 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
         &self,
         tenant_id: TenantId,
         user_id: Uuid,
-        revoked_at: DateTime<Utc>,
+        revoked_at: OffsetDateTime,
     ) -> Result<()> {
         sqlx::query(
             "UPDATE refresh_tokens SET revoked_at = ? \
@@ -219,7 +220,7 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
         tenant_id: TenantId,
         user_id: Uuid,
         client_id: &str,
-        revoked_at: DateTime<Utc>,
+        revoked_at: OffsetDateTime,
     ) -> Result<()> {
         sqlx::query(
             "UPDATE refresh_tokens SET revoked_at = ? \
@@ -235,7 +236,7 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
         Ok(())
     }
 
-    async fn revoke_all_for_user(&self, user_id: Uuid, revoked_at: DateTime<Utc>) -> Result<u64> {
+    async fn revoke_all_for_user(&self, user_id: Uuid, revoked_at: OffsetDateTime) -> Result<u64> {
         // The range dropped is the same as the range `count_active_for_user` counts (`ACTIVE_FOR_USER`). Expired
         // rows can no longer be used for refresh, so marking them revoked changes nothing except making the count drift from the screen.
         let result = sqlx::query(sqlx::AssertSqlSafe(format!(
@@ -250,7 +251,7 @@ impl RefreshTokenRepository for SqlxRefreshTokenRepository {
         Ok(result.rows_affected())
     }
 
-    async fn count_active_for_user(&self, user_id: Uuid, now: DateTime<Utc>) -> Result<u64> {
+    async fn count_active_for_user(&self, user_id: Uuid, now: OffsetDateTime) -> Result<u64> {
         // Resolved via `refresh_tokens_user_idx (user_id)`. Rows per user are few, so no extra index is needed.
         let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "SELECT COUNT(*) FROM refresh_tokens WHERE {ACTIVE_FOR_USER}"

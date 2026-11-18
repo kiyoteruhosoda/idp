@@ -9,18 +9,19 @@ use crate::domain::repositories::{
     ApprovalRequestRepository, ApproverEnrollmentRepository, ApproverKeyRepository,
 };
 use crate::infrastructure::db::Db;
+use assay_contracts::utc::{from_naive_utc, UtcInstant};
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::mysql::MySqlRow;
 use sqlx::Row;
+use time::{OffsetDateTime, PrimitiveDateTime};
 use uuid::Uuid;
 
 fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-fn utc(raw: NaiveDateTime) -> DateTime<Utc> {
-    Utc.from_utc_datetime(&raw)
+fn utc(raw: PrimitiveDateTime) -> OffsetDateTime {
+    from_naive_utc(raw)
 }
 
 fn uuid_of(raw: &str) -> Result<Uuid> {
@@ -48,8 +49,8 @@ fn key_from_row(row: &MySqlRow) -> Result<ApproverKey> {
     let id: String = row.try_get("id").map_err(repo_err)?;
     let user_id: String = row.try_get("user_id").map_err(repo_err)?;
     let level: String = row.try_get("security_level").map_err(repo_err)?;
-    let registered_at: NaiveDateTime = row.try_get("registered_at").map_err(repo_err)?;
-    let last_used_at: Option<NaiveDateTime> = row.try_get("last_used_at").map_err(repo_err)?;
+    let registered_at: PrimitiveDateTime = row.try_get("registered_at").map_err(repo_err)?;
+    let last_used_at: Option<PrimitiveDateTime> = row.try_get("last_used_at").map_err(repo_err)?;
     Ok(ApproverKey {
         id: uuid_of(&id)?,
         user_id: uuid_of(&user_id)?,
@@ -134,7 +135,7 @@ impl ApproverKeyRepository for SqlxApproverKeyRepository {
         Ok(Some(key))
     }
 
-    async fn touch(&self, id: Uuid, used_at: DateTime<Utc>) -> Result<()> {
+    async fn touch(&self, id: Uuid, used_at: OffsetDateTime) -> Result<()> {
         sqlx::query("UPDATE app_approver_keys SET last_used_at = ? WHERE id = ?")
             .bind(used_at.naive_utc())
             .bind(id.to_string())
@@ -205,10 +206,10 @@ fn enrollment_from_row(row: &MySqlRow) -> Result<ApproverEnrollment> {
     let device_name: Option<String> = row.try_get("device_name").map_err(repo_err)?;
     let user_id: Option<String> = row.try_get("user_id").map_err(repo_err)?;
     let code_hash: Option<String> = row.try_get("code_hash").map_err(repo_err)?;
-    let code_expires_at: Option<NaiveDateTime> =
+    let code_expires_at: Option<PrimitiveDateTime> =
         row.try_get("code_expires_at").map_err(repo_err)?;
-    let created_at: NaiveDateTime = row.try_get("created_at").map_err(repo_err)?;
-    let expires_at: NaiveDateTime = row.try_get("expires_at").map_err(repo_err)?;
+    let created_at: PrimitiveDateTime = row.try_get("created_at").map_err(repo_err)?;
+    let expires_at: PrimitiveDateTime = row.try_get("expires_at").map_err(repo_err)?;
     let broken = || DomainError::Repository(format!("enrollment stage `{stage}` is incomplete"));
     let stage = match stage.as_str() {
         "awaiting_key" => EnrollmentStage::AwaitingKey,
@@ -356,10 +357,10 @@ fn request_from_row(row: &MySqlRow) -> Result<ApprovalRequest> {
     let state: String = row.try_get("state").map_err(repo_err)?;
     let approver_key: Option<String> = row.try_get("approver_key_id").map_err(repo_err)?;
     let user_id: Option<String> = row.try_get("user_id").map_err(repo_err)?;
-    let code_expires_at: Option<NaiveDateTime> =
+    let code_expires_at: Option<PrimitiveDateTime> =
         row.try_get("code_expires_at").map_err(repo_err)?;
-    let created_at: NaiveDateTime = row.try_get("created_at").map_err(repo_err)?;
-    let expires_at: NaiveDateTime = row.try_get("expires_at").map_err(repo_err)?;
+    let created_at: PrimitiveDateTime = row.try_get("created_at").map_err(repo_err)?;
+    let expires_at: PrimitiveDateTime = row.try_get("expires_at").map_err(repo_err)?;
     Ok(ApprovalRequest {
         id: row.try_get("id").map_err(repo_err)?,
         tenant_id: uuid_of(&tenant_id)?,
@@ -425,7 +426,7 @@ impl ApprovalRequestRepository for SqlxApprovalRequestRepository {
         approver_key: Uuid,
         user_id: Uuid,
         code_hash: &str,
-        code_expires_at: DateTime<Utc>,
+        code_expires_at: OffsetDateTime,
     ) -> Result<bool> {
         let result = sqlx::query(
             "UPDATE app_approval_requests SET state = 'approved', approver_key_id = ?, user_id = ?, \

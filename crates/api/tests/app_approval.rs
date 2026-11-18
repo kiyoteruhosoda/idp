@@ -9,6 +9,7 @@
 
 mod support;
 
+use assay_contracts::utc::UtcInstant;
 use aws_lc_rs::rand::SystemRandom;
 use aws_lc_rs::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
 use axum::http::{Method, StatusCode};
@@ -387,7 +388,7 @@ async fn revoking_the_key_ends_the_sessions_it_approved() {
     assert!(listed["keys"][0]["last_used_at"].is_string());
 
     // Revoke from the app (signature over the time).
-    let signed_at = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let signed_at = time::OffsetDateTime::now_utc().to_rfc3339_seconds_z();
     let (status, _) = public(
         &env,
         Method::POST,

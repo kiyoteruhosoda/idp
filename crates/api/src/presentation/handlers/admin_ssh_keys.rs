@@ -11,6 +11,7 @@ use crate::presentation::error::ApiError;
 use crate::presentation::i18n::{ApiLocale, ApiMessages};
 use crate::presentation::state::AppState;
 use crate::presentation::tenant::ResolvedTenant;
+use assay_contracts::utc::UtcInstant;
 use axum::extract::{Extension, State};
 use axum::Json;
 
@@ -53,9 +54,7 @@ pub async fn list_ssh_keys(
                 name: k.name,
                 public_key: k.key.authorized_key(),
                 fingerprint: k.key.fingerprint().to_string(),
-                created_at: k
-                    .created_at
-                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                created_at: k.created_at.to_rfc3339_seconds_z(),
             })
             .collect(),
     }))
