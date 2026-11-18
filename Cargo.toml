@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = ["crates/core", "crates/contracts", "crates/api", "crates/web"]
+# vendor/ holds patched copies of third-party crates (see [patch.crates-io]); they are not our members.
+exclude = ["vendor"]
 
 # Workspace-wide lint policy (each crate references it with `[lints] workspace = true`).
 #
@@ -107,3 +109,8 @@ webauthn-rs-proto = { version = "0.6" }
 # and only rendering is used (serving is done via an axum route).
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
+
+# crypto-glue 0.2.2 (via webauthn-rs) pins rsa to the 0.10 release candidates, which carry RUSTSEC-2023-0071.
+# vendor/crypto-glue is the same crate with only the rsa requirement moved to 0.10.0 (ADR-0081, task #1016).
+[patch.crates-io]
+crypto-glue = { path = "vendor/crypto-glue" }

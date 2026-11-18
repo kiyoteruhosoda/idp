@@ -24,6 +24,8 @@ COPY crates/core/Cargo.toml crates/core/Cargo.toml
 COPY crates/contracts/Cargo.toml crates/contracts/Cargo.toml
 COPY crates/api/Cargo.toml crates/api/Cargo.toml
 COPY crates/web/Cargo.toml crates/web/Cargo.toml
+# Patched third-party crates used through [patch.crates-io] (ADR-0081). Needed before the dependency build.
+COPY vendor ./vendor
 RUN mkdir -p crates/core/src crates/contracts/src crates/api/src/bin crates/web/src \
     && echo "" > crates/core/src/lib.rs \
     && echo "" > crates/contracts/src/lib.rs \
