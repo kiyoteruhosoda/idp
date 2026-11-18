@@ -87,7 +87,9 @@ utoipa-swagger-ui = { version = "10", features = ["axum", "vendored"] }
 fluent = "0.17"
 unic-langid = { version = "0.9", features = ["macros"] }
 # Templates for server rendering in the web crate (compile-time type checking, automatic HTML escaping).
-askama = "0.16"
+# Default features minus `config`: there is no askama.toml (templates live in the default `templates/`), and
+# `config` pulls in basic-toml, which is flagged unmaintained (RUSTSEC-2026-0374) by the dependency audit (task #1016).
+askama = { version = "0.16", default-features = false, features = ["derive", "std", "urlencode"] }
 # API client of the web crate (access over HTTP so it doesn't depend on core/sqlx). TLS is rustls.
 reqwest = { version = "0.13", default-features = false, features = ["json", "query", "form", "rustls"] }
 # TOTP (RFC 6238) generation and verification (MFA self-enrollment).

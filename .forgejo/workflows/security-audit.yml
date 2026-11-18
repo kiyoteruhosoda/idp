@@ -1,0 +1,75 @@
+name: Security Audit
+
+# Detects known vulnerabilities in the locked dependencies (Cargo.lock, crates/web/frontend/package-lock.json),
+# so that a newly published vulnerability turns main red (deck "main CI" list -> ci-fixer, task #995).
+# The pattern, how the steps run and how to write exceptions: deploy-repo docs/decisions/ADR-0002 (task #1012),
+# the npm split: deploy-repo ADR-0003. Here: ADR-0080 (task #1016).
+#
+# When it runs:
+# - PRs that touch dependencies (or this file): check what that PR is about to bring in
+# - Push to main: check the merged result
+# - Weekly: newly published vulnerabilities appear even when dependencies do not change
+#
+# Rust: osv-scanner fails on any known vulnerability in Cargo.lock. It reads the whole lock, including
+# crates that only appear there through optional features and are never built.
+# npm: fails at high and above for what reaches users (`--omit=dev`: react / react-dom bundled into
+# crates/web/assets/react). The build tools (vite, typescript) are reported, not blocked.
+on:
+  pull_request:
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/*/Cargo.toml"
+      - "crates/web/frontend/package-lock.json"
+      - "crates/web/frontend/package.json"
+      - ".forgejo/workflows/security-audit.yml"
+  push:
+    branches:
+      - main
+  schedule:
+    # Mondays. The minute differs per repository so the weekly runs of all repositories
+    # do not pile up on the runners at once.
+    - cron: "43 0 * * 1"
+
+# When the same branch (PR) is pushed again, cancel the old run and check only the latest commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cargo:
+    name: Rust (osv-scanner)
+    runs-on: [self-hosted, nolumialab]
+    # ⚠ The default is 6 hours. A hung job eats the slots and the runner, so cap it.
+    timeout-minutes: 20
+    container:
+      # ci-lang image with osv-scanner baked in (deploy-repo host/services/builders/ci-lang).
+      # The weekly builder rebuild swaps this digest.
+      image: hub.nolumia.com:5000/builder/ci-node24@sha256:c62edf8d34b8fdd46f5faedeca324f69aebd056194b80d132496463ede483996
+    steps:
+      - uses: actions/checkout@v6
+      - name: Audit Cargo.lock
+        run: |
+          osv-scanner scan source --lockfile Cargo.lock
+
+  node:
+    name: Node (npm audit)
+    runs-on: [self-hosted, nolumialab]
+    # ⚠ The default is 6 hours. A hung job eats the slots and the runner, so cap it.
+    timeout-minutes: 20
+    container:
+      # ci-lang image with osv-scanner baked in (deploy-repo host/services/builders/ci-lang).
+      # The weekly builder rebuild swaps this digest.
+      image: hub.nolumia.com:5000/builder/ci-node24@sha256:c62edf8d34b8fdd46f5faedeca324f69aebd056194b80d132496463ede483996
+    steps:
+      - uses: actions/checkout@v6
+      # What reaches users blocks; the build tools only report (deploy-repo ADR-0003).
+      - name: Audit what reaches users
+        run: |
+          (cd crates/web/frontend && npm audit --audit-level=high --omit=dev)
+      - name: Report the build tools (does not block)
+        run: |
+          cd crates/web/frontend
+          if ! npm audit --audit-level=high; then
+            echo "::warning::A build tool has a known vulnerability (report above). It never reaches users, so it does not block (deploy-repo ADR-0003)."
+          fi
