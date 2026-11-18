@@ -59,7 +59,7 @@ use crate::domain::values::AssignmentEnforcement;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
-use time::{Duration, OffsetDateTime};
+use time::Duration;
 
 /// A copy of stored overrides (key -> stored-format value). Rows with empty strings are excluded.
 pub type SettingOverrides = HashMap<String, String>;
@@ -518,6 +518,7 @@ pub(crate) mod testing {
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use time::OffsetDateTime;
 
     #[derive(Default)]
     pub struct FakeTenantSettings {
@@ -722,7 +723,7 @@ mod tests {
     use crate::domain::system_setting::SystemSetting;
     use crate::infrastructure::cache::InMemoryTtlCache;
     use std::sync::atomic::Ordering;
-    use time::macros::datetime;
+    use time::{macros::datetime, OffsetDateTime};
     use uuid::Uuid;
 
     struct FixedClock(OffsetDateTime);

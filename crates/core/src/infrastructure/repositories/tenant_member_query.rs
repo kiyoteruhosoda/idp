@@ -113,12 +113,12 @@ pub(crate) fn map_row(row: &MySqlRow) -> Result<TenantMember> {
         status: MembershipStatus::parse(&status)?,
         // The join goes through a foreign key (`tenant_memberships.user_id` -> `users.id`), so the user always exists.
         user_status: Some(UserStatus::parse(&user_status)?),
-        locked_until: locked_until.map(|naive| chrono::from_naive_utc(naive)),
+        locked_until: locked_until.map(assay_contracts::utc::from_naive_utc),
         pending_setup: row.try_get("pending_setup").map_err(repo_err)?,
         setup_link_expires_at: row
             .try_get::<Option<time::PrimitiveDateTime>, _>("setup_link_expires_at")
             .map_err(repo_err)?
-            .map(|naive| chrono::from_naive_utc(naive)),
+            .map(assay_contracts::utc::from_naive_utc),
         note: map_note(row)?,
     })
 }
@@ -133,7 +133,7 @@ pub(crate) fn map_note(row: &MySqlRow) -> Result<Option<AccountNote>> {
     let updated_by: Option<String> = row.try_get("note_updated_by").map_err(repo_err)?;
     Ok(Some(AccountNote {
         text,
-        updated_at: chrono::from_naive_utc(updated_at),
+        updated_at: assay_contracts::utc::from_naive_utc(updated_at),
         updated_by: updated_by
             .map(|id| {
                 Uuid::parse_str(&id)

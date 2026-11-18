@@ -4,6 +4,10 @@
   （`assay_contracts::utc`）。
 - パスキーの部品の奥の serde_with が chrono を任意の依存として名指しし Cargo.lock に残すので、その依存だけを外した写しを
   `vendor/serde_with/` に置き、`[patch.crates-io]` で使う。
+## 2026-11-18（rsa を 0.10.0 へ。task #1016・ADR-0081）
+
+- パスキーの部品の奥にある rsa を 0.10.0-rc.19 から 0.10.0 へ上げた（RUSTSEC-2023-0071）。中継ぎの crypto-glue 0.2.2 が
+  rsa 0.10.0 を受け付けないので、rsa の指定 1 行だけを直した写しを `vendor/crypto-glue/` に置き、`[patch.crates-io]` で使う。
 
 ## 2026-11-17（App Link の案内から認証アプリを入れられるようにする）
 

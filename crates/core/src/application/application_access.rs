@@ -419,7 +419,7 @@ mod tests {
     use crate::domain::values::{ApplicationStatus, AssignmentMode};
     use async_trait::async_trait;
     use std::sync::Mutex;
-    use time::macros::datetime;
+    use time::{macros::datetime, OffsetDateTime};
 
     struct FixedClock;
     impl Clock for FixedClock {

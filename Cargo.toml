@@ -112,7 +112,11 @@ webauthn-rs-proto = { version = "0.6" }
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 
-# serde_with (via webauthn-rs) names chrono as an optional dependency, which keeps chrono (RUSTSEC-2026-0543) in
-# Cargo.lock although nothing builds it. vendor/serde_with is the same crate without that dependency (ADR-0082).
+# Patched copies of third-party crates (vendor/, see each PATCHED.md):
+# - crypto-glue 0.2.2 (via webauthn-rs) pins rsa to the 0.10 release candidates, which carry RUSTSEC-2023-0071.
+#   vendor/crypto-glue moves only the rsa requirement to 0.10.0 (ADR-0081, task #1016).
+# - serde_with (via webauthn-rs) names chrono as an optional dependency, which keeps chrono (RUSTSEC-2026-0543) in
+#   Cargo.lock although nothing builds it. vendor/serde_with is the same crate without that dependency (ADR-0082).
 [patch.crates-io]
+crypto-glue = { path = "vendor/crypto-glue" }
 serde_with = { path = "vendor/serde_with" }

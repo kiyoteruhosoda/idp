@@ -78,6 +78,7 @@ where
 mod tests {
     use super::*;
     use std::sync::Mutex as StdMutex;
+    use time::macros::datetime;
 
     /// Clock that tests can advance at will.
     struct MutClock(StdMutex<OffsetDateTime>);
@@ -97,7 +98,6 @@ mod tests {
     }
 
     fn base() -> OffsetDateTime {
-        use time::macros::datetime;
         datetime!(2026-07-10 00:00:00 UTC)
     }
 

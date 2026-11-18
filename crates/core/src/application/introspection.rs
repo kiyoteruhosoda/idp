@@ -245,7 +245,7 @@ impl IntrospectionService {
             client_id: Some(rt.client_id),
             username: None,
             token_type: Some("refresh_token".to_string()),
-            exp: Some(rt.expires_at.timestamp()),
+            exp: Some(rt.expires_at.unix_timestamp()),
             iat: None,
             // The public `sub` (same value as the ID Token and access token). It used to return the internal user ID
             // (task #593; it disagreed with the access token path and leaked the internal ID to RPs).

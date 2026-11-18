@@ -1459,6 +1459,7 @@ mod tests {
     use super::*;
     use crate::domain::tenant::TenantId;
     use crate::domain::values::{ClientStatus, ClientType, TokenEndpointAuthMethod};
+    use time::macros::datetime;
 
     /// ADR-0043 decision 3. When nothing is recorded, nothing is claimed by guessing.
     #[test]
@@ -1509,7 +1510,6 @@ mod tests {
         );
         assert_eq!(amr, Some(vec!["fed".to_string()]));
     }
-    use time::macros::datetime;
 
     fn client_with_scopes(scopes: &[&str]) -> Client {
         let now = datetime!(2026-08-01 00:00:00 UTC);

@@ -322,6 +322,7 @@ mod tests {
     use super::*;
     use crate::domain::jwt::generate_ec_keypair;
     use jsonwebtoken::{EncodingKey, Header};
+    use time::macros::datetime;
 
     struct DeviceKey {
         private_pem: String,
@@ -427,7 +428,6 @@ mod tests {
 
     #[test]
     fn only_a_bound_session_on_a_registered_device_gets_the_long_lifetime() {
-        use time::macros::datetime;
         let created = datetime!(2026-11-01 00:00:00 UTC);
         let idle = created + Duration::hours(30);
         let week = Duration::days(7);

@@ -619,6 +619,7 @@ impl LoginService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use time::{macros::datetime, OffsetDateTime};
 
     #[test]
     fn csrf_token_is_deterministic_and_session_bound() {
@@ -649,7 +650,6 @@ mod tests {
     use crate::infrastructure::repositories::in_memory_auth_session::InMemoryAuthSessions;
     use async_trait::async_trait;
     use std::sync::Mutex;
-    use time::{macros::datetime, OffsetDateTime};
     use uuid::Uuid;
 
     const CSRF_KEY: [u8; 32] = *b"unit-test-csrf-0123456789abcdef!";

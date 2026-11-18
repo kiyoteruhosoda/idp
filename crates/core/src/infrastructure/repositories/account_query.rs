@@ -150,7 +150,7 @@ fn map_service_account(row: &MySqlRow) -> Result<ServiceAccount> {
         client_id: row.try_get("client_id").map_err(repo_err)?,
         app_name: row.try_get("app_name").map_err(repo_err)?,
         status: ClientStatus::parse(&status)?,
-        created_at: chrono::from_naive_utc(created_at),
+        created_at: assay_contracts::utc::from_naive_utc(created_at),
         identity_of: match (identity_id, identity_name) {
             (Some(id), Some(display_name)) => Some(IdentityApplication {
                 application_id: parse_uuid(&id)?,
