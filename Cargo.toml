@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = ["crates/core", "crates/contracts", "crates/api", "crates/web"]
+# vendor/ holds patched copies of third-party crates (see [patch.crates-io]); they are not our members.
+exclude = ["vendor"]
 
 # Workspace-wide lint policy (each crate references it with `[lints] workspace = true`).
 #
@@ -109,3 +111,8 @@ webauthn-rs-proto = { version = "0.6" }
 # and only rendering is used (serving is done via an axum route).
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
+
+# serde_with (via webauthn-rs) names chrono as an optional dependency, which keeps chrono (RUSTSEC-2026-0543) in
+# Cargo.lock although nothing builds it. vendor/serde_with is the same crate without that dependency (ADR-0082).
+[patch.crates-io]
+serde_with = { path = "vendor/serde_with" }

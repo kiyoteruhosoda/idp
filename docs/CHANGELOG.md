@@ -1,3 +1,10 @@
+## 2026-11-18（日時の部品を chrono から time へ。task #1016・ADR-0082）
+
+- chrono（RUSTSEC-2026-0543・保守されなくなった）を time へ置き換えた。API の応答・ログ・保存する日時の文字の形は変えていない
+  （`assay_contracts::utc`）。
+- パスキーの部品の奥の serde_with が chrono を任意の依存として名指しし Cargo.lock に残すので、その依存だけを外した写しを
+  `vendor/serde_with/` に置き、`[patch.crates-io]` で使う。
+
 ## 2026-11-17（App Link の案内から認証アプリを入れられるようにする）
 
 - App Link（`/app/approve`・`/app/enrolled`）をブラウザで開いたときの案内に、認証アプリの入手先へのリンクを出すようにした。
