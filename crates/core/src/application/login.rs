@@ -528,7 +528,7 @@ impl LoginService {
             )
             .await
         {
-            Ok(Establishment::Established(sso)) => sso,
+            Ok(Establishment::Established(sso)) => *sso,
             Ok(Establishment::DeviceEnrollmentRequired { ticket }) => {
                 return LoginOutcome::DeviceEnrollmentRequired { ticket }
             }

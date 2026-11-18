@@ -931,7 +931,7 @@ impl AppApprovalService {
             )
             .await
         {
-            Ok(crate::application::sign_in_completion::Establishment::Established(sso)) => sso,
+            Ok(crate::application::sign_in_completion::Establishment::Established(sso)) => *sso,
             // A login approved with the authenticator app passes the gate (task #916; the approving key is a key of a device registered with a passkey).
             Ok(
                 crate::application::sign_in_completion::Establishment::DeviceEnrollmentRequired {

@@ -79,7 +79,8 @@ impl EstablishedSso {
 /// Outcome of trying to create an SSO session.
 pub enum Establishment {
     /// Created.
-    Established(EstablishedSso),
+    /// Boxed: the session is much larger than the other variant (clippy::large_enum_variant).
+    Established(Box<EstablishedSso>),
     /// In an organization restricted to registered devices, the device was not registered (task #916. ADR-0079). No SSO session
     /// was created. The web puts the `ticket` in a Cookie and redirects to the device registration screen.
     ///
@@ -92,7 +93,7 @@ impl Establishment {
     #[cfg(test)]
     pub fn expect_established(self) -> EstablishedSso {
         match self {
-            Self::Established(sso) => sso,
+            Self::Established(sso) => *sso,
             Self::DeviceEnrollmentRequired { .. } => panic!("device enrollment was required"),
         }
     }
@@ -247,10 +248,10 @@ impl SignInCompletion {
                 ctx,
             )
             .await;
-        Ok(Establishment::Established(EstablishedSso {
+        Ok(Establishment::Established(Box::new(EstablishedSso {
             session,
             session_id,
-        }))
+        })))
     }
 
     /// Continues the authorization flow: records the authentication (re-keying the id), checks consent, issues a code.

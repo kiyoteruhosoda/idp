@@ -674,7 +674,7 @@ impl ExternalLoginService {
             )
             .await
         {
-            Ok(Establishment::Established(sso)) => sso,
+            Ok(Establishment::Established(sso)) => *sso,
             Ok(Establishment::DeviceEnrollmentRequired { ticket }) => {
                 return CallbackOutcome::DeviceEnrollmentRequired { ticket }
             }

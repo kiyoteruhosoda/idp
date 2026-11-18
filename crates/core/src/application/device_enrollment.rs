@@ -363,7 +363,8 @@ pub struct CompleteEnrollment<'a> {
 
 pub enum CompleteEnrollmentOutcome {
     /// Enrolled and created the SSO session.
-    Enrolled(EstablishedSso),
+    /// Boxed: the session is much larger than the other variants (clippy::large_enum_variant).
+    Enrolled(Box<EstablishedSso>),
     TicketInvalid,
     /// The passkey failed, or it is not the ticket user's passkey.
     PasskeyRejected,

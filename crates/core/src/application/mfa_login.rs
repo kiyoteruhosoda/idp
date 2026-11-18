@@ -314,7 +314,7 @@ impl MfaLoginService {
             )
             .await
         {
-            Ok(Establishment::Established(sso)) => sso,
+            Ok(Establishment::Established(sso)) => *sso,
             Ok(Establishment::DeviceEnrollmentRequired { ticket }) => {
                 return MfaLoginOutcome::DeviceEnrollmentRequired { ticket }
             }
