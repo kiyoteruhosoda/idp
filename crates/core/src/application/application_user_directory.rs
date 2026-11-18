@@ -207,10 +207,10 @@ mod tests {
     use crate::domain::tenant::TenantId;
     use crate::domain::values::{ApplicationStatus, UserStatus};
     use async_trait::async_trait;
-    use chrono::{DateTime, TimeZone, Utc};
+    use time::{macros::datetime, OffsetDateTime};
 
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 9, 16, 0, 0, 0).unwrap()
+    fn now() -> OffsetDateTime {
+        datetime!(2026-09-16 00:00:00 UTC)
     }
 
     fn tenant_id() -> TenantId {
@@ -291,7 +291,7 @@ mod tests {
             _n: &str,
             _s: ApplicationStatus,
             _m: AssignmentMode,
-            _u: DateTime<Utc>,
+            _u: OffsetDateTime,
         ) -> DomainResult<bool> {
             Ok(false)
         }
@@ -312,7 +312,7 @@ mod tests {
             _b: Uuid,
             _from: Uuid,
             _to: Uuid,
-            _at: DateTime<Utc>,
+            _at: OffsetDateTime,
         ) -> DomainResult<bool> {
             Ok(false)
         }

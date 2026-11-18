@@ -33,7 +33,7 @@ async fn concurrent_failures_all_count_and_reach_the_lock_threshold() {
         // lock duration growth is covered by the AP6 tests.
         max_lock_duration_secs: 900,
     };
-    let now = chrono::Utc::now();
+    let now = time::OffsetDateTime::now_utc();
 
     let mut handles = Vec::with_capacity(CONCURRENCY);
     for _ in 0..CONCURRENCY {
@@ -50,7 +50,7 @@ async fn concurrent_failures_all_count_and_reach_the_lock_threshold() {
         handle.await.expect("task did not panic");
     }
 
-    let (count, locked_until): (i32, Option<chrono::NaiveDateTime>) =
+    let (count, locked_until): (i32, Option<time::PrimitiveDateTime>) =
         sqlx::query_as("SELECT failed_login_count, locked_until FROM users WHERE id = ?")
             .bind(&user_id)
             .fetch_one(&env.pool)
@@ -88,7 +88,7 @@ async fn an_expired_lock_is_not_reported_as_locked() {
     let user_uuid = Uuid::parse_str(&user_id).expect("user id is a UUID");
     let users = SqlxUserRepository::new(env.pool.clone());
 
-    let now = chrono::Utc::now();
+    let now = time::OffsetDateTime::now_utc();
     // Reach the threshold with a 1-second lock and read from the viewpoint of 1 hour later.
     let lockout = LockoutPolicy {
         max_failed_attempts: 1,
@@ -101,7 +101,7 @@ async fn an_expired_lock_is_not_reported_as_locked() {
         .expect("record login failure");
     assert!(locked.is_locked());
 
-    let later = now + chrono::Duration::hours(1);
+    let later = now + time::Duration::hours(1);
     let after = users
         .record_login_failure(user_uuid, lockout, later)
         .await
@@ -117,7 +117,7 @@ async fn an_expired_lock_is_not_reported_as_locked() {
         lock_duration_secs: 1,
         max_lock_duration_secs: 1,
     };
-    let much_later = now + chrono::Duration::hours(2);
+    let much_later = now + time::Duration::hours(2);
     let relaxed = users
         .record_login_failure(user_uuid, lenient, much_later)
         .await

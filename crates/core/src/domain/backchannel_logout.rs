@@ -11,7 +11,7 @@
 #![allow(dead_code)]
 
 use crate::domain::tenant::TenantId;
-use chrono::{DateTime, Duration, Utc};
+use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 /// A back-channel logout notification request to one client.
@@ -30,11 +30,11 @@ pub struct BackchannelLogoutDelivery {
     /// `jti` of the `logout_token`. Does not change on retry.
     pub jti: Uuid,
     pub attempts: i32,
-    pub next_attempt_at: DateTime<Utc>,
+    pub next_attempt_at: OffsetDateTime,
     pub last_error: Option<String>,
-    pub delivered_at: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub delivered_at: Option<OffsetDateTime>,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
 }
 
 /// Values for building a new delivery request (attempt count and times are decided by [`BackchannelLogoutDelivery::new`]).
@@ -52,7 +52,7 @@ pub struct NewBackchannelLogoutDelivery {
 
 impl BackchannelLogoutDelivery {
     /// Builds a new delivery request (next attempt is immediate).
-    pub fn new(new: NewBackchannelLogoutDelivery, now: DateTime<Utc>) -> Self {
+    pub fn new(new: NewBackchannelLogoutDelivery, now: OffsetDateTime) -> Self {
         Self {
             id: new.id,
             tenant_id: new.tenant_id,

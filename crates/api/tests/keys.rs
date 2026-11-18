@@ -9,14 +9,14 @@ use assay_api::application::key_service::KeyService;
 use assay_api::domain::clock::Clock;
 use assay_api::infrastructure::jwt;
 use assay_api::infrastructure::repositories::signing_key::SqlxSigningKeyRepository;
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use std::sync::Arc;
+use time::OffsetDateTime;
 
-struct FixedClock(DateTime<Utc>);
+struct FixedClock(OffsetDateTime);
 impl Clock for FixedClock {
-    fn now(&self) -> DateTime<Utc> {
+    fn now(&self) -> OffsetDateTime {
         self.0
     }
 }
@@ -48,7 +48,7 @@ async fn ensure_key_is_idempotent_and_token_verifies_against_jwks() {
     };
 
     let repo = Arc::new(SqlxSigningKeyRepository::new(pool.clone()));
-    let clock = Arc::new(FixedClock(Utc::now()));
+    let clock = Arc::new(FixedClock(OffsetDateTime::now_utc()));
     // Match the encryption key to the app default. If mixed with another key on the shared test DB,
     // other tests (going through server assembly) could not decrypt the ACTIVE key.
     let kek = *assay_api::config::Config::from_env()

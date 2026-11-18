@@ -38,8 +38,8 @@ use crate::domain::saml_metadata::{IdpSigningKey, NAMED_CURVE_P256};
 use aws_lc_rs::signature::KeyPair as _;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
+use time::OffsetDateTime;
 
 const NS_ASSERTION: &str = "urn:oasis:names:tc:SAML:2.0:assertion";
 const NS_PROTOCOL: &str = "urn:oasis:names:tc:SAML:2.0:protocol";
@@ -63,7 +63,7 @@ pub struct SamlResponseInput<'a> {
     pub response_id: &'a str,
     pub assertion_id: &'a str,
     /// Issue time (`IssueInstant` of Response / Assertion).
-    pub issued_at: DateTime<Utc>,
+    pub issued_at: OffsetDateTime,
     /// assay's entity ID (tenant issuer).
     pub idp_entity_id: &'a str,
     /// Entity ID of the target SP (`Audience`).
@@ -76,11 +76,11 @@ pub struct SamlResponseInput<'a> {
     pub name_id: &'a str,
     pub name_id_format: &'a str,
     /// Authentication time (`auth_time` of the SSO session).
-    pub authn_instant: DateTime<Utc>,
+    pub authn_instant: OffsetDateTime,
     /// `SessionIndex` (an opaque value derived from the SSO session).
     pub session_index: &'a str,
     /// Assertion expiry (`NotOnOrAfter`).
-    pub not_on_or_after: DateTime<Utc>,
+    pub not_on_or_after: OffsetDateTime,
     /// email attribute (`AttributeStatement`). If `None`, no attribute is output.
     pub email: Option<&'a str>,
 }
@@ -320,8 +320,12 @@ fn build_signature(
 }
 
 /// SAML time representation (xsd:dateTime, UTC, millisecond precision).
-fn format_instant(at: DateTime<Utc>) -> String {
-    at.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
+fn format_instant(at: OffsetDateTime) -> String {
+    at.to_offset(time::UtcOffset::UTC)
+        .format(time::macros::format_description!(
+            "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z"
+        ))
+        .expect("a fixed format of a UTC instant")
 }
 
 /// Canonical escaping of attribute values (Canonical XML: only `&` `<` `"` and TAB/LF/CR; `>` `'`
@@ -360,24 +364,24 @@ fn escape_text(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
     use quick_xml::events::Event;
     use quick_xml::reader::Reader;
+    use time::macros::datetime;
 
     fn test_input<'a>() -> SamlResponseInput<'a> {
         SamlResponseInput {
             response_id: "_resp1",
             assertion_id: "_assert1",
-            issued_at: Utc.with_ymd_and_hms(2026, 7, 28, 12, 0, 0).unwrap(),
+            issued_at: datetime!(2026-07-28 12:00:00 UTC),
             idp_entity_id: "https://idp.example.com/tenant-1",
             sp_entity_id: "https://sp.example.test/metadata",
             acs_url: "https://sp.example.test/acs?x=1&y=2",
             in_response_to: Some("_req1"),
             name_id: "user@example.test",
             name_id_format: "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
-            authn_instant: Utc.with_ymd_and_hms(2026, 7, 28, 11, 0, 0).unwrap(),
+            authn_instant: datetime!(2026-07-28 11:00:00 UTC),
             session_index: "_session1",
-            not_on_or_after: Utc.with_ymd_and_hms(2026, 7, 28, 12, 5, 0).unwrap(),
+            not_on_or_after: datetime!(2026-07-28 12:05:00 UTC),
             email: Some("user@example.test"),
         }
     }

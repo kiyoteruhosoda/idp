@@ -406,7 +406,7 @@ impl ChangePasswordService {
             )
             .await
         {
-            Ok(Establishment::Established(sso)) => sso,
+            Ok(Establishment::Established(sso)) => *sso,
             Ok(Establishment::DeviceEnrollmentRequired { ticket }) => {
                 return ChangePasswordOutcome::DeviceEnrollmentRequired { ticket }
             }

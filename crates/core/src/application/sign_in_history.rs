@@ -29,8 +29,8 @@ use crate::domain::sign_in_history::{
 use crate::domain::sso_session;
 use crate::domain::user_device::{CountryCode, OBSERVATION_WINDOW_SECS};
 use async_trait::async_trait;
-use chrono::{DateTime, Duration, Utc};
 use std::sync::Arc;
+use time::{Duration, OffsetDateTime};
 
 /// One history row and, for a successful sign-in, how it was used by that app.
 #[derive(Debug, Clone)]
@@ -148,7 +148,7 @@ impl SignInHistoryService {
         session_hash: &str,
         before: Option<i64>,
         limit: u32,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<SignInHistoryPage> {
         let limit = limit.clamp(1, SIGN_IN_HISTORY_PAGE_MAX);
         // Fetch one extra row to decide whether there is a next page.
@@ -226,7 +226,7 @@ impl AuditLogSink for SignInFailureRecordingSink {
         result
     }
 
-    async fn purge_older_than(&self, older_than: DateTime<Utc>) -> Result<u64> {
+    async fn purge_older_than(&self, older_than: OffsetDateTime) -> Result<u64> {
         self.inner.purge_older_than(older_than).await
     }
 }
@@ -267,7 +267,7 @@ mod tests {
             _: TenantId,
             _: &str,
             _: &str,
-            _: DateTime<Utc>,
+            _: OffsetDateTime,
             _: bool,
         ) -> Result<()> {
             Ok(())
@@ -276,13 +276,13 @@ mod tests {
             &self,
             _: &str,
             _: &str,
-            _: DateTime<Utc>,
+            _: OffsetDateTime,
             _: Option<&str>,
             _: Option<&str>,
         ) -> Result<()> {
             Ok(())
         }
-        async fn record_refresh_reuse(&self, _: &str, _: &str, _: DateTime<Utc>) -> Result<()> {
+        async fn record_refresh_reuse(&self, _: &str, _: &str, _: OffsetDateTime) -> Result<()> {
             Ok(())
         }
         async fn list_for_user(
@@ -297,7 +297,7 @@ mod tests {
             &self,
             _: Uuid,
             _: &[String],
-            _: DateTime<Utc>,
+            _: OffsetDateTime,
         ) -> Result<Vec<SignInAppUse>> {
             Ok(Vec::new())
         }
@@ -315,7 +315,7 @@ mod tests {
     fn event(event_type: AuditEventType) -> AuditEvent {
         AuditEvent {
             event_type,
-            occurred_at: DateTime::from_timestamp(1_800_000_000, 0).unwrap(),
+            occurred_at: assay_contracts::utc::from_unix_seconds(1_800_000_000).unwrap(),
             tenant_id: None,
             user_id: Some(Uuid::nil()),
             client_id: None,

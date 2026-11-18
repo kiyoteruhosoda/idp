@@ -185,7 +185,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     /// Process start time. Kept so `/internal/health` can report uptime (ADR-0031).
     /// Whether a restart happened cannot be told from the version alone.
-    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub started_at: time::OffsetDateTime,
     /// Clock source (replaced by a fixed implementation in tests). Used where the presentation layer
     /// needs "now" (e.g. checking lock expiry).
     pub clock: Arc<dyn Clock>,
@@ -363,11 +363,9 @@ impl AppState {
         // scope → permission resolution (ADR-0009 §7): caches `has_permission` results with a TTL and
         // invalidates on grant / revoke. The check (admin_access) and changes (permissions_admin) share the
         // same instance, which avoids stale allow/deny right after a grant.
-        let permission_cache: Arc<dyn Cache<PermissionKey, bool>> =
-            Arc::new(InMemoryTtlCache::new(
-                chrono_from_std(config.permission_cache_ttl()),
-                clock.clone(),
-            ));
+        let permission_cache: Arc<dyn Cache<PermissionKey, bool>> = Arc::new(
+            InMemoryTtlCache::new(time_from_std(config.permission_cache_ttl()), clock.clone()),
+        );
         let user_permissions: Arc<dyn UserPermissionRepository> =
             Arc::new(CachedUserPermissionRepository::new(
                 Arc::new(SqlxUserPermissionRepository::new(pool.clone())),
@@ -424,11 +422,11 @@ impl AppState {
                 Arc::new(SqlxSystemSettingsRepository::new(pool.clone())),
                 tenant_settings_fallback,
                 Arc::new(InMemoryTtlCache::new(
-                    chrono_from_std(config.tenant_cache_ttl()),
+                    time_from_std(config.tenant_cache_ttl()),
                     clock.clone(),
                 )),
                 Arc::new(InMemoryTtlCache::new(
-                    chrono_from_std(config.tenant_cache_ttl()),
+                    time_from_std(config.tenant_cache_ttl()),
                     clock.clone(),
                 )),
                 audit.clone(),
@@ -468,7 +466,7 @@ impl AppState {
 
         let rate_limiter = Arc::new(InMemoryLoginRateLimiter::new(
             LOGIN_RATE_LIMIT_MAX_ATTEMPTS,
-            chrono::Duration::minutes(LOGIN_RATE_LIMIT_WINDOW_MINUTES),
+            time::Duration::minutes(LOGIN_RATE_LIMIT_WINDOW_MINUTES),
         ));
 
         let saml_service_providers = Arc::new(SamlServiceProviderManagementService::new(
@@ -564,7 +562,7 @@ impl AppState {
             Arc::new(LettreSmtpMailer::with_trust(config.outbound_trust())),
             Arc::new(InMemoryLoginRateLimiter::new(
                 PASSWORD_RESET_RATE_LIMIT_MAX_ATTEMPTS,
-                chrono::Duration::minutes(PASSWORD_RESET_RATE_LIMIT_WINDOW_MINUTES),
+                time::Duration::minutes(PASSWORD_RESET_RATE_LIMIT_WINDOW_MINUTES),
             )),
             audit.clone(),
             clock.clone(),
@@ -632,7 +630,7 @@ impl AppState {
         // separate from login (so failed registrations do not consume the login attempt budget).
         let register_rate_limiter = Arc::new(InMemoryLoginRateLimiter::new(
             REGISTER_RATE_LIMIT_MAX_ATTEMPTS,
-            chrono::Duration::minutes(REGISTER_RATE_LIMIT_WINDOW_MINUTES),
+            time::Duration::minutes(REGISTER_RATE_LIMIT_WINDOW_MINUTES),
         ));
         let register = Arc::new(RegisterService::new(
             users.clone(),
@@ -670,7 +668,7 @@ impl AppState {
         // `AuthorizeService` (tenant display name on the login screen) also rides on the same cache, so it is
         // assembled before its dependents.
         let tenant_cache: Arc<dyn Cache<TenantId, Tenant>> = Arc::new(InMemoryTtlCache::new(
-            chrono_from_std(config.tenant_cache_ttl()),
+            time_from_std(config.tenant_cache_ttl()),
             clock.clone(),
         ));
         let tenant_resolution =
@@ -1324,7 +1322,7 @@ impl AppState {
             clients.clone(),
             config.cors_allowed_origins(),
             Arc::new(InMemoryTtlCache::new(
-                chrono_from_std(config.tenant_cache_ttl()),
+                time_from_std(config.tenant_cache_ttl()),
                 clock.clone(),
             )),
         ));
@@ -1432,10 +1430,10 @@ impl AppState {
     }
 }
 
-/// Converts a setting value (`std::time::Duration`) to a resolution cache TTL (`chrono::Duration`).
+/// Converts a setting value (`std::time::Duration`) to a resolution cache TTL (`time::Duration`).
 /// TTLs are second-precision, so rounding does not matter (saturates at the maximum on overflow).
-fn chrono_from_std(d: std::time::Duration) -> chrono::Duration {
-    chrono::Duration::from_std(d).unwrap_or(chrono::Duration::MAX)
+fn time_from_std(d: std::time::Duration) -> time::Duration {
+    time::Duration::try_from(d).unwrap_or(time::Duration::MAX)
 }
 
 impl FromRef<AppState> for Db {

@@ -20,8 +20,8 @@ use crate::domain::clock::Clock;
 use crate::domain::error::DomainError;
 use crate::domain::repositories::AuthorizationCodeRepository;
 use crate::domain::tenant_context::TenantContext;
-use chrono::Duration;
 use std::sync::Arc;
+use time::Duration;
 
 /// Authorization data needed to issue a code: **which authorization request** is answered **with which authentication**.
 ///
@@ -71,7 +71,7 @@ impl CodeIssuanceService {
             applications,
             audit,
             clock,
-            ttl: Duration::from_std(ttl).expect("authorization code TTL out of range"),
+            ttl: Duration::try_from(ttl).expect("authorization code TTL out of range"),
         }
     }
 

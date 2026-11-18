@@ -18,15 +18,13 @@ use uuid::Uuid;
 
 /// Rounds "how many seconds from now" of a lock expiry to seconds.
 ///
-/// `chrono::Utc::now()` has nanosecond precision, but it is **truncated to microseconds** when stored in
-/// `DATETIME(6)`. Looking at the difference with `num_seconds()` (truncation toward 0) gives 59 for exactly 60.
+/// `time::OffsetDateTime::now_utc()` has nanosecond precision, but it is **truncated to microseconds** when stored in
+/// `DATETIME(6)`. Looking at the difference with `whole_seconds()` (truncation toward 0) gives 59 for exactly 60.
 /// What we want to check is "which step was chosen", so we round to the nearest second and compare.
-fn lock_seconds(
-    locked_until: chrono::DateTime<chrono::Utc>,
-    now: chrono::DateTime<chrono::Utc>,
-) -> i64 {
-    (locked_until - now).num_milliseconds().div_euclid(1_000)
-        + i64::from((locked_until - now).num_milliseconds().rem_euclid(1_000) >= 500)
+fn lock_seconds(locked_until: time::OffsetDateTime, now: time::OffsetDateTime) -> i64 {
+    let millis = (locked_until - now).whole_milliseconds();
+    i64::try_from(millis.div_euclid(1_000)).expect("lock fits in i64 seconds")
+        + i64::from(millis.rem_euclid(1_000) >= 500)
 }
 
 /// Lock after 3 failures; the cap is 4x the first (= 3 steps).
@@ -48,7 +46,7 @@ async fn the_lock_window_grows_with_each_repeated_lockout() {
     let user_uuid = Uuid::parse_str(&user_id).expect("user id is a UUID");
     let users = SqlxUserRepository::new(env.pool.clone());
     let policy = escalating_policy();
-    let now = chrono::Utc::now();
+    let now = time::OffsetDateTime::now_utc();
 
     // No lock until the threshold is reached.
     for _ in 0..(policy.max_failed_attempts - 1) {
@@ -103,7 +101,7 @@ async fn an_administrator_unlock_also_clears_the_failure_counter() {
 
     let users = SqlxUserRepository::new(pool.clone());
     let policy = escalating_policy();
-    let now = chrono::Utc::now();
+    let now = time::OffsetDateTime::now_utc();
     for _ in 0..policy.max_failed_attempts {
         users
             .record_login_failure(user_uuid, policy, now)

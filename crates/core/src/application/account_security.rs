@@ -36,8 +36,8 @@ use crate::domain::sso_session;
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::AuthenticationStrength;
-use chrono::{DateTime, Utc};
 use std::sync::Arc;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// One login session shown on screen.
@@ -47,14 +47,14 @@ pub struct SessionSummary {
     pub id: String,
     /// Whether this session is "the session of the browser in use now".
     pub current: bool,
-    pub auth_time: DateTime<Utc>,
+    pub auth_time: OffsetDateTime,
     /// Whether the second factor was completed (recorded by AP4; lets users see "this device has done MFA").
     pub multi_factor: bool,
     pub user_agent: Option<String>,
     pub ip_address: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub idle_expires_at: DateTime<Utc>,
-    pub absolute_expires_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
+    pub idle_expires_at: OffsetDateTime,
+    pub absolute_expires_at: OffsetDateTime,
 }
 
 /// One connected app shown on screen.
@@ -65,8 +65,8 @@ pub struct ConnectedAppSummary {
     pub app_name: String,
     /// Consented scopes (the stored value as is, including `openid`).
     pub scopes: Vec<String>,
-    pub granted_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub granted_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
 }
 
 /// Content of the security screen.
@@ -390,7 +390,7 @@ impl AccountSecurityService {
     async fn resolve_active_user_id(
         &self,
         session_hash: &str,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<Option<Uuid>, String> {
         let user_id = match self.sso_sessions.find_by_hash(session_hash).await {
             Ok(Some(s)) if s.is_valid_at(now) => s.user_id,
@@ -423,16 +423,16 @@ mod tests {
     use crate::domain::user::User;
     use crate::domain::values::{AuthenticationMethod, UserStatus};
     use async_trait::async_trait;
-    use chrono::{Duration, TimeZone};
     use std::sync::Mutex;
+    use time::{macros::datetime, Duration};
 
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 8, 1, 12, 0, 0).unwrap()
+    fn now() -> OffsetDateTime {
+        datetime!(2026-08-01 12:00:00 UTC)
     }
 
     struct FixedClock;
     impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> OffsetDateTime {
             now()
         }
     }
@@ -490,7 +490,7 @@ mod tests {
                 .cloned()
                 .collect())
         }
-        async fn extend_idle(&self, _h: &str, _t: DateTime<Utc>) -> DomainResult<()> {
+        async fn extend_idle(&self, _h: &str, _t: OffsetDateTime) -> DomainResult<()> {
             unreachable!()
         }
         async fn delete(&self, hash: &str) -> DomainResult<()> {
@@ -512,7 +512,7 @@ mod tests {
             &self,
             _id: Uuid,
             _lockout: crate::domain::authentication_policy::LockoutPolicy,
-            _now: chrono::DateTime<chrono::Utc>,
+            _now: time::OffsetDateTime,
         ) -> DomainResult<crate::domain::user::LoginFailureRecord> {
             unreachable!()
         }
@@ -558,7 +558,7 @@ mod tests {
             &self,
             _id: Uuid,
             _c: i32,
-            _l: Option<DateTime<Utc>>,
+            _l: Option<OffsetDateTime>,
         ) -> DomainResult<()> {
             unreachable!()
         }
@@ -668,7 +668,7 @@ mod tests {
             &self,
             _t: TenantId,
             _family: &str,
-            _at: DateTime<Utc>,
+            _at: OffsetDateTime,
         ) -> DomainResult<u64> {
             unreachable!()
         }
@@ -678,27 +678,27 @@ mod tests {
         async fn find_by_hash(&self, _t: TenantId, _h: &str) -> DomainResult<Option<RefreshToken>> {
             unreachable!()
         }
-        async fn revoke(&self, _h: &str, _at: DateTime<Utc>) -> DomainResult<u64> {
+        async fn revoke(&self, _h: &str, _at: OffsetDateTime) -> DomainResult<u64> {
             unreachable!()
         }
         async fn exists_by_parent_hash(&self, _h: &str) -> DomainResult<bool> {
             unreachable!()
         }
-        async fn revoke_all_for_user(&self, u: Uuid, _at: DateTime<Utc>) -> DomainResult<u64> {
+        async fn revoke_all_for_user(&self, u: Uuid, _at: OffsetDateTime) -> DomainResult<u64> {
             if self.failures.user_revoke {
                 return Err(crate::domain::error::DomainError::Repository("boom".into()));
             }
             self.revoked_users.lock().unwrap().push(u);
             Ok(3)
         }
-        async fn count_active_for_user(&self, _u: Uuid, _now: DateTime<Utc>) -> DomainResult<u64> {
+        async fn count_active_for_user(&self, _u: Uuid, _now: OffsetDateTime) -> DomainResult<u64> {
             unreachable!()
         }
         async fn revoke_all_for_session(
             &self,
             u: Uuid,
             sid: &str,
-            _at: DateTime<Utc>,
+            _at: OffsetDateTime,
         ) -> DomainResult<u64> {
             if self.failures.session_revoke {
                 return Err(crate::domain::error::DomainError::Repository("boom".into()));
@@ -713,7 +713,7 @@ mod tests {
             &self,
             _t: TenantId,
             _u: Uuid,
-            _at: DateTime<Utc>,
+            _at: OffsetDateTime,
         ) -> DomainResult<()> {
             // Disconnecting must not call the per-tenant full revocation (it would take down other apps).
             unreachable!("consent revocation must not revoke every client in the tenant")
@@ -723,7 +723,7 @@ mod tests {
             t: TenantId,
             u: Uuid,
             c: &str,
-            _at: DateTime<Utc>,
+            _at: OffsetDateTime,
         ) -> DomainResult<()> {
             self.revoked.lock().unwrap().push((t, u, c.to_string()));
             Ok(())

@@ -162,13 +162,13 @@ mod tests {
     use crate::domain::user::User;
     use crate::domain::values::UserStatus;
     use async_trait::async_trait;
-    use chrono::{DateTime, TimeZone, Utc};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use time::{macros::datetime, OffsetDateTime};
     use uuid::Uuid;
 
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 8, 20, 0, 0, 0).unwrap()
+    fn now() -> OffsetDateTime {
+        datetime!(2026-08-20 00:00:00 UTC)
     }
 
     fn user(tenant_id: TenantId) -> User {
@@ -296,7 +296,7 @@ mod tests {
             &self,
             _id: Uuid,
             _count: i32,
-            _locked_until: Option<DateTime<Utc>>,
+            _locked_until: Option<OffsetDateTime>,
         ) -> Result<()> {
             unreachable!()
         }
@@ -304,7 +304,7 @@ mod tests {
             &self,
             _id: Uuid,
             _lockout: crate::domain::authentication_policy::LockoutPolicy,
-            _now: DateTime<Utc>,
+            _now: OffsetDateTime,
         ) -> Result<LoginFailureRecord> {
             unreachable!()
         }

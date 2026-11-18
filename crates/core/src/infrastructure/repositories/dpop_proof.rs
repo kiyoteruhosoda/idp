@@ -5,8 +5,9 @@
 use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::DpopProofReplayRepository;
 use crate::infrastructure::db::Db;
+use assay_contracts::utc::UtcInstant;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 
 pub struct SqlxDpopProofReplayRepository {
     pool: Db,
@@ -27,7 +28,7 @@ impl DpopProofReplayRepository for SqlxDpopProofReplayRepository {
     async fn record_if_unused(
         &self,
         proof_hash: &str,
-        retain_until: DateTime<Utc>,
+        retain_until: OffsetDateTime,
     ) -> Result<bool> {
         let result =
             sqlx::query("INSERT INTO dpop_proof_jtis (proof_hash, expires_at) VALUES (?, ?)")

@@ -24,6 +24,7 @@ use crate::domain::repositories::{EmailVerificationTokenRepository, UserReposito
 use crate::domain::system_setting::DeploymentState;
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
+use assay_contracts::utc::UtcInstant;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -225,18 +226,18 @@ mod tests {
     use crate::domain::user::User;
     use crate::domain::values::UserStatus;
     use async_trait::async_trait;
-    use chrono::{DateTime, TimeZone, Utc};
     use std::sync::Mutex;
+    use time::{macros::datetime, OffsetDateTime};
 
     const TEST_KEY: [u8; 32] = *b"unit-test-key-0123456789abcdef!!";
 
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 7, 12, 12, 0, 0).unwrap()
+    fn now() -> OffsetDateTime {
+        datetime!(2026-07-12 12:00:00 UTC)
     }
 
     struct FixedClock;
     impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> OffsetDateTime {
             now()
         }
     }
@@ -265,7 +266,7 @@ mod tests {
             &self,
             id: Uuid,
             lockout: crate::domain::authentication_policy::LockoutPolicy,
-            now: DateTime<Utc>,
+            now: OffsetDateTime,
         ) -> DomainResult<crate::domain::user::LoginFailureRecord> {
             let mut rows = self.rows.lock().unwrap();
             let Some(row) = rows.iter_mut().find(|u| u.id == id) else {
@@ -308,7 +309,7 @@ mod tests {
             &self,
             _id: Uuid,
             _c: i32,
-            _l: Option<DateTime<Utc>>,
+            _l: Option<OffsetDateTime>,
         ) -> DomainResult<()> {
             unreachable!()
         }
@@ -359,7 +360,7 @@ mod tests {
         async fn consume(
             &self,
             token_hash: &str,
-            used_at: DateTime<Utc>,
+            used_at: OffsetDateTime,
         ) -> DomainResult<Option<EmailVerificationToken>> {
             let mut rows = self.rows.lock().unwrap();
             match rows.iter_mut().find(|t| {
@@ -375,7 +376,7 @@ mod tests {
         async fn invalidate_all_for_user(
             &self,
             user_id: Uuid,
-            now: DateTime<Utc>,
+            now: OffsetDateTime,
         ) -> DomainResult<()> {
             for row in self.rows.lock().unwrap().iter_mut() {
                 if row.user_id == user_id && row.used_at.is_none() {

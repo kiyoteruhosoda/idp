@@ -8,7 +8,7 @@
 use crate::domain::account_note::AccountNote;
 use crate::domain::tenant::TenantId;
 use crate::domain::values::{MembershipStatus, MembershipType, UserStatus};
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// One entry of the member list (read model). Represents a user participating in the tenant,
@@ -40,7 +40,7 @@ pub struct TenantMember {
     /// `users.status` (`status = LOCKED` cannot be set by admin operations), and **whether it has
     /// expired must be judged at read time**. Folding it into the state column would keep showing
     /// "locked" even after the expiry passed.
-    pub locked_until: Option<DateTime<Utc>>,
+    pub locked_until: Option<OffsetDateTime>,
     /// Provisional registration (ADR-0064). The user has not yet set credentials via the setup
     /// link.
     pub pending_setup: bool,
@@ -49,7 +49,7 @@ pub struct TenantMember {
     ///
     /// ⚠ **Whether it has expired is judged at read time** (same reason as `locked_until`). Someone
     /// whose provisional link expired cannot get in until an admin reissues it.
-    pub setup_link_expires_at: Option<DateTime<Utc>>,
+    pub setup_link_expires_at: Option<OffsetDateTime>,
     /// Admin note (ADR-0063). `None` if empty. ⚠ **Never expose outside the admin screen.**
     pub note: Option<AccountNote>,
 }
@@ -90,14 +90,14 @@ pub struct TenantMembership {
     pub invited_by: Option<Uuid>,
     /// Hash of the invitation token (kept only while `INVITED`).
     pub invitation_token_hash: Option<String>,
-    pub invitation_expires_at: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub invitation_expires_at: Option<OffsetDateTime>,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
 }
 
 impl TenantMembership {
     /// HOME membership (a projection generated automatically at user creation; ADR-0009 §3).
-    pub fn new_home(tenant_id: TenantId, user_id: Uuid, now: DateTime<Utc>) -> Self {
+    pub fn new_home(tenant_id: TenantId, user_id: Uuid, now: OffsetDateTime) -> Self {
         Self {
             tenant_id,
             user_id,
@@ -115,7 +115,7 @@ impl TenantMembership {
     /// new tenant (ADR-0009 §4). It skips the invitation flow, so it has no `invited_by` or token.
     /// Granted at tenant creation to the creator (root's system admin) together with
     /// `idp.tenant.admin`, enabling the initial setup.
-    pub fn new_active_guest(tenant_id: TenantId, user_id: Uuid, now: DateTime<Utc>) -> Self {
+    pub fn new_active_guest(tenant_id: TenantId, user_id: Uuid, now: OffsetDateTime) -> Self {
         Self {
             tenant_id,
             user_id,
@@ -172,8 +172,8 @@ mod tests {
             invited_by: None,
             invitation_token_hash: None,
             invitation_expires_at: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: OffsetDateTime::now_utc(),
+            updated_at: OffsetDateTime::now_utc(),
         }
     }
 

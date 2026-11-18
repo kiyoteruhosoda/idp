@@ -9,11 +9,12 @@ use crate::domain::security_status::{
 };
 use crate::domain::user_device::CountryCode;
 use crate::infrastructure::db::Db;
+use assay_contracts::utc::{from_naive_utc, UtcInstant};
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use sqlx::mysql::MySqlRow;
 use sqlx::{MySql, QueryBuilder, Row};
 use std::collections::BTreeMap;
+use time::{OffsetDateTime, PrimitiveDateTime};
 use uuid::Uuid;
 
 pub struct SqlxSecurityStatusQuery {
@@ -30,12 +31,12 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
-    Utc.from_utc_datetime(&naive)
+fn to_utc(naive: PrimitiveDateTime) -> OffsetDateTime {
+    from_naive_utc(naive)
 }
 
-fn opt_time(row: &MySqlRow, name: &str) -> Result<Option<DateTime<Utc>>> {
-    let v: Option<NaiveDateTime> = row.try_get(name).map_err(repo_err)?;
+fn opt_time(row: &MySqlRow, name: &str) -> Result<Option<OffsetDateTime>> {
+    let v: Option<PrimitiveDateTime> = row.try_get(name).map_err(repo_err)?;
     Ok(v.map(to_utc))
 }
 
@@ -119,8 +120,8 @@ impl SecurityStatusQuery for SqlxSecurityStatusQuery {
     async fn app_tokens(
         &self,
         user_id: Uuid,
-        now: DateTime<Utc>,
-        recent_since: DateTime<Utc>,
+        now: OffsetDateTime,
+        recent_since: OffsetDateTime,
     ) -> Result<Vec<AppTokenStatus>> {
         let user = user_id.to_string();
         let mut apps: BTreeMap<AppKey, AppTokenStatus> = BTreeMap::new();
@@ -266,7 +267,7 @@ impl SecurityStatusQuery for SqlxSecurityStatusQuery {
         Ok(list)
     }
 
-    async fn warnings(&self, user_id: Uuid, since: DateTime<Utc>) -> Result<SecurityWarnings> {
+    async fn warnings(&self, user_id: Uuid, since: OffsetDateTime) -> Result<SecurityWarnings> {
         let user = user_id.to_string();
         let since = since.naive_utc();
 
@@ -336,7 +337,7 @@ impl SecurityStatusQuery for SqlxSecurityStatusQuery {
         let failure_days = failure_rows
             .iter()
             .map(|row| {
-                let day: NaiveDate = row.try_get("day").map_err(repo_err)?;
+                let day: time::Date = row.try_get("day").map_err(repo_err)?;
                 Ok((day, count(row, "n")?))
             })
             .collect::<Result<Vec<_>>>()?;

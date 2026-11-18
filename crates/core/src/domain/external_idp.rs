@@ -14,7 +14,7 @@
 
 use crate::domain::error::DomainError;
 use crate::domain::tenant::TenantId;
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// Scopes requested from external IdPs by default.
@@ -143,8 +143,8 @@ pub struct ExternalIdentityProvider {
     pub enabled: bool,
     /// Whether to auto-link to an existing user on verified email match.
     pub allow_auto_link: bool,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
 }
 
 impl ExternalIdentityProvider {
@@ -200,8 +200,8 @@ pub struct ExternalIdentity {
     pub provider_id: Uuid,
     pub external_issuer: String,
     pub external_subject: String,
-    pub created_at: DateTime<Utc>,
-    pub last_used_at: Option<DateTime<Utc>>,
+    pub created_at: OffsetDateTime,
+    pub last_used_at: Option<OffsetDateTime>,
 }
 
 /// Progress state from the redirect to the external IdP until the callback.
@@ -227,12 +227,12 @@ pub struct ExternalLoginRequest {
     /// URL** (logging them in to the attacker's account). `state` goes through the external IdP
     /// into the URL, so it alone cannot identify the browser.
     pub browser_binding_hash: Option<String>,
-    pub expires_at: DateTime<Utc>,
-    pub created_at: DateTime<Utc>,
+    pub expires_at: OffsetDateTime,
+    pub created_at: OffsetDateTime,
 }
 
 impl ExternalLoginRequest {
-    pub fn is_expired_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_expired_at(&self, now: OffsetDateTime) -> bool {
         self.expires_at <= now
     }
 

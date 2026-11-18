@@ -274,7 +274,7 @@ pub mod test_support {
     use crate::domain::error::Result;
     use crate::domain::values::{ApplicationStatus, AssignmentMode};
     use async_trait::async_trait;
-    use chrono::{DateTime, Utc};
+    use time::OffsetDateTime;
 
     /// A repository with no apps (every query returns empty).
     pub struct NoApplications;
@@ -318,7 +318,7 @@ pub mod test_support {
             _display_name: &str,
             _status: ApplicationStatus,
             _assignment_mode: AssignmentMode,
-            _updated_at: DateTime<Utc>,
+            _updated_at: OffsetDateTime,
         ) -> Result<bool> {
             Ok(false)
         }
@@ -339,7 +339,7 @@ pub mod test_support {
             _binding_id: Uuid,
             _from_application_id: Uuid,
             _to_application_id: Uuid,
-            _moved_at: DateTime<Utc>,
+            _moved_at: OffsetDateTime,
         ) -> Result<bool> {
             Ok(false)
         }
@@ -418,13 +418,13 @@ mod tests {
     use crate::domain::repositories::AuditLogSink;
     use crate::domain::values::{ApplicationStatus, AssignmentMode};
     use async_trait::async_trait;
-    use chrono::{DateTime, TimeZone, Utc};
     use std::sync::Mutex;
+    use time::{macros::datetime, OffsetDateTime};
 
     struct FixedClock;
     impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
-            Utc.with_ymd_and_hms(2026, 9, 15, 0, 0, 0).unwrap()
+        fn now(&self) -> OffsetDateTime {
+            datetime!(2026-09-15 00:00:00 UTC)
         }
     }
 
@@ -486,7 +486,7 @@ mod tests {
             _display_name: &str,
             _status: ApplicationStatus,
             _assignment_mode: AssignmentMode,
-            _updated_at: DateTime<Utc>,
+            _updated_at: OffsetDateTime,
         ) -> Result<bool> {
             Ok(true)
         }
@@ -507,7 +507,7 @@ mod tests {
             _binding_id: Uuid,
             _from_application_id: Uuid,
             _to_application_id: Uuid,
-            _moved_at: DateTime<Utc>,
+            _moved_at: OffsetDateTime,
         ) -> Result<bool> {
             Ok(false)
         }

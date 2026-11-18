@@ -6,10 +6,11 @@ use crate::domain::tenant::TenantId;
 use crate::domain::tenant_membership::TenantMembership;
 use crate::domain::values::{MembershipStatus, MembershipType};
 use crate::infrastructure::db::Db;
+use assay_contracts::utc::{from_naive_utc, UtcInstant};
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::mysql::MySqlRow;
 use sqlx::Row;
+use time::{OffsetDateTime, PrimitiveDateTime};
 use uuid::Uuid;
 
 pub struct SqlxTenantMembershipRepository {
@@ -29,8 +30,8 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
-    Utc.from_utc_datetime(&naive)
+fn to_utc(naive: PrimitiveDateTime) -> OffsetDateTime {
+    from_naive_utc(naive)
 }
 
 fn parse_uuid(raw: &str) -> Result<Uuid> {
@@ -43,7 +44,7 @@ fn map_row(row: &MySqlRow) -> Result<TenantMembership> {
     let membership_type: String = row.try_get("membership_type").map_err(repo_err)?;
     let status: String = row.try_get("status").map_err(repo_err)?;
     let invited_by: Option<String> = row.try_get("invited_by").map_err(repo_err)?;
-    let invitation_expires_at: Option<NaiveDateTime> =
+    let invitation_expires_at: Option<PrimitiveDateTime> =
         row.try_get("invitation_expires_at").map_err(repo_err)?;
     Ok(TenantMembership {
         tenant_id: TenantId::from(parse_uuid(&tenant_id)?),

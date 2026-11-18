@@ -4,7 +4,7 @@
 use crate::domain::client_jwks::ClientJwks;
 use crate::domain::tenant::TenantId;
 use crate::domain::values::{ClientStatus, ClientType, GrantType, TokenEndpointAuthMethod};
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -32,8 +32,8 @@ pub struct Client {
     pub frontchannel_logout_uri: Option<String>,
     /// HTTP POST target URI for back-channel logout (F4).
     pub backchannel_logout_uri: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
 }
 
 impl Client {
@@ -101,10 +101,10 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
+    use time::macros::datetime;
 
     fn client(client_type: ClientType, grant_types: &[&str]) -> Client {
-        let now = Utc.with_ymd_and_hms(2026, 8, 1, 0, 0, 0).unwrap();
+        let now = datetime!(2026-08-01 00:00:00 UTC);
         Client {
             id: Uuid::from_u128(1),
             tenant_id: TenantId::from(Uuid::from_u128(2)),

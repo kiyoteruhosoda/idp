@@ -36,8 +36,8 @@ use crate::domain::user_device::{
     normalize_device_name, passkey_verified_recently, unused_device_cutoff, CountryCode, DeviceRef,
     UserDevice, OBSERVATION_WINDOW_SECS,
 };
-use chrono::{DateTime, Duration, Utc};
 use std::sync::Arc;
+use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 /// Request to bind a login (from web).
@@ -410,7 +410,7 @@ impl DeviceRegistryService {
             .delete_unused_before(unused_device_cutoff(now))
             .await?;
         let ctx = RequestContext {
-            correlation_id: format!("device-expiry-{}", now.timestamp()),
+            correlation_id: format!("device-expiry-{}", now.unix_timestamp()),
             ip_address: None,
             user_agent: None,
         };
@@ -449,7 +449,7 @@ impl DeviceRegistryService {
         &self,
         active: &ActiveSession,
         device: &DeviceRef,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<usize, DomainError> {
         let hashes = self
             .devices
@@ -477,7 +477,7 @@ impl DeviceRegistryService {
     async fn passkey_is_fresh(
         &self,
         session: &SsoSession,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<bool, DomainError> {
         let verified_at = self
             .sso_sessions
@@ -489,7 +489,7 @@ impl DeviceRegistryService {
     async fn active_session(
         &self,
         sso_session_id: &str,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<Option<ActiveSession>, String> {
         let hash = crypto::sha256_hex(sso_session_id);
         let session = match self.sso_sessions.find_by_hash(&hash).await {
@@ -510,7 +510,7 @@ impl DeviceRegistryService {
         &self,
         user: &User,
         kind: SecurityAlertKind,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
         country: Option<CountryCode>,
         ctx: &RequestContext,
         device: Option<&DeviceRef>,
@@ -568,16 +568,16 @@ mod tests {
     use crate::domain::refresh_token::RefreshToken;
     use crate::domain::values::{AuthenticationMethod, UserStatus};
     use async_trait::async_trait;
-    use chrono::TimeZone;
     use std::sync::Mutex;
+    use time::macros::datetime;
 
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 11, 4, 12, 0, 0).unwrap()
+    fn now() -> OffsetDateTime {
+        datetime!(2026-11-04 12:00:00 UTC)
     }
 
     struct FixedClock;
     impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> OffsetDateTime {
             now()
         }
     }
@@ -599,7 +599,7 @@ mod tests {
     fn session(
         raw: &str,
         methods: Vec<AuthenticationMethod>,
-        created: DateTime<Utc>,
+        created: OffsetDateTime,
     ) -> SsoSession {
         SsoSession::establish(
             crypto::sha256_hex(raw),
@@ -616,7 +616,7 @@ mod tests {
     #[derive(Default)]
     struct FakeSessions {
         rows: Mutex<Vec<SsoSession>>,
-        passkey_at: Mutex<Option<DateTime<Utc>>>,
+        passkey_at: Mutex<Option<OffsetDateTime>>,
     }
     #[async_trait]
     impl SsoSessionRepository for FakeSessions {
@@ -633,10 +633,10 @@ mod tests {
                 .find(|s| s.session_hash == hash)
                 .cloned())
         }
-        async fn extend_idle(&self, _h: &str, _t: DateTime<Utc>) -> DomainResult<()> {
+        async fn extend_idle(&self, _h: &str, _t: OffsetDateTime) -> DomainResult<()> {
             unreachable!()
         }
-        async fn passkey_verified_at(&self, _h: &str) -> DomainResult<Option<DateTime<Utc>>> {
+        async fn passkey_verified_at(&self, _h: &str) -> DomainResult<Option<OffsetDateTime>> {
             Ok(*self.passkey_at.lock().unwrap())
         }
         async fn delete(&self, hash: &str) -> DomainResult<()> {
@@ -700,7 +700,7 @@ mod tests {
         async fn touch(
             &self,
             id: Uuid,
-            at: DateTime<Utc>,
+            at: OffsetDateTime,
             country: Option<&CountryCode>,
             _ip: Option<&str>,
         ) -> DomainResult<()> {
@@ -712,7 +712,7 @@ mod tests {
         }
         async fn delete_unused_before(
             &self,
-            cutoff: DateTime<Utc>,
+            cutoff: OffsetDateTime,
         ) -> DomainResult<Vec<UserDevice>> {
             let mut rows = self.rows.lock().unwrap();
             let (gone, kept): (Vec<_>, Vec<_>) =
@@ -725,7 +725,7 @@ mod tests {
             hash: &str,
             d: &DeviceRef,
             _c: Option<&CountryCode>,
-            _at: DateTime<Utc>,
+            _at: OffsetDateTime,
         ) -> DomainResult<bool> {
             let mut links = self.links.lock().unwrap();
             if links.iter().any(|(h, _)| h == hash) {
@@ -770,7 +770,7 @@ mod tests {
             &self,
             _id: Uuid,
             _lockout: crate::domain::authentication_policy::LockoutPolicy,
-            _now: DateTime<Utc>,
+            _now: OffsetDateTime,
         ) -> DomainResult<crate::domain::user::LoginFailureRecord> {
             unreachable!()
         }
@@ -812,7 +812,7 @@ mod tests {
             &self,
             _id: Uuid,
             _c: i32,
-            _l: Option<DateTime<Utc>>,
+            _l: Option<OffsetDateTime>,
         ) -> DomainResult<()> {
             unreachable!()
         }
@@ -846,7 +846,7 @@ mod tests {
             &self,
             _t: TenantId,
             _f: &str,
-            _a: DateTime<Utc>,
+            _a: OffsetDateTime,
         ) -> DomainResult<u64> {
             unreachable!()
         }
@@ -856,23 +856,23 @@ mod tests {
         async fn find_by_hash(&self, _t: TenantId, _h: &str) -> DomainResult<Option<RefreshToken>> {
             unreachable!()
         }
-        async fn revoke(&self, _h: &str, _a: DateTime<Utc>) -> DomainResult<u64> {
+        async fn revoke(&self, _h: &str, _a: OffsetDateTime) -> DomainResult<u64> {
             unreachable!()
         }
         async fn exists_by_parent_hash(&self, _h: &str) -> DomainResult<bool> {
             unreachable!()
         }
-        async fn revoke_all_for_user(&self, _u: Uuid, _a: DateTime<Utc>) -> DomainResult<u64> {
+        async fn revoke_all_for_user(&self, _u: Uuid, _a: OffsetDateTime) -> DomainResult<u64> {
             unreachable!()
         }
-        async fn count_active_for_user(&self, _u: Uuid, _n: DateTime<Utc>) -> DomainResult<u64> {
+        async fn count_active_for_user(&self, _u: Uuid, _n: OffsetDateTime) -> DomainResult<u64> {
             unreachable!()
         }
         async fn revoke_all_for_session(
             &self,
             _u: Uuid,
             sid: &str,
-            _a: DateTime<Utc>,
+            _a: OffsetDateTime,
         ) -> DomainResult<u64> {
             self.revoked_sessions.lock().unwrap().push(sid.to_string());
             Ok(1)
@@ -881,7 +881,7 @@ mod tests {
             &self,
             _t: TenantId,
             _u: Uuid,
-            _a: DateTime<Utc>,
+            _a: OffsetDateTime,
         ) -> DomainResult<()> {
             unreachable!()
         }
@@ -890,7 +890,7 @@ mod tests {
             _t: TenantId,
             _u: Uuid,
             _c: &str,
-            _a: DateTime<Utc>,
+            _a: OffsetDateTime,
         ) -> DomainResult<()> {
             unreachable!()
         }

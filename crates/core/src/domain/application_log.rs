@@ -7,7 +7,7 @@
 //! Messages are not localized and are **unified in the operating language (English)** (outside the scope of CLAUDE.md "i18n"). No PII.
 #![allow(dead_code)]
 
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// Log levels to record. Stored in the DB as `VARCHAR` + `CHECK`, with allowed values managed centrally by this enum
@@ -71,7 +71,7 @@ pub const MAX_TRACEBACK_LEN: usize = 8_000;
 /// One entry to write (built from a `tracing` event).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplicationLogRecord {
-    pub occurred_at: DateTime<Utc>,
+    pub occurred_at: OffsetDateTime,
     pub level: LogLevel,
     pub service: LogService,
     pub target: String,
@@ -108,7 +108,7 @@ fn truncate(value: &str, max: usize) -> String {
 #[derive(Debug, Clone)]
 pub struct ApplicationLogEntry {
     pub id: i64,
-    pub occurred_at: DateTime<Utc>,
+    pub occurred_at: OffsetDateTime,
     pub level: String,
     pub service: String,
     pub target: String,
@@ -127,8 +127,8 @@ pub struct ApplicationLogFilter {
     pub target_prefix: Option<String>,
     pub correlation_id: Option<String>,
     /// Lower and upper bounds of the period (`occurred_at`, inclusive).
-    pub from: Option<DateTime<Utc>>,
-    pub to: Option<DateTime<Utc>>,
+    pub from: Option<OffsetDateTime>,
+    pub to: Option<OffsetDateTime>,
     /// Paging (newest first).
     pub limit: i64,
     pub offset: i64,
@@ -156,7 +156,7 @@ mod tests {
     #[test]
     fn truncates_oversized_fields_on_char_boundaries() {
         let record = ApplicationLogRecord {
-            occurred_at: Utc::now(),
+            occurred_at: OffsetDateTime::now_utc(),
             level: LogLevel::Error,
             service: LogService::Api,
             target: "t".repeat(MAX_TARGET_LEN + 10),
@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn keeps_fields_within_limits_untouched() {
         let record = ApplicationLogRecord {
-            occurred_at: Utc::now(),
+            occurred_at: OffsetDateTime::now_utc(),
             level: LogLevel::Warn,
             service: LogService::Web,
             target: "assay_web::handlers::login".to_string(),

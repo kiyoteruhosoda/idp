@@ -56,10 +56,10 @@ use crate::domain::tenant_context::TenantContext;
 use crate::domain::user::User;
 use crate::domain::user_authenticator::AuthenticatorType;
 use crate::domain::values::AuthenticationMethod;
-use chrono::{DateTime, Utc};
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use std::sync::Arc;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -1021,7 +1021,7 @@ impl PortalLoginService {
         user: &User,
         methods: Vec<AuthenticationMethod>,
         ctx: &RequestContext,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<PortalSso, String> {
         if let Some(gate) = &self.device_gate {
             let admission = gate
@@ -1103,7 +1103,7 @@ impl PortalLoginService {
         &self,
         user_id: Uuid,
         code: &str,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<Option<AuthenticationMethod>, String> {
         // A TOTP stopped in the registry doesn't pass even if the secret remains (AP9; suspension and revocation are
         // only written to the registry, so without checking here "an authenticator that was supposedly stopped" would get in).
@@ -1163,18 +1163,23 @@ impl PortalLoginService {
     }
 
     /// Issues a signed `mfa_ticket`.
-    fn issue_ticket(&self, tenant_id: TenantId, user_id: Uuid, now: DateTime<Utc>) -> String {
-        let exp = now.timestamp() + MFA_TICKET_TTL_SECS;
+    fn issue_ticket(&self, tenant_id: TenantId, user_id: Uuid, now: OffsetDateTime) -> String {
+        let exp = now.unix_timestamp() + MFA_TICKET_TTL_SECS;
         sign_ticket(&self.ticket_secret, tenant_id.as_uuid(), user_id, exp)
     }
 
     /// Verifies the `mfa_ticket` and returns `user_id` if valid (tenant match, signature match, not expired).
-    fn verify_ticket(&self, tenant_id: TenantId, ticket: &str, now: DateTime<Utc>) -> Option<Uuid> {
+    fn verify_ticket(
+        &self,
+        tenant_id: TenantId,
+        ticket: &str,
+        now: OffsetDateTime,
+    ) -> Option<Uuid> {
         verify_ticket(
             &self.ticket_secret,
             tenant_id.as_uuid(),
             ticket,
-            now.timestamp(),
+            now.unix_timestamp(),
         )
     }
 

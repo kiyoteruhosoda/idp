@@ -11,7 +11,7 @@ pub struct WebState {
     pub config: Arc<Config>,
     pub api: ApiClient,
     /// Process start time. Kept so `/internal/health` can report uptime (ADR-0031).
-    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub started_at: time::OffsetDateTime,
     /// Restart request from the settings screen (ADR-0017). The graceful shutdown in `run()` waits on this value.
     /// In tests nobody waits on the value created by `build`, so requesting does nothing.
     pub restart: ServiceRestart,
@@ -28,7 +28,7 @@ impl WebState {
         Self {
             config,
             api,
-            started_at: chrono::Utc::now(),
+            started_at: time::OffsetDateTime::now_utc(),
             restart: ServiceRestart::new(),
             session_keys: crate::session_key::SessionKeyCache::default(),
         }

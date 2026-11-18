@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 use crate::domain::tenant::TenantId;
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// Audit event types (design spec §7). `sso_session.terminated` is reserved for future Logout.
@@ -330,7 +330,7 @@ impl AuditResult {
 #[derive(Debug, Clone)]
 pub struct AuditEvent {
     pub event_type: AuditEventType,
-    pub occurred_at: DateTime<Utc>,
+    pub occurred_at: OffsetDateTime,
     /// The tenant the event belongs to (per-tenant tracking. ADR-0009 §8). `None` only for events with no
     /// tenant context (startup processing, etc.).
     pub tenant_id: Option<TenantId>,
@@ -351,7 +351,7 @@ pub struct AuditEvent {
 pub struct AuditLogEntry {
     pub id: i64,
     pub event_type: String,
-    pub occurred_at: DateTime<Utc>,
+    pub occurred_at: OffsetDateTime,
     pub tenant_id: Option<Uuid>,
     pub user_id: Option<Uuid>,
     pub client_id: Option<String>,
@@ -373,8 +373,8 @@ pub struct AuditLogFilter {
     pub client_id: Option<String>,
     pub correlation_id: Option<String>,
     /// Lower and upper bounds of the period (`occurred_at`, inclusive).
-    pub from: Option<DateTime<Utc>>,
-    pub to: Option<DateTime<Utc>>,
+    pub from: Option<OffsetDateTime>,
+    pub to: Option<OffsetDateTime>,
     /// Paging (newest first).
     pub limit: i64,
     pub offset: i64,

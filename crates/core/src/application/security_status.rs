@@ -35,9 +35,9 @@ use crate::domain::user_device::{
     CountryCode, REGISTRATION_PASSKEY_MAX_AGE_SECS, UNUSED_DEVICE_EXPIRY_DAYS,
 };
 use crate::domain::values::{AuthenticationMethod, AuthenticationStrength};
-use chrono::{DateTime, Duration, Utc};
 use std::collections::HashMap;
 use std::sync::Arc;
+use time::{Duration, OffsetDateTime};
 
 /// Status of one signed-in state.
 #[derive(Debug, Clone)]
@@ -46,10 +46,10 @@ pub struct SessionStatus {
     pub id: String,
     /// Whether this is the signed-in state currently being viewed.
     pub current: bool,
-    pub auth_time: DateTime<Utc>,
-    pub created_at: DateTime<Utc>,
+    pub auth_time: OffsetDateTime,
+    pub created_at: OffsetDateTime,
     /// Expiry time (the earlier of idle and absolute).
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: OffsetDateTime,
     pub methods: Vec<AuthenticationMethod>,
     pub multi_factor: bool,
     pub user_agent: Option<String>,
@@ -62,7 +62,7 @@ pub struct SessionStatus {
     pub binding: SessionBinding,
     pub lifetime_basis: LifetimeBasis,
     /// Deadline while the passkey verification is fresh (device registration and SSH key operations allowed). `None` if past.
-    pub passkey_fresh_until: Option<DateTime<Utc>>,
+    pub passkey_fresh_until: Option<OffsetDateTime>,
 }
 
 /// Kind of possession.
@@ -94,11 +94,11 @@ pub struct Belonging {
     pub name: String,
     /// Per-kind detail (where the authenticator app key is, the device's name, the SSH key type).
     pub detail: Option<String>,
-    pub registered_at: DateTime<Utc>,
+    pub registered_at: OffsetDateTime,
     /// Last used time. Always `None` for things whose use assay cannot see (SSH keys).
-    pub last_used_at: Option<DateTime<Utc>>,
+    pub last_used_at: Option<OffsetDateTime>,
     /// Expiry (registered devices only. 180 days after last use).
-    pub expires_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<OffsetDateTime>,
 }
 
 /// Organization rules in effect for oneself.
@@ -221,9 +221,9 @@ impl SecurityStatusService {
         let policy = PolicyStatus {
             unregistered_device_alerts: alerts,
             ssh_keys_enabled: ssh_enabled,
-            idle_ttl_secs: lifetime.idle.num_seconds(),
-            absolute_ttl_secs: lifetime.absolute.num_seconds(),
-            bound_ttl_secs: lifetime.bound.num_seconds(),
+            idle_ttl_secs: lifetime.idle.whole_seconds(),
+            absolute_ttl_secs: lifetime.absolute.whole_seconds(),
+            bound_ttl_secs: lifetime.bound.whole_seconds(),
             device_expiry_days: UNUSED_DEVICE_EXPIRY_DAYS,
         };
 
@@ -283,7 +283,7 @@ impl SecurityStatusService {
         tenant: &TenantContext,
         user_id: uuid::Uuid,
         ssh_enabled: bool,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<Vec<Belonging>, DomainError> {
         let mut list = Vec::new();
         for a in self.authenticators.list_for_user(user_id).await? {
@@ -356,7 +356,7 @@ fn session_status(
     current_hash: &str,
     absolute_ttl: Duration,
     bound_ttl: Duration,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> SessionStatus {
     let binding = binding_of(&context);
     let basis = lifetime_basis(
@@ -401,9 +401,9 @@ fn binding_of(context: &SessionContextStatus) -> SessionBinding {
 /// Deadline while passkey verification is fresh (same basis as `user_device::passkey_verified_recently`).
 fn passkey_fresh_until(
     s: &SsoSession,
-    passkey_verified_at: Option<DateTime<Utc>>,
-    now: DateTime<Utc>,
-) -> Option<DateTime<Utc>> {
+    passkey_verified_at: Option<OffsetDateTime>,
+    now: OffsetDateTime,
+) -> Option<OffsetDateTime> {
     let max_age = Duration::seconds(REGISTRATION_PASSKEY_MAX_AGE_SECS);
     let signed_in = s
         .used_method(AuthenticationMethod::WebAuthn)
@@ -419,10 +419,10 @@ fn passkey_fresh_until(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
+    use time::macros::datetime;
     use uuid::Uuid;
 
-    fn session(methods: Vec<AuthenticationMethod>, created: DateTime<Utc>) -> SsoSession {
+    fn session(methods: Vec<AuthenticationMethod>, created: OffsetDateTime) -> SsoSession {
         SsoSession::establish(
             "hash-a".to_string(),
             Uuid::nil(),
@@ -435,8 +435,10 @@ mod tests {
         )
     }
 
-    fn at(h: u32, m: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 11, 5, h, m, 0).unwrap()
+    fn at(h: u32, m: u32) -> OffsetDateTime {
+        datetime!(2026-11-05 00:00:00 UTC)
+            + time::Duration::hours(i64::from(h))
+            + time::Duration::minutes(i64::from(m))
     }
 
     fn device() -> RegisteredDeviceStatus {

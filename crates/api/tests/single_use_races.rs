@@ -15,9 +15,9 @@ use axum::body::Body;
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
 use axum::http::{Request, StatusCode};
 use base64::Engine as _;
-use chrono::{Duration, Utc};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use support::{create_plain_user, send};
+use time::{Duration, OffsetDateTime};
 
 /// Consuming a challenge succeeds only once. The second (the other concurrent one) learns it "could not delete".
 #[tokio::test]
@@ -26,7 +26,7 @@ async fn a_passkey_challenge_can_be_consumed_only_once() {
         return;
     };
     let repo = SqlxPasskeyChallengeRepository::new(env.pool.clone());
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     let challenge = PasskeyChallenge {
         id: uuid::Uuid::now_v7(),
         user_id: None,

@@ -8,10 +8,11 @@ use crate::domain::repositories::ClientRepository;
 use crate::domain::tenant::TenantId;
 use crate::domain::values::{ClientStatus, ClientType, GrantType, TokenEndpointAuthMethod};
 use crate::infrastructure::db::Db;
+use assay_contracts::utc::from_naive_utc;
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::mysql::MySqlRow;
 use sqlx::Row;
+use time::{OffsetDateTime, PrimitiveDateTime};
 use uuid::Uuid;
 
 pub struct SqlxClientRepository {
@@ -34,8 +35,8 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
-    Utc.from_utc_datetime(&naive)
+fn to_utc(naive: PrimitiveDateTime) -> OffsetDateTime {
+    from_naive_utc(naive)
 }
 
 // MariaDB JSON columns (alias of LONGTEXT) come back as BLOB in sqlx, so receive bytes and parse.

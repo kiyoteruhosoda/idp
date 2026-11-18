@@ -527,16 +527,16 @@ mod tests {
     use crate::domain::tenant_membership::TenantMembership;
     use crate::domain::values::{MembershipStatus, MembershipType};
     use async_trait::async_trait;
-    use chrono::{DateTime, TimeZone, Utc};
     use std::sync::Mutex;
+    use time::{macros::datetime, OffsetDateTime};
 
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 7, 11, 12, 0, 0).unwrap()
+    fn now() -> OffsetDateTime {
+        datetime!(2026-07-11 12:00:00 UTC)
     }
 
-    struct FixedClock(DateTime<Utc>);
+    struct FixedClock(OffsetDateTime);
     impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> OffsetDateTime {
             self.0
         }
     }
@@ -634,7 +634,7 @@ mod tests {
             tenant: &Tenant,
             admin_membership: &TenantMembership,
             admin_permission_code: &str,
-            _granted_at: DateTime<Utc>,
+            _granted_at: OffsetDateTime,
         ) -> DomainResult<()> {
             if self.fail {
                 return Err(DomainError::Repository(

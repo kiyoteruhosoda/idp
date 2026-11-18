@@ -57,9 +57,9 @@ use crate::domain::tenant_context::TenantContext;
 use crate::domain::tenant_setting::{TenantOverrideEntry, TenantSetting};
 use crate::domain::values::AssignmentEnforcement;
 use async_trait::async_trait;
-use chrono::Duration;
 use std::collections::HashMap;
 use std::sync::Arc;
+use time::Duration;
 
 /// A copy of stored overrides (key -> stored-format value). Rows with empty strings are excluded.
 pub type SettingOverrides = HashMap<String, String>;
@@ -468,7 +468,7 @@ impl TenantSettingsService {
         let secs: u64 = self.parse(tenant_id, key).await?;
         i64::try_from(secs)
             .ok()
-            .and_then(Duration::try_seconds)
+            .map(Duration::seconds)
             .ok_or_else(|| DomainError::InvalidValue(format!("{key} is out of range: {secs}")))
     }
 }
@@ -516,9 +516,9 @@ pub(crate) mod testing {
     use crate::domain::system_setting::{tenant_overridable_setting_keys, SystemSetting};
     use crate::domain::tenant_setting::TenantOverridesAcrossTenants;
     use async_trait::async_trait;
-    use chrono::{DateTime, Utc};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use time::OffsetDateTime;
 
     #[derive(Default)]
     pub struct FakeTenantSettings {
@@ -615,8 +615,8 @@ pub(crate) mod testing {
 
     struct EpochClock;
     impl Clock for EpochClock {
-        fn now(&self) -> DateTime<Utc> {
-            DateTime::<Utc>::UNIX_EPOCH
+        fn now(&self) -> OffsetDateTime {
+            OffsetDateTime::UNIX_EPOCH
         }
     }
 
@@ -722,13 +722,13 @@ mod tests {
     use crate::domain::clock::Clock;
     use crate::domain::system_setting::SystemSetting;
     use crate::infrastructure::cache::InMemoryTtlCache;
-    use chrono::{DateTime, Duration, TimeZone, Utc};
     use std::sync::atomic::Ordering;
+    use time::{macros::datetime, OffsetDateTime};
     use uuid::Uuid;
 
-    struct FixedClock(DateTime<Utc>);
+    struct FixedClock(OffsetDateTime);
     impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> OffsetDateTime {
             self.0
         }
     }
@@ -741,9 +741,7 @@ mod tests {
     }
 
     fn fixture() -> Fixture {
-        let clock: Arc<dyn Clock> = Arc::new(FixedClock(
-            Utc.with_ymd_and_hms(2026, 9, 16, 0, 0, 0).unwrap(),
-        ));
+        let clock: Arc<dyn Clock> = Arc::new(FixedClock(datetime!(2026-09-16 00:00:00 UTC)));
         let tenants = Arc::new(FakeTenantSettings::default());
         let system = Arc::new(FakeSystemSettings::default());
         let audit = Arc::new(CapturingSink::default());

@@ -5,10 +5,11 @@ use crate::domain::repositories::SamlSsoRequestRepository;
 use crate::domain::saml_sso_request::SamlSsoRequest;
 use crate::domain::tenant::TenantId;
 use crate::infrastructure::db::Db;
+use assay_contracts::utc::{from_naive_utc, UtcInstant};
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::mysql::MySqlRow;
 use sqlx::Row;
+use time::{OffsetDateTime, PrimitiveDateTime};
 use uuid::Uuid;
 
 pub struct SqlxSamlSsoRequestRepository {
@@ -28,8 +29,8 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
-    Utc.from_utc_datetime(&naive)
+fn to_utc(naive: PrimitiveDateTime) -> OffsetDateTime {
+    from_naive_utc(naive)
 }
 
 fn parse_uuid(value: &str) -> Result<Uuid> {
@@ -40,7 +41,7 @@ fn parse_uuid(value: &str) -> Result<Uuid> {
 fn map_row(row: &MySqlRow) -> Result<SamlSsoRequest> {
     let tenant_id: String = row.try_get("tenant_id").map_err(repo_err)?;
     let service_provider_id: String = row.try_get("service_provider_id").map_err(repo_err)?;
-    let handle_expires_at: Option<NaiveDateTime> =
+    let handle_expires_at: Option<PrimitiveDateTime> =
         row.try_get("handle_expires_at").map_err(repo_err)?;
     Ok(SamlSsoRequest {
         id_hash: row.try_get("id_hash").map_err(repo_err)?,
@@ -149,7 +150,7 @@ impl SamlSsoRequestRepository for SqlxSamlSsoRequestRepository {
         Ok(result.rows_affected() == 1)
     }
 
-    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64> {
+    async fn delete_expired(&self, now: OffsetDateTime) -> Result<u64> {
         let result = sqlx::query("DELETE FROM saml_sso_requests WHERE expires_at <= ?")
             .bind(now.naive_utc())
             .execute(&self.pool)

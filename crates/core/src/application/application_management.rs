@@ -27,8 +27,8 @@ use crate::domain::repositories::{
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::tenant_membership::{TenantMember, TenantMemberFilter};
 use crate::domain::values::{ApplicationStatus, AssignmentMode, GrantType};
-use chrono::{DateTime, Utc};
 use std::sync::Arc;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// Read limit when listing "people who can get in now".
@@ -138,7 +138,7 @@ pub struct AccountApplication {
     /// token issuance for service accounts): ⚠ if the screen answered by a different rule, "shown as usable but cannot get in" would happen.
     pub access: ApplicationAccess,
     /// The date and time of an individual assignment, if any. Shown even for `EVERYONE` apps if the row remains.
-    pub assigned_at: Option<DateTime<Utc>>,
+    pub assigned_at: Option<OffsetDateTime>,
 }
 
 /// Input for a new app.

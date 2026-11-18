@@ -15,7 +15,7 @@ use crate::domain::audit::{AuditEvent, AuditEventType};
 use crate::domain::tenant::TenantId;
 use crate::domain::user_device::CountryCode;
 use crate::domain::values::{string_enum, AuthenticationMethod};
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// Upper bound on items per page (the screen views this many at a time, newest first).
@@ -64,7 +64,7 @@ string_enum!(
 pub struct SignInFailure {
     pub user_id: Uuid,
     pub tenant_id: Option<TenantId>,
-    pub occurred_at: DateTime<Utc>,
+    pub occurred_at: OffsetDateTime,
     pub outcome: SignInOutcome,
     pub kind: SignInFailureKind,
     pub ip_address: Option<String>,
@@ -157,7 +157,7 @@ fn failure_kind(reason: &str) -> (SignInOutcome, SignInFailureKind) {
 pub struct SignInSuccess {
     pub user_id: Uuid,
     pub tenant_id: TenantId,
-    pub occurred_at: DateTime<Utc>,
+    pub occurred_at: OffsetDateTime,
     pub ip_address: Option<String>,
     pub user_agent: Option<String>,
     pub country: Option<CountryCode>,
@@ -172,7 +172,7 @@ pub struct SignInSuccess {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignInRecord {
     pub id: i64,
-    pub occurred_at: DateTime<Utc>,
+    pub occurred_at: OffsetDateTime,
     pub outcome: SignInOutcome,
     pub failure_kind: Option<SignInFailureKind>,
     pub ip_address: Option<String>,
@@ -192,8 +192,8 @@ pub struct SignInAppUse {
     pub sid: String,
     pub client_id: String,
     pub app_name: Option<String>,
-    pub first_issued_at: DateTime<Utc>,
-    pub last_issued_at: DateTime<Utc>,
+    pub first_issued_at: OffsetDateTime,
+    pub last_issued_at: OffsetDateTime,
     /// `None` if no refresh token was issued.
     pub refresh: Option<RefreshUsage>,
 }
@@ -203,10 +203,10 @@ pub struct SignInAppUse {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefreshUsage {
     pub use_count: u32,
-    pub last_used_at: Option<DateTime<Utc>>,
+    pub last_used_at: Option<OffsetDateTime>,
     pub last_ip_address: Option<String>,
     pub last_user_agent: Option<String>,
-    pub reuse_detected_at: Option<DateTime<Utc>>,
+    pub reuse_detected_at: Option<OffsetDateTime>,
     pub state: RefreshState,
 }
 
@@ -216,7 +216,7 @@ pub enum RefreshState {
     /// Still usable.
     Active,
     /// Revoked before expiry (logout, device revocation, reuse detection, etc.).
-    Revoked { at: Option<DateTime<Utc>> },
+    Revoked { at: Option<OffsetDateTime> },
     /// Expired (including ones whose rows were removed by cleanup).
     Expired,
 }
@@ -230,7 +230,7 @@ pub struct RefreshTokenTally {
     pub active: u32,
     /// Number of unexpired rows (including revoked).
     pub unexpired: u32,
-    pub last_revoked_at: Option<DateTime<Utc>>,
+    pub last_revoked_at: Option<OffsetDateTime>,
 }
 
 impl RefreshTokenTally {
@@ -259,7 +259,7 @@ mod tests {
     fn event(event_type: AuditEventType, reason: &str, user: Option<Uuid>) -> AuditEvent {
         AuditEvent {
             event_type,
-            occurred_at: DateTime::from_timestamp(1_800_000_000, 0).unwrap(),
+            occurred_at: assay_contracts::utc::from_unix_seconds(1_800_000_000).unwrap(),
             tenant_id: None,
             user_id: user,
             client_id: Some("app".into()),

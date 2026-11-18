@@ -168,17 +168,17 @@ mod tests {
     use crate::domain::user::User;
     use crate::domain::values::UserStatus;
     use async_trait::async_trait;
-    use chrono::{DateTime, Duration, TimeZone, Utc};
+    use time::{macros::datetime, Duration, OffsetDateTime};
 
     const ADMIN_PERM: &str = "idp.tenant.admin";
 
-    fn fixed_now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 7, 6, 12, 0, 0).unwrap()
+    fn fixed_now() -> OffsetDateTime {
+        datetime!(2026-07-06 12:00:00 UTC)
     }
 
-    struct FixedClock(DateTime<Utc>);
+    struct FixedClock(OffsetDateTime);
     impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> OffsetDateTime {
             self.0
         }
     }
@@ -198,7 +198,7 @@ mod tests {
                 .clone()
                 .filter(|s| s.session_hash == session_hash))
         }
-        async fn extend_idle(&self, _h: &str, _e: DateTime<Utc>) -> DomainResult<()> {
+        async fn extend_idle(&self, _h: &str, _e: OffsetDateTime) -> DomainResult<()> {
             unreachable!()
         }
         async fn delete(&self, _h: &str) -> DomainResult<()> {
@@ -219,7 +219,7 @@ mod tests {
             &self,
             _id: Uuid,
             _lockout: crate::domain::authentication_policy::LockoutPolicy,
-            _now: chrono::DateTime<chrono::Utc>,
+            _now: time::OffsetDateTime,
         ) -> DomainResult<crate::domain::user::LoginFailureRecord> {
             unreachable!()
         }
@@ -242,7 +242,7 @@ mod tests {
             &self,
             _id: Uuid,
             _c: i32,
-            _l: Option<DateTime<Utc>>,
+            _l: Option<OffsetDateTime>,
         ) -> DomainResult<()> {
             unreachable!()
         }
@@ -323,7 +323,7 @@ mod tests {
             _t: TenantId,
             _u: Uuid,
             _c: &str,
-            _g: DateTime<Utc>,
+            _g: OffsetDateTime,
         ) -> DomainResult<()> {
             unreachable!()
         }

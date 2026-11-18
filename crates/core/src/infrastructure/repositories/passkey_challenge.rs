@@ -4,10 +4,11 @@ use crate::domain::error::{DomainError, Result};
 use crate::domain::passkey_challenge::{PasskeyChallenge, PasskeyChallengeType};
 use crate::domain::repositories::PasskeyChallengeRepository;
 use crate::infrastructure::db::Db;
+use assay_contracts::utc::{from_naive_utc, UtcInstant};
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::mysql::MySqlRow;
 use sqlx::Row;
+use time::{OffsetDateTime, PrimitiveDateTime};
 use uuid::Uuid;
 
 pub struct SqlxPasskeyChallengeRepository {
@@ -24,8 +25,8 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
-    Utc.from_utc_datetime(&naive)
+fn to_utc(naive: PrimitiveDateTime) -> OffsetDateTime {
+    from_naive_utc(naive)
 }
 
 fn map_row(row: &MySqlRow) -> Result<PasskeyChallenge> {
@@ -94,7 +95,7 @@ impl PasskeyChallengeRepository for SqlxPasskeyChallengeRepository {
         Ok(result.rows_affected() == 1)
     }
 
-    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64> {
+    async fn delete_expired(&self, now: OffsetDateTime) -> Result<u64> {
         let result = sqlx::query("DELETE FROM passkey_challenges WHERE expires_at <= ?")
             .bind(now.naive_utc())
             .execute(&self.pool)

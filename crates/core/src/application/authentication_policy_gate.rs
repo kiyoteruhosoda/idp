@@ -21,8 +21,8 @@ use crate::domain::effective_tenant_settings::EffectiveTenantSettings;
 use crate::domain::error::DomainError;
 use crate::domain::repositories::AuthenticationPolicyRepository;
 use crate::domain::tenant::TenantId;
-use chrono::{DateTime, Utc};
 use std::sync::Arc;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// The target of a policy.
@@ -44,7 +44,7 @@ pub struct PolicyQuery<'a> {
     pub ip_address: Option<&'a str>,
     /// `acr_values` of the authorization request (used by AP3's `requested_acr` condition). Empty outside an authorization request.
     pub requested_acr: &'a [String],
-    pub now: DateTime<Utc>,
+    pub now: OffsetDateTime,
 }
 
 pub struct AuthenticationPolicyGate {

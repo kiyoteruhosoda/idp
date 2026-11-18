@@ -354,7 +354,7 @@ mod tests {
     use crate::domain::client_jwks::{parse_registration_jwks, ClientJwks};
     use crate::domain::tenant::TenantId;
     use crate::domain::values::ClientStatus;
-    use chrono::Utc;
+    use time::OffsetDateTime;
     use uuid::Uuid;
 
     fn client(client_type: ClientType, method: TokenEndpointAuthMethod) -> Client {
@@ -376,8 +376,8 @@ mod tests {
             post_logout_redirect_uris: vec![],
             frontchannel_logout_uri: None,
             backchannel_logout_uri: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: OffsetDateTime::now_utc(),
+            updated_at: OffsetDateTime::now_utc(),
         }
     }
 

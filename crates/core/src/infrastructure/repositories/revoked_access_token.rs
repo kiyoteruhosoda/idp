@@ -4,8 +4,9 @@ use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::RevokedAccessTokenRepository;
 use crate::domain::revoked_access_token::RevokedAccessToken;
 use crate::infrastructure::db::Db;
+use assay_contracts::utc::{from_naive_utc, UtcInstant};
 use async_trait::async_trait;
-use chrono::{NaiveDateTime, TimeZone, Utc};
+use time::PrimitiveDateTime;
 
 pub struct SqlxRevokedAccessTokenRepository {
     pool: Db,
@@ -55,6 +56,6 @@ impl RevokedAccessTokenRepository for SqlxRevokedAccessTokenRepository {
 }
 
 #[allow(dead_code)]
-fn to_utc(naive: NaiveDateTime) -> chrono::DateTime<Utc> {
-    Utc.from_utc_datetime(&naive)
+fn to_utc(naive: PrimitiveDateTime) -> time::OffsetDateTime {
+    from_naive_utc(naive)
 }

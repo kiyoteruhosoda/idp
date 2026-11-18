@@ -214,7 +214,12 @@ pub(crate) fn notice_body(alert: &SecurityAlert) -> Value {
 
     let mut details = vec![format!(
         "時刻: {}",
-        alert.occurred_at.format("%Y-%m-%d %H:%M:%S UTC")
+        alert
+            .occurred_at
+            .format(time::macros::format_description!(
+                "[year]-[month]-[day] [hour]:[minute]:[second] UTC"
+            ))
+            .expect("a fixed format of a UTC instant")
     )];
     details.push(format!(
         "国: {}",
@@ -313,7 +318,7 @@ mod tests {
     use super::*;
     use crate::domain::tenant::TenantId;
     use crate::domain::user_device::CountryCode;
-    use chrono::{TimeZone, Utc};
+    use time::macros::datetime;
     use uuid::Uuid;
 
     fn alert(kind: SecurityAlertKind) -> SecurityAlert {
@@ -322,7 +327,7 @@ mod tests {
             tenant_id: TenantId::from(Uuid::nil()),
             user_id: Uuid::nil(),
             username: "kyon".to_string(),
-            occurred_at: Utc.with_ymd_and_hms(2026, 11, 4, 9, 0, 0).unwrap(),
+            occurred_at: datetime!(2026-11-04 09:00:00 UTC),
             country: CountryCode::parse("JP"),
             ip_address: Some("203.0.113.7".to_string()),
             user_agent: Some("Mozilla/5.0".to_string()),

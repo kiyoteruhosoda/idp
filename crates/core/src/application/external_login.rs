@@ -45,9 +45,9 @@ use crate::domain::repositories::{
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::AuthenticationMethod;
 use crate::domain::{saml_external_idp, saml_response};
-use chrono::{DateTime, Duration, Utc};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use std::sync::Arc;
+use time::{Duration, OffsetDateTime};
 
 /// Lifetime of the in-progress state. Long enough for login at the external IdP (including consent and MFA).
 const REQUEST_TTL_SECS: i64 = 600;
@@ -674,7 +674,7 @@ impl ExternalLoginService {
             )
             .await
         {
-            Ok(Establishment::Established(sso)) => sso,
+            Ok(Establishment::Established(sso)) => *sso,
             Ok(Establishment::DeviceEnrollmentRequired { ticket }) => {
                 return CallbackOutcome::DeviceEnrollmentRequired { ticket }
             }
@@ -708,7 +708,7 @@ impl ExternalLoginService {
         auth_session_id_hash: &str,
         user: &crate::domain::user::User,
         sso: &EstablishedSso,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
         ctx: &RequestContext,
     ) -> CallbackOutcome {
         let sso_session_id = sso.session_id().to_string();

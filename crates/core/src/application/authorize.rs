@@ -32,8 +32,8 @@ use crate::domain::repositories::{
 use crate::domain::response_mode::AuthorizationResponse;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::AuthenticationMethod;
-use chrono::{DateTime, Duration, Utc};
 use std::sync::Arc;
+use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 /// Expiry of the web handoff handle (seconds). It only needs to cover the one-way trip from web receiving `/authorize`'s 302
@@ -185,7 +185,7 @@ impl AuthorizeService {
             client_consents,
             code_issuance,
             clock,
-            auth_session_ttl: Duration::from_std(auth_session_ttl)
+            auth_session_ttl: Duration::try_from(auth_session_ttl)
                 .expect("auth session TTL out of range"),
             policy_gate,
             tenants,
@@ -367,7 +367,7 @@ impl AuthorizeService {
         &self,
         tenant: TenantContext,
         handle: &str,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<(AuthSession, AuthSessionId), ResumeOutcome> {
         let Some(handle) = HandoffHandle::from_presented(handle) else {
             return Err(ResumeOutcome::ExpiredHandle);
@@ -402,7 +402,7 @@ impl AuthorizeService {
         session: &mut AuthSession,
         sso_session_id: Option<&str>,
         ctx: &RequestContext,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Option<ResumeOutcome> {
         if session.request().forces_reauthentication() {
             return None;
@@ -589,7 +589,7 @@ impl AuthorizeService {
         user_id: Uuid,
         methods: &[AuthenticationMethod],
         ctx: &RequestContext,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> RestoredPolicy {
         let decision = match self
             .policy_gate

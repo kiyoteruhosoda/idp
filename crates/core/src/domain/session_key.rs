@@ -17,10 +17,10 @@
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use chrono::{DateTime, Duration, Utc};
 use jsonwebtoken::jwk::{AlgorithmParameters, EllipticCurve, Jwk, ThumbprintHash};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
+use time::{Duration, OffsetDateTime};
 
 /// Lower bound on RSA key length (bits).
 const MIN_RSA_BITS: usize = 2048;
@@ -83,7 +83,7 @@ pub struct SessionKeyBinding {
     /// Identifier Chrome sends in `Sec-Secure-Session-Id` on refresh (32 hex characters).
     pub session_identifier: String,
     pub key: SessionPublicKey,
-    pub bound_at: DateTime<Utc>,
+    pub bound_at: OffsetDateTime,
 }
 
 /// Kind of binding of a sign-in state (task #887, #892; ADR-0074, ADR-0077).
@@ -106,13 +106,13 @@ pub enum SessionBinding {
 /// device registration does not matter). Otherwise the length at establishment (`absolute_ttl`).
 /// Both count **from creation time**. Returns (idle expiry, absolute expiry).
 pub fn lifetime_for(
-    created_at: DateTime<Utc>,
-    current_idle: DateTime<Utc>,
+    created_at: OffsetDateTime,
+    current_idle: OffsetDateTime,
     binding: SessionBinding,
     device_registered: bool,
     absolute_ttl: Duration,
     bound_ttl: Duration,
-) -> (DateTime<Utc>, DateTime<Utc>) {
+) -> (OffsetDateTime, OffsetDateTime) {
     if lifetime_basis(binding, device_registered, absolute_ttl, bound_ttl).is_long() {
         let absolute = created_at + bound_ttl;
         // A bound sign-in state is not cut off for "not being used" (owner's decision; idle has the
@@ -322,6 +322,7 @@ mod tests {
     use super::*;
     use crate::domain::jwt::generate_ec_keypair;
     use jsonwebtoken::{EncodingKey, Header};
+    use time::macros::datetime;
 
     struct DeviceKey {
         private_pem: String,
@@ -427,8 +428,7 @@ mod tests {
 
     #[test]
     fn only_a_bound_session_on_a_registered_device_gets_the_long_lifetime() {
-        use chrono::TimeZone;
-        let created = Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).unwrap();
+        let created = datetime!(2026-11-01 00:00:00 UTC);
         let idle = created + Duration::hours(30);
         let week = Duration::days(7);
         let month = Duration::days(30);
@@ -458,8 +458,7 @@ mod tests {
 
     #[test]
     fn an_app_approved_session_gets_the_long_lifetime_without_a_registered_browser() {
-        use chrono::TimeZone;
-        let created = Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).unwrap();
+        let created = datetime!(2026-11-01 00:00:00 UTC);
         let idle = created + Duration::hours(30);
         let week = Duration::days(7);
         let month = Duration::days(30);
@@ -504,8 +503,7 @@ mod tests {
             LifetimeBasis::NotExtendedBySetting
         );
         // Only when the basis says long does lifetime_for also make it long.
-        use chrono::TimeZone;
-        let created = Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).unwrap();
+        let created = datetime!(2026-11-01 00:00:00 UTC);
         for (binding, registered) in [
             (DeviceKey, true),
             (DeviceKey, false),

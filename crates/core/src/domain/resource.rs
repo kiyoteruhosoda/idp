@@ -22,7 +22,7 @@
 use crate::domain::message::MessageKey;
 use crate::domain::tenant::TenantId;
 use crate::domain::values::ResourceStatus;
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// Column limit of `resources.resource_uri`.
@@ -41,8 +41,8 @@ pub struct ProtectedResource {
     pub resource_uri: String,
     pub display_name: String,
     pub status: ResourceStatus,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
 }
 
 impl ProtectedResource {

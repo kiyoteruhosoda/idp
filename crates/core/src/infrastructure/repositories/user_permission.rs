@@ -4,9 +4,10 @@ use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::UserPermissionRepository;
 use crate::domain::tenant::TenantId;
 use crate::infrastructure::db::Db;
+use assay_contracts::utc::UtcInstant;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use sqlx::Row;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 pub struct SqlxUserPermissionRepository {
@@ -30,7 +31,7 @@ pub(crate) async fn insert_grant<'e>(
     tenant_id: TenantId,
     user_id: Uuid,
     code: &str,
-    granted_at: DateTime<Utc>,
+    granted_at: OffsetDateTime,
 ) -> Result<()> {
     sqlx::query(
         "INSERT INTO user_permissions (user_id, permission_code, tenant_id, granted_at) \
@@ -144,7 +145,7 @@ impl UserPermissionRepository for SqlxUserPermissionRepository {
         tenant_id: TenantId,
         user_id: Uuid,
         code: &str,
-        granted_at: DateTime<Utc>,
+        granted_at: OffsetDateTime,
     ) -> Result<()> {
         insert_grant(&self.pool, tenant_id, user_id, code, granted_at).await
     }

@@ -9,9 +9,9 @@ use crate::domain::error::DomainError;
 use crate::domain::repositories::{AuditLogQuery, ClientRepository};
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::ClientStatus;
-use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::sync::Arc;
+use time::OffsetDateTime;
 
 /// Status of one client (read model).
 #[derive(Debug, Clone)]
@@ -21,7 +21,7 @@ pub struct ClientStatusView {
     pub status: ClientStatus,
     pub scopes: Vec<String>,
     /// Last used time (latest successful token issuance or authorization code issuance). `None` if never used.
-    pub last_used_at: Option<DateTime<Utc>>,
+    pub last_used_at: Option<OffsetDateTime>,
 }
 
 pub struct ClientStatusService {
@@ -40,7 +40,7 @@ impl ClientStatusService {
     /// Returns the status of every client in the given tenant, newest registration first (the order of `ClientRepository::list`).
     pub async fn list(&self, tenant: TenantContext) -> Result<Vec<ClientStatusView>, DomainError> {
         let clients = self.clients.list(tenant.tenant_id()).await?;
-        let last_used: HashMap<String, DateTime<Utc>> = self
+        let last_used: HashMap<String, OffsetDateTime> = self
             .audit_logs
             .last_used_per_client(tenant.tenant_id())
             .await?
@@ -53,7 +53,7 @@ impl ClientStatusService {
     }
 }
 
-fn to_view(client: Client, last_used: &HashMap<String, DateTime<Utc>>) -> ClientStatusView {
+fn to_view(client: Client, last_used: &HashMap<String, OffsetDateTime>) -> ClientStatusView {
     ClientStatusView {
         last_used_at: last_used.get(&client.client_id).copied(),
         client_id: client.client_id,
@@ -71,7 +71,7 @@ mod tests {
     use crate::domain::tenant::TenantId;
     use crate::domain::values::{ClientType, TokenEndpointAuthMethod};
     use async_trait::async_trait;
-    use chrono::TimeZone;
+    use time::macros::datetime;
     use uuid::Uuid;
 
     fn client(client_id: &str, app_name: &str) -> Client {
@@ -92,8 +92,8 @@ mod tests {
             post_logout_redirect_uris: vec![],
             frontchannel_logout_uri: None,
             backchannel_logout_uri: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: OffsetDateTime::now_utc(),
+            updated_at: OffsetDateTime::now_utc(),
         }
     }
 
@@ -114,7 +114,7 @@ mod tests {
         }
     }
 
-    struct FakeAuditLogs(Vec<(String, DateTime<Utc>)>);
+    struct FakeAuditLogs(Vec<(String, OffsetDateTime)>);
     #[async_trait]
     impl AuditLogQuery for FakeAuditLogs {
         async fn search(&self, _f: &AuditLogFilter) -> DomainResult<Vec<AuditLogEntry>> {
@@ -123,14 +123,14 @@ mod tests {
         async fn last_used_per_client(
             &self,
             _t: TenantId,
-        ) -> DomainResult<Vec<(String, DateTime<Utc>)>> {
+        ) -> DomainResult<Vec<(String, OffsetDateTime)>> {
             Ok(self.0.clone())
         }
     }
 
     #[tokio::test]
     async fn joins_clients_with_last_used_and_leaves_unused_as_none() {
-        let used_at = Utc.with_ymd_and_hms(2026, 7, 6, 10, 0, 0).unwrap();
+        let used_at = datetime!(2026-07-06 10:00:00 UTC);
         let svc = ClientStatusService::new(
             Arc::new(FakeClients(vec![
                 client("used", "Used App"),

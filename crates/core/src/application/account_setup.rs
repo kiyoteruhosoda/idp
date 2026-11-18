@@ -29,8 +29,8 @@ use crate::domain::repositories::{PasswordResetTokenRepository, UserRepository};
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::user::User;
-use chrono::{DateTime, Utc};
 use std::sync::Arc;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// Byte length of the link token (about 43 chars in base64url; same as the reset link).
@@ -42,7 +42,7 @@ pub struct SetupLink {
     pub token: String,
     /// Absolute URL handed to the user. **The link's shape is decided only here** (screens and machines hand out the same value).
     pub url: String,
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: OffsetDateTime,
 }
 
 /// Content shown by the screen that opened the link (does not consume).
@@ -52,7 +52,7 @@ pub struct SetupLinkView {
     /// Shows on screen whose link it is. Visible only to the link holder (the token is the key).
     pub email: String,
     pub purpose: ResetPurpose,
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: OffsetDateTime,
 }
 
 impl SetupLinkView {
@@ -389,16 +389,16 @@ mod tests {
     use crate::domain::repositories::AuditLogSink;
     use crate::domain::user::User;
     use crate::domain::values::UserStatus;
-    use chrono::TimeZone;
     use std::sync::Mutex;
+    use time::macros::datetime;
 
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 9, 21, 9, 0, 0).unwrap()
+    fn now() -> OffsetDateTime {
+        datetime!(2026-09-21 09:00:00 UTC)
     }
 
-    struct FixedClock(DateTime<Utc>);
+    struct FixedClock(OffsetDateTime);
     impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> OffsetDateTime {
             self.0
         }
     }
@@ -484,7 +484,7 @@ mod tests {
             &self,
             _id: Uuid,
             _lockout: crate::domain::authentication_policy::LockoutPolicy,
-            _now: DateTime<Utc>,
+            _now: OffsetDateTime,
         ) -> DomainResult<crate::domain::user::LoginFailureRecord> {
             unreachable!()
         }
@@ -493,7 +493,7 @@ mod tests {
             &self,
             _id: Uuid,
             _failed_login_count: i32,
-            _locked_until: Option<DateTime<Utc>>,
+            _locked_until: Option<OffsetDateTime>,
         ) -> DomainResult<()> {
             unreachable!()
         }
@@ -710,7 +710,7 @@ mod tests {
                 token_hash: crypto::sha256_hex(token),
                 user_id: f.user_id,
                 purpose: ResetPurpose::Reset,
-                expires_at: now() + chrono::Duration::hours(1),
+                expires_at: now() + time::Duration::hours(1),
                 used_at: None,
                 created_at: now(),
             })
@@ -766,7 +766,7 @@ pub(crate) mod testing {
         async fn consume(
             &self,
             token_hash: &str,
-            used_at: DateTime<Utc>,
+            used_at: OffsetDateTime,
         ) -> DomainResult<Option<PasswordResetToken>> {
             let mut rows = self.rows.lock().unwrap();
             let Some(row) = rows.iter_mut().find(|r| {
@@ -781,7 +781,7 @@ pub(crate) mod testing {
         async fn find_active(
             &self,
             token_hash: &str,
-            now: DateTime<Utc>,
+            now: OffsetDateTime,
         ) -> DomainResult<Option<PasswordResetToken>> {
             Ok(self
                 .rows
@@ -795,7 +795,7 @@ pub(crate) mod testing {
         async fn invalidate_all_for_user(
             &self,
             user_id: Uuid,
-            now: DateTime<Utc>,
+            now: OffsetDateTime,
         ) -> DomainResult<()> {
             for row in self.rows.lock().unwrap().iter_mut() {
                 if row.user_id == user_id && row.used_at.is_none() {

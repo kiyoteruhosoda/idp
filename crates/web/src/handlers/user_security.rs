@@ -39,6 +39,7 @@ use assay_contracts::auth::{
     InternalAccountSignInHistoryRequest, InternalAccountSignInHistoryResponse,
     InternalAccountSshKeysRequest, InternalAccountSshKeysResponse,
 };
+use assay_contracts::utc::UtcInstant;
 use axum::extract::{Extension, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
@@ -327,7 +328,7 @@ pub async fn page(
     };
     let bound_cookie_expires_at =
         crate::session_key::bound_cookie_expiry(&state, &headers, &request.sso_session_id)
-            .and_then(|t| chrono::DateTime::from_timestamp(t, 0))
+            .and_then(assay_contracts::utc::from_unix_seconds)
             .map(|t| t.to_rfc3339())
             .unwrap_or_default();
     let request_user_agent = headers

@@ -13,10 +13,10 @@
 use crate::domain::crypto::{base64url, sha256_hex};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use chrono::{DateTime, Duration, TimeZone, Utc};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use time::{Duration, OffsetDateTime};
 
 /// How far before now `iat` is accepted (seconds). ADR-0075 decision 6.
 pub const MAX_PROOF_AGE_SECS: i64 = 120;
@@ -38,7 +38,7 @@ pub struct DpopProofRequirements<'a> {
     pub uri: &'a str,
     /// The access token that came with it at a resource endpoint (`/userinfo`). `None` at the token endpoint.
     pub access_token: Option<&'a str>,
-    pub now: DateTime<Utc>,
+    pub now: OffsetDateTime,
 }
 
 /// A verified proof.
@@ -47,7 +47,7 @@ pub struct VerifiedDpopProof {
     /// Key fingerprint (RFC 7638 JWK Thumbprint. base64url of SHA-256). The value placed in `cnf.jkt`.
     pub jkt: String,
     pub jti: String,
-    pub issued_at: DateTime<Utc>,
+    pub issued_at: OffsetDateTime,
 }
 
 impl VerifiedDpopProof {
@@ -57,7 +57,7 @@ impl VerifiedDpopProof {
     }
 
     /// The time after which this proof would be refused by time. The record only needs to be kept until then.
-    pub fn retain_until(&self) -> DateTime<Utc> {
+    pub fn retain_until(&self) -> OffsetDateTime {
         self.issued_at + Duration::seconds(MAX_PROOF_AGE_SECS)
     }
 }
@@ -230,10 +230,8 @@ pub fn verify_proof(
         (Some(presented), Some(endpoint)) if presented == endpoint => {}
         _ => return Err(DpopProofRejection::UriMismatch),
     }
-    let issued_at = Utc
-        .timestamp_opt(iat, 0)
-        .single()
-        .ok_or(DpopProofRejection::MissingClaim)?;
+    let issued_at =
+        OffsetDateTime::from_unix_timestamp(iat).map_err(|_| DpopProofRejection::MissingClaim)?;
     if issued_at < expected.now - Duration::seconds(MAX_PROOF_AGE_SECS) {
         return Err(DpopProofRejection::TooOld);
     }
@@ -329,8 +327,8 @@ mod tests {
 
     const TOKEN_URI: &str = "https://assay.example.com/t1/token";
 
-    fn now() -> DateTime<Utc> {
-        Utc.timestamp_opt(1_800_000_000, 0).unwrap()
+    fn now() -> OffsetDateTime {
+        OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap()
     }
 
     fn at_token_endpoint() -> DpopProofRequirements<'static> {
@@ -345,7 +343,7 @@ mod tests {
     #[test]
     fn a_fresh_proof_yields_the_key_thumbprint() {
         let device = DeviceKey::generate();
-        let proof = device.proof("POST", TOKEN_URI, now().timestamp(), "j1", None);
+        let proof = device.proof("POST", TOKEN_URI, now().unix_timestamp(), "j1", None);
         let verified = verify_proof(&proof, &at_token_endpoint()).unwrap();
         assert_eq!(verified.jkt, device.thumbprint());
         assert_eq!(verified.jti, "j1");
@@ -369,7 +367,7 @@ mod tests {
         let proof = device.proof(
             "POST",
             "https://ASSAY.example.com/t1/token?x=1#y",
-            now().timestamp(),
+            now().unix_timestamp(),
             "j1",
             None,
         );
@@ -382,7 +380,7 @@ mod tests {
         let other_uri = device.proof(
             "POST",
             "https://assay.example.com/t1/userinfo",
-            now().timestamp(),
+            now().unix_timestamp(),
             "j1",
             None,
         );
@@ -390,7 +388,7 @@ mod tests {
             verify_proof(&other_uri, &at_token_endpoint()),
             Err(DpopProofRejection::UriMismatch)
         );
-        let other_method = device.proof("GET", TOKEN_URI, now().timestamp(), "j1", None);
+        let other_method = device.proof("GET", TOKEN_URI, now().unix_timestamp(), "j1", None);
         assert_eq!(
             verify_proof(&other_method, &at_token_endpoint()),
             Err(DpopProofRejection::MethodMismatch)
@@ -400,7 +398,7 @@ mod tests {
     #[test]
     fn iat_must_be_inside_the_window() {
         let device = DeviceKey::generate();
-        let t = now().timestamp();
+        let t = now().unix_timestamp();
         let ok_old = device.proof("POST", TOKEN_URI, t - MAX_PROOF_AGE_SECS, "a", None);
         assert!(verify_proof(&ok_old, &at_token_endpoint()).is_ok());
         let too_old = device.proof("POST", TOKEN_URI, t - MAX_PROOF_AGE_SECS - 1, "b", None);
@@ -427,14 +425,14 @@ mod tests {
             access_token: Some("token-a"),
             now: now(),
         };
-        let right = device.proof("GET", uri, now().timestamp(), "j", Some("token-a"));
+        let right = device.proof("GET", uri, now().unix_timestamp(), "j", Some("token-a"));
         assert!(verify_proof(&right, &expected).is_ok());
-        let wrong = device.proof("GET", uri, now().timestamp(), "j", Some("token-b"));
+        let wrong = device.proof("GET", uri, now().unix_timestamp(), "j", Some("token-b"));
         assert_eq!(
             verify_proof(&wrong, &expected),
             Err(DpopProofRejection::AccessTokenHashMismatch)
         );
-        let missing = device.proof("GET", uri, now().timestamp(), "j", None);
+        let missing = device.proof("GET", uri, now().unix_timestamp(), "j", None);
         assert_eq!(
             verify_proof(&missing, &expected),
             Err(DpopProofRejection::AccessTokenHashMismatch)
@@ -448,7 +446,7 @@ mod tests {
         // Put the owner's public key in the header and sign with the thief's key.
         let header =
             serde_json::json!({"typ": "dpop+jwt", "alg": "ES256", "jwk": device.public_jwk()});
-        let claims = serde_json::json!({"jti": "j", "htm": "POST", "htu": TOKEN_URI, "iat": now().timestamp()});
+        let claims = serde_json::json!({"jti": "j", "htm": "POST", "htu": TOKEN_URI, "iat": now().unix_timestamp()});
         let forged = thief.sign_raw(&header, &claims);
         assert_eq!(
             verify_proof(&forged, &at_token_endpoint()),
@@ -459,7 +457,7 @@ mod tests {
     #[test]
     fn the_header_must_be_a_dpop_proof_with_a_public_p256_key() {
         let device = DeviceKey::generate();
-        let claims = serde_json::json!({"jti": "j", "htm": "POST", "htu": TOKEN_URI, "iat": now().timestamp()});
+        let claims = serde_json::json!({"jti": "j", "htm": "POST", "htu": TOKEN_URI, "iat": now().unix_timestamp()});
         let wrong_typ = device.sign_raw(
             &serde_json::json!({"typ": "JWT", "alg": "ES256", "jwk": device.public_jwk()}),
             &claims,

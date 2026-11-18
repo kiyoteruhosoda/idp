@@ -21,8 +21,8 @@ use crate::domain::crypto;
 use crate::domain::key_attestation::KeySecurityLevel;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use chrono::{DateTime, Duration, Utc};
 use sha2::{Digest, Sha256};
+use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 /// Lifetime of a key registration intake.
@@ -94,8 +94,8 @@ pub struct ApproverKey {
     pub security_level: KeySecurityLevel,
     /// The app's self-reported device model name (display only).
     pub device_name: String,
-    pub registered_at: DateTime<Utc>,
-    pub last_used_at: Option<DateTime<Utc>>,
+    pub registered_at: OffsetDateTime,
+    pub last_used_at: Option<OffsetDateTime>,
 }
 
 /// Stage of a key registration intake.
@@ -116,7 +116,7 @@ pub enum EnrollmentStage {
         device_name: String,
         user_id: Uuid,
         code_hash: String,
-        code_expires_at: DateTime<Utc>,
+        code_expires_at: OffsetDateTime,
     },
 }
 
@@ -128,12 +128,12 @@ pub struct ApproverEnrollment {
     /// The value to be included in Key Attestation (base64url).
     pub challenge: String,
     pub stage: EnrollmentStage,
-    pub created_at: DateTime<Utc>,
-    pub expires_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
+    pub expires_at: OffsetDateTime,
 }
 
 impl ApproverEnrollment {
-    pub fn start(tenant_id: Uuid, now: DateTime<Utc>) -> Self {
+    pub fn start(tenant_id: Uuid, now: OffsetDateTime) -> Self {
         Self {
             id: random_value(),
             tenant_id,
@@ -144,7 +144,7 @@ impl ApproverEnrollment {
         }
     }
 
-    pub fn is_expired_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_expired_at(&self, now: OffsetDateTime) -> bool {
         self.expires_at <= now
     }
 
@@ -209,13 +209,13 @@ pub struct ApprovalRequest {
     pub user_id: Option<Uuid>,
     /// SHA-256 and expiry of the code returned on approval.
     pub code_hash: Option<String>,
-    pub code_expires_at: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
-    pub expires_at: DateTime<Utc>,
+    pub code_expires_at: Option<OffsetDateTime>,
+    pub created_at: OffsetDateTime,
+    pub expires_at: OffsetDateTime,
 }
 
 impl ApprovalRequest {
-    pub fn is_expired_at(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_expired_at(&self, now: OffsetDateTime) -> bool {
         self.expires_at <= now
     }
 }
@@ -228,11 +228,11 @@ pub fn new_browser_binding() -> (String, String) {
 }
 
 /// Whether the time in a revocation signature (`YYYY-MM-DDTHH:MM:SSZ`) is within the allowed window from now.
-pub fn signed_at_is_fresh(signed_at: &str, now: DateTime<Utc>) -> bool {
-    let Ok(at) = DateTime::parse_from_rfc3339(signed_at) else {
+pub fn signed_at_is_fresh(signed_at: &str, now: OffsetDateTime) -> bool {
+    let Ok(at) = assay_contracts::utc::parse_rfc3339(signed_at) else {
         return false;
     };
-    (now - at.with_timezone(&Utc)).num_seconds().abs() <= SIGNED_AT_TOLERANCE_SECS
+    (now - at).whole_seconds().abs() <= SIGNED_AT_TOLERANCE_SECS
 }
 
 /// Makes a model name usable for display (trims whitespace, removes control characters, truncates). `None` if empty.
@@ -249,7 +249,7 @@ pub fn normalize_device_name(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
+    use time::macros::datetime;
 
     #[test]
     fn signed_message_names_the_action_tenant_target_and_nonce() {
@@ -274,7 +274,7 @@ mod tests {
 
     #[test]
     fn enrollment_challenge_is_32_bytes() {
-        let now = Utc.with_ymd_and_hms(2026, 11, 4, 0, 0, 0).unwrap();
+        let now = datetime!(2026-11-04 00:00:00 UTC);
         let e = ApproverEnrollment::start(Uuid::nil(), now);
         assert_eq!(e.challenge_bytes().map(|b| b.len()), Some(32));
         assert!(!e.is_expired_at(now + Duration::seconds(599)));
@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn signed_at_must_be_within_five_minutes() {
-        let now = Utc.with_ymd_and_hms(2026, 11, 4, 12, 0, 0).unwrap();
+        let now = datetime!(2026-11-04 12:00:00 UTC);
         assert!(signed_at_is_fresh("2026-11-04T11:56:00Z", now));
         assert!(signed_at_is_fresh("2026-11-04T12:04:59Z", now));
         assert!(!signed_at_is_fresh("2026-11-04T11:54:59Z", now));

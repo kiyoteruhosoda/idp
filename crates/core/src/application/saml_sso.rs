@@ -41,8 +41,8 @@ use crate::domain::saml_sso_request::{self as saml_sso_request, SamlSsoRequest};
 use crate::domain::tenant_context::TenantContext;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use chrono::Duration;
 use std::sync::Arc;
+use time::Duration;
 
 /// Expiry (seconds) of the web handoff handle. It only needs to cover the one-way trip from the web receiving
 /// the 302 of `/saml/sso` to passing it to `/internal/saml/resume` (same value as OIDC authorize).
@@ -156,7 +156,7 @@ impl SamlSsoService {
             audit,
             clock,
             base_issuer,
-            request_ttl: Duration::from_std(request_ttl).expect("SAML request TTL out of range"),
+            request_ttl: Duration::try_from(request_ttl).expect("SAML request TTL out of range"),
         }
     }
 

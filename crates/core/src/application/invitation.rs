@@ -35,8 +35,9 @@ use crate::domain::user::User;
 use crate::domain::values::{
     validate_email as domain_validate_email, MembershipStatus, MembershipType,
 };
-use chrono::{DateTime, Utc};
+use assay_contracts::utc::UtcInstant;
 use std::sync::Arc;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
@@ -63,7 +64,7 @@ pub enum InvitationError {
 pub struct CreatedInvitation {
     /// Plaintext invitation token. If the mail doesn't arrive, the admin notifies the invitee separately (never in logs or audit).
     pub token: String,
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: OffsetDateTime,
     /// Whether the invitation email (accept link) could be sent to the invitee (MT17). `false` if SMTP is unset or sending failed
     /// (the invitation itself is valid, and the admin conveys the token manually).
     pub email_sent: bool,
@@ -248,7 +249,7 @@ impl InvitationService {
         to: &str,
         host_id: TenantId,
         token: &str,
-        expires_at: DateTime<Utc>,
+        expires_at: OffsetDateTime,
     ) -> bool {
         // The invitation arrives under the inviting tenant's name (ADR-0058 §8).
         let server = match self.system_settings.smtp_server_for(host_id).await {
@@ -518,19 +519,19 @@ mod tests {
     use crate::domain::user::User;
     use crate::domain::values::UserStatus;
     use async_trait::async_trait;
-    use chrono::TimeZone;
     use std::sync::Mutex;
+    use time::macros::datetime;
 
     /// Encryption key for secret values in tests (used to verify decryption of the SMTP password).
     const TEST_KEY: [u8; 32] = *b"unit-test-key-0123456789abcdef!!";
 
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 7, 10, 12, 0, 0).unwrap()
+    fn now() -> OffsetDateTime {
+        datetime!(2026-07-10 12:00:00 UTC)
     }
 
-    struct FixedClock(DateTime<Utc>);
+    struct FixedClock(OffsetDateTime);
     impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> OffsetDateTime {
             self.0
         }
     }
@@ -559,7 +560,7 @@ mod tests {
             &self,
             _id: Uuid,
             _lockout: crate::domain::authentication_policy::LockoutPolicy,
-            _now: chrono::DateTime<chrono::Utc>,
+            _now: time::OffsetDateTime,
         ) -> DomainResult<crate::domain::user::LoginFailureRecord> {
             unreachable!()
         }
@@ -598,7 +599,7 @@ mod tests {
             &self,
             _id: Uuid,
             _c: i32,
-            _l: Option<DateTime<Utc>>,
+            _l: Option<OffsetDateTime>,
         ) -> DomainResult<()> {
             unreachable!()
         }
@@ -644,7 +645,7 @@ mod tests {
             &self,
             _u: Uuid,
             _sid: &str,
-            _at: DateTime<Utc>,
+            _at: OffsetDateTime,
         ) -> DomainResult<u64> {
             unreachable!()
         }
@@ -652,7 +653,7 @@ mod tests {
             &self,
             _t: TenantId,
             _family: &str,
-            _at: DateTime<Utc>,
+            _at: OffsetDateTime,
         ) -> DomainResult<u64> {
             unreachable!()
         }
@@ -669,24 +670,24 @@ mod tests {
         ) -> DomainResult<Option<crate::domain::refresh_token::RefreshToken>> {
             unreachable!()
         }
-        async fn revoke(&self, _h: &str, _now: DateTime<Utc>) -> DomainResult<u64> {
+        async fn revoke(&self, _h: &str, _now: OffsetDateTime) -> DomainResult<u64> {
             unreachable!()
         }
         async fn exists_by_parent_hash(&self, _p: &str) -> DomainResult<bool> {
             unreachable!()
         }
-        async fn revoke_all_for_user(&self, _u: Uuid, _now: DateTime<Utc>) -> DomainResult<u64> {
+        async fn revoke_all_for_user(&self, _u: Uuid, _now: OffsetDateTime) -> DomainResult<u64> {
             // Guest suspension revokes per tenant (doesn't take down the whole user).
             unreachable!()
         }
-        async fn count_active_for_user(&self, _u: Uuid, _now: DateTime<Utc>) -> DomainResult<u64> {
+        async fn count_active_for_user(&self, _u: Uuid, _now: OffsetDateTime) -> DomainResult<u64> {
             unreachable!()
         }
         async fn revoke_all_for_user_in_tenant(
             &self,
             tenant_id: TenantId,
             user_id: Uuid,
-            _now: DateTime<Utc>,
+            _now: OffsetDateTime,
         ) -> DomainResult<()> {
             if *self.fail.lock().unwrap() {
                 return Err(DomainError::Repository("connection lost".into()));
@@ -699,7 +700,7 @@ mod tests {
             _t: TenantId,
             _u: Uuid,
             _c: &str,
-            _at: DateTime<Utc>,
+            _at: OffsetDateTime,
         ) -> DomainResult<()> {
             unreachable!()
         }
@@ -827,7 +828,7 @@ mod tests {
             _t: TenantId,
             _u: Uuid,
             _c: &str,
-            _g: DateTime<Utc>,
+            _g: OffsetDateTime,
         ) -> DomainResult<()> {
             unreachable!()
         }

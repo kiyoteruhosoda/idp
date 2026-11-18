@@ -4,7 +4,7 @@
 //! (`token_hash`) is stored. Setting `used_at` makes it single-use (the same one-time pattern as
 //! password_reset_tokens).
 
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -12,8 +12,8 @@ pub struct EmailVerificationToken {
     /// SHA-256 hex of the verification token (the plaintext is not stored).
     pub token_hash: String,
     pub user_id: Uuid,
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: OffsetDateTime,
     /// Consumption time. `None` = unused.
-    pub used_at: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
+    pub used_at: Option<OffsetDateTime>,
+    pub created_at: OffsetDateTime,
 }

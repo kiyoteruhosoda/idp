@@ -6,10 +6,11 @@ use crate::domain::user_authenticator::{
     AuthenticatorStatus, AuthenticatorType, UserAuthenticator, OTP_SEND_WINDOW_SECS,
 };
 use crate::infrastructure::db::Db;
+use assay_contracts::utc::{from_naive_utc, UtcInstant};
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::mysql::MySqlRow;
 use sqlx::Row;
+use time::{OffsetDateTime, PrimitiveDateTime};
 use uuid::Uuid;
 
 pub struct SqlxUserAuthenticatorRepository {
@@ -29,8 +30,8 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
-    Utc.from_utc_datetime(&naive)
+fn to_utc(naive: PrimitiveDateTime) -> OffsetDateTime {
+    from_naive_utc(naive)
 }
 
 fn parse_uuid(value: &str, column: &str) -> Result<Uuid> {
@@ -38,9 +39,9 @@ fn parse_uuid(value: &str, column: &str) -> Result<Uuid> {
         .map_err(|e| DomainError::Repository(format!("invalid UUID in `{column}`: {e}")))
 }
 
-fn opt_time(row: &MySqlRow, column: &str) -> Result<Option<DateTime<Utc>>> {
+fn opt_time(row: &MySqlRow, column: &str) -> Result<Option<OffsetDateTime>> {
     Ok(row
-        .try_get::<Option<NaiveDateTime>, _>(column)
+        .try_get::<Option<PrimitiveDateTime>, _>(column)
         .map_err(repo_err)?
         .map(to_utc))
 }
@@ -129,7 +130,7 @@ impl UserAuthenticatorRepository for SqlxUserAuthenticatorRepository {
         &self,
         user_id: Uuid,
         authenticator_type: Option<AuthenticatorType>,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<Vec<UserAuthenticator>> {
         // Type filtering is split by presence of the clause, not by value (`? IS NULL OR type = ?` can't use the index).
         let type_clause = if authenticator_type.is_some() {
@@ -158,7 +159,7 @@ impl UserAuthenticatorRepository for SqlxUserAuthenticatorRepository {
         id: Uuid,
         user_id: Uuid,
         status: AuthenticatorStatus,
-        at: DateTime<Utc>,
+        at: OffsetDateTime,
     ) -> Result<bool> {
         // Including `user_id` in the condition is the owner check (bringing in someone else's authenticator id changes nothing).
         let revoked_at = (status == AuthenticatorStatus::Revoked).then(|| at.naive_utc());
@@ -199,7 +200,7 @@ impl UserAuthenticatorRepository for SqlxUserAuthenticatorRepository {
         Ok(result.rows_affected() == 1)
     }
 
-    async fn touch_last_used(&self, id: Uuid, at: DateTime<Utc>) -> Result<()> {
+    async fn touch_last_used(&self, id: Uuid, at: OffsetDateTime) -> Result<()> {
         sqlx::query("UPDATE user_authenticators SET last_used_at = ? WHERE id = ?")
             .bind(at.naive_utc())
             .bind(id.to_string())
@@ -214,7 +215,7 @@ impl UserAuthenticatorRepository for SqlxUserAuthenticatorRepository {
         user_id: Uuid,
         authenticator_type: AuthenticatorType,
         secret_hash: &str,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<Option<UserAuthenticator>> {
         // "Revoke a usable row" in one statement and re-read only if the update succeeded (same approach as the
         // one-time consumption of authorization codes). Reading then updating would let concurrent presentations of the same code both pass.
@@ -256,7 +257,7 @@ impl UserAuthenticatorRepository for SqlxUserAuthenticatorRepository {
         &self,
         user_id: Uuid,
         authenticator_type: AuthenticatorType,
-        at: DateTime<Utc>,
+        at: OffsetDateTime,
     ) -> Result<u64> {
         let result = sqlx::query(
             "UPDATE user_authenticators SET status = 'revoked', revoked_at = ? \
@@ -275,7 +276,7 @@ impl UserAuthenticatorRepository for SqlxUserAuthenticatorRepository {
         &self,
         user_id: Uuid,
         authenticator_type: AuthenticatorType,
-        at: DateTime<Utc>,
+        at: OffsetDateTime,
     ) -> Result<u64> {
         // Only rows with an expiry (= issued one-time codes). Registration rows without a lifetime (the SMS OTP
         // registered phone number) are kept.
@@ -298,7 +299,7 @@ impl UserAuthenticatorRepository for SqlxUserAuthenticatorRepository {
         user_id: Uuid,
         authenticator_type: AuthenticatorType,
         secret_hash: &str,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<Option<UserAuthenticator>> {
         // Re-read only if the update succeeded (same approach as `consume_single_use`). Drop the code and expiry
         // from rows being confirmed: if an expiry remains, GC deletes the row and the confirmed registration vanishes.
@@ -334,12 +335,12 @@ impl UserAuthenticatorRepository for SqlxUserAuthenticatorRepository {
         row.as_ref().map(map_row).transpose()
     }
 
-    async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64> {
+    async fn delete_expired(&self, now: OffsetDateTime) -> Result<u64> {
         // Only single-use codes have an expiry. TOTP and WebAuthn rows have `expires_at IS NULL`, so
         // they don't match this condition (the registry isn't wiped).
         // ⚠ Even after expiry, rows are kept for the window. The number of OTPs sent is counted from these rows (task #749).
         //   Expired codes can't be used because the verifying side checks `expires_at`.
-        let keep_until = now - chrono::Duration::seconds(OTP_SEND_WINDOW_SECS);
+        let keep_until = now - time::Duration::seconds(OTP_SEND_WINDOW_SECS);
         let result = sqlx::query(
             "DELETE FROM user_authenticators WHERE expires_at IS NOT NULL AND expires_at <= ?",
         )

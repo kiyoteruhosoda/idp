@@ -63,20 +63,20 @@ mod tests {
     use crate::domain::values::TenantStatus;
     use crate::infrastructure::cache::InMemoryTtlCache;
     use async_trait::async_trait;
-    use chrono::{DateTime, Duration, TimeZone, Utc};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use time::{macros::datetime, Duration, OffsetDateTime};
     use uuid::Uuid;
 
-    struct FixedClock(DateTime<Utc>);
+    struct FixedClock(OffsetDateTime);
     impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> OffsetDateTime {
             self.0
         }
     }
 
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 7, 10, 0, 0, 0).unwrap()
+    fn now() -> OffsetDateTime {
+        datetime!(2026-07-10 00:00:00 UTC)
     }
 
     fn tenant(id: TenantId, status: TenantStatus) -> Tenant {

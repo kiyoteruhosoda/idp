@@ -314,7 +314,7 @@ impl MfaLoginService {
             )
             .await
         {
-            Ok(Establishment::Established(sso)) => sso,
+            Ok(Establishment::Established(sso)) => *sso,
             Ok(Establishment::DeviceEnrollmentRequired { ticket }) => {
                 return MfaLoginOutcome::DeviceEnrollmentRequired { ticket }
             }
@@ -471,7 +471,7 @@ impl MfaLoginService {
         tenant_id: TenantId,
         user: &User,
         client_id: &str,
-        now: chrono::DateTime<chrono::Utc>,
+        now: time::OffsetDateTime,
         ctx: &RequestContext,
     ) -> MfaLoginOutcome {
         // The threshold is the value of the user's home tenant (unless it's the same tenant's value as password authentication,
@@ -578,9 +578,8 @@ mod tests {
     use crate::domain::{auth_session, authorization_request};
     use crate::infrastructure::repositories::in_memory_auth_session::InMemoryAuthSessions;
     use async_trait::async_trait;
-    use chrono::Duration;
-    use chrono::{DateTime, TimeZone, Utc};
     use std::sync::Mutex;
+    use time::{macros::datetime, Duration, OffsetDateTime};
 
     const TEST_KEY: [u8; 32] = *b"unit-test-key-0123456789abcdef!!";
     const CSRF_SECRET: [u8; 32] = *b"unit-test-csrf-0123456789abcdef!";
@@ -589,13 +588,13 @@ mod tests {
     /// TOTP secret (20 bytes = the recommended length for SHA-1).
     const TOTP_SECRET: &[u8] = b"12345678901234567890";
 
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 7, 12, 12, 0, 0).unwrap()
+    fn now() -> OffsetDateTime {
+        datetime!(2026-07-12 12:00:00 UTC)
     }
 
     struct FixedClock;
     impl ClockTrait for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> OffsetDateTime {
             now()
         }
     }
@@ -693,7 +692,7 @@ mod tests {
             &self,
             id: Uuid,
             lockout: crate::domain::authentication_policy::LockoutPolicy,
-            now: DateTime<Utc>,
+            now: OffsetDateTime,
         ) -> DomainResult<crate::domain::user::LoginFailureRecord> {
             let mut rows = self.rows.lock().unwrap();
             let Some(row) = rows.iter_mut().find(|u| u.id == id) else {
@@ -736,7 +735,7 @@ mod tests {
             &self,
             id: Uuid,
             count: i32,
-            locked_until: Option<DateTime<Utc>>,
+            locked_until: Option<OffsetDateTime>,
         ) -> DomainResult<()> {
             let mut rows = self.rows.lock().unwrap();
             if let Some(row) = rows.iter_mut().find(|u| u.id == id) {
@@ -790,7 +789,7 @@ mod tests {
             *self.lookups.lock().unwrap() += 1;
             Ok(self.row.lock().unwrap().clone())
         }
-        async fn confirm(&self, _u: Uuid, _c: DateTime<Utc>) -> DomainResult<()> {
+        async fn confirm(&self, _u: Uuid, _c: OffsetDateTime) -> DomainResult<()> {
             unreachable!()
         }
         async fn delete(&self, _u: Uuid) -> DomainResult<()> {
@@ -811,7 +810,7 @@ mod tests {
         async fn find_by_hash(&self, _h: &str) -> DomainResult<Option<SsoSession>> {
             unreachable!()
         }
-        async fn extend_idle(&self, _h: &str, _t: DateTime<Utc>) -> DomainResult<()> {
+        async fn extend_idle(&self, _h: &str, _t: OffsetDateTime) -> DomainResult<()> {
             unreachable!()
         }
         async fn delete(&self, _h: &str) -> DomainResult<()> {
@@ -866,14 +865,14 @@ mod tests {
             &self,
             _t: TenantId,
             _h: &crate::domain::authorization_code::AuthorizationCodeHash,
-            _u: DateTime<Utc>,
+            _u: OffsetDateTime,
         ) -> DomainResult<Option<AuthorizationCode>> {
             unreachable!()
         }
         async fn revoke_all_active_for_user(
             &self,
             _u: Uuid,
-            _n: DateTime<Utc>,
+            _n: OffsetDateTime,
         ) -> DomainResult<()> {
             unreachable!()
         }
@@ -885,7 +884,7 @@ mod tests {
         calls: Mutex<usize>,
     }
     impl LoginRateLimiter for CountingLimiter {
-        fn check_and_record(&self, _key: &str, _now: DateTime<Utc>) -> bool {
+        fn check_and_record(&self, _key: &str, _now: OffsetDateTime) -> bool {
             let mut calls = self.calls.lock().unwrap();
             *calls += 1;
             *calls <= self.allowed

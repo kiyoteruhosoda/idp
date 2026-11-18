@@ -10,7 +10,7 @@ use crate::domain::error::DomainError;
 use crate::domain::tenant::TenantId;
 use crate::domain::tenant_membership::TenantMember;
 use crate::domain::values::ClientStatus;
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// A value pointing to one account (ADR-0059 decision 5, ADR-0065 decision 2).
@@ -132,7 +132,7 @@ pub struct ServiceAccount {
     /// Registered name.
     pub app_name: String,
     pub status: ClientStatus,
-    pub created_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
     /// The app that has this service account as its identity (binding) (ADR-0059 decision 1). `None` if none.
     ///
     /// ⚠ This is a different relationship from "usable apps" (assignments). Mixing them up means no admin token is issued.

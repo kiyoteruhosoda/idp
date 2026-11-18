@@ -5,10 +5,11 @@ use crate::domain::error::{DomainError, Result};
 use crate::domain::repositories::{AuditLogQuery, AuditLogSink};
 use crate::domain::tenant::TenantId;
 use crate::infrastructure::db::Db;
+use assay_contracts::utc::{from_naive_utc, UtcInstant};
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::mysql::MySqlRow;
 use sqlx::{MySql, QueryBuilder, Row};
+use time::{OffsetDateTime, PrimitiveDateTime};
 use uuid::Uuid;
 
 pub struct SqlxAuditLogSink {
@@ -46,7 +47,7 @@ impl AuditLogSink for SqlxAuditLogSink {
         Ok(())
     }
 
-    async fn purge_older_than(&self, older_than: DateTime<Utc>) -> Result<u64> {
+    async fn purge_older_than(&self, older_than: OffsetDateTime) -> Result<u64> {
         // Cap the number of rows deleted by one DELETE. The audit log is expected to run for a long time with
         // `AUDIT_LOG_RETENTION_DAYS = 0` (no deletion) before being enabled, so the first deletion may cover millions of rows.
         // An unbounded DELETE would hold locks the whole time and stall the authorization flow's INSERTs.
@@ -93,8 +94,8 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
-    Utc.from_utc_datetime(&naive)
+fn to_utc(naive: PrimitiveDateTime) -> OffsetDateTime {
+    from_naive_utc(naive)
 }
 
 fn map_row(row: &MySqlRow) -> Result<AuditLogEntry> {
@@ -169,7 +170,7 @@ impl AuditLogQuery for SqlxAuditLogQuery {
     async fn last_used_per_client(
         &self,
         tenant_id: TenantId,
-    ) -> Result<Vec<(String, DateTime<Utc>)>> {
+    ) -> Result<Vec<(String, OffsetDateTime)>> {
         // "Usage" = successful token issuance and authorization code issuance. Gets the latest time per client_id in one aggregation.
         let rows = sqlx::query(
             "SELECT client_id, MAX(occurred_at) AS last_used_at FROM audit_log \
@@ -184,7 +185,7 @@ impl AuditLogQuery for SqlxAuditLogQuery {
         rows.iter()
             .map(|row| {
                 let client_id: String = row.try_get("client_id").map_err(repo_err)?;
-                let last_used: NaiveDateTime = row.try_get("last_used_at").map_err(repo_err)?;
+                let last_used: PrimitiveDateTime = row.try_get("last_used_at").map_err(repo_err)?;
                 Ok((client_id, to_utc(last_used)))
             })
             .collect()

@@ -218,7 +218,7 @@ impl AuthenticationPolicyManagementService {
 /// Validates the input and maps it onto the mutable part of the entity (`id` / `tenant_id` / `created_at` are set by the caller).
 fn validated(
     draft: AuthenticationPolicyDraft,
-    now: chrono::DateTime<chrono::Utc>,
+    now: time::OffsetDateTime,
 ) -> PolicyResult<AuthenticationPolicy> {
     AuthenticationPolicy::validate_code(&draft.policy_code).map_err(|_| {
         AuthenticationPolicyManagementError::Validation(MessageKey::new(
@@ -306,11 +306,11 @@ mod tests {
     use crate::domain::repositories::AuditLogSink;
     use crate::domain::tenant::TenantId;
     use async_trait::async_trait;
-    use chrono::{DateTime, TimeZone, Utc};
     use std::sync::Mutex;
+    use time::{macros::datetime, OffsetDateTime};
 
-    fn fixed_now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 8, 1, 0, 0, 0).unwrap()
+    fn fixed_now() -> OffsetDateTime {
+        datetime!(2026-08-01 00:00:00 UTC)
     }
 
     fn test_tenant() -> TenantId {
@@ -333,9 +333,9 @@ mod tests {
         }
     }
 
-    struct FixedClock(DateTime<Utc>);
+    struct FixedClock(OffsetDateTime);
     impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> OffsetDateTime {
             self.0
         }
     }

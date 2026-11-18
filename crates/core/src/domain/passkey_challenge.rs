@@ -4,7 +4,7 @@
 //! challenge state returned by `webauthn-rs` (`PasskeyRegistration` /
 //! `DiscoverableAuthentication`). The application layer deletes records past `expires_at`.
 
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// Purpose of the challenge. **The completing side does not accept a challenge for a different
@@ -66,6 +66,6 @@ pub struct PasskeyChallenge {
     /// re-verification). auth_session_id is a bearer credential, so the copy is also kept as a hash
     /// (SEC6).
     pub auth_session_id_hash: Option<String>,
-    pub expires_at: DateTime<Utc>,
-    pub created_at: DateTime<Utc>,
+    pub expires_at: OffsetDateTime,
+    pub created_at: OffsetDateTime,
 }

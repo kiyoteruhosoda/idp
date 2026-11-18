@@ -16,15 +16,15 @@ use crate::domain::repositories::{
 };
 use crate::domain::tenant_context::TenantContext;
 use crate::domain::values::{AuthenticationMethod, AuthenticationStrength};
-use chrono::{DateTime, Utc};
 use std::sync::Arc;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// An SSO session that was successfully restored.
 pub struct RestoredSso {
     pub user_id: Uuid,
     /// First sign-in time (`auth_time`. Not updated on restore).
-    pub auth_time: DateTime<Utc>,
+    pub auth_time: OffsetDateTime,
     /// SHA-256 of the session (does not include the raw Cookie value). Can be used to refer to the session
     /// opaquely, e.g. as SAML `SessionIndex`.
     pub session_hash: String,
@@ -33,7 +33,7 @@ pub struct RestoredSso {
     /// Authentication strength (AP4). Input for the step-up authentication (§15) decision.
     pub authentication_strength: AuthenticationStrength,
     /// Time the second factor was verified (AP4). Input for re-authentication by elapsed MFA time (§18.2).
-    pub mfa_completed_at: Option<DateTime<Utc>>,
+    pub mfa_completed_at: Option<OffsetDateTime>,
     /// Length (seconds) until the absolute expiry decided at establishment. The `Max-Age` when the web reissues the Cookie
     /// (same value as at sign-in. ADR-0058).
     pub absolute_ttl_secs: u64,

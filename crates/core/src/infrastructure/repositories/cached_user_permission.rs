@@ -24,8 +24,8 @@ use crate::domain::error::Result;
 use crate::domain::repositories::UserPermissionRepository;
 use crate::domain::tenant::TenantId;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use std::sync::Arc;
+use time::OffsetDateTime;
 use tokio::sync::OnceCell;
 use uuid::Uuid;
 
@@ -99,7 +99,7 @@ impl UserPermissionRepository for CachedUserPermissionRepository {
         tenant_id: TenantId,
         user_id: Uuid,
         code: &str,
-        granted_at: DateTime<Utc>,
+        granted_at: OffsetDateTime,
     ) -> Result<()> {
         self.inner
             .grant(tenant_id, user_id, code, granted_at)
@@ -137,13 +137,13 @@ impl UserPermissionRepository for CachedUserPermissionRepository {
 mod tests {
     use super::*;
     use crate::infrastructure::cache::InMemoryTtlCache;
-    use chrono::{Duration, TimeZone};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use time::{macros::datetime, Duration};
 
-    struct FixedClock(DateTime<Utc>);
+    struct FixedClock(OffsetDateTime);
     impl crate::domain::clock::Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
+        fn now(&self) -> OffsetDateTime {
             self.0
         }
     }
@@ -214,7 +214,7 @@ mod tests {
             tenant_id: TenantId,
             user_id: Uuid,
             code: &str,
-            _g: DateTime<Utc>,
+            _g: OffsetDateTime,
         ) -> Result<()> {
             self.granted
                 .lock()
@@ -245,8 +245,8 @@ mod tests {
         }
     }
 
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 7, 10, 0, 0, 0).unwrap()
+    fn now() -> OffsetDateTime {
+        datetime!(2026-07-10 00:00:00 UTC)
     }
 
     fn setup(inner: Arc<CountingPermissions>) -> CachedUserPermissionRepository {

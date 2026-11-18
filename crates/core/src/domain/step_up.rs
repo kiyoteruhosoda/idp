@@ -12,7 +12,7 @@
 
 use crate::domain::sso_session::SsoSession;
 use crate::domain::values::AuthenticationStrength;
-use chrono::{DateTime, Duration, Utc};
+use time::{Duration, OffsetDateTime};
 
 /// Sensitive operations that require step-up (spec §15).
 ///
@@ -144,7 +144,7 @@ pub enum StepUpDecision {
 ///
 /// Right after login it counts as stepped up (login itself is a verification, and asking the same
 /// again right after would be a pointless repetition for the user).
-fn last_verified_at(session: &SsoSession, step_up_at: Option<DateTime<Utc>>) -> DateTime<Utc> {
+fn last_verified_at(session: &SsoSession, step_up_at: Option<OffsetDateTime>) -> OffsetDateTime {
     match step_up_at {
         Some(at) if at > session.auth_time => at,
         _ => session.auth_time,
@@ -161,9 +161,9 @@ fn last_verified_at(session: &SsoSession, step_up_at: Option<DateTime<Utc>>) -> 
 ///   freshness.
 pub fn evaluate_step_up(
     session: &SsoSession,
-    step_up_at: Option<DateTime<Utc>>,
+    step_up_at: Option<OffsetDateTime>,
     requirement: StepUpRequirement,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> StepUpDecision {
     if !session
         .authentication_strength
@@ -195,14 +195,14 @@ pub fn evaluate_step_up(
 mod tests {
     use super::*;
     use crate::domain::values::AuthenticationMethod;
-    use chrono::TimeZone;
+    use time::macros::datetime;
     use uuid::Uuid;
 
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 8, 1, 12, 0, 0).unwrap()
+    fn now() -> OffsetDateTime {
+        datetime!(2026-08-01 12:00:00 UTC)
     }
 
-    fn session(methods: Vec<AuthenticationMethod>, auth_time: DateTime<Utc>) -> SsoSession {
+    fn session(methods: Vec<AuthenticationMethod>, auth_time: OffsetDateTime) -> SsoSession {
         let mut s = SsoSession::establish(
             "hash".to_string(),
             Uuid::from_u128(1),

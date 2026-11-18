@@ -98,7 +98,7 @@ impl AuditService {
         if retention_days == 0 {
             return Ok(0);
         }
-        let cutoff = self.clock.now() - chrono::Duration::days(i64::from(retention_days));
+        let cutoff = self.clock.now() - time::Duration::days(i64::from(retention_days));
         self.sink.purge_older_than(cutoff).await
     }
 }

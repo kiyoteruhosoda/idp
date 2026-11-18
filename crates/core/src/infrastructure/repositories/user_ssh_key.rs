@@ -7,10 +7,11 @@ use crate::domain::repositories::UserSshKeyRepository;
 use crate::domain::ssh_key::{DistributedSshKey, SshKeyType, SshPublicKey, UserSshKey};
 use crate::domain::tenant::TenantId;
 use crate::infrastructure::db::Db;
+use assay_contracts::utc::{from_naive_utc, UtcInstant};
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use sqlx::mysql::MySqlRow;
 use sqlx::Row;
+use time::{OffsetDateTime, PrimitiveDateTime};
 use uuid::Uuid;
 
 pub struct SqlxUserSshKeyRepository {
@@ -30,8 +31,8 @@ fn repo_err<E: std::fmt::Display>(e: E) -> DomainError {
     DomainError::Repository(e.to_string())
 }
 
-fn to_utc(naive: NaiveDateTime) -> DateTime<Utc> {
-    Utc.from_utc_datetime(&naive)
+fn to_utc(naive: PrimitiveDateTime) -> OffsetDateTime {
+    from_naive_utc(naive)
 }
 
 fn parse_uuid(raw: &str) -> Result<Uuid> {

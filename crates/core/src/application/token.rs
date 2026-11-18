@@ -329,7 +329,7 @@ impl TokenService {
         &self,
         stored: &RefreshToken,
         client_id: &str,
-        now: chrono::DateTime<chrono::Utc>,
+        now: time::OffsetDateTime,
     ) {
         if let Some(sid) = stored.sid.as_deref() {
             log_history_error(
@@ -535,7 +535,7 @@ impl TokenService {
         let has_offline = grant.includes(Scope::OfflineAccess);
         let has = |s: Scope| grant.includes(s);
         let scope_str = grant.scope_string();
-        let iat = now.timestamp();
+        let iat = now.unix_timestamp();
         // `iss` is composed per tenant (ADR-0009 §6). Bound to the issuing tenant (= the flow's tenant).
         let issuer = tenant_issuer(&self.base_issuer, tenant_id);
 
@@ -547,7 +547,7 @@ impl TokenService {
             aud: client_id.clone(),
             exp: iat + self.id_token_ttl.as_secs() as i64,
             iat,
-            auth_time: authentication.auth_time().timestamp(),
+            auth_time: authentication.auth_time().unix_timestamp(),
             nonce: grant.nonce().to_string(),
             jti: Uuid::new_v4().to_string(),
             sid: authentication.sso_sid().map(str::to_string),
@@ -603,7 +603,7 @@ impl TokenService {
                 auth_time: Some(authentication.auth_time()),
                 // Bind to the same key as the access token (ADR-0075 decision 1).
                 dpop_jkt: proof.as_ref().map(|p| p.jkt.clone()),
-                expires_at: now + chrono::Duration::from_std(self.refresh_token_ttl).unwrap(),
+                expires_at: now + time::Duration::try_from(self.refresh_token_ttl).unwrap(),
                 revoked_at: None,
                 created_at: now,
             };
@@ -855,7 +855,7 @@ impl TokenService {
         // 9. Issue new tokens.
         let has = |s: Scope| stored.scope.iter().any(|v| v == s.as_str());
         let scope_str = stored.scope.join(" ");
-        let iat = now.timestamp();
+        let iat = now.unix_timestamp();
         let issuer = tenant_issuer(&self.base_issuer, tenant_id);
 
         let (refreshed_acr, refreshed_amr) =
@@ -868,7 +868,7 @@ impl TokenService {
             iat,
             // Authentication was not redone, so the time of the original sign-in is kept (task #584). Using "now" would let
             // RPs' "re-authenticate within N minutes" imposed via `auth_time` be bypassed just by repeating refreshes.
-            auth_time: stored.auth_time_or_issued().timestamp(),
+            auth_time: stored.auth_time_or_issued().unix_timestamp(),
             nonce: String::new(), // nonce is not needed in the refresh grant
             jti: Uuid::new_v4().to_string(),
             // Keeps pointing to the session established by the original authorization (the value carried over by rotation. G5).
@@ -1050,7 +1050,7 @@ impl TokenService {
         //    Otherwise the registered audiences (`resources`) are looked up, and if allowed it goes into `aud`.
         //    If neither, `invalid_target`: **tokens are not issued to destinations this authorization server does not know**.
         let now = self.clock.now();
-        let iat = now.timestamp();
+        let iat = now.unix_timestamp();
         let issuer = tenant_issuer(&self.base_issuer, tenant_id);
         let management_aud = management_audience(&issuer);
         // Admin tokens are shorter-lived than normal access tokens (ADR-0037 decision 2). `perms` is read
@@ -1459,6 +1459,7 @@ mod tests {
     use super::*;
     use crate::domain::tenant::TenantId;
     use crate::domain::values::{ClientStatus, ClientType, TokenEndpointAuthMethod};
+    use time::macros::datetime;
 
     /// ADR-0043 decision 3. When nothing is recorded, nothing is claimed by guessing.
     #[test]
@@ -1509,10 +1510,9 @@ mod tests {
         );
         assert_eq!(amr, Some(vec!["fed".to_string()]));
     }
-    use chrono::TimeZone;
 
     fn client_with_scopes(scopes: &[&str]) -> Client {
-        let now = chrono::Utc.with_ymd_and_hms(2026, 8, 1, 0, 0, 0).unwrap();
+        let now = datetime!(2026-08-01 00:00:00 UTC);
         Client {
             id: Uuid::from_u128(1),
             tenant_id: TenantId::from(Uuid::from_u128(2)),

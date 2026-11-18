@@ -37,7 +37,7 @@ async fn registry_primary(pool: &MySqlPool, user_id: Uuid) -> Option<String> {
 }
 
 fn new_user(tenant_id: TenantId, username: &str) -> User {
-    let now = chrono::Utc::now();
+    let now = time::OffsetDateTime::now_utc();
     User {
         id: Uuid::now_v7(),
         tenant_id,
@@ -169,7 +169,7 @@ async fn the_primary_identifier_cannot_be_disabled_or_deleted_as_an_identifier()
     );
 
     // Additional identifiers can be stopped and deleted as before.
-    let now = chrono::Utc::now();
+    let now = time::OffsetDateTime::now_utc();
     let extra_value = format!("ap15-extra-{}", Uuid::new_v4().simple());
     let extra = UserLoginIdentifier {
         id: Uuid::now_v7(),
@@ -214,7 +214,7 @@ async fn a_value_another_user_already_owns_is_rejected() {
     );
     users.create(&owner).await.expect("create owner");
     // The owner holds this value as an **additional** identifier (a shape the primary identifier's unique constraint alone cannot prevent).
-    let now = chrono::Utc::now();
+    let now = time::OffsetDateTime::now_utc();
     identifiers
         .create(&UserLoginIdentifier {
             id: Uuid::now_v7(),
