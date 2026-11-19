@@ -216,7 +216,7 @@ default-features = false
 package = "hashbrown"
 
 [dependencies.hashbrown_0_15]
-version = "0.15.0"
+version = "0.15.1"
 features = ["serde"]
 optional = true
 default-features = false
