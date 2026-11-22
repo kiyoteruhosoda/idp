@@ -45,7 +45,7 @@ jobs:
     container:
       # ci-lang image with osv-scanner baked in (deploy-repo host/services/builders/ci-lang).
       # The weekly builder rebuild swaps this digest.
-      image: hub.nolumia.com:5000/builder/ci-node24@sha256:c62edf8d34b8fdd46f5faedeca324f69aebd056194b80d132496463ede483996
+      image: hub.nolumia.com:5000/builder/ci-node24@sha256:15ae917e8114a4e4f626f9f5ce9146d0bc9abbc84c814629d2767a22b43ee13a
     steps:
       - uses: actions/checkout@v6
       - name: Audit Cargo.lock
@@ -60,7 +60,7 @@ jobs:
     container:
       # ci-lang image with osv-scanner baked in (deploy-repo host/services/builders/ci-lang).
       # The weekly builder rebuild swaps this digest.
-      image: hub.nolumia.com:5000/builder/ci-node24@sha256:c62edf8d34b8fdd46f5faedeca324f69aebd056194b80d132496463ede483996
+      image: hub.nolumia.com:5000/builder/ci-node24@sha256:15ae917e8114a4e4f626f9f5ce9146d0bc9abbc84c814629d2767a22b43ee13a
     steps:
       - uses: actions/checkout@v6
       # What reaches users blocks; the build tools only report (deploy-repo ADR-0003).

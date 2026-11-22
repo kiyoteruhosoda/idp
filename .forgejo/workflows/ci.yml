@@ -39,7 +39,7 @@ jobs:
     # ⚠ **Pin by digest.** With a tag, on the day the image is rebuilt
     #   "what passed yesterday fails today" happens and the cause cannot be traced.
     container:
-      image: hub.nolumia.com:5000/builder/ci-rust@sha256:21d15ea717cc6b7836a0c384a95c2cdbf80facd4863ed876d38ef267fc60ae86
+      image: hub.nolumia.com:5000/builder/ci-rust@sha256:efb9901536dffe60f02ee9cad96428941ec53bc93d4587de36e4243b767c8b2b
       # There are 3 `target/` storages (slots 1-3). There are 3 runners, so a 4th is not needed.
       #   Every job mounts all 3 and uses only the one taken in the first step
       #   (`scripts/with-target-lock.sh --take`, https://task.nolumia.com/issues/702).
@@ -143,7 +143,7 @@ jobs:
     if: github.event.pull_request.user.login != 'renovate'
     timeout-minutes: 45
     container:
-      image: hub.nolumia.com:5000/builder/ci-docker@sha256:ac3361bcd7a0e126a81db391ec2b699866b1c4fc644da68f4ecfe82b098042a4
+      image: hub.nolumia.com:5000/builder/ci-docker@sha256:d161061ed08529f69b45c887b0b81c9e731d1d74af752c9473a7bc4d6031e2d2
     # ⚠ **`docker compose config` resolves values, so the secrets need a "shape".**
     #   On GitHub one job did everything and the env placed on the `test` side
     #   applied here as well — **once split, if this is missing here it fails with
