@@ -209,21 +209,21 @@ version = "0.2.12"
 optional = true
 
 [dependencies.hashbrown_0_14]
-version = "0.14.0"
+version = "0.17.0"
 features = ["serde"]
 optional = true
 default-features = false
 package = "hashbrown"
 
 [dependencies.hashbrown_0_15]
-version = "0.15.1"
+version = "0.17.0"
 features = ["serde"]
 optional = true
 default-features = false
 package = "hashbrown"
 
 [dependencies.hashbrown_0_16]
-version = "0.16.0"
+version = "0.17.0"
 features = ["serde"]
 optional = true
 default-features = false
@@ -262,7 +262,7 @@ default-features = false
 package = "jiff"
 
 [dependencies.schemars_0_8]
-version = "0.8.16"
+version = "0.9.0"
 optional = true
 default-features = false
 package = "schemars"
@@ -290,7 +290,7 @@ optional = true
 default-features = false
 
 [dependencies.serde_with_macros]
-version = "=3.24.0"
+version = "=3.25.0"
 optional = true
 
 [dependencies.smallvec_1]
@@ -315,7 +315,7 @@ version = "1.0.6"
 version = "0.3.4"
 
 [dev-dependencies.jsonschema]
-version = "0.56.0"
+version = "0.63.0"
 features = ["resolve-file"]
 default-features = false
 
@@ -340,7 +340,7 @@ version = "0.12.2"
 version = "1.0.23"
 
 [dev-dependencies.schemars_0_8]
-version = "0.8.16"
+version = "0.9.0"
 package = "schemars"
 
 [dev-dependencies.schemars_0_9]
